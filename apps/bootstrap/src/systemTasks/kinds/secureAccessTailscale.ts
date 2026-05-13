@@ -46,6 +46,14 @@ function parseNonNegativeIntEnv(name: string, fallback: number): number {
   return Math.floor(parsed);
 }
 
+function parseOptionalNonNegativeIntEnv(name: string): number | undefined {
+  const raw = String(process.env[name] ?? '').trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed) || parsed < 0) return undefined;
+  return Math.floor(parsed);
+}
+
 function resolveTailscaleApprovalPollConfigFromEnv(): Readonly<{
   timeoutMs: number;
   intervalMs: number;
@@ -53,6 +61,14 @@ function resolveTailscaleApprovalPollConfigFromEnv(): Readonly<{
   return {
     timeoutMs: parseNonNegativeIntEnv('HAPPIER_TAILSCALE_APPROVAL_POLL_TIMEOUT_MS', DEFAULT_TAILSCALE_APPROVAL_POLL_TIMEOUT_MS),
     intervalMs: parseNonNegativeIntEnv('HAPPIER_TAILSCALE_APPROVAL_POLL_INTERVAL_MS', DEFAULT_TAILSCALE_APPROVAL_POLL_INTERVAL_MS),
+  };
+}
+
+function resolveTailscaleCommandConfigFromEnv(): Readonly<{
+  timeoutMs?: number;
+}> {
+  return {
+    timeoutMs: parseOptionalNonNegativeIntEnv('HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS'),
   };
 }
 
@@ -314,11 +330,12 @@ export function createSecureAccessTailscaleHandler(overrides?: Partial<SecureAcc
 }
 
 function createSecureAccessTailscaleDeps(overrides?: Partial<SecureAccessTailscaleDeps>): SecureAccessTailscaleDeps {
+  const commandConfig = resolveTailscaleCommandConfigFromEnv();
   return {
-    inspectState: overrides?.inspectState ?? inspectSecureAccessTailscaleState,
+    inspectState: overrides?.inspectState ?? (async (params) => await inspectSecureAccessTailscaleState(params, commandConfig)),
     ensureInstalled: overrides?.ensureInstalled ?? (async (params) => await ensureTailscaleInstalled(params)),
-    loginInteractive: overrides?.loginInteractive ?? (async () => await runTailscaleLogin()),
-    enableServe: overrides?.enableServe ?? (async (params) => await runTailscaleServeEnable(params)),
+    loginInteractive: overrides?.loginInteractive ?? (async () => await runTailscaleLogin(commandConfig)),
+    enableServe: overrides?.enableServe ?? (async (params) => await runTailscaleServeEnable({ ...params, ...commandConfig })),
     sleep: overrides?.sleep ?? defaultSleep,
     now: overrides?.now ?? Date.now,
   };
@@ -361,10 +378,11 @@ async function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 async function inspectSecureAccessTailscaleState(
   params: SecureAccessTailscaleParams,
+  commandConfig: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<SecureAccessTailscaleState> {
   let status: TailscaleStatusSnapshot;
   try {
-    status = await runTailscaleStatusJson();
+    status = await runTailscaleStatusJson(commandConfig);
   } catch (error) {
     if (isUnavailableTailscaleError(error)) {
       return {
@@ -386,7 +404,7 @@ async function inspectSecureAccessTailscaleState(
     };
   }
 
-  const serveStatus = await runTailscaleServeStatus().catch(() => '');
+  const serveStatus = await runTailscaleServeStatus(commandConfig).catch(() => '');
   const upstream = String(params.upstreamUrl ?? '').trim();
   const httpsBaseUrl = upstream
     ? tailscaleServeHttpsUrlForInternalServerUrlFromStatus(serveStatus, upstream)

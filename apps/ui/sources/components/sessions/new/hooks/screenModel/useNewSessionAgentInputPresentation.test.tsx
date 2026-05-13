@@ -35,6 +35,10 @@ const sessionAgentInputTheme = {
     },
 } as const;
 
+vi.mock('@/components/sessions/pickers/OptionPickerOverlay', () => ({
+    OptionPickerOverlay: () => null,
+}));
+
 describe('useNewSessionAgentInputPresentation', () => {
     it('exposes automation controls via an action chip (no inline automation section)', async () => {
         const { useNewSessionAgentInputPresentation } = await import('./useNewSessionAgentInputPresentation');

@@ -15,7 +15,7 @@ import { Switch } from '@/components/ui/forms/Switch';
 import { useUnistyles } from 'react-native-unistyles';
 import { setLastViewedVersion, getLatestVersion } from '@/changelog';
 import { t } from '@/text';
-import { StoryDeckPreviewDevSection } from './StoryDeckPreviewDevSection';
+import { StoryDeckPreviewDevSection } from '@/dev/storyDeck/StoryDeckPreviewDevSection';
 
 export default function DevScreen() {
     const router = useRouter();

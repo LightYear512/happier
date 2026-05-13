@@ -49,6 +49,7 @@ installSkillBundleCommonModuleMocks({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 960 },
+    useLayoutMaxWidth: () => 960,
 }));
 
 vi.mock('@/components/ui/code/editor/CodeEditor', () => ({

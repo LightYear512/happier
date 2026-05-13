@@ -11,6 +11,7 @@ import { installServerHookCommonModuleMocks } from './serverHookModuleTestHelper
 const featureState = vi.hoisted(() => ({ enabled: true }));
 const backendsState = vi.hoisted(() => ({ backends: null as Record<string, unknown> | null }));
 const messagesState = vi.hoisted(() => ({ messages: [] as any[] }));
+const preferredServerState = vi.hoisted(() => ({ serverId: 'server-a' as string | null }));
 const listRunsSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
@@ -19,6 +20,10 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 
 vi.mock('@/hooks/server/useExecutionRunsBackendsForSession', () => ({
   useExecutionRunsBackendsForSession: () => backendsState.backends,
+}));
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
+  usePreferredServerIdForSession: () => preferredServerState.serverId,
 }));
 
 installServerHookCommonModuleMocks({
@@ -75,6 +80,7 @@ describe('useSessionExecutionRunsSupported', () => {
     featureState.enabled = true;
     backendsState.backends = null;
     messagesState.messages = [];
+    preferredServerState.serverId = 'server-a';
     listRunsSpy.mockReset();
   });
 

@@ -179,9 +179,9 @@ describe('startCliAuthLoginForTerminalConnect', () => {
                 env: {},
             });
 
-            started.proc.child.exitCode = 0;
+            const success = started.waitForSuccess();
             started.proc.child.emit('exit', 0, null);
-            await started.waitForSuccess();
+            await success;
 
             const updated = JSON.parse(await readFile(settingsPath, 'utf8')) as {
                 activeServerId?: string;

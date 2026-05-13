@@ -13,7 +13,6 @@ const capture = vi.hoisted(() => ({
     renderOrder: [] as string[],
     searchHeaders: [] as Array<Record<string, unknown>>,
     segmentedTabBars: [] as Array<Record<string, unknown>>,
-    stackOptions: null as Record<string, unknown> | null,
     switches: [] as Array<Record<string, unknown>>,
     setRawSettings: vi.fn(),
     reset() {
@@ -23,7 +22,6 @@ const capture = vi.hoisted(() => ({
         this.renderOrder = [];
         this.searchHeaders = [];
         this.segmentedTabBars = [];
-        this.stackOptions = null;
         this.switches = [];
         this.setRawSettings.mockReset();
     },
@@ -35,23 +33,11 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 
 installSettingsViewCommonModuleMocks({
     router: async () => {
-        const { createExpoRouterMock, createStackOptionsCapture } = await import('@/dev/testkit/mocks/router');
-        const stackOptionsCapture = createStackOptionsCapture();
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const routerMock = createExpoRouterMock({
             params: { actionId: 'review.start' },
-            stackOptionsCapture,
         });
-        const StackScreen = routerMock.module.Stack.Screen;
-        return {
-            ...routerMock.module,
-            Stack: Object.assign(routerMock.module.Stack, {
-                Screen: (props: { options?: Record<string, unknown> }) => {
-                    StackScreen(props);
-                    capture.stackOptions = stackOptionsCapture.getResolved();
-                    return React.createElement('StackScreen', props);
-                },
-            }),
-        };
+        return routerMock.module;
     },
     storage: async (importOriginal) => {
         const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
@@ -193,11 +179,11 @@ describe('ActionSettingsDetailView', () => {
         });
     });
 
-    it('uses the action name as the route header title', async () => {
+    it('renders the selected route action from search params', async () => {
         const { ActionSettingsDetailView } = await import('./ActionSettingsDetailView');
 
-        await renderScreen(<ActionSettingsDetailView />);
+        const screen = await renderScreen(<ActionSettingsDetailView />);
 
-        expect(capture.stackOptions?.headerTitle).toBe('Start review');
+        expect(await screen.findByTestId('settings-actions:action:review.start:summary')).toBeTruthy();
     });
 });

@@ -188,8 +188,10 @@ async function main() {
     env: envWithStackDefaults,
     resolveUserHomeDir,
   });
-  assertCargoAvailableForTauri({ env: runtimeEnv, resolveUserHomeDir });
-  if (String(runtimeEnv.HAPPIER_STACK_TUI ?? '').trim() === '1') {
+  if (!json) {
+    assertCargoAvailableForTauri({ env: runtimeEnv, resolveUserHomeDir });
+  }
+  if (!json && String(runtimeEnv.HAPPIER_STACK_TUI ?? '').trim() === '1') {
     const pathEntries = String(runtimeEnv.PATH ?? '')
       .split(process.platform === 'win32' ? ';' : ':')
       .map((entry) => String(entry ?? '').trim())
@@ -263,6 +265,7 @@ async function main() {
       configPath,
       configOverride,
       resolveUserHomeDir,
+      validateCargo: false,
     });
     printResult({
       json,

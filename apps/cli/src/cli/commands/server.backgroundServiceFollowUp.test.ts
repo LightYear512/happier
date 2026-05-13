@@ -23,6 +23,11 @@ const { spawnHappyCLIMock, resolveInstalledDaemonServiceInventoryForCurrentRelay
 const { axiosGetMock } = vi.hoisted(() => ({
     axiosGetMock: vi.fn(),
 }));
+const { openTtyMock } = vi.hoisted(() => ({
+    openTtyMock: vi.fn(async () => {
+        throw new Error('tty unavailable in unit test');
+    }),
+}));
 
 const currentReleaseChannel = (): DaemonServiceListEntry['releaseChannel'] => configuration.publicReleaseRing;
 const alternateReleaseChannel = (): DaemonServiceListEntry['releaseChannel'] =>
@@ -37,6 +42,18 @@ vi.mock('node:readline', () => ({
         close: () => {},
     }),
 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs/promises')>();
+	    return {
+	        ...actual,
+	        open: (...args: Parameters<typeof actual.open>) => (
+	            args[0] === '/dev/tty'
+	                ? openTtyMock()
+	                : actual.open(...args)
+	        ),
+	    };
+	});
 
 vi.mock('axios', () => ({
     default: {
@@ -153,6 +170,7 @@ describe('happier server background service follow-up', () => {
         spawnHappyCLIMock.mockReset();
         resolveInstalledDaemonServiceInventoryForCurrentRelayMock.mockReset();
         axiosGetMock.mockReset();
+        openTtyMock.mockClear();
         promptAnswers.length = 0;
         promptQuestions.length = 0;
     });

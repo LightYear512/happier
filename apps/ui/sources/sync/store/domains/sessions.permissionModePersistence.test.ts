@@ -37,6 +37,8 @@ vi.mock('../../domains/state/persistence', async (importOriginal) => {
             saveSessionActionDrafts: () => {},
             saveSessionReviewCommentsDrafts: () => {},
             saveWorkspaceReviewCommentsDrafts: () => {},
+            loadLocalPetSourcesBySourceKey: () => ({}),
+            saveLocalPetSourcesBySourceKey: vi.fn(),
         },
     });
 });

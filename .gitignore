@@ -37,6 +37,7 @@ yarn-error.*
 .playwright-cli/
 .yarn-cache/
 .yarn-global/
+/graphify-out/
 
 # local build/log artifacts
 apps/cli/.dist.hstack-backup/

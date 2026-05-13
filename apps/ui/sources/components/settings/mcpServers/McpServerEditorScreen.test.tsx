@@ -422,7 +422,8 @@ describe('McpServerEditorScreen', () => {
         await act(async () => {
             addFlowTabs?.props.onSelectTab?.('quickInstall');
         });
-        expect(screen.findByTestId('mcp.server.quickInstall.preset.github')).toBeTruthy();
+        expect(await screen.findByTestId('mcp.server.quickInstall.preset.visual-runner')).toBeTruthy();
+        expect(await screen.findByTestId('mcp.server.quickInstall.preset.github')).toBeTruthy();
     });
 
     it('disables JSON import when a saved-secret mapping is missing a value', async () => {

@@ -99,6 +99,36 @@ vi.mock('expo-modules-core', () => ({
     requireNativeModule: () => null,
 }));
 
+vi.mock('expo-secure-store', () => ({
+    deleteItemAsync: vi.fn(async () => undefined),
+    getItemAsync: vi.fn(async () => null),
+    setItemAsync: vi.fn(async () => undefined),
+}));
+
+vi.mock('posthog-react-native', () => ({
+    default: class PostHogMock {
+        capture() {}
+        identify() {}
+        reset() {}
+    },
+    PostHogProvider: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+}));
+
+vi.mock('@/track', () => ({
+    initializeTracking: vi.fn(),
+    tracking: {
+        capture: vi.fn(),
+        identify: vi.fn(),
+        reset: vi.fn(),
+    },
+}));
+
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+    getSyncSingleton: () => ({
+        applySettings: vi.fn(),
+    }),
+}));
+
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({
         serverId: 'server-a',

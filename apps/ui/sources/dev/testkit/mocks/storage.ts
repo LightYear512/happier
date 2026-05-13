@@ -74,6 +74,7 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useLocalSettingMutable,
         useSessionMessages: () => ({ messages: [], isLoaded: true } as const),
         useSessionMessagesVersion: () => 0,
+        useProjectForSession: () => null,
         useAllMachines: () => allMachines,
         useAllSessions: () => allSessions,
         useAllSessionListRenderables: () => allSessionListRenderables,
@@ -86,7 +87,6 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useSyncError: () => null,
         useArtifacts: () => [],
         useWorkspaceReviewCommentsDrafts: () => [],
-        useProjectForSession: () => null,
         useMachineListByServerId: () => ({}),
         useMachineListStatusByServerId: () => ({}),
     } satisfies Partial<StorageModule>;
@@ -155,6 +155,7 @@ export function createStorageStoreMock(state: Partial<StorageState>): UseBoundSt
         machineDisplayById: {},
         machineListByServerId: {},
         machineListStatusByServerId: {},
+        localSettings: localSettingsDefaults,
         artifacts: {},
         automations: {},
         friends: {},

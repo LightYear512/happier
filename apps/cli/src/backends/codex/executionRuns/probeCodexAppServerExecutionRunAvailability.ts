@@ -45,7 +45,7 @@ export function probeCodexAppServerExecutionRunAvailability(opts: Readonly<{
   env?: NodeJS.ProcessEnv;
   cwd?: string;
 }> = {}): boolean {
-  const env = opts.env ?? process.env;
+  const env = opts.env ? { ...process.env, ...opts.env } : process.env;
   const cwd = opts.cwd ?? process.cwd();
   const rawOverrideCommand = resolveCodexOverrideCommand(env, CODEX_APP_SERVER_OVERRIDE_KEYS, cwd);
   const overrideCommand = rawOverrideCommand

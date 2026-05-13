@@ -1,8 +1,8 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
 import type { StyleProp, ViewStyle } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 export type SurfaceGradient = Readonly<{
     colors: readonly [string, string, ...string[]];

@@ -179,7 +179,8 @@ describe('PermissionHandler (ExitPlanMode)', () => {
     } satisfies PermissionRpcPayload);
 
     await expect(expectResolvesWithin(Promise.all([first, second]))).resolves.toHaveLength(2);
-    expect(session.setLastPermissionMode).not.toHaveBeenCalled();
+    expect(session.setLastPermissionMode).toHaveBeenCalledTimes(1);
+    expect(session.setLastPermissionMode).toHaveBeenCalledWith('yolo');
     expect(client.getAgentStateSnapshot().completedRequests[sharedToolUseId]).toMatchObject({
       status: 'approved',
       mode: 'yolo',

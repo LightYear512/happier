@@ -82,6 +82,10 @@ installRootLayoutRouteCommonModuleMocks({
             importOriginal,
             overrides: {
                 storage: createStorageStoreMock({
+                    accountPetsById: {},
+                    localPetSourcesBySourceKey: {},
+                    sessions: {},
+                    sessionListRenderables: {},
                     settings: mockState.mockSettings as any,
                     localSettings: mockState.mockLocalSettings,
                 }),
@@ -125,6 +129,10 @@ vi.mock('@/hooks/server/useFriendsAllowUsernameSupport', () => ({
 
 vi.mock('@/sync/domains/state/storageStore', () => {
     const storage = createStorageStoreMock({
+        accountPetsById: {},
+        localPetSourcesBySourceKey: {},
+        sessions: {},
+        sessionListRenderables: {},
         profile: { linkedProviders: [], username: 'u' } as any,
         localSettings: mockState.mockLocalSettings,
     });

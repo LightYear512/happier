@@ -17,6 +17,11 @@ let promptQuestions: string[] = [];
 const { resolveInstalledDaemonServiceInventoryForCurrentRelayMock } = vi.hoisted(() => ({
   resolveInstalledDaemonServiceInventoryForCurrentRelayMock: vi.fn<(...args: unknown[]) => Promise<readonly DaemonServiceListEntry[]>>(async () => []),
 }));
+const { openTtyMock } = vi.hoisted(() => ({
+  openTtyMock: vi.fn(async () => {
+    throw new Error('tty unavailable in unit test');
+  }),
+}));
 
 vi.mock('node:readline', () => ({
   createInterface: () => ({
@@ -27,6 +32,18 @@ vi.mock('node:readline', () => ({
     close: () => {},
   }),
 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+	return {
+	  ...actual,
+	  open: (...args: Parameters<typeof actual.open>) => (
+	    args[0] === '/dev/tty'
+	      ? openTtyMock()
+	      : actual.open(...args)
+	  ),
+	};
+	});
 
 const spawnHappyCLIMock = vi.fn();
 vi.mock('@/utils/spawnHappyCLI', () => ({
@@ -80,6 +97,7 @@ function setTtyMode(stdinIsTTY: boolean, stdoutIsTTY: boolean): () => void {
 
 afterEach(() => {
   resolveInstalledDaemonServiceInventoryForCurrentRelayMock.mockReset();
+  openTtyMock.mockClear();
 });
 
 function installDefaultFollowingServiceFixture(homeDir: string): void {

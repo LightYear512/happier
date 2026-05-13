@@ -394,6 +394,7 @@ export class PermissionHandler {
         const { response, toolName, sourceLocalId } = params;
         if (response.approved) {
             if (response.mode) {
+                this.session.setLastPermissionMode(response.mode);
                 this.handleModeChange(response.mode);
             }
             const updatedPermissions = response.updatedPermissions;

@@ -306,7 +306,7 @@ vi.mock('@/utils/sessions/terminalSessionDetails', () => ({ getAttachCommandForS
 vi.mock('@/utils/errors/errors', () => ({ HappyError: class HappyError extends Error {} }));
 vi.mock('@/sync/domains/profiles/profileUtils', () => ({ resolveProfileById: () => null }));
 vi.mock('@/components/profiles/profileDisplay', () => ({ getProfileDisplayName: () => 'profile' }));
-vi.mock('@/components/ui/layout/layout', () => ({ layout: { screenPaddingHorizontal: 16 } }));
+vi.mock('@/components/ui/layout/layout', () => ({ layout: { screenPaddingHorizontal: 16 }, useLayoutMaxWidth: () => 1024 }));
 
 describe('/session/[id]/info', () => {
     beforeEach(() => {

@@ -222,6 +222,7 @@ describe('createCodexAppServerStreamEventBridge', () => {
                     {
                         kind: 'local-file',
                         path: imagePath,
+                        mimeType: 'image/png',
                         origin: {
                             source: 'provider-generated',
                             generationId: 'img_generating_final',

@@ -6520,7 +6520,7 @@ settingsSession: {
         wizardPresentationTitle: "Layout dei selettori della procedura",
         wizardPresentationFooter:
           "Auto mantiene le sezioni brevi come liste e passa quelle lunghe a menu a discesa ricercabili.",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "Automatico",
         wizardPresentationAutoSubtitle:
           "Lascia che Happier scelga il layout migliore in base alla quantità di contenuto.",
         wizardPresentationListTitle: "Lista",
@@ -6529,14 +6529,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "Mostra una riga compatta che apre il selettore completo.",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'Personalizzazione del prompt',
+              footer: 'Scegli quali istruzioni integrate Happier aggiunge alle nuove sessioni agente. Questo non nasconde le opzioni che un agente invia già.',
+              askAgentToRenameSessionsTitle: 'Chiedi all’agente di rinominare le sessioni',
+              askAgentToRenameSessionsEnabledSubtitle: 'Il prompt chiede agli agenti di impostare titoli di sessione brevi e descrittivi.',
+              askAgentToRenameSessionsDisabledSubtitle: 'Il prompt non chiede agli agenti di impostare titoli; la rinomina manuale continua a funzionare.',
+              askAgentToSuggestReplyOptionsTitle: 'Chiedi all’agente di suggerire risposte',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'Il prompt chiede agli agenti di proporre risposte rapide quando utile.',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'Il prompt non chiede agli agenti di aggiungere risposte rapide.',
           },
       defaultPermissions: {
         title: "Permessi predefiniti",
@@ -7624,78 +7624,78 @@ settingsSession: {
                         "title": "Inizia ovunque. Continua dappertutto.",
                         "wideTitle": "Inizia ovunque.\nContinua dappertutto.",
                         "body": "Avvia una sessione da qualsiasi posto. Seguila in tempo reale, invia messaggi e approva permessi da telefono, browser o desktop.",
-                        "alt": "Abstract placeholder image for cross-device agent sessions."
+                        "alt": "Immagine astratta segnaposto per sessioni agent tra dispositivi."
                     },
                     "terminalTuis": {
                         "title": "Ami il terminale? Anche noi!",
                         "wideTitle": "Ami il terminale?\nAnche noi!",
                         "body": "Esegui Claude Code, Codex o OpenCode nella loro interfaccia terminale nativa. Segui, invia messaggi e approva permessi dal telefono.",
-                        "alt": "Abstract placeholder image for terminal UI syncing."
+                        "alt": "Immagine astratta segnaposto per la sincronizzazione delle interfacce terminale."
                     },
                     "cockpit": {
                         "title": "Tutto ciò che ti serve. A un tap.",
                         "wideTitle": "Tutto ciò che ti serve.\nA un tap",
                         "body": "Chat, file, Git, editor, terminale. Interagisci con l’agente, sfoglia e modifica file, rivedi diff, gestisci branch Git, apri PR e apri un terminale live.",
-                        "alt": "Abstract placeholder image for the mobile cockpit."
+                        "alt": "Immagine astratta segnaposto per il cockpit mobile."
                     },
                     "existingSessions": {
                         "title": "Sessioni Claude, Codex, OpenCode? Già presenti.",
                         "body": "Sfoglia qualsiasi sessione Claude, Codex o OpenCode, in esecuzione o meno.",
-                        "alt": "Abstract placeholder image for existing provider sessions."
+                        "alt": "Immagine astratta segnaposto per sessioni provider esistenti."
                     },
                     "voiceAssistant": {
                         "title": "Un collega con cui parlare",
                         "wideTitle": "Assistente vocale: un collega con cui parlare",
                         "body": "L’assistente vocale monitora tutte le sessioni in esecuzione. Ragiona sui prossimi cambiamenti, approva permessi e molto altro, a mani libere.",
-                        "alt": "Abstract placeholder image for the voice assistant."
+                        "alt": "Immagine astratta segnaposto per l'assistente vocale."
                     },
                     "reviewComments": {
                         "title": "Rivedi codice e lascia commenti",
                         "body": "Sfoglia modifiche e diff del tuo agente. Segna le righe esatte che vuoi trattare. Inviale a un agente nella sessione corrente o in una nuova.",
-                        "alt": "Abstract placeholder image for review comments."
+                        "alt": "Immagine astratta segnaposto per i commenti di revisione."
                     },
                     "subagents": {
                         "title": "Una sessione, subagenti multi-provider",
                         "body": "Avvia Codex, Claude o qualsiasi altro subagente in qualunque sessione. Usa la forza di ciascuno e falli lavorare tutti insieme nella stessa sessione.",
-                        "alt": "Abstract placeholder image for cross-provider subagents."
+                        "alt": "Immagine astratta segnaposto per subagenti multi-provider."
                     },
                     "inbox": {
                         "title": "Non perdere più il filo",
                         "body": "Hai 10 sessioni aperte e perdi di vista cosa richiede attenzione? La inbox mostra tutta l’attività, da ogni sessione e macchina.",
-                        "alt": "Abstract placeholder image for the global inbox."
+                        "alt": "Immagine astratta segnaposto per la inbox globale."
                     },
                     "mcp": {
                         "title": "Una configurazione. Ogni provider.",
                         "wideTitle": "Una configurazione.\nOgni provider.",
                         "body": "Definisci gli MCP una sola volta in Happier e funzionano su tutti i backend, anche quelli che non supportano MCP nativamente. Gestisci skill, prompt e altro!",
-                        "alt": "Abstract placeholder image for shared MCP configuration."
+                        "alt": "Immagine astratta segnaposto per la configurazione MCP condivisa."
                     },
                     "queue": {
                         "title": "Accoda, guida, biforca, ripristina",
                         "body": "Accoda messaggi mentre l’agente è occupato. Guida una sessione in corso. Biforca da qualsiasi messaggio. Ripristina se qualcosa va storto.",
-                        "alt": "Abstract placeholder image for session control tools."
+                        "alt": "Immagine astratta segnaposto per gli strumenti di controllo sessione."
                     },
                     "automations": {
                         "title": "Il tuo agente, programmato",
                         "body": "Pianifica sessioni ricorrenti per monitorare pull request, controllare issue o eseguire qualsiasi attività a intervalli regolari.",
-                        "alt": "Abstract placeholder image for scheduled agent automations."
+                        "alt": "Immagine astratta segnaposto per automazioni agent programmate."
                     },
                     "accounts": {
                         "title": "Account multipli e monitoraggio quote",
                         "body": "Collega più account OpenAI o Claude. Monitora uso e quote direttamente nell’app.",
-                        "alt": "Abstract placeholder image for connected accounts and quotas."
+                        "alt": "Immagine astratta segnaposto per account collegati e quote."
                     },
                     "privacy": {
                         "title": "Open-source. Crittografato end-to-end.",
                         "wideTitle": "Open-source.\nCrittografato end-to-end.",
                         "body": "Codice, prompt e contenuti di sessione vengono crittografati sul dispositivo prima di raggiungere qualsiasi server. Privato per design. Aperto per default.",
-                        "alt": "Abstract placeholder image for privacy and self-hosting."
+                        "alt": "Immagine astratta segnaposto per privacy e self-hosting."
                     },
                     "pets": {
                         "title": "Non sentirti mai solo. Scopri Pets.",
                         "wideTitle": "Non sentirti mai solo.\nScopri Pets.",
                         "body": "Un piccolo compagno che ti aiuta a restare sul pezzo tra le sessioni. Utile? Forse. Affascinante? Sicuro.",
-                        "alt": "Abstract placeholder image for Pets."
+                        "alt": "Immagine astratta segnaposto per Pets."
                     }
                 }
             },

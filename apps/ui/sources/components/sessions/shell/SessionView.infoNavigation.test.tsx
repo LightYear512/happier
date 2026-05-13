@@ -155,6 +155,8 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionI
         ...actual,
         resolveServerIdForSessionIdFromLocalCache: (sessionId: string) =>
             resolveServerIdForSessionIdFromLocalCacheSpy(sessionId),
+        resolveServerIdForSessionIdFromLocalState: (_state: unknown, sessionId: string) =>
+            resolveServerIdForSessionIdFromLocalCacheSpy(sessionId),
     };
 });
 

@@ -6185,7 +6185,7 @@ settingsSession: {
         wizardPresentationTitle: "Макет селекторов мастера",
         wizardPresentationFooter:
           "Auto оставляет короткие разделы списками и переключает длинные разделы на выпадающие меню с поиском.",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "Авто",
         wizardPresentationAutoSubtitle:
           "Позвольте Happier выбрать лучший макет для объема содержимого.",
         wizardPresentationListTitle: "Список",
@@ -6194,14 +6194,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "Показывать компактную строку, открывающую полный селектор.",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'Персонализация промпта',
+              footer: 'Выберите, какие встроенные инструкции Happier добавляет в новые агентские сессии. Это не скрывает варианты, которые агент уже отправляет.',
+              askAgentToRenameSessionsTitle: 'Просить агента переименовывать сессии',
+              askAgentToRenameSessionsEnabledSubtitle: 'Промпт просит агентов задавать короткие описательные названия сессий.',
+              askAgentToRenameSessionsDisabledSubtitle: 'Промпт не просит агентов задавать названия; ручное переименование по-прежнему работает.',
+              askAgentToSuggestReplyOptionsTitle: 'Просить агента предлагать варианты ответа',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'Промпт просит агентов предлагать быстрые варианты ответа, когда это полезно.',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'Промпт не просит агентов добавлять быстрые варианты ответа.',
           },
       defaultPermissions: {
         title: "Разрешения по умолчанию",

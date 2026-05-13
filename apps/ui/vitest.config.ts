@@ -176,6 +176,10 @@ export default defineConfig({
             { find: 'react-native-device-info', replacement: resolve('./sources/dev/reactNativeDeviceInfoStub.ts') },
             // Sentry's React Native SDK depends on native modules; stub it in node/Vitest.
             { find: '@sentry/react-native', replacement: resolve('./sources/dev/sentryReactNativeStub.ts') },
+            // `@react-native-masked-view/masked-view` ships JSX in a .js file; stub it for node/Vitest import analysis.
+            { find: '@react-native-masked-view/masked-view', replacement: resolve('./sources/dev/reactNativeMaskedViewStub.tsx') },
+            // `react-native-view-shot` ships JSX in a .js file; stub it for node/Vitest import analysis.
+            { find: 'react-native-view-shot', replacement: resolve('./sources/dev/reactNativeViewShotStub.ts') },
             // `@react-native/virtualized-lists` ships Flow sources (`import typeof`) that Node can't parse.
             { find: /^@react-native\/virtualized-lists(\/.*)?$/, replacement: resolve('./sources/dev/reactNativeVirtualizedListsStub.ts') },
             // Some deps import the abort-controller polyfill, which uses extensionless ESM imports that Node can't resolve.

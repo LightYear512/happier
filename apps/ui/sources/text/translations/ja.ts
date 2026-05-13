@@ -6438,7 +6438,7 @@ settingsSession: {
         wizardPresentationTitle: "ウィザード選択欄のレイアウト",
         wizardPresentationFooter:
           "Auto は短いセクションをリストのままにし、長いセクションを検索可能なドロップダウンに切り替えます。",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "自動",
         wizardPresentationAutoSubtitle:
           "コンテンツ量に応じて Happier が最適なレイアウトを選びます。",
         wizardPresentationListTitle: "リスト",
@@ -6447,14 +6447,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "完全な選択欄を開くコンパクトな行を表示します。",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'プロンプトのパーソナライズ',
+              footer: '新しいエージェントセッションに Happier が追加する組み込み指示を選びます。エージェントがすでに送信する選択肢は非表示になりません。',
+              askAgentToRenameSessionsTitle: 'エージェントにセッション名の変更を依頼',
+              askAgentToRenameSessionsEnabledSubtitle: 'プロンプトは、短く説明的なセッションタイトルを設定するようエージェントに依頼します。',
+              askAgentToRenameSessionsDisabledSubtitle: 'プロンプトはタイトル設定をエージェントに依頼しません。手動での名前変更は引き続き使えます。',
+              askAgentToSuggestReplyOptionsTitle: 'エージェントに返信候補の提案を依頼',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'プロンプトは、有用な場合にクイック返信候補を提案するようエージェントに依頼します。',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'プロンプトはクイック返信候補の追加をエージェントに依頼しません。',
           },
       defaultPermissions: {
         title: "デフォルト権限",

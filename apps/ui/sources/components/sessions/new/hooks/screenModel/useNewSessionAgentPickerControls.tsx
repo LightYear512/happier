@@ -41,11 +41,13 @@ function areConfigOverridesEqual(
     left: Readonly<Record<string, string>> | null | undefined,
     right: Readonly<Record<string, string>> | null | undefined,
 ): boolean {
-    const leftKeys = Object.keys(left ?? {});
-    const rightKeys = Object.keys(right ?? {});
+    const safeLeft = left ?? {};
+    const safeRight = right ?? {};
+    const leftKeys = Object.keys(safeLeft);
+    const rightKeys = Object.keys(safeRight);
     if (leftKeys.length !== rightKeys.length) return false;
     for (const key of leftKeys) {
-        if ((left ?? {})[key] !== (right ?? {})[key]) return false;
+        if (safeLeft[key] !== safeRight[key]) return false;
     }
     return true;
 }

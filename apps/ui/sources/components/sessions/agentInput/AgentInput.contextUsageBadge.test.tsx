@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { createReducer } from '@/sync/reducer/reducer';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
+import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
+import type { StorageState } from '@/sync/store/types';
 import { renderScreen } from '@/dev/testkit';
 import { installAgentInputCommonModuleMocks } from './agentInputTestHelpers';
 
@@ -65,11 +67,12 @@ installAgentInputCommonModuleMocks({
         return createModalModuleMock().module;
     },
     storage: async (importOriginal) => {
-        const { createStorageModuleMock, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
+        const { createStorageModuleMock, createUseLocalSettingMock, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleMock({
             importOriginal,
             overrides: {
                 useSetting: createUseSettingMock({ values: storageSettings }),
+                useLocalSetting: createUseLocalSettingMock({ values: { uiBackdropBlurEnabled: true } }),
                 useSettings: () => storageSettings,
                 useSessionMessages: () => ({ messages: [], isLoaded: true }),
                 useSessionTranscriptIds: () => ({ ids: [], isLoaded: true }),
@@ -98,11 +101,15 @@ vi.mock('react-native-svg', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 800, headerMaxWidth: 800 },
+    useLayoutMaxWidth: () => 800,
 }));
 
 vi.mock('@/sync/domains/state/storageStore', async () => {
     const { createStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
-    const store = createStorageStoreMock({ sessionMessages: {} } as any);
+    const store = createStorageStoreMock({
+        localSettings: { ...localSettingsDefaults, uiBackdropBlurEnabled: true },
+        sessionMessages: {},
+    } satisfies Partial<StorageState>);
     return {
         getStorage: () => store,
     };

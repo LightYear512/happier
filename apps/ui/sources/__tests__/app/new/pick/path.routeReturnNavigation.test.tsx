@@ -143,6 +143,7 @@ vi.mock('@/utils/navigation/safeRouterBack', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 920 },
+    useLayoutMaxWidth: () => 920,
 }));
 
 vi.mock('@/constants/Typography', () => ({

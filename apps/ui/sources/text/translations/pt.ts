@@ -6321,7 +6321,7 @@ settingsSession: {
         wizardPresentationTitle: "Layout dos seletores do assistente",
         wizardPresentationFooter:
           "Auto mantém seções curtas como listas e muda seções longas para menus suspensos pesquisáveis.",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "Automático",
         wizardPresentationAutoSubtitle:
           "Deixe o Happier escolher o melhor layout para a quantidade de conteúdo.",
         wizardPresentationListTitle: "Lista",
@@ -6330,14 +6330,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "Mostre uma linha compacta que abre o seletor completo.",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'Personalização do prompt',
+              footer: 'Escolha quais instruções integradas o Happier adiciona a novas sessões de agente. Isso não oculta opções que um agente já envia.',
+              askAgentToRenameSessionsTitle: 'Pedir ao agente para renomear sessões',
+              askAgentToRenameSessionsEnabledSubtitle: 'O prompt pede aos agentes que definam títulos curtos e descritivos para as sessões.',
+              askAgentToRenameSessionsDisabledSubtitle: 'O prompt não pede aos agentes que definam títulos; renomear manualmente ainda funciona.',
+              askAgentToSuggestReplyOptionsTitle: 'Pedir ao agente para sugerir respostas',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'O prompt pede aos agentes que proponham respostas rápidas quando útil.',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'O prompt não pede aos agentes que adicionem respostas rápidas.',
           },
       defaultPermissions: {
         title: "Permissões padrão",

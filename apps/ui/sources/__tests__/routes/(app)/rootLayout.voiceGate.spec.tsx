@@ -74,6 +74,7 @@ installRootLayoutRouteCommonModuleMocks({
             useProfile: () => ({ linkedProviders: [], username: null }),
             useAllSessions: () => [],
             useFriendRequests: () => [],
+            useIsDataReady: () => true,
             useLocalSettings: () => mockLocalSettings,
             useLocalSetting: (<K extends keyof LocalSettings>(key: K): LocalSettings[K] =>
                 mockLocalSettings[key]) as typeof import('@/sync/domains/state/storage')['useLocalSetting'],

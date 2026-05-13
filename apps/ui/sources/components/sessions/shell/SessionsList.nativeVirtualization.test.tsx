@@ -211,6 +211,7 @@ vi.mock('@/components/ui/feedback/UpdateBanner', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1280 },
+    useLayoutMaxWidth: () => 1280,
 }));
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({

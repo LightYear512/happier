@@ -23,6 +23,16 @@ function splitPathEntries(pathValue) {
     .filter(Boolean);
 }
 
+async function createExecutableCargoHome(prefix) {
+  const cargoHome = await mkdir(`${tmpdir()}/${prefix}-${Date.now()}`, { recursive: true });
+  const cargoBinDir = `${cargoHome}/bin`;
+  await mkdir(cargoBinDir, { recursive: true });
+  const cargoBinary = `${cargoBinDir}/${process.platform === 'win32' ? 'cargo.exe' : 'cargo'}`;
+  await writeFile(cargoBinary, '#!/bin/sh\nexit 0\n', 'utf-8');
+  await chmod(cargoBinary, 0o755);
+  return { cargoHome, cargoBinDir, cargoBinary };
+}
+
 test('resolveTauriDevUrl points at the existing Expo dev server port', () => {
   assert.equal(resolveTauriDevUrl({ expoPort: 8081 }), 'http://localhost:8081');
 });
@@ -50,12 +60,16 @@ test('buildTauriDevInvocation disables beforeDevCommand and reuses the existing 
   });
 });
 
-test('buildStackTauriDevProcessInvocation launches tauri from apps/ui/src-tauri with the repo-local binary', () => {
+test('buildStackTauriDevProcessInvocation launches tauri from apps/ui/src-tauri with the repo-local binary', async () => {
   const expectedTauriEntrypoint = join(repoRootDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
+  const { cargoHome } = await createExecutableCargoHome('happier-tauri-invocation');
 
   const invocation = buildStackTauriDevProcessInvocation({
     rootDir: stackRootDir,
-    env: process.env,
+    env: {
+      ...process.env,
+      CARGO_HOME: cargoHome,
+    },
     configPath: 'src-tauri/tauri.publicdev.conf.json',
     configOverride: {
       build: {
@@ -83,13 +97,15 @@ test('buildStackTauriDevProcessInvocation launches tauri from apps/ui/src-tauri 
   assert.equal(invocation.cwd, join(repoRootDir, 'apps', 'ui', 'src-tauri'));
 });
 
-test('buildStackTauriDevProcessInvocation scopes the cargo target directory to the active stack', () => {
+test('buildStackTauriDevProcessInvocation scopes the cargo target directory to the active stack', async () => {
   const stackName = 'codex-bootstrap-qa-24534';
+  const { cargoHome } = await createExecutableCargoHome('happier-tauri-target-dir');
   const invocation = buildStackTauriDevProcessInvocation({
     rootDir: stackRootDir,
     env: {
       ...process.env,
       HAPPIER_STACK_STACK: stackName,
+      CARGO_HOME: cargoHome,
     },
     configPath: 'src-tauri/tauri.publicdev.conf.json',
     configOverride: {
@@ -110,6 +126,7 @@ test('buildStackTauriDevProcessInvocation uses the explicitly resolved UI dir ev
   const explicitUiDir = join(repoRootDir, 'apps', 'ui');
   const expectedTauriEntrypoint = join(repoRootDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
   const fakeRepo = await mkdir(`${tmpdir()}/happier-tauri-bad-repo-${Date.now()}`, { recursive: true });
+  const { cargoHome } = await createExecutableCargoHome('happier-tauri-explicit-ui-dir');
 
   const invocation = buildStackTauriDevProcessInvocation({
     rootDir: stackRootDir,
@@ -118,6 +135,7 @@ test('buildStackTauriDevProcessInvocation uses the explicitly resolved UI dir ev
     env: {
       ...process.env,
       HAPPIER_STACK_REPO_DIR: fakeRepo,
+      CARGO_HOME: cargoHome,
     },
     configPath: 'src-tauri/tauri.publicdev.conf.json',
     configOverride: {

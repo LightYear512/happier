@@ -13,6 +13,10 @@ on:
         required: false
         default: false
         type: boolean
+      run_visual_runner_e2e:
+        required: false
+        default: true
+        type: boolean
       run_wsrepl_lima:
         required: false
         default: false
@@ -300,6 +304,62 @@ jobs:
             .project/logs/e2e/*ui-e2e*
           if-no-files-found: ignore
 
+  visual-runner-e2e:
+    if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || (github.event_name == 'workflow_call' && inputs.run_visual_runner_e2e) }}
+    name: Visual Runner E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Visual Runner changes
+        id: changes
+        if: github.event_name != 'workflow_call'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            visual_runner:
+              - 'packages/visual-runner/**'
+              - 'package.json'
+              - 'yarn.lock'
+
+      - name: Skip Visual Runner E2E (no relevant changes)
+        if: github.event_name != 'workflow_call' && steps.changes.outputs.visual_runner != 'true'
+        run: |
+          echo "Visual Runner E2E skipped: no relevant changes."
+
+      - name: Setup Node
+        if: github.event_name == 'workflow_call' || steps.changes.outputs.visual_runner == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Enable Corepack
+        if: github.event_name == 'workflow_call' || steps.changes.outputs.visual_runner == 'true'
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install dependencies
+        if: github.event_name == 'workflow_call' || steps.changes.outputs.visual_runner == 'true'
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile
+
+      - name: Install Playwright browsers
+        if: github.event_name == 'workflow_call' || steps.changes.outputs.visual_runner == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Visual Runner E2E
+        if: github.event_name == 'workflow_call' || steps.changes.outputs.visual_runner == 'true'
+        run: yarn -s test:e2e:visual-runner
+
   mobile-e2e-android:
     # Native E2E is intentionally opt-in for now (not a PR check).
     if: ${{ github.event_name == 'workflow_call' && inputs.run_mobile_e2e_android }}
@@ -491,6 +551,7 @@ jobs:
           yarn workspace @happier-dev/agents test
           yarn workspace @happier-dev/cli-common test
           yarn workspace @happier-dev/connection-supervisor test
+          yarn workspace @happier-dev/visual-runner test
           yarn workspace @happier-dev/bootstrap test
           yarn --cwd packages/relay-server test
 

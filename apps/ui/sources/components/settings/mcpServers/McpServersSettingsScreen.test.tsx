@@ -222,8 +222,10 @@ describe('McpServersSettingsScreen', () => {
 
         const addServerRow = screen.findRow('settings.mcpServers.addServer');
         const quickInstallPlaywright = screen.findRow('settings.mcpServers.quickInstall.playwright');
+        const quickInstallVisualRunner = screen.findRow('settings.mcpServers.quickInstall.visual-runner');
         expect(addServerRow).toBeTruthy();
         expect(quickInstallPlaywright).toBeTruthy();
+        expect(quickInstallVisualRunner).toBeTruthy();
 
         const allRows = screen.listRows('');
         const configuredIndex = allRows.indexOf(configuredRow!);
@@ -234,6 +236,9 @@ describe('McpServersSettingsScreen', () => {
 
         await screen.pressRow('settings.mcpServers.quickInstall.playwright');
         expect(routerPushSpy).toHaveBeenCalledWith('/settings/mcp-server?addMode=quick-install&presetId=playwright');
+
+        await screen.pressRow('settings.mcpServers.quickInstall.visual-runner');
+        expect(routerPushSpy).toHaveBeenCalledWith('/settings/mcp-server?addMode=quick-install&presetId=visual-runner');
 
         await selectHeaderTab(screen, 'detected');
         expect(screen.findRow('settings.mcpServers.detect.refresh')).toBeTruthy();

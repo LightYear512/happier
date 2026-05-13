@@ -14,9 +14,13 @@ const { resolveWindowsCommandInvocationMock, resolveOpenCodeCliLaunchSpecMock } 
   resolveOpenCodeCliLaunchSpecMock: vi.fn(),
 }));
 
-vi.mock('@happier-dev/cli-common/process', () => ({
-  resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
-}));
+vi.mock('@happier-dev/cli-common/process', async () => {
+  const actual = await vi.importActual<typeof import('@happier-dev/cli-common/process')>('@happier-dev/cli-common/process');
+  return {
+    ...actual,
+    resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
+  };
+});
 
 vi.mock('../utils/resolveOpenCodeCliCommand', async (importOriginal) => {
   const original = await importOriginal<typeof import('../utils/resolveOpenCodeCliCommand')>();

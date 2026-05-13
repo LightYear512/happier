@@ -84,7 +84,8 @@ installSessionRouteCommonModuleMocks({
     });
   },
   storageModule: async (importOriginal) => {
-    const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const { createStorageModuleMock, createUseLocalSettingMock } = await import('@/dev/testkit/mocks/storage');
+    const useLocalSetting = createUseLocalSettingMock({ values: { uiBackdropBlurEnabled: true } });
     return createStorageModuleMock({
       importOriginal,
       overrides: {
@@ -97,15 +98,20 @@ installSessionRouteCommonModuleMocks({
         useSession: () => mockSession,
         useSessionTranscriptIds: () => ({ ids: [], isLoaded: mockMessagesLoaded }),
         useMessage: (_sessionId: string, messageId: string) => mockMessagesById[messageId] ?? mockMessage,
+        useLocalSetting,
         useResolvedSessionMessageRouteId: (_sessionId: string, _routeMessageId: string) => mockResolvedRouteMessageId,
       },
     });
   },
 });
 
-vi.mock('@/sync/store/hooks', () => ({
-  useSessionMessages: () => ({ messages: mockCommittedMessages, isLoaded: mockMessagesLoaded }),
-}));
+vi.mock('@/sync/store/hooks', async () => {
+  const { createUseLocalSettingMock } = await import('@/dev/testkit/mocks/storage');
+  return {
+    useLocalSetting: createUseLocalSettingMock({ values: { uiBackdropBlurEnabled: true } }),
+    useSessionMessages: () => ({ messages: mockCommittedMessages, isLoaded: mockMessagesLoaded }),
+  };
+});
 
 vi.mock('@/sync/sync', () => ({
   sync: {

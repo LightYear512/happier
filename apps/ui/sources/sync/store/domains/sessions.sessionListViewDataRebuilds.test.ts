@@ -46,6 +46,8 @@ function mockSessionPersistenceBoundaries(): void {
         saveSessionActionDrafts: vi.fn(),
         saveSessionReviewCommentsDrafts: vi.fn(),
         saveWorkspaceReviewCommentsDrafts: vi.fn(),
+        loadLocalPetSourcesBySourceKey: () => ({}),
+        saveLocalPetSourcesBySourceKey: vi.fn(),
         saveLocalSettings: vi.fn(),
         savePurchases: vi.fn(),
         saveSettings: vi.fn(),

@@ -109,6 +109,10 @@ export function buildEnrichedMarkdownStyle(params: Readonly<{
     const monoTypography = Typography.mono();
     const defaultFace = blockFontFace(defaultTypography);
     const semiBoldFace = blockFontFace(semiBoldTypography);
+    const compactBlockMargins = params.profile === 'transcript' || params.profile === 'thinking';
+    const blockMargins = (marginTop: number, marginBottom: number) => compactBlockMargins
+        ? { marginTop: 0, marginBottom: 0 }
+        : { marginTop, marginBottom };
 
     const headingBase = {
         ...semiBoldFace,
@@ -121,50 +125,43 @@ export function buildEnrichedMarkdownStyle(params: Readonly<{
             fontSize: baseFontSize,
             lineHeight: baseLineHeight,
             color: baseColor,
-            marginTop: 0,
-            marginBottom: 8,
+            ...blockMargins(0, 8),
         },
         h1: {
             ...headingBase,
             fontSize: h1FontSize,
             lineHeight: h1LineHeight,
-            marginTop: 18,
-            marginBottom: 10,
+            ...blockMargins(18, 10),
         },
         h2: {
             ...headingBase,
             fontSize: h2FontSize,
             lineHeight: h2LineHeight,
-            marginTop: 16,
-            marginBottom: 8,
+            ...blockMargins(16, 8),
         },
         h3: {
             ...headingBase,
             fontSize: h3FontSize,
             lineHeight: h3LineHeight,
-            marginTop: 14,
-            marginBottom: 8,
+            ...blockMargins(14, 8),
         },
         h4: {
             ...headingBase,
             fontSize: baseFontSize,
             lineHeight: baseLineHeight,
-            marginTop: 10,
-            marginBottom: 6,
+            ...blockMargins(10, 6),
         },
         h5: {
             ...headingBase,
             fontSize: baseFontSize,
             lineHeight: baseLineHeight,
-            marginTop: 8,
-            marginBottom: 6,
+            ...blockMargins(8, 6),
         },
         h6: {
             ...headingBase,
             fontSize: h6FontSize,
             lineHeight: h6LineHeight,
-            marginTop: 8,
-            marginBottom: 6,
+            ...blockMargins(8, 6),
         },
         strong: {
             fontFamily: readFontFamily(semiBoldTypography),
@@ -223,8 +220,7 @@ export function buildEnrichedMarkdownStyle(params: Readonly<{
         thematicBreak: {
             color: params.colors.divider,
             height: 1,
-            marginTop: 8,
-            marginBottom: 8,
+            ...blockMargins(8, 8),
         },
         math: {
             fontSize: baseFontSize,
@@ -232,8 +228,7 @@ export function buildEnrichedMarkdownStyle(params: Readonly<{
             backgroundColor: 'transparent',
             padding: 0,
             textAlign: 'center' as const,
-            marginTop: 8,
-            marginBottom: 8,
+            ...blockMargins(8, 8),
         },
         inlineMath: {
             color: baseColor,

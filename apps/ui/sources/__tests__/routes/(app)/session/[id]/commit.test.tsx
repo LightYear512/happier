@@ -129,6 +129,7 @@ installSessionRouteCommonModuleMocks({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 999 },
+    useLayoutMaxWidth: () => 999,
 }));
 
 vi.mock('@/constants/Typography', () => ({

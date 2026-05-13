@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { Platform, View } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { type ActionId, listActionSpecs } from '@happier-dev/protocol';
@@ -291,32 +291,21 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
 export const ActionSettingsDetailView = React.memo(function ActionSettingsDetailView() {
     const params = useLocalSearchParams<{ actionId?: string | string[] }>();
     const actionId = decodeActionIdParam(params.actionId);
-    const actionTitle = actionId
-        ? listActionSpecs().find((spec) => spec.id === actionId)?.title
-        : null;
 
     if (!actionId) {
         return (
-            <>
-                <Stack.Screen options={{ headerTitle: t('settingsActions.invalidActionTitle') }} />
-                <ItemList>
-                    <ItemGroup>
-                        <Item
-                            title={t('settingsActions.invalidActionTitle')}
-                            subtitle={t('settingsActions.invalidActionSubtitle')}
-                            mode="info"
-                            showChevron={false}
-                        />
-                    </ItemGroup>
-                </ItemList>
-            </>
+            <ItemList>
+                <ItemGroup>
+                    <Item
+                        title={t('settingsActions.invalidActionTitle')}
+                        subtitle={t('settingsActions.invalidActionSubtitle')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            </ItemList>
         );
     }
 
-    return (
-        <>
-            <Stack.Screen options={{ headerTitle: actionTitle ?? t('common.actions') }} />
-            <ActionSettingsDetailContent actionId={actionId} />
-        </>
-    );
+    return <ActionSettingsDetailContent actionId={actionId} />;
 });

@@ -546,6 +546,7 @@ describe('app/_layout init resilience', () => {
             value: {
                 getElementById: vi.fn(() => null),
                 createElement: vi.fn(() => ({ textContent: '', id: '' })),
+                documentElement: { dataset: {} },
                 head: { appendChild },
             },
             configurable: true,

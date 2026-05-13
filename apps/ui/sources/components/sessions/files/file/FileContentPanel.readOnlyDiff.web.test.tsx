@@ -32,6 +32,7 @@ vi.mock('@/constants/Typography', async (importOriginal) => {
         Typography: {
             ...actual.Typography,
             default: () => ({}),
+            mono: () => ({}),
         },
     };
 });

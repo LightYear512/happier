@@ -96,6 +96,10 @@ vi.mock('@/sync/runtime/syncPerformanceTelemetry', () => ({
 }));
 
 vi.mock('@/sync/domains/state/persistence', () => ({
+    loadWorkspaceReviewCommentsDrafts: () => ({}),
+    saveWorkspaceReviewCommentsDrafts: vi.fn(),
+        loadLocalPetSourcesBySourceKey: () => ({}),
+        saveLocalPetSourcesBySourceKey: vi.fn(),
   loadProfile: () => ({
     id: 'acct_ui_1',
     timestamp: 1,

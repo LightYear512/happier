@@ -113,6 +113,7 @@ vi.mock('@/components/ui/lists/ItemList', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 900 },
+    useLayoutMaxWidth: () => 900,
 }));
 
 vi.mock('@/components/ui/forms/SearchHeader', () => ({

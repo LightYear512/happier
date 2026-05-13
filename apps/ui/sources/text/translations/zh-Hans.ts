@@ -5929,7 +5929,7 @@ settingsSession: {
       wizardPresentationTitle: "向导选择器布局",
       wizardPresentationFooter:
         "Auto 会将短区段保留为列表，并将长区段切换为可搜索下拉菜单。",
-      wizardPresentationAutoTitle: "Auto",
+      wizardPresentationAutoTitle: "自动",
       wizardPresentationAutoSubtitle:
         "让 Happier 根据内容数量选择最佳布局。",
       wizardPresentationListTitle: "列表",
@@ -5938,14 +5938,14 @@ settingsSession: {
       wizardPresentationDropdownSubtitle: "显示一个可打开完整选择器的紧凑行。",
     },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: '提示词个性化',
+              footer: '选择 Happier 要向新代理会话添加哪些内置指令。这不会隐藏代理本身已经发送的选项。',
+              askAgentToRenameSessionsTitle: '要求代理重命名会话',
+              askAgentToRenameSessionsEnabledSubtitle: '提示词会要求代理设置简短且有描述性的会话标题。',
+              askAgentToRenameSessionsDisabledSubtitle: '提示词不会要求代理设置标题；仍可手动重命名。',
+              askAgentToSuggestReplyOptionsTitle: '要求代理建议回复选项',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: '提示词会要求代理在有用时提出快捷回复选项。',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: '提示词不会要求代理添加快捷回复选项。',
           },
     defaultPermissions: {
       title: "默认权限",

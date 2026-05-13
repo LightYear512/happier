@@ -55,6 +55,7 @@ vi.mock('@/constants/Typography', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 800 },
+    useLayoutMaxWidth: () => 800,
 }));
 
 vi.mock('@/components/sessions/SessionNoticeBanner', () => ({

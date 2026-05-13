@@ -60,6 +60,7 @@ vi.mock('@/components/ui/theme/haptics', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 920 },
+    useLayoutMaxWidth: () => 920,
 }));
 
 vi.mock('@/constants/Typography', () => ({
@@ -182,7 +183,10 @@ installAgentInputCommonModuleMocks({
 });
 
 vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => (selector: any) => selector({ sessionMessages: {} }),
+    getStorage: () => (selector: any) => selector({
+        sessionMessages: {},
+        localSettings: { uiBackdropBlurEnabled: true },
+    }),
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({

@@ -196,7 +196,7 @@ installSessionRouteCommonModuleMocks({
     },
 });
 
-vi.mock('@/components/ui/layout/layout', () => ({ layout: { maxWidth: 999 } }));
+vi.mock('@/components/ui/layout/layout', () => ({ layout: { maxWidth: 999 }, useLayoutMaxWidth: () => 999 }));
 
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
     useHydrateSessionForRoute: (sessionId: string, tag: string, options?: { serverId?: string }) =>

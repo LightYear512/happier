@@ -157,7 +157,7 @@ describe('AgentInput (attachments drag overlay)', () => {
         const overlay = screen.findByTestId('agent-input-drop-overlay');
         const overlayStyle = flattenStyle(overlay?.props.style);
         expect(overlayStyle.backdropFilter).toBeUndefined();
-        expect(overlayStyle.backgroundColor).toBe('rgba(0, 0, 0, 0.6)');
+        expect(overlayStyle.backgroundColor).toBe('rgba(255, 255, 255, 0.68)');
         backdropBlurEnabled = true;
     }, 120_000);
 

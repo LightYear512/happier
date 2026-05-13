@@ -105,6 +105,7 @@ vi.mock('@expo/vector-icons', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1000 },
+    useLayoutMaxWidth: () => 1000,
 }));
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({

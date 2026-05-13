@@ -27,17 +27,21 @@ vi.mock('@happier-dev/release-runtime', async () => {
   };
 });
 
-vi.mock('@happier-dev/cli-common/process', () => ({
-  runCommandStreaming: async ({ args }: { args: string[] }) => {
-    const extractDir = args[0];
-    if (!extractDir) return;
-    const binaryName = process.platform === 'win32' ? 'gh.exe' : 'gh';
-    const extractedBinPath = join(extractDir, 'gh-release', 'bin', binaryName);
-    await mkdir(dirname(extractedBinPath), { recursive: true });
-    await writeFile(extractedBinPath, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\necho gh\n', { encoding: 'utf8', mode: 0o755 });
-    if (process.platform !== 'win32') await chmod(extractedBinPath, 0o755);
-  },
-}));
+vi.mock('@happier-dev/cli-common/process', async () => {
+  const actual = await vi.importActual<typeof import('@happier-dev/cli-common/process')>('@happier-dev/cli-common/process');
+  return {
+    ...actual,
+    runCommandStreaming: async ({ args }: { args: string[] }) => {
+      const extractDir = args[0];
+      if (!extractDir) return;
+      const binaryName = process.platform === 'win32' ? 'gh.exe' : 'gh';
+      const extractedBinPath = join(extractDir, 'gh-release', 'bin', binaryName);
+      await mkdir(dirname(extractedBinPath), { recursive: true });
+      await writeFile(extractedBinPath, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\necho gh\n', { encoding: 'utf8', mode: 0o755 });
+      if (process.platform !== 'win32') await chmod(extractedBinPath, 0o755);
+    },
+  };
+});
 
 const ORIGINAL_HOME = process.env.HAPPIER_HOME_DIR;
 const envKeys = ['HAPPIER_HOME_DIR', 'PATH', 'PATHEXT'] as const;

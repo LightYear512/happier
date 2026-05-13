@@ -1,0 +1,39 @@
+{
+  "name": "@happier-dev/visual-runner",
+  "version": "0.0.0",
+  "description": "AI-native visual runner MCP server for Happier sessions",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "happier-visual-runner": "./dist/bin/happier-visual-runner.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
+    "test": "node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src/bin/happierVisualRunnerCli.test.ts src/mcp/visualArtifactStore.test.ts src/mcp/visualRunnerMcpTools.test.ts src/visualRunnerContract.test.ts",
+    "test:e2e": "yarn -s build && node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src/e2e/visualRunnerMcp.visual.e2e.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "playwright": "^1.56.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}
