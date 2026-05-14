@@ -212,11 +212,12 @@ describe('visual runner MCP visual e2e', () => {
       expect(dashboardHtml).toContain(screenshotResult.screenshotRef.id);
       expect(dashboardHtml).toContain(traceResult.traceRef.id);
 
-      const screenshotUrl = new URL(
-        `artifact/${screenshotResult.screenshotRef.id}.png`,
-        dashboardResult.dashboardUrl.endsWith('/') ? dashboardResult.dashboardUrl : `${dashboardResult.dashboardUrl}/`,
-      ).toString();
-      const dashboardScreenshotBytes = Buffer.from(await fetch(screenshotUrl).then((response) => response.arrayBuffer()));
+      const screenshotHref = dashboardHtml.match(new RegExp(`href="([^"]*${screenshotResult.screenshotRef.id}\\.png)"`))?.[1];
+      expect(screenshotHref).toBeTruthy();
+      const screenshotUrl = new URL(screenshotHref ?? '', dashboardResult.dashboardUrl).toString();
+      const screenshotResponse = await fetch(screenshotUrl);
+      expect(screenshotResponse.status).toBe(200);
+      const dashboardScreenshotBytes = Buffer.from(await screenshotResponse.arrayBuffer());
       expect(pngSignature(dashboardScreenshotBytes)).toBe('89504e470d0a1a0a');
 
       await client.callTool({

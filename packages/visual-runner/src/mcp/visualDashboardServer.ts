@@ -30,7 +30,7 @@ export function createVisualDashboardServer(): VisualDashboardServer {
         sessionId: params.sessionId,
         artifactDir: params.artifactDir,
       });
-      return `http://127.0.0.1:${port}/session/${token}`;
+      return `http://127.0.0.1:${port}/session/${token}/`;
     },
   };
 
@@ -63,7 +63,7 @@ export function createVisualDashboardServer(): VisualDashboardServer {
           return;
         }
 
-        const html = await renderDashboardHtml(session);
+        const html = await renderDashboardHtml({ session, token });
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',
           'cache-control': 'no-store',
@@ -81,14 +81,18 @@ export function createVisualDashboardServer(): VisualDashboardServer {
   }
 }
 
-async function renderDashboardHtml(session: DashboardSession): Promise<string> {
+async function renderDashboardHtml(params: Readonly<{
+  session: DashboardSession;
+  token: string;
+}>): Promise<string> {
+  const { session, token } = params;
   const artifacts = await listDashboardArtifacts(session.artifactDir);
   const rows = artifacts.map((artifact) => [
     '<tr>',
     `<td>${escapeHtml(artifact.id)}</td>`,
     `<td>${escapeHtml(artifact.kind)}</td>`,
     `<td>${artifact.sizeBytes}</td>`,
-    `<td><a href="./artifact/${encodeURIComponent(artifact.fileName)}">${escapeHtml(artifact.fileName)}</a></td>`,
+    `<td><a href="/session/${encodeURIComponent(token)}/artifact/${encodeURIComponent(artifact.fileName)}">${escapeHtml(artifact.fileName)}</a></td>`,
     '</tr>',
   ].join('')).join('');
 
