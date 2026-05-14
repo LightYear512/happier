@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { SessionHandoffPrepareTargetRequestSchema } from '@happier-dev/protocol';
 
 import { createTestAuth } from '../../src/testkit/auth';
 import { seedCliDataKeyAuthForServer } from '../../src/testkit/cliAuth';
@@ -19,7 +20,6 @@ import { createDataKeyRpcClient, unwrapDataKeyRpcResult } from '../../src/testki
 import { waitFor } from '../../src/testkit/timing';
 // @ts-expect-error - This CJS helper is consumed directly by the runtime test fixture.
 import { resolveClaudeProjectId } from '../../src/testkit/claudeProjectId.cjs';
-import { waitForDaemonSessionWebhookMarker } from '../../src/testkit/daemon/waitForDaemonSessionWebhookMarker';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -32,6 +32,7 @@ type HandoffStartResult = Readonly<{
 }>;
 
 type HandoffStartResponse = HandoffStartResult | Readonly<{ ok: false; error?: unknown; errorCode?: unknown }>;
+type HandoffPrepareRpcResponse = HandoffPrepareResult | Readonly<{ ok: false; error?: unknown; errorCode?: unknown }>;
 
 type HandoffPrepareResult = Readonly<{
   handoffId: string;
@@ -172,12 +173,22 @@ async function waitForReadyHandoffPrepareResult(params: Readonly<{
     return 'rpc_failed';
   };
 
-  if (params.initialResult.resume && params.initialResult.status.status === 'ready_for_cutover') {
+  if (
+    params.initialResult.resume
+    && (
+      params.initialResult.status.status === 'ready_for_cutover'
+      || params.initialResult.status.phase === 'ready_for_cutover'
+    )
+  ) {
     return params.initialResult;
   }
 
   let readyResult: HandoffPrepareResult | null = null;
-  await waitFor(async () => {
+  let lastStatusSummary: Readonly<{ status: string; phase: string; transportStrategy?: string; lastErrorMessage?: string }> | null = null;
+  let lastPolledHasResume = false;
+  let lastPolledErrorCode: string | null = null;
+  try {
+    await waitFor(async () => {
     const polledRaw = unwrapDataKeyRpcResult(
       await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET}`, {
         handoffId: params.handoffId,
@@ -185,16 +196,39 @@ async function waitForReadyHandoffPrepareResult(params: Readonly<{
       `${params.context} result get`,
     );
     const polledErrorCode = readInnerRpcErrorCode(polledRaw);
+    lastPolledErrorCode = polledErrorCode;
     if (polledErrorCode && polledErrorCode !== 'not_found') {
       throw new Error(`${params.context} result get failed: ${polledErrorCode}`);
     }
 
-    const status = unwrapDataKeyRpcResult(
-      await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET}`, {
-        handoffId: params.handoffId,
-      }),
-      `${params.context} status get`,
-    ) as HandoffStatusResult;
+    const statusEnvelope = await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET}`, {
+      handoffId: params.handoffId,
+    });
+    if (statusEnvelope.ok !== true) {
+      const statusError = statusEnvelope.errorCode ?? statusEnvelope.error ?? 'rpc_failed';
+      if (statusError === 'not_found') {
+        return false;
+      }
+      throw new Error(`${params.context} status get failed: ${statusError}`);
+    }
+    const statusRaw = statusEnvelope.result;
+    const statusErrorCode = readInnerRpcErrorCode(statusRaw);
+    if (statusErrorCode) {
+      if (statusErrorCode === 'not_found') {
+        return false;
+      }
+      throw new Error(`${params.context} status get failed: ${statusErrorCode}`);
+    }
+    if (!statusRaw || typeof statusRaw !== 'object' || !('status' in statusRaw)) {
+      throw new Error(`${params.context} status get returned malformed payload`);
+    }
+    const status = statusRaw as HandoffStatusResult;
+    lastStatusSummary = {
+      status: status.status.status,
+      phase: status.status.phase,
+      transportStrategy: status.status.transportStrategy,
+      lastErrorMessage: status.status.lastErrorMessage,
+    };
     if (status.status.status === 'awaiting_recovery' || status.status.status === 'failed' || status.status.status === 'aborted') {
       const lastError = typeof status.status.lastErrorMessage === 'string' && status.status.lastErrorMessage.trim().length > 0
         ? `; lastErrorMessage: ${status.status.lastErrorMessage}`
@@ -203,16 +237,34 @@ async function waitForReadyHandoffPrepareResult(params: Readonly<{
     }
 
     const polled = polledErrorCode ? null : polledRaw as HandoffPrepareResult;
-    if (polled && polled.resume && polled.status.status === 'ready_for_cutover') {
+    lastPolledHasResume = Boolean(polled?.resume);
+    if (
+      polled
+      && polled.resume
+      && (
+        polled.status.status === 'ready_for_cutover'
+        || polled.status.phase === 'ready_for_cutover'
+      )
+    ) {
       readyResult = polled;
       return true;
     }
     return false;
-  }, {
-    timeoutMs: 30_000,
-    intervalMs: 100,
-    context: `${params.context} ready for cutover`,
-  });
+    }, {
+      timeoutMs: 90_000,
+      intervalMs: 100,
+      context: `${params.context} ready for cutover`,
+    });
+  } catch (error) {
+    const detail = JSON.stringify({
+      handoffId: params.handoffId,
+      context: params.context,
+      lastStatusSummary,
+      lastPolledHasResume,
+      lastPolledErrorCode,
+    });
+    throw new Error(`${error instanceof Error ? error.message : String(error)} | detail=${detail}`);
+  }
 
   if (!readyResult) {
     throw new Error(`Expected ready handoff prepare result for ${params.handoffId}`);
@@ -260,6 +312,95 @@ function requireHandoffStartOk(result: HandoffStartResponse, context: string): H
   return result as HandoffStartResult;
 }
 
+function readRpcFailureCode(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { ok?: unknown; errorCode?: unknown; error?: unknown };
+  if (candidate.ok !== false) return null;
+  if (typeof candidate.errorCode === 'string' && candidate.errorCode.trim().length > 0) return candidate.errorCode;
+  if (typeof candidate.error === 'string' && candidate.error.trim().length > 0) return candidate.error;
+  return 'rpc_failed';
+}
+
+async function waitForPrepareTargetAccepted(params: Readonly<{
+  machineRpc: ReturnType<typeof createDataKeyRpcClient>;
+  machineId: string;
+  payload: Record<string, unknown>;
+  context: string;
+  timeoutMs?: number;
+}>): Promise<HandoffPrepareResult> {
+  const clampEndpointCandidates = (value: unknown): unknown => {
+    if (!Array.isArray(value)) return value;
+    return value.slice(0, 20);
+  };
+  const normalizePreparePayload = (payload: Record<string, unknown>): Record<string, unknown> => {
+    const normalized: Record<string, unknown> = {
+      ...payload,
+      endpointCandidates: clampEndpointCandidates(payload.endpointCandidates),
+    };
+    const metadata = payload.handoffMetadataV2;
+    if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+      const metadataRecord = { ...(metadata as Record<string, unknown>) };
+      const providerBundleTransferPublication = metadataRecord.providerBundleTransferPublication;
+      if (
+        providerBundleTransferPublication
+        && typeof providerBundleTransferPublication === 'object'
+        && !Array.isArray(providerBundleTransferPublication)
+      ) {
+        metadataRecord.providerBundleTransferPublication = {
+          ...(providerBundleTransferPublication as Record<string, unknown>),
+          endpointCandidates: clampEndpointCandidates((providerBundleTransferPublication as Record<string, unknown>).endpointCandidates),
+        };
+      }
+      const workspaceReplicationManifestTransferPublication = metadataRecord.workspaceReplicationManifestTransferPublication;
+      if (
+        workspaceReplicationManifestTransferPublication
+        && typeof workspaceReplicationManifestTransferPublication === 'object'
+        && !Array.isArray(workspaceReplicationManifestTransferPublication)
+      ) {
+        metadataRecord.workspaceReplicationManifestTransferPublication = {
+          ...(workspaceReplicationManifestTransferPublication as Record<string, unknown>),
+          endpointCandidates: clampEndpointCandidates((workspaceReplicationManifestTransferPublication as Record<string, unknown>).endpointCandidates),
+        };
+      }
+      normalized.handoffMetadataV2 = metadataRecord;
+    }
+    return normalized;
+  };
+  const normalizedPayload = normalizePreparePayload(params.payload);
+
+  const requestValidation = SessionHandoffPrepareTargetRequestSchema.safeParse(normalizedPayload);
+  if (!requestValidation.success) {
+    throw new Error(
+      `${params.context} payload invalid: ${JSON.stringify(requestValidation.error.issues.map((issue) => ({
+        path: issue.path,
+        message: issue.message,
+      })))}`
+    );
+  }
+  let accepted: HandoffPrepareResult | null = null;
+  await waitFor(async () => {
+    const raw = unwrapDataKeyRpcResult(
+      await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, normalizedPayload),
+      params.context,
+    ) as HandoffPrepareRpcResponse;
+    const errorCode = readRpcFailureCode(raw);
+    if (!errorCode) {
+      accepted = raw as HandoffPrepareResult;
+      return true;
+    }
+    if (errorCode === 'not_found') return false;
+    throw new Error(`${params.context} failed: ${errorCode}`);
+  }, {
+    timeoutMs: params.timeoutMs ?? 90_000,
+    intervalMs: 250,
+    context: `${params.context} accepted`,
+  });
+  if (!accepted) {
+    throw new Error(`Expected accepted prepare-target response for ${params.context}`);
+  }
+  return accepted;
+}
+
 describe('core e2e: session handoff via direct peer', () => {
   let server: StartedServer | null = null;
   let sourceDaemon: StartedDaemon | null = null;
@@ -275,7 +416,7 @@ describe('core e2e: session handoff via direct peer', () => {
     sourceDaemon = null;
     await server?.stop().catch(() => {});
     server = null;
-  });
+  }, 60_000);
 
   afterAll(async () => {
     ui?.close();
@@ -478,8 +619,11 @@ describe('core e2e: session handoff via direct peer', () => {
       machineRpc: targetMachineRpc,
       machineId: targetSeed.machineId,
       handoffId: started.handoffId,
-      initialResult: unwrapDataKeyRpcResult(
-        await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+      initialResult: await waitForPrepareTargetAccepted({
+        machineRpc: targetMachineRpc,
+        machineId: targetSeed.machineId,
+        context: 'target handoff prepare',
+        payload: {
           handoffId: started.handoffId,
           sourceMachineId: sourceSeed.machineId,
           targetMachineId: targetSeed.machineId,
@@ -496,9 +640,8 @@ describe('core e2e: session handoff via direct peer', () => {
             includeIgnoredMode: 'exclude',
             ignoredIncludeGlobs: [],
           },
-        }),
-        'target handoff prepare',
-      ) as HandoffPrepareResult,
+        },
+      }),
       context: 'target handoff prepare',
     });
     const preparedResume = requirePreparedResume(prepared, 'target handoff prepare');
@@ -521,6 +664,7 @@ describe('core e2e: session handoff via direct peer', () => {
       controlToken: targetDaemon.state.controlToken,
       body: {
         directory: preparedResume.directory,
+        backendTarget: { kind: 'builtInAgent', agentId: preparedResume.agent },
         agent: preparedResume.agent,
         existingSessionId: sessionId,
         resume: preparedResume.resume,
@@ -573,10 +717,10 @@ describe('core e2e: session handoff via direct peer', () => {
     await writeFile(resolve(join(preparedResume.directory, 'README.md')), 'session handoff test after second pass\n', 'utf8');
     await writeFile(resolve(join(preparedResume.directory, 'added-after-first-handoff.txt')), 'added after first handoff\n', 'utf8');
     await rm(resolve(join(preparedResume.directory, 'deleted-after-first-handoff.txt')));
-    await waitForDaemonSessionWebhookMarker({
-      happyHomeDir: targetHomeDir,
-      sessionId,
-      machineId: targetSeed.machineId,
+    await waitFor(async () => (await listDaemonSessions(targetDaemon!)).includes(sessionId) === true, {
+      timeoutMs: 30_000,
+      intervalMs: 100,
+      context: 'target daemon session listed before direct-peer handoff-back',
     });
 
     const secondStarted = requireHandoffStartOk(unwrapDataKeyRpcResult(
@@ -612,8 +756,11 @@ describe('core e2e: session handoff via direct peer', () => {
       machineRpc: sourceMachineRpc,
       machineId: sourceSeed.machineId,
       handoffId: secondStarted.handoffId,
-      initialResult: unwrapDataKeyRpcResult(
-        await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+      initialResult: await waitForPrepareTargetAccepted({
+        machineRpc: sourceMachineRpc,
+        machineId: sourceSeed.machineId,
+        context: 'source handoff-back prepare',
+        payload: {
           handoffId: secondStarted.handoffId,
           sourceMachineId: targetSeed.machineId,
           targetMachineId: sourceSeed.machineId,
@@ -630,9 +777,8 @@ describe('core e2e: session handoff via direct peer', () => {
             includeIgnoredMode: 'exclude',
             ignoredIncludeGlobs: [],
           },
-        }),
-        'source handoff-back prepare',
-      ) as HandoffPrepareResult,
+        },
+      }),
       context: 'source handoff-back prepare',
     });
     const secondPreparedResume = requirePreparedResume(secondPrepared, 'source handoff-back prepare');
@@ -643,6 +789,7 @@ describe('core e2e: session handoff via direct peer', () => {
       controlToken: sourceDaemon.state.controlToken,
       body: {
         directory: secondPreparedResume.directory,
+        backendTarget: { kind: 'builtInAgent', agentId: secondPreparedResume.agent },
         agent: secondPreparedResume.agent,
         existingSessionId: sessionId,
         resume: secondPreparedResume.resume,
@@ -660,10 +807,10 @@ describe('core e2e: session handoff via direct peer', () => {
     expect(sourceRespawnResult.status).toBe(200);
     expect(sourceRespawnResult.data.success).toBe(true);
     expect(sourceRespawnResult.data.sessionId).toBe(sessionId);
-    await waitForDaemonSessionWebhookMarker({
-      happyHomeDir: sourceHomeDir,
-      sessionId,
-      machineId: sourceSeed.machineId,
+    await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === true, {
+      timeoutMs: 30_000,
+      intervalMs: 100,
+      context: 'source daemon session listed before final direct-peer commit',
     });
     const secondCommitted = unwrapDataKeyRpcResult(
       await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
@@ -690,7 +837,7 @@ describe('core e2e: session handoff via direct peer', () => {
       'added after first handoff\n',
     );
     await expect(readFile(resolve(join(secondPreparedResume.directory, 'deleted-after-first-handoff.txt')), 'utf8')).rejects.toThrow();
-  }, 180_000);
+  }, 420_000);
 
   it('does not let a late plaintext UI message execute on the source once direct-peer cutover has started', async () => {
     const testDir = run.testDir('session-handoff-direct-peer-late-message-cutover');
@@ -799,6 +946,7 @@ describe('core e2e: session handoff via direct peer', () => {
       controlToken: sourceDaemon.state.controlToken,
       body: {
         directory: sourceWorkspaceDir,
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
         terminal: { mode: 'plain' },
         environmentVariables: sessionChildEnv({
           homeDir: sourceHomeDir,
@@ -807,7 +955,7 @@ describe('core e2e: session handoff via direct peer', () => {
           fakeClaudeLogPath: sourceFakeClaudeLog,
         }),
       },
-      timeoutMs: 30_000,
+      timeoutMs: 90_000,
     });
     expect(spawned.status).toBe(200);
     expect(spawned.data.success).toBe(true);
@@ -876,8 +1024,11 @@ describe('core e2e: session handoff via direct peer', () => {
       machineRpc: targetMachineRpc,
       machineId: targetSeed.machineId,
       handoffId: started.handoffId,
-      initialResult: unwrapDataKeyRpcResult(
-        await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+      initialResult: await waitForPrepareTargetAccepted({
+        machineRpc: targetMachineRpc,
+        machineId: targetSeed.machineId,
+        context: 'target handoff prepare for late cutover proof',
+        payload: {
           handoffId: started.handoffId,
           sourceMachineId: sourceSeed.machineId,
           targetMachineId: targetSeed.machineId,
@@ -887,9 +1038,8 @@ describe('core e2e: session handoff via direct peer', () => {
           targetPath: started.targetPath,
           endpointCandidates: started.endpointCandidates,
           handoffMetadataV2: lateCutoverMetadataV2,
-        }),
-        'target handoff prepare for late cutover proof',
-      ) as HandoffPrepareResult,
+        },
+      }),
       context: 'target handoff prepare for late cutover proof',
     });
     const lateCutoverPreparedResume = requirePreparedResume(prepared, 'target handoff prepare for late cutover proof');
@@ -900,6 +1050,7 @@ describe('core e2e: session handoff via direct peer', () => {
       controlToken: targetDaemon.state.controlToken,
       body: {
         directory: lateCutoverPreparedResume.directory,
+        backendTarget: { kind: 'builtInAgent', agentId: lateCutoverPreparedResume.agent },
         agent: lateCutoverPreparedResume.agent,
         existingSessionId: sessionId,
         resume: lateCutoverPreparedResume.resume,

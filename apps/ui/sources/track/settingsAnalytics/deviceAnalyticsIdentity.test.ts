@@ -16,6 +16,10 @@ vi.mock('expo-constants', () => ({
 }));
 
 vi.mock('@/sync/domains/state/persistence', () => ({
+    loadWorkspaceReviewCommentsDrafts: () => ({}),
+    saveWorkspaceReviewCommentsDrafts: vi.fn(),
+        loadLocalPetSourcesBySourceKey: () => ({}),
+        saveLocalPetSourcesBySourceKey: vi.fn(),
     loadDeviceAnalyticsId: mocks.persistence.loadDeviceAnalyticsId,
     saveDeviceAnalyticsId: mocks.persistence.saveDeviceAnalyticsId,
 }));

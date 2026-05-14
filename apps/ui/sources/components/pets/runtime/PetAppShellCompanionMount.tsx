@@ -1,10 +1,10 @@
 import * as React from 'react';
 import {
     Platform,
-    StyleSheet,
     View,
     type ViewStyle,
 } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { DEFAULT_BUILT_IN_PET_ID } from '@/components/pets/builtIns/builtInPetRegistry';
 import {
@@ -203,7 +203,7 @@ export function PetAppShellCompanionMount(): React.ReactElement | null {
     );
 }
 
-const styles = StyleSheet.create({
+const styles = {
     root: {
         position: APP_SHELL_PET_WEB_POSITION,
         right: APP_SHELL_PET_MARGIN,
@@ -212,25 +212,25 @@ const styles = StyleSheet.create({
         height: APP_SHELL_DEFAULT_METRICS.spriteHeight,
         backgroundColor: 'transparent',
         zIndex: APP_SHELL_PET_WEB_Z_INDEX,
-    },
+    } satisfies ViewStyle,
     petCompact: {
         position: 'absolute',
         right: 0,
         bottom: 0,
-    },
+    } satisfies ViewStyle,
     petExpanded: {
         position: 'absolute',
         right: 36,
         bottom: 18,
         alignItems: 'center',
         justifyContent: 'center',
-    },
+    } satisfies ViewStyle,
     tray: {
         position: 'absolute',
         right: 58,
-    },
+    } satisfies ViewStyle,
     contextExpanded: {
         position: 'absolute',
         right: 46,
-    },
-});
+    } satisfies ViewStyle,
+} satisfies Record<string, ViewStyle>;

@@ -934,6 +934,7 @@ export const ru: TranslationStructure = {
     copy: "Копировать",
     copyWithLabel: ({ label }: { label: string }) => `Копировать ${label}`,
     paste: "Вставить",
+    pasteImage: "Вставить изображение",
     expand: "Развернуть",
     collapse: "Свернуть",
     command: "Команда",
@@ -2245,6 +2246,8 @@ export const ru: TranslationStructure = {
       fileTooLargeTitle: "Файл слишком большой",
       fileTooLargeBody: ({ count }: { count: number }) =>
         `Пропущено ${count} ${plural({ count, one: "файл", few: "файла", many: "файлов" })}, превышающих максимальный размер вложений.`,
+      noClipboardImageTitle: "В буфере нет изображения",
+      noClipboardImageBody: "Скопируйте изображение, затем вставьте его как вложение.",
     },
   },
 
@@ -3186,6 +3189,20 @@ export const ru: TranslationStructure = {
     },
     display: "Отображение",
     displayDescription: "Управление макетом и интервалами",
+    contentWidth: "Ширина содержимого",
+    contentWidthDescription:
+      "Выберите, насколько широко может растягиваться основное содержимое",
+    contentWidthOptions: {
+      compact: "Компактная",
+      compactDescription: "Ограничить основное содержимое 850 px",
+      medium: "Средняя",
+      mediumDescription: "Разрешить основному содержимому ширину до 960 px",
+      full: "На всю ширину",
+      fullDescription: "Использовать доступную ширину окна",
+    },
+    backdropBlur: "Размытие фона",
+    backdropBlurDescription:
+      "Использовать размытие фона за модальными окнами и меню. Отключите, чтобы повысить производительность браузера.",
     multiPanePanels: "Правые панели",
     multiPanePanelsDescription:
       "Показывать изменяемые по размеру правые панели для файлов и контроля версий (web/tablet)",
@@ -5431,6 +5448,7 @@ export const ru: TranslationStructure = {
       selectForCommit: "Выбрать для коммита",
       stageFile: "Добавить в stage",
       removeFromSelection: "Убрать из выбора",
+      removeFromCommitSelection: "Убрать из выбора для коммита",
       unstageFile: "Убрать из stage",
       selectionHint:
         "Выберите «Включено» или «Ожидает», чтобы включить выбор строк.",
@@ -5720,9 +5738,27 @@ export const ru: TranslationStructure = {
         aboutSubtitle: "Выберите, где каждое действие будет отображаться в приложении, голосовой связи и интеграции. ",
         aboutFooter: "Эти настройки применяются глобально к настройкам вашей учетной записи по умолчанию. ",
         searchPlaceholder: "Действия поиска",
+        detailSearchPlaceholder: "Поиск поверхностей",
         noResults: "Нет действий, соответствующих вашему текущему запросу.",
+        noTargetsMatch: "Нет поверхностей, соответствующих текущему поиску.",
         noDescription: "Описание пока отсутствует.",
         requireApproval: "Требовать одобрения",
+        invalidActionTitle: "Действие не найдено",
+        invalidActionSubtitle: "Это действие больше недоступно в этой сборке.",
+        configureActionAccessibilityLabel: "Настроить действие",
+        approvalHelpTitle: "Режимы одобрения",
+        approvalHelpBody: "«Сначала спрашивать» показывает подтверждение перед запуском этого действия из этой поверхности. «Разрешено» позволяет запускать его из этой поверхности без запроса одобрения.",
+        status: {
+            allowed: ({ count }: { count: number }) => `${count} разрешено`,
+            askFirst: ({ count }: { count: number }) => `${count} сначала спрашивать`,
+            off: ({ count }: { count: number }) => `${count} выкл.`,
+            unavailable: ({ count }: { count: number }) => `${count} недоступно`,
+        },
+        modes: {
+            off: "Выкл.",
+            askFirst: "Сначала спрашивать",
+            allowed: "Разрешено",
+        },
         sections: {
             app: "В приложении",
             voice: "Голос",
@@ -6149,7 +6185,7 @@ settingsSession: {
         wizardPresentationTitle: "Макет селекторов мастера",
         wizardPresentationFooter:
           "Auto оставляет короткие разделы списками и переключает длинные разделы на выпадающие меню с поиском.",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "Авто",
         wizardPresentationAutoSubtitle:
           "Позвольте Happier выбрать лучший макет для объема содержимого.",
         wizardPresentationListTitle: "Список",
@@ -6158,14 +6194,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "Показывать компактную строку, открывающую полный селектор.",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'Персонализация промпта',
+              footer: 'Выберите, какие встроенные инструкции Happier добавляет в новые агентские сессии. Это не скрывает варианты, которые агент уже отправляет.',
+              askAgentToRenameSessionsTitle: 'Просить агента переименовывать сессии',
+              askAgentToRenameSessionsEnabledSubtitle: 'Промпт просит агентов задавать короткие описательные названия сессий.',
+              askAgentToRenameSessionsDisabledSubtitle: 'Промпт не просит агентов задавать названия; ручное переименование по-прежнему работает.',
+              askAgentToSuggestReplyOptionsTitle: 'Просить агента предлагать варианты ответа',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'Промпт просит агентов предлагать быстрые варианты ответа, когда это полезно.',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'Промпт не просит агентов добавлять быстрые варианты ответа.',
           },
       defaultPermissions: {
         title: "Разрешения по умолчанию",
@@ -7182,6 +7218,133 @@ settingsSession: {
     noEntriesAvailable: "Записи журнала изменений недоступны.",
   },
 
+  releaseNotes: {
+    viewFullChangelog: "Все примечания к выпуску",
+    mediaUnavailable: "Медиа недоступно",
+    storyDeck: {
+      dragToDismiss: "Потяните, чтобы закрыть",
+      letsGo: "Поехали!",
+      slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+    },
+    defaultTitle: "Что нового",
+    onboardingShowcase: {
+                "title": "Добро пожаловать в Happier",
+                "subtitle": "Ваши AI-агенты везде, где вы работаете.",
+                "cards": {
+                    "welcome": {
+                        "title": "Добро пожаловать в Happier",
+                        "everywhereTitle": "Ваши AI-агенты везде, где вы работаете",
+                        "everywhereBody": "Claude Code, Codex, OpenCode, Pi и многое другое: на телефоне, планшете, в браузере или на desktop.",
+                        "cockpitTitle": "Ваш мобильный cockpit",
+                        "cockpitBody": "Чат, файлы, Git, редактор, терминал. Всё, что нужно, чтобы собрать и отправить следующий проект, у вас под рукой.",
+                        "existingTitle": "Существующие сессии уже здесь",
+                        "existingBody": "Любую сессию Claude, Codex или OpenCode, запущенную на вашей машине, можно открыть в Happier вживую.",
+                        "voiceTitle": "Голосовой ассистент для брейншторма",
+                        "voiceBody": "Спросите, что делают ваши агенты, одобряйте запросы разрешений и отправляйте сообщения. Без рук.",
+                        "reviewTitle": "Проверяйте diff и оставляйте комментарии",
+                        "reviewBody": "Отмечайте конкретные строки в файлах или diff, выбирайте заметки для отправки и передавайте их агенту.",
+                        "subagentsTitle": "Subagents между провайдерами",
+                        "subagentsBody": "Запускайте subagents Codex из сессии Claude. Делите работу между агентами. Маршрутизируйте сообщения между сессиями.",
+                        "tuisTitle": "Используйте любимые TUI",
+                        "tuisBody": "Запускайте Claude Code, Codex или OpenCode в их нативном терминальном UI. Happier захватывает его и синхронизирует на все устройства.",
+                        "inboxTitle": "Один inbox. Каждая сессия.",
+                        "inboxBody": "Все ожидающие одобрения, запросы разрешений и непрочитанная активность по всем сессиям и машинам в одном месте.",
+                        "mcpTitle": "Один MCP-конфиг. Каждый провайдер.",
+                        "mcpBody": "Определите MCP-серверы один раз. Они работают во всех backend, включая провайдеров без нативной поддержки MCP.",
+                        "controlTitle": "Ставьте в очередь, направляйте, fork, rollback",
+                        "controlBody": "Ставьте сообщения в очередь, пока агент занят. Направляйте текущий turn. Делайте fork от любого сообщения. Откатывайте при необходимости.",
+                        "automationsTitle": "Автоматизации",
+                        "automationsBody": "Планируйте регулярные сессии агентов для мониторинга PR, проверки issues или выполнения любых задач по расписанию.",
+                        "accountsTitle": "Несколько аккаунтов и квоты",
+                        "accountsBody": "Подключайте несколько аккаунтов Claude или OpenAI: личный, рабочий, командный. Отслеживайте использование каждого прямо в приложении.",
+                        "promptsTitle": "Prompts, skills и профили",
+                        "promptsBody": "Переиспользуемые prompts, bundles skills и backend-профили, синхронизированные между всеми сессиями и устройствами.",
+                        "privacyTitle": "Open-source. End-to-end encryption. Self-hostable.",
+                        "privacyBody": "Ваши сессии остаются приватными. Исходный код открыт. Self-host одной командой.",
+                        "petsTitle": "Познакомьтесь с Pets",
+                        "petsBody": "Маленький компаньон для долгих сессий. Полезный? Возможно. Очаровательный? Определённо."
+                    },
+                    "anywhere": {
+                        "title": "Начните где угодно. Продолжайте везде.",
+                        "wideTitle": "Начните где угодно.\nПродолжайте везде.",
+                        "body": "Запустите сессию откуда угодно. Следите вживую, отправляйте сообщения и одобряйте разрешения с телефона, браузера или desktop.",
+                        "alt": "Абстрактное изображение-заглушка для сессий агентов между устройствами."
+                    },
+                    "terminalTuis": {
+                        "title": "Любите терминал? Мы тоже!",
+                        "wideTitle": "Любите терминал?\nМы тоже!",
+                        "body": "Запускайте Claude Code, Codex или OpenCode в их нативном терминальном UI. Следите, отправляйте сообщения и одобряйте разрешения с телефона.",
+                        "alt": "Абстрактное изображение-заглушка для синхронизации терминального TUI."
+                    },
+                    "cockpit": {
+                        "title": "Всё, что нужно. В одно касание.",
+                        "wideTitle": "Всё, что нужно.\nВ одно касание",
+                        "body": "Чат, файлы, Git, редактор, терминал. Взаимодействуйте с агентом, просматривайте и редактируйте файлы, проверяйте diff, управляйте ветками Git, открывайте PR и живой терминал.",
+                        "alt": "Абстрактное изображение-заглушка для мобильного cockpit."
+                    },
+                    "existingSessions": {
+                        "title": "Сессии Claude, Codex, OpenCode? Уже здесь.",
+                        "body": "Просматривайте любые сессии Claude, Codex или OpenCode, запущенные сейчас или нет.",
+                        "alt": "Абстрактное изображение-заглушка для существующих сессий провайдеров."
+                    },
+                    "voiceAssistant": {
+                        "title": "Коллега, с которым можно поговорить",
+                        "wideTitle": "Голосовой ассистент: коллега, с которым можно поговорить",
+                        "body": "Голосовой ассистент следит за всеми запущенными сессиями. Обсуждайте следующие изменения, одобряйте разрешения и многое другое без рук.",
+                        "alt": "Абстрактное изображение-заглушка для голосового ассистента."
+                    },
+                    "reviewComments": {
+                        "title": "Проверяйте код и оставляйте комментарии",
+                        "body": "Просматривайте изменения и diff вашего агента. Отмечайте точные строки, которые хотите исправить. Отправляйте их агенту в текущей сессии или новой.",
+                        "alt": "Абстрактное изображение-заглушка для review comments."
+                    },
+                    "subagents": {
+                        "title": "Одна сессия, subagents разных провайдеров",
+                        "body": "Запускайте Codex, Claude или других subagents в любой сессии. Используйте сильные стороны каждого и заставьте их работать вместе в одной сессии.",
+                        "alt": "Абстрактное изображение-заглушка для subagents между провайдерами."
+                    },
+                    "inbox": {
+                        "title": "Больше не теряйте нить",
+                        "body": "Запущено 10 сессий, и непонятно, что требует вашего внимания? Inbox показывает всю активность по всем сессиям и машинам.",
+                        "alt": "Абстрактное изображение-заглушка для глобального inbox."
+                    },
+                    "mcp": {
+                        "title": "Один конфиг. Каждый провайдер.",
+                        "wideTitle": "Один конфиг.\nКаждый провайдер.",
+                        "body": "Определите MCP один раз в Happier, и они работают во всех backend, даже тех, где нет нативной поддержки MCP. Управляйте skills, prompts и не только!",
+                        "alt": "Абстрактное изображение-заглушка для общей конфигурации MCP."
+                    },
+                    "queue": {
+                        "title": "Очередь, steering, fork, rollback",
+                        "body": "Ставьте сообщения в очередь, пока агент занят. Направляйте текущую сессию. Делайте fork от любого сообщения. Откатывайтесь, если всё пошло не туда.",
+                        "alt": "Абстрактное изображение-заглушка для инструментов контроля сессии."
+                    },
+                    "automations": {
+                        "title": "Ваш агент по расписанию",
+                        "body": "Планируйте регулярные сессии для мониторинга pull requests, проверки issues или выполнения любых задач по расписанию.",
+                        "alt": "Абстрактное изображение-заглушка для запланированных автоматизаций агентов."
+                    },
+                    "accounts": {
+                        "title": "Мультиаккаунты и отслеживание квот",
+                        "body": "Подключайте несколько аккаунтов OpenAI или Claude. Отслеживайте использование и квоты каждого прямо в приложении.",
+                        "alt": "Абстрактное изображение-заглушка для подключенных аккаунтов и квот."
+                    },
+                    "privacy": {
+                        "title": "Open-source. End-to-end encryption.",
+                        "wideTitle": "Открытый исходный код.\nСквозное шифрование.",
+                        "body": "Ваш код, prompts и содержимое сессий шифруются на устройстве до отправки на любой сервер. Private by design. Open by default.",
+                        "alt": "Абстрактное изображение-заглушка для приватности и self-hosting."
+                    },
+                    "pets": {
+                        "title": "Никогда не оставайтесь одни. Meet Pets.",
+                        "wideTitle": "Никогда не оставайтесь одни.\nПознакомьтесь с Pets.",
+                        "body": "Маленький компаньон, который помогает держать фокус между сессиями. Полезный? Возможно. Очаровательный? Определённо.",
+                        "alt": "Абстрактное изображение-заглушка для Pets."
+                    }
+                }
+            },
+  },
+
   terminal: {
     // Used by terminal connection screens
     webBrowserRequired: "Требуется веб-браузер",
@@ -7668,7 +7831,7 @@ settingsSession: {
       codeLabel: "Код",
     },
 
-  artifacts: {
+    artifacts: {
     // Artifacts feature
     title: "Артефакты",
     countSingular: "1 артефакт",

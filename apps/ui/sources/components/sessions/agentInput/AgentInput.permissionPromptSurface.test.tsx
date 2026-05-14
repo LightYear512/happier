@@ -86,7 +86,10 @@ vi.mock('@/components/tools/shell/userActions/UserActionPromptCard', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => (selector: any) => selector({ sessionMessages: {} }),
+    getStorage: () => (selector: any) => selector({
+        localSettings: { uiBackdropBlurEnabled: false },
+        sessionMessages: {},
+    }),
 }));
 
 vi.mock('@/hooks/session/useUserMessageHistory', () => ({
@@ -246,10 +249,16 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
 }));
 
-vi.mock('./inputMaxHeight', () => ({
-    computeAgentInputDefaultMaxHeight: () => 100,
-    computeMeasuredPanelInputMaxHeight: () => 100,
-}));
+vi.mock('./inputMaxHeight', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./inputMaxHeight')>();
+    return {
+        ...actual,
+        computeAgentInputDefaultMaxHeight: () => 100,
+        computeAgentInputKeyboardOpenPanelMaxHeight: () => 100,
+        computeAgentInputKeyboardOpenVariableSectionMaxHeight: () => 100,
+        computeMeasuredPanelInputMaxHeight: () => 100,
+    };
+});
 
 vi.mock('./contextWarning', () => ({
     getContextUsageState: () => null,

@@ -81,6 +81,7 @@ vi.mock('@/components/sessions/agentInput', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1000 },
+    useLayoutMaxWidth: () => 1000,
 }));
 
 vi.mock('@/components/automations/gating/AutomationsGate', () => ({

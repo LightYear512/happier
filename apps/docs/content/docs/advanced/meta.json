@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "provider-integrations",
+    "visual-runner",
     "custom-mobile-build",
     "notifications",
     "updates"

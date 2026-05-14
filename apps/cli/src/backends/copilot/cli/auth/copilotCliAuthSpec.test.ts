@@ -7,7 +7,7 @@ import { writeExecutableShim } from '@/testkit/fs/executableShim';
 import { copilotCliAuthSpec } from './copilotCliAuthSpec';
 
 describe('copilotCliAuthSpec', () => {
-  const envKeys = ['PATH', 'HOME', 'USERPROFILE', 'GH_TOKEN', 'GITHUB_TOKEN', 'COPILOT_GITHUB_TOKEN'] as const;
+  const envKeys = ['PATH', 'HOME', 'USERPROFILE', 'GH_TOKEN', 'GITHUB_TOKEN', 'COPILOT_GITHUB_TOKEN', 'HAPPIER_COPILOT_CLI_AUTH_PROBE_TIMEOUT_MS'] as const;
   let envScope = createEnvKeyScope(envKeys);
 
   afterEach(() => {
@@ -52,6 +52,7 @@ describe('copilotCliAuthSpec', () => {
         COPILOT_GITHUB_TOKEN: undefined,
         GH_TOKEN: undefined,
         GITHUB_TOKEN: undefined,
+        HAPPIER_COPILOT_CLI_AUTH_PROBE_TIMEOUT_MS: '5000',
       });
 
       expect(ghPath).toContain(dir);
@@ -85,6 +86,7 @@ describe('copilotCliAuthSpec', () => {
         COPILOT_GITHUB_TOKEN: undefined,
         GH_TOKEN: undefined,
         GITHUB_TOKEN: undefined,
+        HAPPIER_COPILOT_CLI_AUTH_PROBE_TIMEOUT_MS: '5000',
       });
 
       expect(ghPath).toContain(dir);

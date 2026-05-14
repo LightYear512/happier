@@ -2,6 +2,7 @@ import type { ImportedMcpInputDefinitionV1, ImportedMcpServerDraftV1 } from './p
 
 export type McpQuickInstallPresetId =
     | 'playwright'
+    | 'visual-runner'
     | 'context7'
     | 'sequential-thinking'
     | 'github';
@@ -33,6 +34,27 @@ const PRESETS: readonly QuickInstallDraft[] = [
             stdio: {
                 command: 'npx',
                 args: ['-y', '@playwright/mcp@latest'],
+            },
+            env: {},
+            enabled: true,
+            warnings: [],
+        },
+        inputs: [],
+    },
+    {
+        preset: {
+            id: 'visual-runner',
+            title: 'Visual Runner',
+            description: 'AI-visible browser runs with screenshots, traces, and runtime evidence.',
+            iconName: 'scan-outline',
+        },
+        server: {
+            name: 'visual_runner',
+            title: 'Visual Runner',
+            transport: 'stdio',
+            stdio: {
+                command: 'npx',
+                args: ['-y', '@happier-dev/visual-runner@latest', 'mcp'],
             },
             env: {},
             enabled: true,

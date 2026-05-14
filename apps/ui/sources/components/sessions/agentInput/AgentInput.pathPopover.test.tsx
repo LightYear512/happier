@@ -83,6 +83,7 @@ vi.mock('@/components/ui/text/Text', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 800, headerMaxWidth: 800 },
+    useLayoutMaxWidth: () => 800,
 }));
 
 vi.mock('@/sync/domains/state/storageStore', async () => {

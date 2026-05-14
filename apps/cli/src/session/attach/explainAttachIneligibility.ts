@@ -148,19 +148,6 @@ export function explainAttachIneligibility(input: Readonly<{
     };
   }
 
-  // tmux is the only supported attach strategy for this agent, but tmux is
-  // not installed on this computer. (Distinct from "started outside tmux":
-  // here the session might be in a tmux pane elsewhere, we just can't
-  // dispatch an `attach` command from this CLI.)
-  if (input.agentAttachStrategy === 'tmux' && !input.tmuxAvailable) {
-    return {
-      category: 'tmux_unavailable',
-      shortReason: 'tmux is not installed on this computer',
-      fullReason: 'tmux is required to attach to this session, but it isn\'t installed on this computer.',
-      nextStepHint: 'Install tmux (e.g. `brew install tmux` on macOS) and retry.',
-    };
-  }
-
   // Remote-machine case: distinguish by reading host from decrypted metadata
   // first (auth'd via the encryption key), falling back to current-machine
   // checks the evaluator already did. Note we use `compareMachineHosts` so
@@ -184,6 +171,18 @@ export function explainAttachIneligibility(input: Readonly<{
         ? `This session is running${remoteSuffix} and can't be attached from this computer.`
         : 'Session belongs to another machine and cannot be attached from this computer.',
       nextStepHint: 'Switch to that machine, or use `happier session list --active` to see all running sessions.',
+    };
+  }
+
+  // tmux is the only supported attach strategy for this agent, but tmux is
+  // not installed on this computer. Only surface this after ruling out the
+  // stronger "this session is remote" explanations above.
+  if (input.agentAttachStrategy === 'tmux' && !input.tmuxAvailable) {
+    return {
+      category: 'tmux_unavailable',
+      shortReason: 'tmux is not installed on this computer',
+      fullReason: 'tmux is required to attach to this session, but it isn\'t installed on this computer.',
+      nextStepHint: 'Install tmux (e.g. `brew install tmux` on macOS) and retry.',
     };
   }
 

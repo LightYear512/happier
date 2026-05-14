@@ -115,6 +115,11 @@ on:
         required: false
         default: ""
         type: string
+      android_release_status:
+        description: "Deploy (Android store) — EAS submit releaseStatus"
+        required: false
+        default: draft
+        type: string
       desktop_mode:
         description: "Deploy (Desktop) — Desktop bundle mode"
         required: false
@@ -271,6 +276,37 @@ jobs:
         run: |
           set -euo pipefail
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Generate release notes manifest
+        run: |
+          set -euo pipefail
+          yarn --cwd apps/ui tsx sources/scripts/parseReleaseNotes.ts
+
+      - name: Build release notes assets
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/release-notes/build-release-notes-assets.mjs \
+            --out-dir "dist/release-notes-assets"
+
+      - name: Create release notes assets GitHub App token
+        id: release_notes_assets_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: happier-assets
+          permission-contents: write
+
+      - name: Publish release notes assets
+        env:
+          GH_TOKEN: ${{ steps.release_notes_assets_token.outputs.token }}
+          GH_REPO: happier-dev/happier-assets
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/release-notes/publish-release-notes-assets.mjs \
+            --in-dir "dist/release-notes-assets" \
+            --repo "happier-dev/happier-assets" \
+            --tag "release-notes"
 
       - name: Expo OTA update
         if: inputs.expo_action == 'ota'
@@ -362,6 +398,7 @@ jobs:
       profile: auto
       action: ${{ inputs.expo_action == 'native_submit' && 'build_and_submit' || 'build_only' }}
       publish_apk_release: "false"
+      android_release_status: ${{ inputs.android_release_status || 'draft' }}
 
   mobile_apk_release:
     name: Mobile APK release (local runner)
@@ -378,6 +415,7 @@ jobs:
       profile: ${{ inputs.environment == 'production' && 'production-apk' || 'preview-apk' }}
       action: build_only
       publish_apk_release: "true"
+      android_release_status: ${{ inputs.android_release_status || 'draft' }}
 
   desktop:
     name: Desktop bundles (Tauri)

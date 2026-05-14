@@ -885,6 +885,7 @@ export const zhHans: TranslationStructure = {
     copy: "复制",
     copyWithLabel: ({ label }: { label: string }) => `复制 ${label}`,
     paste: "粘贴",
+    pasteImage: "粘贴图片",
     expand: "展开",
     collapse: "收起",
     command: "命令",
@@ -2189,6 +2190,8 @@ export const zhHans: TranslationStructure = {
       fileTooLargeTitle: "文件过大",
       fileTooLargeBody: ({ count }: { count: number }) =>
         `已跳过 ${count} 个超过最大附件大小的文件。`,
+      noClipboardImageTitle: "剪贴板中没有图片",
+      noClipboardImageBody: "请先复制图片，然后将其粘贴为附件。",
     },
   },
 
@@ -3098,6 +3101,18 @@ export const zhHans: TranslationStructure = {
     },
     display: "显示",
     displayDescription: "控制布局和间距",
+    contentWidth: "内容宽度",
+    contentWidthDescription: "选择主内容可扩展到的最大宽度",
+    contentWidthOptions: {
+      compact: "紧凑",
+      compactDescription: "将主内容限制在 850 px",
+      medium: "中等",
+      mediumDescription: "允许主内容扩展到 960 px",
+      full: "全宽",
+      fullDescription: "使用可用窗口宽度",
+    },
+    backdropBlur: "背景模糊",
+    backdropBlurDescription: "在弹窗和菜单后使用背景模糊。关闭后可提升浏览器性能。",
     multiPanePanels: "右侧面板",
     multiPanePanelsDescription: "显示可调整大小的右侧文件/源代码控制面板（Web/平板）",
     sessionsRightPaneDefaultOpen: "在会话中始终显示右侧边栏",
@@ -5218,6 +5233,7 @@ export const zhHans: TranslationStructure = {
       selectForCommit: "选择用于提交",
       stageFile: "暂存文件",
       removeFromSelection: "从选择中移除",
+      removeFromCommitSelection: "从提交选择中移除",
       unstageFile: "取消暂存",
       selectionHint: "选择“已包含”或“待处理”以启用行选择。",
       selectedLines: {
@@ -5500,9 +5516,27 @@ export const zhHans: TranslationStructure = {
         aboutSubtitle: "选择每个操作在应用、语音和集成中的显示位置。不可用卡片会保持可见，以便你了解哪些内容被功能、隐私或运行时支持所阻止。",
         aboutFooter: "这些设置会全局应用到你的账号默认值。不可用卡片会解释目标当前为何被阻止。",
         searchPlaceholder: "搜索操作",
+        detailSearchPlaceholder: "搜索界面",
         noResults: "没有操作匹配你当前的搜索。",
+        noTargetsMatch: "没有界面与当前搜索匹配。",
         noDescription: "暂时没有可用说明。",
         requireApproval: "需要批准",
+        invalidActionTitle: "未找到操作",
+        invalidActionSubtitle: "此操作在此版本中不再可用。",
+        configureActionAccessibilityLabel: "配置操作",
+        approvalHelpTitle: "批准模式",
+        approvalHelpBody: "“先询问”会在此操作从该界面运行前显示确认。“允许”则让此操作从该界面运行，而无需批准提示。",
+        status: {
+            allowed: ({ count }: { count: number }) => `${count} 个允许`,
+            askFirst: ({ count }: { count: number }) => `${count} 个先询问`,
+            off: ({ count }: { count: number }) => `${count} 个关闭`,
+            unavailable: ({ count }: { count: number }) => `${count} 个不可用`,
+        },
+        modes: {
+            off: "关闭",
+            askFirst: "先询问",
+            allowed: "允许",
+        },
         sections: {
             app: '应用内',
             voice: '语音',
@@ -5895,7 +5929,7 @@ settingsSession: {
       wizardPresentationTitle: "向导选择器布局",
       wizardPresentationFooter:
         "Auto 会将短区段保留为列表，并将长区段切换为可搜索下拉菜单。",
-      wizardPresentationAutoTitle: "Auto",
+      wizardPresentationAutoTitle: "自动",
       wizardPresentationAutoSubtitle:
         "让 Happier 根据内容数量选择最佳布局。",
       wizardPresentationListTitle: "列表",
@@ -5904,14 +5938,14 @@ settingsSession: {
       wizardPresentationDropdownSubtitle: "显示一个可打开完整选择器的紧凑行。",
     },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: '提示词个性化',
+              footer: '选择 Happier 要向新代理会话添加哪些内置指令。这不会隐藏代理本身已经发送的选项。',
+              askAgentToRenameSessionsTitle: '要求代理重命名会话',
+              askAgentToRenameSessionsEnabledSubtitle: '提示词会要求代理设置简短且有描述性的会话标题。',
+              askAgentToRenameSessionsDisabledSubtitle: '提示词不会要求代理设置标题；仍可手动重命名。',
+              askAgentToSuggestReplyOptionsTitle: '要求代理建议回复选项',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: '提示词会要求代理在有用时提出快捷回复选项。',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: '提示词不会要求代理添加快捷回复选项。',
           },
     defaultPermissions: {
       title: "默认权限",
@@ -6864,6 +6898,133 @@ settingsSession: {
     noEntriesAvailable: "没有可用的更新日志条目。",
   },
 
+  releaseNotes: {
+    viewFullChangelog: "查看完整发行说明",
+    mediaUnavailable: "媒体不可用",
+    storyDeck: {
+      dragToDismiss: "拖动关闭",
+      letsGo: "开始吧！",
+      slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+    },
+    defaultTitle: "新功能",
+    onboardingShowcase: {
+                "title": "欢迎使用 Happier",
+                "subtitle": "你的 AI 代理，覆盖每一个工作场景。",
+                "cards": {
+                    "welcome": {
+                        "title": "欢迎使用 Happier",
+                        "everywhereTitle": "你的 AI 代理，覆盖每一个工作场景",
+                        "everywhereBody": "Claude Code、Codex、OpenCode、Pi，以及更多：手机、平板、浏览器或桌面端都能使用。",
+                        "cockpitTitle": "你的移动 cockpit",
+                        "cockpitBody": "聊天、文件、Git、编辑器、终端。构建并发布下一个项目所需的一切，都在指尖。",
+                        "existingTitle": "已有会话，已经在那里",
+                        "existingBody": "任何在你机器上运行的 Claude、Codex 或 OpenCode 会话，都可以在 Happier 中实时打开。",
+                        "voiceTitle": "可以一起头脑风暴的语音助手",
+                        "voiceBody": "询问代理正在做什么，批准权限请求，并发送消息。全程免手动。",
+                        "reviewTitle": "审查 diff 并留下评论",
+                        "reviewBody": "在文件或 diff 的具体行上做标记，选择要发送的备注，并直接交给代理。",
+                        "subagentsTitle": "跨 provider 的 subagents",
+                        "subagentsBody": "从 Claude 会话启动 Codex subagents。把工作拆给多个代理。让消息在会话之间流转。",
+                        "tuisTitle": "使用你喜欢的 TUI",
+                        "tuisBody": "在原生终端 UI 中运行 Claude Code、Codex 或 OpenCode。Happier 会捕获它，并同步到每台设备。",
+                        "inboxTitle": "一个 inbox。所有会话。",
+                        "inboxBody": "所有待批准事项、权限请求和未读活动，跨所有会话和机器，集中在一个地方。",
+                        "mcpTitle": "一个 MCP 配置。所有 provider。",
+                        "mcpBody": "MCP 服务器只需定义一次。它们可用于所有 backend，包括不原生支持 MCP 的 provider。",
+                        "controlTitle": "排队、steer、fork、rollback",
+                        "controlBody": "代理忙碌时先排队消息。Steer 正在运行的 turn。从任意消息 fork。需要时回滚。",
+                        "automationsTitle": "自动化",
+                        "automationsBody": "定期调度代理会话，用于监控 PR、检查 issue，或按固定频率运行任何任务。",
+                        "accountsTitle": "多账号与配额追踪",
+                        "accountsBody": "连接多个 Claude 或 OpenAI 账号：个人、工作、团队。直接在应用中监控每个账号的使用量。",
+                        "promptsTitle": "Prompts、skills 和 profiles",
+                        "promptsBody": "可复用的 prompts、skill bundles 和 backend profiles，在每个会话与设备之间同步。",
+                        "privacyTitle": "开源。端到端加密。可自托管。",
+                        "privacyBody": "你的会话保持私密。源代码开放。一个命令即可自托管。",
+                        "petsTitle": "认识 Pets",
+                        "petsBody": "长时间会话里的小伙伴。有用吗？也许。可爱吗？当然。"
+                    },
+                    "anywhere": {
+                        "title": "随时开始。到处继续。",
+                        "wideTitle": "随时开始。\n到处继续。",
+                        "body": "从任何地方启动会话。通过手机、浏览器或桌面端实时跟进、发送消息并批准权限。",
+                        "alt": "跨设备代理会话的抽象占位图。"
+                    },
+                    "terminalTuis": {
+                        "title": "你喜欢终端？我们也是！",
+                        "wideTitle": "你喜欢终端？\n我们也是！",
+                        "body": "在原生终端 UI 中运行 Claude Code、Codex 或 OpenCode。通过手机跟进、发送消息并批准权限。",
+                        "alt": "终端 TUI 同步的抽象占位图。"
+                    },
+                    "cockpit": {
+                        "title": "你需要的一切。一点即达。",
+                        "wideTitle": "你需要的一切。\n一点即达",
+                        "body": "聊天、文件、Git、编辑器、终端。和代理互动，浏览并编辑文件，审查 diff，管理 Git 分支，打开 PR，并打开实时终端。",
+                        "alt": "移动 cockpit 的抽象占位图。"
+                    },
+                    "existingSessions": {
+                        "title": "已有 Claude、Codex、OpenCode 会话？已经在那里。",
+                        "body": "浏览任何 Claude、Codex 或 OpenCode 会话，无论当前是否运行。",
+                        "alt": "已有 provider 会话的抽象占位图。"
+                    },
+                    "voiceAssistant": {
+                        "title": "一个可以交谈的同事",
+                        "wideTitle": "语音助手：一个可以交谈的同事",
+                        "body": "语音助手会监控所有正在运行的会话。一起头脑风暴下一步修改、批准权限，还有更多，全程免手动。",
+                        "alt": "语音助手的抽象占位图。"
+                    },
+                    "reviewComments": {
+                        "title": "审查代码并留下评论",
+                        "body": "浏览代理的修改和 diff。标记你想处理的精确行。把它们发送给当前会话中的代理，或发送到一个新会话。",
+                        "alt": "审查评论的抽象占位图。"
+                    },
+                    "subagents": {
+                        "title": "一个会话，多 provider subagents",
+                        "body": "在任何会话中启动 Codex、Claude 或其他 subagents。利用每一个的优势，让它们一起在同一个会话中工作。",
+                        "alt": "跨 provider subagents 的抽象占位图。"
+                    },
+                    "inbox": {
+                        "title": "再也不会丢失上下文",
+                        "body": "同时运行 10 个会话，不知道哪里需要你关注？Inbox 会显示所有会话和机器上的全部活动。",
+                        "alt": "全局 inbox 的抽象占位图。"
+                    },
+                    "mcp": {
+                        "title": "一个配置。所有 provider。",
+                        "wideTitle": "一个配置。\n所有 provider。",
+                        "body": "在 Happier 中定义一次 MCP，它们即可跨所有 backend 工作，甚至包括不原生支持 MCP 的 backend。管理 skills、prompts 等等！",
+                        "alt": "共享 MCP 配置的抽象占位图。"
+                    },
+                    "queue": {
+                        "title": "排队、steer、fork、rollback",
+                        "body": "代理忙碌时先排队消息。Steer 正在运行的会话。从任意消息 fork。情况不对就 rollback。",
+                        "alt": "会话控制工具的抽象占位图。"
+                    },
+                    "automations": {
+                        "title": "你的代理，按计划运行",
+                        "body": "调度周期性会话来监控 pull request、检查 issue，或定期运行任何任务。",
+                        "alt": "计划代理自动化的抽象占位图。"
+                    },
+                    "accounts": {
+                        "title": "多账号与配额追踪",
+                        "body": "连接多个 OpenAI 或 Claude 账号。直接在应用中监控每个账号的使用量和配额。",
+                        "alt": "已连接账号与配额的抽象占位图。"
+                    },
+                    "privacy": {
+                        "title": "开源。端到端加密。",
+                        "wideTitle": "开源。\n端到端加密。",
+                        "body": "你的代码、prompts 和会话内容会在设备上加密，然后才到达任何服务器。Private by design. Open by default.",
+                        "alt": "隐私与自托管的抽象占位图。"
+                    },
+                    "pets": {
+                        "title": "别再一个人熬了。认识 Pets。",
+                        "wideTitle": "别再一个人熬了。\n认识 Pets。",
+                        "body": "一个小伙伴，帮助你在多个会话之间保持节奏。有用吗？也许。可爱吗？当然。",
+                        "alt": "Pets 的抽象占位图。"
+                    }
+                }
+            },
+  },
+
   terminal: {
     // Used by terminal connection screens
     webBrowserRequired: "需要 Web 浏览器",
@@ -7379,7 +7540,7 @@ settingsSession: {
     codeLabel: "代码",
   },
 
-  artifacts: {
+    artifacts: {
     title: "工件",
     countSingular: "1 个工件",
     countPlural: ({ count }: { count: number }) => `${count} 个工件`,

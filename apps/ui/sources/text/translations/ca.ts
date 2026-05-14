@@ -889,6 +889,7 @@ export const ca: TranslationStructure = {
         copy: 'Copiar',
         copyWithLabel: ({ label }: { label: string }) => `Copia ${label}`,
         paste: 'Enganxa',
+        pasteImage: 'Enganxa imatge',
         expand: 'Expandeix',
         collapse: 'Replega',
         command: 'Ordre',
@@ -2164,6 +2165,8 @@ export const ca: TranslationStructure = {
             fileTooLargeTitle: 'Fitxer massa gran',
             fileTooLargeBody: ({ count }: { count: number }) =>
                 `S\'han omès ${count} ${plural({ count, singular: 'fitxer', plural: 'fitxers' })} que superen la mida màxima d\'adjunt.`,
+            noClipboardImageTitle: 'No hi ha cap imatge al porta-retalls',
+            noClipboardImageBody: 'Copia una imatge i enganxa-la com a adjunt.',
         },
     },
 
@@ -3051,6 +3054,18 @@ export const ca: TranslationStructure = {
         },
         display: 'Pantalla',
         displayDescription: 'Controla la disposició i l\'espaiat',
+        contentWidth: 'Amplada del contingut',
+        contentWidthDescription: 'Tria fins on pot créixer el contingut principal',
+        contentWidthOptions: {
+            compact: 'Compacta',
+            compactDescription: 'Mantén el contingut principal limitat a 850 px',
+            medium: 'Mitjana',
+            mediumDescription: 'Permet que el contingut principal arribi a 960 px',
+            full: 'Amplada completa',
+            fullDescription: 'Fes servir tota l\'amplada disponible de la finestra',
+        },
+        backdropBlur: 'Desenfocament de fons',
+        backdropBlurDescription: 'Aplica desenfocament de fons darrere de modals i menús. Desactiva\'l per millorar el rendiment del navegador.',
         multiPanePanels: 'Panells a la dreta',
         multiPanePanelsDescription: 'Mostra panells laterals redimensionables per a fitxers i control de codi font (web/tablet)',
         sessionsRightPaneDefaultOpen: 'Mostra sempre la barra lateral dreta a les sessions',
@@ -5038,6 +5053,7 @@ deps: {
             selectForCommit: 'Selecciona per al commit',
             stageFile: 'Afegeix a l\'índex',
             removeFromSelection: 'Treu de la selecció',
+            removeFromCommitSelection: 'Treu de la selecció del commit',
             unstageFile: 'Treu de l\'índex',
             selectionHint: 'Selecciona Inclòs o Pendent per habilitar la selecció de línies.',
             selectedLines: {
@@ -5294,9 +5310,27 @@ deps: {
         aboutSubtitle: 'Tria on es mostra cada acció a l’aplicació, la veu i les integracions. Les fitxes no disponibles es mantenen visibles perquè puguis entendre què està bloquejat per funcions, privadesa o suport del runtime.',
         aboutFooter: 'Aquests paràmetres s’apliquen globalment als valors per defecte del teu compte. Les fitxes no disponibles expliquen per què un destí està bloquejat actualment.',
         searchPlaceholder: 'Cerca accions',
+        detailSearchPlaceholder: 'Cerca superfícies',
         noResults: 'Cap acció coincideix amb la cerca actual.',
+        noTargetsMatch: 'Cap superfície coincideix amb la cerca actual.',
         noDescription: 'Encara no hi ha cap descripció disponible.',
         requireApproval: 'Requereix aprovació',
+        invalidActionTitle: 'Acció no trobada',
+        invalidActionSubtitle: 'Aquesta acció ja no està disponible en aquesta compilació.',
+        configureActionAccessibilityLabel: 'Configura l’acció',
+        approvalHelpTitle: 'Modes d’aprovació',
+        approvalHelpBody: '“Demana primer” mostra una confirmació abans que aquesta acció s’executi des d’aquesta superfície. “Permès” deixa executar l’acció des d’aquesta superfície sense demanar aprovació.',
+        status: {
+            allowed: ({ count }: { count: number }) => `${count} permesos`,
+            askFirst: ({ count }: { count: number }) => `${count} demana primer`,
+            off: ({ count }: { count: number }) => `${count} desactivats`,
+            unavailable: ({ count }: { count: number }) => `${count} no disponibles`,
+        },
+        modes: {
+            off: 'Desactivat',
+            askFirst: 'Demana primer',
+            allowed: 'Permès',
+        },
         sections: {
             app: 'A l’aplicació',
             voice: 'Veu',
@@ -5683,7 +5717,7 @@ settingsSession: {
               title: 'Modal de sessió nova',
               footer: 'Tria com s’obre el modal de sessió nova i com les dreceres de projecte el preparen.',
               modalModeTitle: 'Mode del modal de sessió nova',
-              modalModeSimpleTitle: 'Simple',
+              modalModeSimpleTitle: 'Senzill',
               modalModeSimpleSubtitle: 'Obre el modal compacte centrat en el compositor.',
               modalModeWizardTitle: 'Assistent',
               modalModeWizardSubtitle: 'Obre la configuració guiada amb selectors separats.',
@@ -5704,7 +5738,7 @@ settingsSession: {
               wizardColumnsDisabledSubtitle: 'Apila tots els selectors de l’assistent en una columna.',
               wizardPresentationTitle: 'Disseny dels selectors de l’assistent',
               wizardPresentationFooter: 'Auto manté les seccions curtes com a llistes i canvia les llargues a desplegables amb cerca.',
-              wizardPresentationAutoTitle: 'Auto',
+              wizardPresentationAutoTitle: 'Automàtic',
               wizardPresentationAutoSubtitle: 'Deixa que Happier triï el millor disseny segons la quantitat de contingut.',
               wizardPresentationListTitle: 'Llista',
               wizardPresentationListSubtitle: 'Mostra totes les files directament a l’assistent.',
@@ -5712,14 +5746,14 @@ settingsSession: {
               wizardPresentationDropdownSubtitle: 'Mostra una fila compacta que obre el selector complet.',
           },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'Personalització del prompt',
+              footer: 'Tria quines instruccions integrades afegeix Happier a les sessions d’agent noves. Això no amaga opcions que l’agent ja envia.',
+              askAgentToRenameSessionsTitle: 'Demana a l’agent que canviï el nom de les sessions',
+              askAgentToRenameSessionsEnabledSubtitle: 'El prompt demana als agents que defineixin títols de sessió curts i descriptius.',
+              askAgentToRenameSessionsDisabledSubtitle: 'El prompt no demana als agents que defineixin títols; el canvi de nom manual continua funcionant.',
+              askAgentToSuggestReplyOptionsTitle: 'Demana a l’agent que suggereixi respostes',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'El prompt demana als agents que proposin respostes ràpides quan sigui útil.',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'El prompt no demana als agents que afegeixin respostes ràpides.',
           },
           defaultPermissions: {
               title: 'Permisos per defecte',
@@ -6606,6 +6640,133 @@ settingsSession: {
         // Used by the changelog screen
         version: ({ version }: { version: number }) => `Versió ${version}`,
         noEntriesAvailable: 'No hi ha entrades de registre de canvis disponibles.',
+    },
+
+    releaseNotes: {
+        viewFullChangelog: 'Veure totes les notes de la versió',
+        mediaUnavailable: 'Contingut multimèdia no disponible',
+        storyDeck: {
+          dragToDismiss: 'Arrossega per tancar',
+          letsGo: 'Som-hi!',
+          slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+        },
+        defaultTitle: 'Què hi ha de nou',
+        onboardingShowcase: {
+                "title": "Benvingut a Happier",
+                "subtitle": "Els teus agents d’IA, a tot arreu on treballes.",
+                "cards": {
+                    "welcome": {
+                        "title": "Benvingut a Happier",
+                        "everywhereTitle": "Els teus agents d’IA, a tot arreu on treballes",
+                        "everywhereBody": "Claude Code, Codex, OpenCode, Pi i molt més: al telèfon, la tauleta, el navegador o l’escriptori.",
+                        "cockpitTitle": "La teva cabina mòbil",
+                        "cockpitBody": "Xat, fitxers, Git, editor, terminal. Tot el que necessites per crear i enviar el teu pròxim projecte, a l’abast dels dits.",
+                        "existingTitle": "Sessions existents, ja disponibles",
+                        "existingBody": "Qualsevol sessió de Claude, Codex o OpenCode que s’executi a la teva màquina, obre-la a Happier en directe.",
+                        "voiceTitle": "Un assistent de veu per pensar-hi plegats",
+                        "voiceBody": "Pregunta què fan els teus agents, aprova sol·licituds de permís i envia missatges. Sense mans.",
+                        "reviewTitle": "Revisa diffs i deixa comentaris",
+                        "reviewBody": "Marca línies concretes en fitxers o diffs, tria quines notes vols enviar i passa-les directament a un agent.",
+                        "subagentsTitle": "Subagents entre proveïdors",
+                        "subagentsBody": "Llança subagents de Codex des d’una sessió de Claude. Divideix la feina entre agents. Encaminia missatges entre sessions.",
+                        "tuisTitle": "Fes servir les teves TUI preferides",
+                        "tuisBody": "Executa Claude Code, Codex o OpenCode a la seva interfície de terminal nativa. Happier ho captura i ho sincronitza amb tots els dispositius.",
+                        "inboxTitle": "Una safata d’entrada. Totes les sessions.",
+                        "inboxBody": "Totes les aprovacions pendents, sol·licituds de permís i activitat no llegida, de totes les sessions i màquines, en un sol lloc.",
+                        "mcpTitle": "Una configuració MCP. Tots els proveïdors.",
+                        "mcpBody": "Defineix servidors MCP una sola vegada. Funcionen amb tots els backends, inclosos els proveïdors que no admeten MCP de manera nativa.",
+                        "controlTitle": "Posa a la cua, guia, bifurca, desfés",
+                        "controlBody": "Posa missatges a la cua mentre l’agent està ocupat. Guia un torn en execució. Bifurca des de qualsevol missatge. Desfés si cal.",
+                        "automationsTitle": "Automatitzacions",
+                        "automationsBody": "Programa sessions recurrents d’agents per vigilar PRs, revisar incidències o executar qualsevol tasca periòdicament.",
+                        "accountsTitle": "Diversos comptes i seguiment de quota",
+                        "accountsBody": "Enllaça diversos comptes de Claude o OpenAI: personal, feina, equip. Supervisa’n l’ús directament a l’app.",
+                        "promptsTitle": "Prompts, skills i perfils",
+                        "promptsBody": "Prompts reutilitzables, paquets de skills i perfils de backend, sincronitzats entre totes les sessions i dispositius.",
+                        "privacyTitle": "Codi obert. Xifrat d’extrem a extrem. Autoallotjable.",
+                        "privacyBody": "Les teves sessions es mantenen privades. El codi és obert. Autoallotja-ho amb una sola ordre.",
+                        "petsTitle": "Coneix Pets",
+                        "petsBody": "Un petit company per a les sessions llargues. Útil? Potser. Encantador? Segur."
+                    },
+                    "anywhere": {
+                        "title": "Comença on vulguis. Continua a tot arreu.",
+                        "wideTitle": "Comença on vulguis.\nContinua a tot arreu.",
+                        "body": "Llança una sessió des de qualsevol lloc. Segueix-la en directe, envia missatges i aprova permisos des del telèfon, el navegador o l’escriptori.",
+                        "alt": "Imatge abstracta de marcador per a sessions d’agents entre dispositius."
+                    },
+                    "terminalTuis": {
+                        "title": "T’agrada el terminal? A nosaltres també!",
+                        "wideTitle": "T’agrada el terminal?\nA nosaltres també!",
+                        "body": "Executa Claude Code, Codex o OpenCode a la seva interfície de terminal nativa. Segueix-ho, envia missatges i aprova permisos des del telèfon.",
+                        "alt": "Imatge abstracta de marcador per a sincronització de TUI de terminal."
+                    },
+                    "cockpit": {
+                        "title": "Tot el que necessites. A un toc.",
+                        "wideTitle": "Tot el que necessites.\nA un toc",
+                        "body": "Xat, fitxers, Git, editor, terminal. Interactua amb l’agent, navega i edita fitxers, revisa diffs, gestiona branques Git, obre PRs i obre un terminal en directe.",
+                        "alt": "Imatge abstracta de marcador per a la cabina mòbil."
+                    },
+                    "existingSessions": {
+                        "title": "Sessions de Claude, Codex, OpenCode? Ja hi són.",
+                        "body": "Navega per qualsevol sessió de Claude, Codex o OpenCode, s’estigui executant o no.",
+                        "alt": "Imatge abstracta de marcador per a sessions de proveïdors existents."
+                    },
+                    "voiceAssistant": {
+                        "title": "Un company amb qui pots parlar",
+                        "wideTitle": "Assistent de veu: un company amb qui pots parlar",
+                        "body": "L’assistent de veu supervisa totes les sessions en execució. Penseu plegats els pròxims canvis, aprova permisos i molt més, sense mans.",
+                        "alt": "Imatge abstracta de marcador per a l’assistent de veu."
+                    },
+                    "reviewComments": {
+                        "title": "Revisa codi i deixa comentaris",
+                        "body": "Navega pels canvis i diffs del teu agent. Marca les línies exactes que vols tractar. Envia-les a un agent en la sessió actual o en una de nova.",
+                        "alt": "Imatge abstracta de marcador per a comentaris de revisió."
+                    },
+                    "subagents": {
+                        "title": "Una sessió, subagents multiproveïdor",
+                        "body": "Inicia Codex, Claude o qualsevol altre subagent en qualsevol sessió. Aprofita la força de cadascun i fes que tots treballin junts en la mateixa sessió.",
+                        "alt": "Imatge abstracta de marcador per a subagents multiproveïdor."
+                    },
+                    "inbox": {
+                        "title": "No perdis mai més el fil",
+                        "body": "Tens 10 sessions alhora i perds el compte del que necessita la teva atenció? La safata d’entrada mostra tota l’activitat, de totes les sessions i màquines.",
+                        "alt": "Imatge abstracta de marcador per a la safata d’entrada global."
+                    },
+                    "mcp": {
+                        "title": "Una configuració. Tots els proveïdors.",
+                        "wideTitle": "Una configuració.\nTots els proveïdors.",
+                        "body": "Defineix MCPs una sola vegada a Happier i funcionen amb tots els backends, fins i tot amb els que no admeten MCP nativament. Gestiona skills, prompts i més!",
+                        "alt": "Imatge abstracta de marcador per a configuració MCP compartida."
+                    },
+                    "queue": {
+                        "title": "Cua, guia, bifurca, desfés",
+                        "body": "Posa missatges a la cua mentre l’agent està ocupat. Guia una sessió en execució. Bifurca des de qualsevol missatge. Torna enrere si les coses es torcen.",
+                        "alt": "Imatge abstracta de marcador per a eines de control de sessió."
+                    },
+                    "automations": {
+                        "title": "El teu agent, programat",
+                        "body": "Programa sessions recurrents per vigilar pull requests, revisar incidències o executar qualsevol tasca periòdicament.",
+                        "alt": "Imatge abstracta de marcador per a automatitzacions programades d’agents."
+                    },
+                    "accounts": {
+                        "title": "Diversos comptes i seguiment de quota",
+                        "body": "Enllaça diversos comptes d’OpenAI o Claude. Supervisa’n l’ús i les quotes directament a l’app.",
+                        "alt": "Imatge abstracta de marcador per a comptes connectats i quotes."
+                    },
+                    "privacy": {
+                        "title": "Codi obert. Xifrat d’extrem a extrem.",
+                        "wideTitle": "Codi obert.\nXifrat d’extrem a extrem.",
+                        "body": "El teu codi, prompts i contingut de sessió es xifren al dispositiu abans d’arribar a cap servidor. Privat per disseny. Obert per defecte.",
+                        "alt": "Imatge abstracta de marcador per a privadesa i autoallotjament."
+                    },
+                    "pets": {
+                        "title": "No et sentis mai sol. Coneix Pets.",
+                        "wideTitle": "No et sentis mai sol.\nConeix Pets.",
+                        "body": "Un petit company que t’ajuda a mantenir el fil entre sessions. Útil? Potser. Encantador? Segur.",
+                        "alt": "Imatge abstracta de marcador per a Pets."
+                    }
+                }
+            },
     },
 
     terminal: {

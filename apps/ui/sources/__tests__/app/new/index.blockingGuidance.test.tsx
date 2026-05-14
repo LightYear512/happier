@@ -1,18 +1,16 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
 import { renderScreen } from '@/dev/testkit';
 
-
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockState = vi.hoisted(() => ({
     persistedDraft: null as Record<string, unknown> | null,
     tempData: null as Record<string, unknown> | null,
     serverId: 's1',
     resolvedTargetServerId: undefined as string | null | undefined,
-    localSearchParams: {
-        dataId: 'draft-data-id',
-    } as { dataId?: string; spawnServerId?: string },
+    localSearchParams: { dataId: 'draft-data-id' } as Record<string, string>,
     serverListeners: new Set<() => void>(),
 }));
 
@@ -25,11 +23,12 @@ function setMockServerId(serverId: string): void {
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-                            View: 'View',
-                        }
-    );
+    return createReactNativeWebMock({ View: 'View' });
+});
+
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ params: mockState.localSearchParams }).module;
 });
 
 vi.mock('@/components/sessions/guidance/SessionGettingStartedGuidance', () => ({
@@ -43,7 +42,7 @@ vi.mock('@/components/sessions/guidance/SessionGettingStartedGuidance', () => ({
                 };
             },
             () => mockState.serverId,
-            () => mockState.serverId,
+            () => mockState.serverId
         );
 
         return {
@@ -63,6 +62,10 @@ vi.mock('@/sync/store/hooks', () => ({
         serverSelectionActiveTargetKind: 'server',
         serverSelectionActiveTargetId: mockState.serverId,
     }),
+    useActiveServerAccountScope: () => ({
+        serverId: mockState.serverId,
+        accountId: 'account-1',
+    }),
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -72,26 +75,28 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
         generation: 1,
     }),
     subscribeActiveServer: (listener: (snapshot: { serverId: string; serverUrl: string; generation: number }) => void) => {
-        mockState.serverListeners.add(() => {
+        const wrapped = () => {
             listener({
                 serverId: mockState.serverId,
                 serverUrl: 'https://api.happier.dev',
                 generation: 1,
             });
-        });
+        };
+        mockState.serverListeners.add(wrapped);
         return () => {
-            mockState.serverListeners.delete(listener as unknown as () => void);
+            mockState.serverListeners.delete(wrapped);
         };
     },
 }));
 
 vi.mock('@/components/sessions/new/hooks/serverTarget/useNewSessionServerTargetState', () => ({
-    useNewSessionServerTargetState: ({ request }: { request: { spawnServerIdParam?: string | null } }) => ({
-        targetServerId: typeof request?.spawnServerIdParam === 'string'
-            ? request.spawnServerIdParam
-            : mockState.resolvedTargetServerId === undefined
-                ? mockState.serverId
-                : mockState.resolvedTargetServerId,
+    useNewSessionServerTargetState: ({ request }: { request?: { spawnServerIdParam?: string | null } }) => ({
+        targetServerId:
+            typeof request?.spawnServerIdParam === 'string'
+                ? request.spawnServerIdParam
+                : mockState.resolvedTargetServerId === undefined
+                    ? mockState.serverId
+                    : mockState.resolvedTargetServerId,
     }),
 }));
 
@@ -104,7 +109,7 @@ vi.mock('expo-router', async () => {
 });
 
 vi.mock('@/sync/domains/state/persistence', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/domains/state/persistence')>();
+    const actual = await importOriginal() as typeof import('@/sync/domains/state/persistence');
     return {
         ...actual,
         loadNewSessionDraft: () => {
@@ -126,12 +131,17 @@ vi.mock('@/components/sessions/new/hooks/useNewSessionScreenModel', () => ({
         popoverBoundaryRef: { current: null },
         wizardProps: {
             layout: null,
+            sectionPresentation: null,
             profiles: null,
             agent: null,
             machine: null,
             footer: null,
         },
     }),
+}));
+
+vi.mock('@/components/sessions/new/navigation/newSessionContainedModalScreen', () => ({
+    NewSessionScreenPortalScope: ({ children }: React.PropsWithChildren) => React.createElement(React.Fragment, null, children),
 }));
 
 vi.mock('@/components/sessions/new/components/NewSessionSimplePanel', () => ({
@@ -143,7 +153,7 @@ vi.mock('@/components/sessions/new/components/NewSessionWizard', () => ({
 }));
 
 vi.mock('@/components/ui/popover', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/components/ui/popover')>();
+    const actual = await importOriginal() as typeof import('@/components/ui/popover');
     return {
         ...actual,
         PopoverBoundaryProvider: ({ children }: any) => React.createElement(React.Fragment, null, children),
@@ -158,19 +168,14 @@ afterEach(() => {
     mockState.serverListeners.clear();
     mockState.serverId = 's1';
     mockState.resolvedTargetServerId = undefined;
-    mockState.localSearchParams = {
-        dataId: 'draft-data-id',
-    };
+    mockState.localSearchParams = { dataId: 'draft-data-id' };
 });
 
 describe('/new (blocking guidance)', () => {
     it('hard-stops with connect-machine guidance when no machines exist', async () => {
         setMockServerId('s1');
-        mockState.persistedDraft = null;
-        mockState.tempData = null;
 
         const Screen = (await import('@/app/(app)/new')).default;
-
         const screen = await renderScreen(React.createElement(Screen));
 
         expect(() => screen.findByType('SessionGettingStartedGuidance')).not.toThrow();
@@ -179,7 +184,6 @@ describe('/new (blocking guidance)', () => {
 
     it('keeps the wizard path when temp data seeds a worktree draft intent', async () => {
         setMockServerId('s1');
-        mockState.persistedDraft = null;
         mockState.tempData = {
             workspaceId: 'workspace-1',
             workspaceLocationId: 'location-1',
@@ -191,7 +195,6 @@ describe('/new (blocking guidance)', () => {
         };
 
         const Screen = (await import('@/app/(app)/new')).default;
-
         const screen = await renderScreen(React.createElement(Screen));
 
         expect(() => screen.findByType('NewSessionWizard')).not.toThrow();

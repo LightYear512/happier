@@ -9,9 +9,13 @@ const { resolveWindowsCommandInvocationMock } = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock('@happier-dev/cli-common/process', () => ({
-  resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
-}));
+vi.mock('@happier-dev/cli-common/process', async () => {
+  const actual = await vi.importActual<typeof import('@happier-dev/cli-common/process')>('@happier-dev/cli-common/process');
+  return {
+    ...actual,
+    resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
+  };
+});
 
 import { runOpenCodeProviderAttach } from './runOpenCodeProviderAttach';
 import type { ProviderCliLaunchSpec } from '@/runtime/managedTools/requireProviderCliLaunchSpec';

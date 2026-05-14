@@ -10,17 +10,9 @@ import { startCliAuthLoginForTerminalConnect, type StartedCliTerminalConnect } f
 import { gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 import { waitForInitialAppUi } from '../../src/testkit/uiE2e/waitForInitialAppUi';
 import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAccountReadyForConnect';
+import { enableEnhancedSessionWizard } from '../../src/testkit/uiE2e/enableEnhancedSessionWizard';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
-
-async function enableEnhancedSessionWizardInSettings(page: Page, baseUrl: string) {
-    await page.goto(`${baseUrl}/settings/features`, { waitUntil: 'domcontentloaded' });
-    const enhancedWizardToggle = page.getByTestId('settings-feature-toggle-useEnhancedSessionWizard');
-    if ((await enhancedWizardToggle.count()) === 0) {
-        return;
-    }
-    await enhancedWizardToggle.click();
-}
 
 async function ensureSignedInAndConnected(params: Readonly<{
     page: Page;
@@ -112,7 +104,7 @@ async function selectDirectoryFromPathBrowser(
             const button = page.getByRole('button', { name: new RegExp(candidate.replace(/\//g, '\\/')) }).first();
             if (await button.count()) {
                 await button.click();
-                await expect(inlinePathTextbox).toHaveCount(0, { timeout: 30_000 });
+                await expect(inlinePathTextbox).toHaveValue(candidate, { timeout: 30_000 });
                 return candidate;
             }
         }
@@ -122,7 +114,7 @@ async function selectDirectoryFromPathBrowser(
         const firstSuggestedText = (await firstSuggested.textContent()) ?? '';
         const selectedPath = firstSuggestedText.match(/\/Users\/[^\s]+/)?.[0] ?? '/Users/leeroy';
         await firstSuggested.click();
-        await expect(inlinePathTextbox).toHaveCount(0, { timeout: 30_000 });
+        await expect(inlinePathTextbox).toHaveValue(selectedPath, { timeout: 30_000 });
         return selectedPath;
     }
 
@@ -308,7 +300,7 @@ test.describe('ui e2e: directory path browser reuse', () => {
             flowDirName: 'connect-daemon-new-session',
         });
 
-        await enableEnhancedSessionWizardInSettings(page, uiBaseUrl);
+        await enableEnhancedSessionWizard({ page, baseUrl: uiBaseUrl });
 
         await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/new`);
         await ensureNewSessionBackendIsReady(page);

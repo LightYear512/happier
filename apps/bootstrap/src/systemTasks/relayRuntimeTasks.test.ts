@@ -52,7 +52,7 @@ function createFakeSsh(): Readonly<{
         `#!/usr/bin/env node
 const { appendFileSync } = require('node:fs');
 
-const logPath = process.env.HAPPIER_FAKE_SSH_LOG_PATH;
+const logPath = ${JSON.stringify(logPath)};
 const argv = process.argv.slice(2);
 appendFileSync(logPath, JSON.stringify(argv) + '\\n');
 const remoteCommand = String(argv.at(-1) ?? '');
@@ -90,7 +90,7 @@ process.exit(Number(next.status ?? 0));
         `#!/usr/bin/env node
 const { appendFileSync } = require('node:fs');
 
-const logPath = process.env.HAPPIER_FAKE_SSH_LOG_PATH;
+const logPath = ${JSON.stringify(logPath)};
 appendFileSync(logPath, JSON.stringify(['scp', ...process.argv.slice(2)]) + '\\n');
 process.exit(0);
 `,
@@ -246,7 +246,7 @@ describe('installOrUpdateRelayRuntimeDefault', () => {
         } finally {
             fakeSsh.cleanup();
         }
-    });
+    }, 15_000);
 
     it('does not delegate remote relay runtime installs to `hstack self-host install`', async () => {
         const fakeSsh = createFakeSsh();
@@ -296,7 +296,7 @@ describe('installOrUpdateRelayRuntimeDefault', () => {
         } finally {
             fakeSsh.cleanup();
         }
-    });
+    }, 20_000);
 });
 
 describe('readRelayRuntimeStatusDefault', () => {

@@ -845,6 +845,7 @@ export const en = {
         copyWithLabel: ({ label }: { label: string }) => `Copy ${label}`,
         copied: 'Copied',
         paste: 'Paste',
+        pasteImage: 'Paste image',
         expand: 'Expand',
         collapse: 'Collapse',
         command: 'Command',
@@ -2123,6 +2124,8 @@ export const en = {
             fileTooLargeTitle: 'File too large',
             fileTooLargeBody: ({ count }: { count: number }) =>
                 `Skipped ${count} ${plural({ count, singular: 'file', plural: 'files' })} that exceed the max attachment size.`,
+            noClipboardImageTitle: 'No clipboard image',
+            noClipboardImageBody: 'Copy an image, then paste it as an attachment.',
         },
     },
 
@@ -3008,6 +3011,18 @@ export const en = {
         },
         display: 'Display',
         displayDescription: 'Control layout and spacing',
+        contentWidth: 'Content width',
+        contentWidthDescription: 'Choose how wide main content can grow',
+        contentWidthOptions: {
+            compact: 'Compact',
+            compactDescription: 'Keep main content capped at 850 px',
+            medium: 'Medium',
+            mediumDescription: 'Allow main content up to 960 px',
+            full: 'Full width',
+            fullDescription: 'Use the available window width',
+        },
+        backdropBlur: 'Backdrop blur',
+        backdropBlurDescription: 'Use frosted background blur behind modals and menus. Disable to improve browser performance.',
         multiPanePanels: 'Right panels',
         multiPanePanelsDescription: 'Show resizable right-side panels for files and source control (web/tablet)',
         sessionsRightPaneDefaultOpen: 'Always show right sidebar in sessions',
@@ -5045,6 +5060,7 @@ export const en = {
                 selectForCommit: 'Select for commit',
                 stageFile: 'Stage file',
                 removeFromSelection: 'Remove from selection',
+                removeFromCommitSelection: 'Remove from commit selection',
                 unstageFile: 'Unstage file',
                 selectionHint: 'Select Included or Pending to enable line selection.',
                 selectedLines: {
@@ -5304,9 +5320,27 @@ export const en = {
         aboutSubtitle: 'Choose where each action is surfaced across the app, voice, and integrations. Unavailable tiles stay visible so you can understand what is blocked by features, privacy, or runtime support.',
         aboutFooter: 'These settings apply globally to your account defaults. Unavailable tiles explain why a target is currently blocked.',
         searchPlaceholder: 'Search actions',
+        detailSearchPlaceholder: 'Search surfaces',
         noResults: 'No actions match your current search.',
+        noTargetsMatch: 'No surfaces match your current search.',
         noDescription: 'No description available yet.',
         requireApproval: 'Require approval',
+        invalidActionTitle: 'Action not found',
+        invalidActionSubtitle: 'This action is no longer available in this build.',
+        configureActionAccessibilityLabel: 'Configure action',
+        approvalHelpTitle: 'Approval modes',
+        approvalHelpBody: '"Ask first" shows a confirmation before this action runs from that surface. "Allowed" lets the action run from that surface without an approval prompt.',
+        status: {
+            allowed: ({ count }: { count: number }) => `${count} allowed`,
+            askFirst: ({ count }: { count: number }) => `${count} ask first`,
+            off: ({ count }: { count: number }) => `${count} off`,
+            unavailable: ({ count }: { count: number }) => `${count} unavailable`,
+        },
+        modes: {
+            off: 'Off',
+            askFirst: 'Ask first',
+            allowed: 'Allowed',
+        },
         sections: {
             app: 'In the app',
             voice: 'Voice',
@@ -6677,6 +6711,133 @@ settingsSession: {
         // Used by the changelog screen
         version: ({ version }: { version: number }) => `Version ${version}`,
         noEntriesAvailable: 'No changelog entries available.',
+    },
+
+    releaseNotes: {
+        viewFullChangelog: 'View full release notes',
+        mediaUnavailable: 'Media unavailable',
+        storyDeck: {
+          dragToDismiss: 'Drag to dismiss',
+          letsGo: "Let's go!",
+          slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+        },
+        defaultTitle: "What's new",
+        onboardingShowcase: {
+                "title": "Welcome to Happier",
+                "subtitle": "Your AI agents, everywhere you work.",
+                "cards": {
+                    "welcome": {
+                        "title": "Welcome to Happier",
+                        "everywhereTitle": "Your AI agents, everywhere you work",
+                        "everywhereBody": "Claude Code, Codex, OpenCode, Pi, and much more: on your phone, tablet, browser, or desktop.",
+                        "cockpitTitle": "Your mobile cockpit",
+                        "cockpitBody": "Chat, files, Git, editor, terminal. Everything you need to build & ship your next project, at your fingertips.",
+                        "existingTitle": "Existing sessions, already there",
+                        "existingBody": "Any Claude, Codex, or OpenCode session running on your machine, open it in Happier, live.",
+                        "voiceTitle": "A voice assistant to brainstorm with",
+                        "voiceBody": "Ask what your agents are doing, approve permission requests, and send messages. Hands-free.",
+                        "reviewTitle": "Review diffs and leave comments",
+                        "reviewBody": "Mark specific lines in files or diffs, pick which notes to send, and hand them straight to an agent.",
+                        "subagentsTitle": "Cross-provider subagents",
+                        "subagentsBody": "Launch Codex subagents from a Claude session. Split work across agents. Route messages between sessions.",
+                        "tuisTitle": "Use your favorite TUIs",
+                        "tuisBody": "Run Claude Code, Codex, or OpenCode in their native terminal UI. Happier captures it and syncs it to every device.",
+                        "inboxTitle": "One inbox. Every session.",
+                        "inboxBody": "All pending approvals, permission requests, and unread activity, across every session and machine, in one place.",
+                        "mcpTitle": "One MCP config. Every provider.",
+                        "mcpBody": "Define MCP servers once. They work across all backends, including providers that don't natively support MCP.",
+                        "controlTitle": "Queue, steer, fork, rollback",
+                        "controlBody": "Queue messages while the agent is busy. Steer a running turn. Fork from any message. Undo if needed.",
+                        "automationsTitle": "Automations",
+                        "automationsBody": "Schedule recurring agent sessions to monitor PRs, check issues, or run any task on a regular cadence.",
+                        "accountsTitle": "Multiple accounts & quota tracking",
+                        "accountsBody": "Link multiple Claude or OpenAI accounts: personal, work, team. Monitor usage for each directly in the app.",
+                        "promptsTitle": "Prompts, skills, and profiles",
+                        "promptsBody": "Reusable prompts, skill bundles, and backend profiles — synced across every session and device.",
+                        "privacyTitle": "Open-source. End-to-end encrypted. Self-hostable.",
+                        "privacyBody": "Your sessions stay private. The source is open. Self-host in one command.",
+                        "petsTitle": "Meet Pets",
+                        "petsBody": "A small companion for the long sessions. Useful? Maybe. Charming? Definitely."
+                    },
+                    "anywhere": {
+                        "title": "Start anywhere. Continue everywhere.",
+                        "wideTitle": "Start anywhere.\nContinue everywhere.",
+                        "body": "Launch a session from anywhere. Follow it live, send messages, and approve permissions from your phone, browser or desktop.",
+                        "alt": "Abstract placeholder image for cross-device agent sessions."
+                    },
+                    "terminalTuis": {
+                        "title": "You love the terminal? We do too!",
+                        "wideTitle": "You love the terminal?\nWe do too!",
+                        "body": "Run Claude Code, Codex, or OpenCode in their native terminal UI. Follow along, send messages, and approve permissions from your phone.",
+                        "alt": "Abstract placeholder image for terminal UI syncing."
+                    },
+                    "cockpit": {
+                        "title": "Everything you need. One tap away.",
+                        "wideTitle": "Everything you need.\nOne tap away",
+                        "body": "Chat, files, Git, editor, terminal. Interact with your agent, browse and edit files, review diffs, manage Git branches, open PRs, and open a live terminal.",
+                        "alt": "Abstract placeholder image for the mobile cockpit."
+                    },
+                    "existingSessions": {
+                        "title": "Existing Claude, Codex, OpenCode sessions? Already there.",
+                        "body": "Browse any Claude, Codex, OpenCode sessions, currently running or not.",
+                        "alt": "Abstract placeholder image for existing provider sessions."
+                    },
+                    "voiceAssistant": {
+                        "title": "A colleague you can talk to",
+                        "wideTitle": "Voice assistant: a colleague you can talk to",
+                        "body": "The voice assistant monitors all your running sessions. Brainstorm your next changes together, approve permissions & much more, hands-free.",
+                        "alt": "Abstract placeholder image for the voice assistant."
+                    },
+                    "reviewComments": {
+                        "title": "Review code & leave comments",
+                        "body": "Browse your agent's changes and diffs. Mark the exact lines you want to address. Send them to an agent in the current session, or a new one.",
+                        "alt": "Abstract placeholder image for review comments."
+                    },
+                    "subagents": {
+                        "title": "One session, multi-provider subagents",
+                        "body": "Start Codex, Claude, or any other subagents in any session. Use the strength of each one and have them all work in the same session, together.",
+                        "alt": "Abstract placeholder image for cross-provider subagents."
+                    },
+                    "inbox": {
+                        "title": "Never lose the thread again",
+                        "body": "Running 10 sessions at once and losing track of what needs your attention? Your inbox surfaces all activity, across every session and machine.",
+                        "alt": "Abstract placeholder image for the global inbox."
+                    },
+                    "mcp": {
+                        "title": "One config. Every provider.",
+                        "wideTitle": "One config.\nEvery provider.",
+                        "body": "Define MCPs once in Happier and they work across all backends, even the ones that don't natively support MCP. Manage skills, prompts & more!",
+                        "alt": "Abstract placeholder image for shared MCP configuration."
+                    },
+                    "queue": {
+                        "title": "Queue, steer, fork, rollback",
+                        "body": "Queue messages while the agent is busy. Steer a running session. Fork from any message. Roll back if things go sideways.",
+                        "alt": "Abstract placeholder image for session control tools."
+                    },
+                    "automations": {
+                        "title": "Your agent, on a schedule",
+                        "body": "Schedule recurring sessions to monitor pull requests, check issues, or run any task on a regular cadence.",
+                        "alt": "Abstract placeholder image for scheduled agent automations."
+                    },
+                    "accounts": {
+                        "title": "Multi-account & quota tracking",
+                        "body": "Link multiple OpenAI or Claude accounts. Monitor usage and quotas for each directly in the app.",
+                        "alt": "Abstract placeholder image for connected accounts and quotas."
+                    },
+                    "privacy": {
+                        "title": "Open-source. End-to-end encrypted.",
+                        "wideTitle": "Open-source.\nEnd-to-end encrypted.",
+                        "body": "Your code, prompts, and session content are encrypted on your device before they reach any server. Private by design. Open by default.",
+                        "alt": "Abstract placeholder image for privacy and self-hosting."
+                    },
+                    "pets": {
+                        "title": "Never feel alone. Meet Pets.",
+                        "wideTitle": "Never feel alone.\nMeet Pets.",
+                        "body": "A small companion that helps you stay on track across sessions. Useful? Maybe. Charming? Definitely.",
+                        "alt": "Abstract placeholder image for Pets."
+                    }
+                }
+            },
     },
 
     terminal: {

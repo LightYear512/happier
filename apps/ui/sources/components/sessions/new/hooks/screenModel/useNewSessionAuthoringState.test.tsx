@@ -20,6 +20,10 @@ vi.mock('@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters', (
 }));
 
 vi.mock('@/sync/domains/state/persistence', () => ({
+    loadWorkspaceReviewCommentsDrafts: () => ({}),
+    saveWorkspaceReviewCommentsDrafts: vi.fn(),
+        loadLocalPetSourcesBySourceKey: () => ({}),
+        saveLocalPetSourcesBySourceKey: vi.fn(),
     saveNewSessionDraft: (...args: unknown[]) => saveNewSessionDraftMock(...args),
     clearNewSessionDraft: (...args: unknown[]) => clearNewSessionDraftMock(...args),
 }));

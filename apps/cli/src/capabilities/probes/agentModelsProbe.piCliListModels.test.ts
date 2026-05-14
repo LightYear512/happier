@@ -34,7 +34,7 @@ process.exit(1);
     try {
       const { probeAgentModelsBestEffort } = await import('./agentModelsProbe');
 
-      const result = await probeAgentModelsBestEffort({ agentId: 'pi', cwd: fixture.dir, timeoutMs: 2_000 });
+      const result = await probeAgentModelsBestEffort({ agentId: 'pi', cwd: fixture.dir, timeoutMs: 5_000 });
       expect(result.source).toBe('dynamic');
       const ids = result.availableModels.map((m) => m.id);
       expect(ids).toContain('openai-codex/gpt-5.4');

@@ -221,10 +221,36 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 }));
 vi.mock('@/hooks/server/useSessionExecutionRunsSupported', () => ({ useSessionExecutionRunsSupported: () => false }));
 vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({ createDefaultActionExecutor: () => ({}) }));
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache', () => ({ resolveServerIdForSessionIdFromLocalCache: resolveServerIdForSessionIdFromLocalCacheSpy }));
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
-    resolvePreferredServerIdForSessionId: (sessionId: string) => resolvePreferredServerIdForSessionIdSpy(sessionId),
-}));
+vi.mock(
+    '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache',
+    async (importOriginal) => {
+        const { createResolveServerIdForSessionIdFromLocalCacheModuleMock } = await import(
+            '@/dev/testkit/mocks/serverScopedRpc'
+        );
+        return createResolveServerIdForSessionIdFromLocalCacheModuleMock({
+            importOriginal,
+            overrides: {
+                resolveServerIdForSessionIdFromLocalCache: (sessionId: string) =>
+                    resolveServerIdForSessionIdFromLocalCacheSpy(sessionId),
+            },
+        });
+    },
+);
+vi.mock(
+    '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId',
+    async (importOriginal) => {
+        const { createResolvePreferredServerIdForSessionIdModuleMock } = await import(
+            '@/dev/testkit/mocks/serverScopedRpc'
+        );
+        return createResolvePreferredServerIdForSessionIdModuleMock({
+            importOriginal,
+            overrides: {
+                resolvePreferredServerIdForSessionId: (sessionId: string) =>
+                    resolvePreferredServerIdForSessionIdSpy(sessionId),
+            },
+        });
+    },
+);
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
     usePreferredServerIdForSession: (sessionId: string) => usePreferredServerIdForSessionSpy(sessionId),
 }));
@@ -280,7 +306,7 @@ vi.mock('@/utils/sessions/terminalSessionDetails', () => ({ getAttachCommandForS
 vi.mock('@/utils/errors/errors', () => ({ HappyError: class HappyError extends Error {} }));
 vi.mock('@/sync/domains/profiles/profileUtils', () => ({ resolveProfileById: () => null }));
 vi.mock('@/components/profiles/profileDisplay', () => ({ getProfileDisplayName: () => 'profile' }));
-vi.mock('@/components/ui/layout/layout', () => ({ layout: { screenPaddingHorizontal: 16 } }));
+vi.mock('@/components/ui/layout/layout', () => ({ layout: { screenPaddingHorizontal: 16 }, useLayoutMaxWidth: () => 1024 }));
 
 describe('/session/[id]/info', () => {
     beforeEach(() => {

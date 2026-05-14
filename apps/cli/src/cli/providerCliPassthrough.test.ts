@@ -1,5 +1,6 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { SpawnSyncReturns } from 'node:child_process';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,9 +15,13 @@ const { resolveWindowsCommandInvocationMock, requireProviderCliLaunchSpecMock, s
   spawnSyncMock: vi.fn(),
 }));
 
-vi.mock('@happier-dev/cli-common/process', () => ({
-  resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
-}));
+vi.mock('@happier-dev/cli-common/process', async () => {
+  const actual = await vi.importActual<typeof import('@happier-dev/cli-common/process')>('@happier-dev/cli-common/process');
+  return {
+    ...actual,
+    resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
+  };
+});
 
 vi.mock('@/runtime/managedTools/requireProviderCliLaunchSpec', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/runtime/managedTools/requireProviderCliLaunchSpec')>();
@@ -86,6 +91,37 @@ afterEach(async () => {
 });
 
 describe('maybePassthroughProviderCliInfoRequest', () => {
+  function successfulSpawnResult(): SpawnSyncReturns<Buffer> {
+    return {
+      pid: 1,
+      output: [],
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
+      status: 0,
+      signal: null,
+    };
+  }
+
+  it('does not native-spawn provider subcommands through the info passthrough path', () => {
+    spawnSyncMock.mockReturnValue(successfulSpawnResult());
+    requireProviderCliLaunchSpecMock.mockReturnValueOnce({
+      source: 'system',
+      resolvedPath: 'codex',
+      command: 'codex',
+      args: [],
+    });
+
+    const handled = maybePassthroughProviderCliInfoRequest({
+      agentId: 'codex',
+      args: ['codex', 'resume', '--all'],
+      processEnv: process.env,
+    });
+
+    expect(handled).toBe(false);
+    expect(requireProviderCliLaunchSpecMock).not.toHaveBeenCalled();
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
   it('runs system node-shebang provider CLIs through the resolved JS runtime', async () => {
     const root = await createTempDir('happier-provider-passthrough-');
     tempDirs.add(root);
@@ -107,6 +143,9 @@ describe('maybePassthroughProviderCliInfoRequest', () => {
 
     process.env.PATH = pathDir;
     process.env.HAPPIER_JS_RUNTIME_PATH = runtimePath;
+    if (process.platform === 'win32') {
+      spawnSyncMock.mockReturnValueOnce(successfulSpawnResult());
+    }
 
     const handled = maybePassthroughProviderCliInfoRequest({
       agentId: 'gemini',
@@ -115,6 +154,17 @@ describe('maybePassthroughProviderCliInfoRequest', () => {
     });
 
     expect(handled).toBe(true);
+    if (process.platform === 'win32') {
+      const [invocation] = resolveWindowsCommandInvocationMock.mock.calls[0] ?? [];
+      expect(invocation).toEqual(expect.objectContaining({ args: ['--help'] }));
+      expect(invocation.command.toLowerCase()).toBe(providerPath.toLowerCase());
+      expect(spawnSyncMock).toHaveBeenCalledWith(
+        invocation.command,
+        ['--help'],
+        expect.objectContaining({ stdio: 'inherit', windowsHide: true }),
+      );
+      return;
+    }
     await expect(readFile(markerPath, 'utf8')).resolves.toContain(providerPath);
   });
 

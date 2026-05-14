@@ -8,7 +8,7 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { writeExecutableShimSync } from '@/testkit/fs/executableShim';
 import { writeTextFileSync } from '@/testkit/fs/fileHelpers';
 import { createTempDirSync, removeTempDirSync } from '@/testkit/fs/tempDir';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { captureConsoleLogAndMuteStdout, captureConsoleText } from '@/testkit/logger/captureOutput';
 
 const { execFileSyncSpy, runtimeState } = vi.hoisted(() => ({
   execFileSyncSpy: vi.fn(() => 'claude help output'),
@@ -90,6 +90,14 @@ function createHelpContext(): CommandContext {
   } satisfies CommandContext;
 }
 
+function createClaudeSubcommandHelpContext(): CommandContext {
+  return {
+    args: ['claude', 'agents', '--help'],
+    rawArgv: [],
+    terminalRuntime: null,
+  } satisfies CommandContext;
+}
+
 describe('happier (default claude) help output', () => {
   it('includes global server selection flags', async () => {
     const root = createTempRoot('happier-claude-help-default-');
@@ -118,6 +126,37 @@ describe('happier (default claude) help output', () => {
       expect(execFileSyncSpy).toHaveBeenCalledWith(
         claudePath,
         ['--help'],
+        expect.objectContaining({
+          encoding: 'utf8',
+          windowsHide: true,
+        }),
+      );
+    } finally {
+      output.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('forwards Claude subcommand context when displaying combined help', async () => {
+    const root = createTempRoot('happier-claude-subcommand-help-');
+    const claudePath = createExecutable(
+      root,
+      process.platform === 'win32' ? 'claude.cmd' : 'claude',
+      process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\n',
+    );
+    process.env.HAPPIER_CLAUDE_PATH = claudePath;
+
+    const exitSpy = createExitSpy();
+    const output = captureConsoleLogAndMuteStdout();
+
+    try {
+      await expect(handleClaudeCliCommand(createClaudeSubcommandHelpContext())).rejects.toThrow('exit:0');
+
+      expect(output.logs.join('\n')).toContain('Claude Code Options');
+      expect(output.logs.join('\n')).toContain('claude agents --help');
+      expect(execFileSyncSpy).toHaveBeenCalledWith(
+        claudePath,
+        ['agents', '--help'],
         expect.objectContaining({
           encoding: 'utf8',
           windowsHide: true,
@@ -299,6 +338,25 @@ describe('happier (default claude) help output', () => {
 
       expect(execFileSyncSpy).not.toHaveBeenCalled();
       expect(output.logs.join('\n')).toContain('HAPPIER_CLAUDE_PATH');
+    } finally {
+      output.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('treats an option after --js-runtime as a missing runtime value', async () => {
+    const exitSpy = createExitSpy();
+    const output = captureConsoleText();
+
+    try {
+      await expect(handleClaudeCliCommand({
+        args: ['claude', '--js-runtime', '--permission-mode', 'default'],
+        rawArgv: [],
+        terminalRuntime: null,
+      })).rejects.toThrow('exit:1');
+
+      expect(output.text()).toContain('Missing value for --js-runtime');
+      expect(execFileSyncSpy).not.toHaveBeenCalled();
     } finally {
       output.restore();
       exitSpy.mockRestore();

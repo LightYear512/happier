@@ -48,14 +48,30 @@ export function installRouteRootCommonModuleMocks(
         return createReactNativeWebMock();
     });
 
-    vi.mock('@/modal', async () => {
+    vi.mock('@/modal', async (importOriginal) => {
         const activeOptions = routeRootModuleState.options;
         if (activeOptions.modal) {
             return await activeOptions.modal();
         }
 
+        const actual = await importOriginal<typeof import('@/modal')>();
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-        return createModalModuleMock().module;
+        const modalMock = createModalModuleMock().module;
+        const modalMockWithUseModal = modalMock as typeof modalMock & {
+            useModal?: typeof actual.useModal;
+        };
+        return {
+            ...actual,
+            ...modalMockWithUseModal,
+            useModal:
+                modalMockWithUseModal.useModal ??
+                (() => ({
+                    state: { modals: [] },
+                    pushModal: vi.fn(),
+                    popModal: vi.fn(),
+                    clearModals: vi.fn(),
+                })),
+        };
     });
 
     vi.mock('expo-router', async () => {

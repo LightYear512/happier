@@ -2867,6 +2867,18 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         },
         display: '顯示',
         displayDescription: '控制版面配置和間距',
+        contentWidth: '內容寬度',
+        contentWidthDescription: '選擇主內容可擴展到的最大寬度',
+        contentWidthOptions: {
+            compact: '緊湊',
+            compactDescription: '將主內容限制在 850 px',
+            medium: '中等',
+            mediumDescription: '允許主內容擴展到 960 px',
+            full: '全寬',
+            fullDescription: '使用可用視窗寬度',
+        },
+        backdropBlur: '背景模糊',
+        backdropBlurDescription: '在彈窗與選單後方使用背景模糊。關閉後可提升瀏覽器效能。',
         multiPanePanels: '右側面板',
         multiPanePanelsDescription: '顯示可調整大小的右側檔案/版本控制面板（Web/平板）',
         sessionsRightPaneDefaultOpen: '在工作階段中一律顯示右側邊欄',
@@ -4315,6 +4327,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
             selectForCommit: '選擇用於提交',
             stageFile: '暫存檔案',
             removeFromSelection: '從選擇中移除',
+            removeFromCommitSelection: '從提交選擇中移除',
             unstageFile: '取消暫存',
             selectionHint: '選擇「已包含」或「待處理」以啟用行選擇。',
             selectedLines: {
@@ -4570,9 +4583,27 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         aboutSubtitle: '選擇每個操作在 app、語音與整合中的呈現位置。不可用的卡片仍會顯示，讓你了解有哪些內容因功能、隱私或執行階段支援而被阻擋。',
         aboutFooter: '這些設定會全域套用到你的帳戶預設。不可用的卡片會說明目標目前為何被阻擋。',
         searchPlaceholder: '搜尋操作',
+        detailSearchPlaceholder: '搜尋介面',
         noResults: '沒有操作符合目前的搜尋。',
+        noTargetsMatch: '沒有介面與目前搜尋相符。',
         noDescription: '尚無描述。',
         requireApproval: '需要核准',
+        invalidActionTitle: '找不到動作',
+        invalidActionSubtitle: '此動作在此版本中不再可用。',
+        configureActionAccessibilityLabel: '設定操作',
+        approvalHelpTitle: '核准模式',
+        approvalHelpBody: '「先詢問」會在此操作從該介面執行前顯示確認。「允許」則讓此操作從該介面執行，而不需要核准提示。',
+        status: {
+            allowed: ({ count }: { count: number }) => `${count} 個允許`,
+            askFirst: ({ count }: { count: number }) => `${count} 個先詢問`,
+            off: ({ count }: { count: number }) => `${count} 個關閉`,
+            unavailable: ({ count }: { count: number }) => `${count} 個不可用`,
+        },
+        modes: {
+            off: '關閉',
+            askFirst: '先詢問',
+            allowed: '允許',
+        },
         sections: {
             app: '在 app 中',
             voice: '語音',
@@ -4941,7 +4972,7 @@ settingsSession: {
               wizardColumnsDisabledSubtitle: '將所有精靈選擇器堆疊在單欄中。',
               wizardPresentationTitle: '精靈選擇器版面',
               wizardPresentationFooter: 'Auto 會將短區段保留為清單，並將長區段切換為可搜尋下拉選單。',
-              wizardPresentationAutoTitle: 'Auto',
+              wizardPresentationAutoTitle: '自動',
               wizardPresentationAutoSubtitle: '讓 Happier 依內容數量選擇最佳版面。',
               wizardPresentationListTitle: '清單',
               wizardPresentationListSubtitle: '直接在精靈中顯示所有列。',
@@ -4949,14 +4980,14 @@ settingsSession: {
               wizardPresentationDropdownSubtitle: '顯示一個可開啟完整選擇器的精簡列。',
           },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: '提示詞個人化',
+              footer: '選擇 Happier 要向新代理工作階段加入哪些內建指令。這不會隱藏代理本身已傳送的選項。',
+              askAgentToRenameSessionsTitle: '要求代理重新命名工作階段',
+              askAgentToRenameSessionsEnabledSubtitle: '提示詞會要求代理設定簡短且具描述性的工作階段標題。',
+              askAgentToRenameSessionsDisabledSubtitle: '提示詞不會要求代理設定標題；仍可手動重新命名。',
+              askAgentToSuggestReplyOptionsTitle: '要求代理建議回覆選項',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: '提示詞會要求代理在有用時提出快速回覆選項。',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: '提示詞不會要求代理加入快速回覆選項。',
           },
           defaultPermissions: {
               title: '預設權限',
@@ -5420,6 +5451,133 @@ settingsSession: {
         // Used by the changelog screen
         version: ({ version }: { version: number }) => `版本 ${version}`,
         noEntriesAvailable: '沒有可用的更新日誌條目。',
+    },
+
+    releaseNotes: {
+        viewFullChangelog: '查看完整版本說明',
+        mediaUnavailable: '媒體不可用',
+        storyDeck: {
+          dragToDismiss: '拖動關閉',
+          letsGo: '開始吧！',
+          slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+        },
+        defaultTitle: '新功能',
+        onboardingShowcase: {
+                "title": "歡迎使用 Happier",
+                "subtitle": "你的 AI 代理，出現在每個工作場景。",
+                "cards": {
+                    "welcome": {
+                        "title": "歡迎使用 Happier",
+                        "everywhereTitle": "你的 AI 代理，出現在每個工作場景",
+                        "everywhereBody": "Claude Code、Codex、OpenCode、Pi，以及更多：手機、平板、瀏覽器或桌面端都能使用。",
+                        "cockpitTitle": "你的行動 cockpit",
+                        "cockpitBody": "聊天、檔案、Git、編輯器、終端機。打造並發布下一個專案所需的一切，都在指尖。",
+                        "existingTitle": "既有工作階段，已經在那裡",
+                        "existingBody": "任何在你機器上執行的 Claude、Codex 或 OpenCode 工作階段，都可以在 Happier 中即時開啟。",
+                        "voiceTitle": "可以一起腦力激盪的語音助理",
+                        "voiceBody": "詢問代理正在做什麼，核准權限請求，並傳送訊息。全程免手動。",
+                        "reviewTitle": "檢視 diff 並留下評論",
+                        "reviewBody": "在檔案或 diff 的特定行做標記，選擇要傳送的備註，並直接交給代理。",
+                        "subagentsTitle": "跨 provider 的 subagents",
+                        "subagentsBody": "從 Claude 工作階段啟動 Codex subagents。把工作拆給多個代理。讓訊息在工作階段之間流轉。",
+                        "tuisTitle": "使用你喜歡的 TUI",
+                        "tuisBody": "在原生終端機 UI 中執行 Claude Code、Codex 或 OpenCode。Happier 會擷取它，並同步到每台裝置。",
+                        "inboxTitle": "一個 inbox。所有工作階段。",
+                        "inboxBody": "所有待核准事項、權限請求與未讀活動，跨所有工作階段和機器，集中在一個地方。",
+                        "mcpTitle": "一個 MCP 設定。所有 provider。",
+                        "mcpBody": "MCP 伺服器只需定義一次。它們可用於所有 backend，包括不原生支援 MCP 的 provider。",
+                        "controlTitle": "排隊、steer、fork、rollback",
+                        "controlBody": "代理忙碌時先排隊訊息。Steer 正在執行的 turn。從任意訊息 fork。需要時回滾。",
+                        "automationsTitle": "自動化",
+                        "automationsBody": "定期排程代理工作階段，用於監控 PR、檢查 issue，或按固定頻率執行任何任務。",
+                        "accountsTitle": "多帳號與配額追蹤",
+                        "accountsBody": "連結多個 Claude 或 OpenAI 帳號：個人、工作、團隊。直接在應用程式中監控每個帳號的使用量。",
+                        "promptsTitle": "Prompts、skills 和 profiles",
+                        "promptsBody": "可重複使用的 prompts、skill bundles 和 backend profiles，在每個工作階段與裝置之間同步。",
+                        "privacyTitle": "開源。端對端加密。可自行託管。",
+                        "privacyBody": "你的工作階段保持私密。原始碼開放。一個指令即可自行託管。",
+                        "petsTitle": "認識 Pets",
+                        "petsBody": "長時間工作階段裡的小夥伴。有用嗎？也許。迷人嗎？當然。"
+                    },
+                    "anywhere": {
+                        "title": "隨時開始。到處繼續。",
+                        "wideTitle": "隨時開始。\n到處繼續。",
+                        "body": "從任何地方啟動工作階段。透過手機、瀏覽器或桌面端即時跟進、傳送訊息並核准權限。",
+                        "alt": "跨裝置代理工作階段的抽象佔位圖。"
+                    },
+                    "terminalTuis": {
+                        "title": "你喜歡終端機？我們也是！",
+                        "wideTitle": "你喜歡終端機？\n我們也是！",
+                        "body": "在原生終端機 UI 中執行 Claude Code、Codex 或 OpenCode。透過手機跟進、傳送訊息並核准權限。",
+                        "alt": "終端機 TUI 同步的抽象佔位圖。"
+                    },
+                    "cockpit": {
+                        "title": "你需要的一切。一點即達。",
+                        "wideTitle": "你需要的一切。\n一點即達",
+                        "body": "聊天、檔案、Git、編輯器、終端機。和代理互動，瀏覽並編輯檔案，檢視 diff，管理 Git 分支，開啟 PR，並開啟即時終端機。",
+                        "alt": "行動 cockpit 的抽象佔位圖。"
+                    },
+                    "existingSessions": {
+                        "title": "既有 Claude、Codex、OpenCode 工作階段？已經在那裡。",
+                        "body": "瀏覽任何 Claude、Codex 或 OpenCode 工作階段，無論目前是否執行。",
+                        "alt": "既有 provider 工作階段的抽象佔位圖。"
+                    },
+                    "voiceAssistant": {
+                        "title": "一位可以交談的同事",
+                        "wideTitle": "語音助手：一位可以交談的同事",
+                        "body": "語音助理會監控所有正在執行的工作階段。一起腦力激盪下一步修改、核准權限，還有更多，全程免手動。",
+                        "alt": "語音助理的抽象佔位圖。"
+                    },
+                    "reviewComments": {
+                        "title": "檢視程式碼並留下評論",
+                        "body": "瀏覽代理的修改和 diff。標記你想處理的精確行。把它們傳送給目前工作階段中的代理，或傳送到一個新工作階段。",
+                        "alt": "檢視評論的抽象佔位圖。"
+                    },
+                    "subagents": {
+                        "title": "一個工作階段，多 provider subagents",
+                        "body": "在任何工作階段中啟動 Codex、Claude 或其他 subagents。運用每一個的優勢，讓它們一起在同一個工作階段中工作。",
+                        "alt": "跨 provider subagents 的抽象佔位圖。"
+                    },
+                    "inbox": {
+                        "title": "再也不會失去脈絡",
+                        "body": "同時執行 10 個工作階段，不知道哪裡需要你關注？Inbox 會顯示所有工作階段和機器上的全部活動。",
+                        "alt": "全域 inbox 的抽象佔位圖。"
+                    },
+                    "mcp": {
+                        "title": "一個設定。所有 provider。",
+                        "wideTitle": "一個設定。\n所有 provider。",
+                        "body": "在 Happier 中定義一次 MCP，它們即可跨所有 backend 工作，甚至包括不原生支援 MCP 的 backend。管理 skills、prompts 等等！",
+                        "alt": "共享 MCP 設定的抽象佔位圖。"
+                    },
+                    "queue": {
+                        "title": "排隊、steer、fork、rollback",
+                        "body": "代理忙碌時先排隊訊息。Steer 正在執行的工作階段。從任意訊息 fork。情況不對就 rollback。",
+                        "alt": "工作階段控制工具的抽象佔位圖。"
+                    },
+                    "automations": {
+                        "title": "你的代理，按排程執行",
+                        "body": "排程週期性工作階段來監控 pull request、檢查 issue，或定期執行任何任務。",
+                        "alt": "排程代理自動化的抽象佔位圖。"
+                    },
+                    "accounts": {
+                        "title": "多帳號與配額追蹤",
+                        "body": "連結多個 OpenAI 或 Claude 帳號。直接在應用程式中監控每個帳號的使用量和配額。",
+                        "alt": "已連結帳號與配額的抽象佔位圖。"
+                    },
+                    "privacy": {
+                        "title": "開源。端對端加密。",
+                        "wideTitle": "開源。\n端對端加密。",
+                        "body": "你的程式碼、prompts 和工作階段內容會先在裝置上加密，才會到達任何伺服器。Private by design. Open by default.",
+                        "alt": "隱私與自行託管的抽象佔位圖。"
+                    },
+                    "pets": {
+                        "title": "別再一個人撐著。認識 Pets。",
+                        "wideTitle": "別再一個人撐著。\n認識 Pets。",
+                        "body": "一個小夥伴，幫助你在多個工作階段之間保持節奏。有用嗎？也許。迷人嗎？當然。",
+                        "alt": "Pets 的抽象佔位圖。"
+                    }
+                }
+            },
     },
 
     terminal: {

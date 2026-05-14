@@ -9,6 +9,11 @@ import { setStdioTtyForTest } from '@/testkit/process/stdio';
 
 let promptAnswers: string[] = [];
 let promptQuestions: string[] = [];
+const { openTtyMock } = vi.hoisted(() => ({
+  openTtyMock: vi.fn(async () => {
+    throw new Error('tty unavailable in unit test');
+  }),
+}));
 
 vi.mock('node:readline', () => ({
   createInterface: () => ({
@@ -19,6 +24,18 @@ vi.mock('node:readline', () => ({
     close: () => {},
   }),
 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+	return {
+	  ...actual,
+	  open: (...args: Parameters<typeof actual.open>) => (
+	    args[0] === '/dev/tty'
+	      ? openTtyMock()
+	      : actual.open(...args)
+	  ),
+	};
+	});
 
 const runTailscaleServeStatusMock = vi.fn<
   (params: Readonly<{ timeoutMs: number; env: NodeJS.ProcessEnv; tailscaleBin: string }>) => Promise<string>
@@ -40,6 +57,7 @@ describe('happier server add reachable URL flow', () => {
     promptAnswers = [];
     promptQuestions = [];
     runTailscaleServeStatusMock.mockReset();
+    openTtyMock.mockClear();
   });
 
   it('offers detected reachable relay addresses when the interactive server URL is local-only', async () => {

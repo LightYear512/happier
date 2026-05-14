@@ -89,7 +89,10 @@ vi.mock('@/components/ui/text/Text', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => (selector: any) => selector({ sessionMessages: {} }),
+    getStorage: () => (selector: any) => selector({
+        localSettings: { uiBackdropBlurEnabled: false },
+        sessionMessages: {},
+    }),
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
@@ -255,6 +258,7 @@ vi.mock('@/components/ui/status/StatusDot', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 920 },
+    useLayoutMaxWidth: () => 920,
 }));
 
 vi.mock('@/constants/Typography', () => ({
@@ -278,10 +282,16 @@ vi.mock('./actionBarLogic', () => ({
     shouldShowPathAndResumeRow: () => false,
 }));
 
-vi.mock('./inputMaxHeight', () => ({
-    computeAgentInputDefaultMaxHeight: () => 200,
-    computeMeasuredPanelInputMaxHeight: () => 200,
-}));
+vi.mock('./inputMaxHeight', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./inputMaxHeight')>();
+    return {
+        ...actual,
+        computeAgentInputDefaultMaxHeight: () => 200,
+        computeAgentInputKeyboardOpenPanelMaxHeight: () => 200,
+        computeAgentInputKeyboardOpenVariableSectionMaxHeight: () => 200,
+        computeMeasuredPanelInputMaxHeight: () => 200,
+    };
+});
 
 vi.mock('./contextWarning', () => ({
     getContextUsageState: () => null,

@@ -55,4 +55,34 @@ describe('vitest config aliases', () => {
         expect(enrichedMarkdownAlias, 'expected enriched markdown to use a node-safe test stub').toBeTruthy();
         expect(enrichedMarkdownAlias?.replacement).toContain('reactNativeEnrichedMarkdownStub.tsx');
     });
+
+    it('stubs react-native-masked-view so node tests do not parse JSX from package .js files', async () => {
+        const module = await import('../../vitest.config');
+        const config = module.default as {
+            resolve?: { alias?: Array<{ find: unknown; replacement: string }> };
+        };
+        const aliasEntries = Array.isArray(config.resolve?.alias)
+            ? config.resolve.alias
+            : [];
+
+        const maskedViewAlias = aliasEntries.find((entry) => entry.find === '@react-native-masked-view/masked-view');
+
+        expect(maskedViewAlias, 'expected masked-view to use a node-safe test stub').toBeTruthy();
+        expect(maskedViewAlias?.replacement).toContain('reactNativeMaskedViewStub.tsx');
+    });
+
+    it('stubs react-native-view-shot so node tests do not parse JSX from package .js files', async () => {
+        const module = await import('../../vitest.config');
+        const config = module.default as {
+            resolve?: { alias?: Array<{ find: unknown; replacement: string }> };
+        };
+        const aliasEntries = Array.isArray(config.resolve?.alias)
+            ? config.resolve.alias
+            : [];
+
+        const viewShotAlias = aliasEntries.find((entry) => entry.find === 'react-native-view-shot');
+
+        expect(viewShotAlias, 'expected react-native-view-shot to use a node-safe test stub').toBeTruthy();
+        expect(viewShotAlias?.replacement).toContain('reactNativeViewShotStub.ts');
+    });
 });

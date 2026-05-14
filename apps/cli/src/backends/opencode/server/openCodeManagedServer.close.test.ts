@@ -24,9 +24,13 @@ vi.mock('@/ui/logger', () => ({
   logger: { debug: vi.fn() },
 }));
 
-vi.mock('@happier-dev/cli-common/process', () => ({
-  resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
-}));
+vi.mock('@happier-dev/cli-common/process', async () => {
+  const actual = await vi.importActual<typeof import('@happier-dev/cli-common/process')>('@happier-dev/cli-common/process');
+  return {
+    ...actual,
+    resolveWindowsCommandInvocation: resolveWindowsCommandInvocationMock,
+  };
+});
 
 vi.mock('@/runtime/managedTools/requireProviderCliLaunchSpec', () => ({
   requireProviderCliLaunchSpec: requireProviderCliLaunchSpecMock,

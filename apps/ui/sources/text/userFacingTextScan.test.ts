@@ -77,6 +77,49 @@ describe('tools/i18n/userFacingTextScan', () => {
         }
     });
 
+    it('ignores style tokens and switch discriminants inside translated user-facing expressions', async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'happier-ui-i18n-scan-'));
+        try {
+            const filePath = path.join(dir, 'Example.tsx');
+            await fs.writeFile(
+                filePath,
+                [
+                    `import { t } from '@/text';`,
+                    '',
+                    'export function Example({ status }: { status: "checking" | "notGranted" }) {',
+                    '  const title = (() => {',
+                    '    switch (status) {',
+                    "      case 'checking':",
+                    "        return t('settings.loading');",
+                    "      case 'notGranted':",
+                    '      default:',
+                    "        return t('settings.default');",
+                    '    }',
+                    '  })();',
+                    '  return (',
+                    '    <Item',
+                    '      title={(',
+                    '        <InlineLabel',
+                    '          title={title}',
+                    '          nameTextStyle={{ fontWeight: Typography.default("semiBold") }}',
+                    '        />',
+                    '      )}',
+                    '    />',
+                    '  );',
+                    '}',
+                    '',
+                ].join('\n'),
+                'utf8'
+            );
+
+            const hits = scanUserFacingStrings({ sourcesRootDir: dir });
+
+            expect(hits).toEqual([]);
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true });
+        }
+    });
+
     it('excludes debug-only dev routes even when sourcesRootDir is relative', async () => {
         const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'happier-ui-i18n-scan-'));
         try {

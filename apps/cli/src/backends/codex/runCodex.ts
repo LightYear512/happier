@@ -44,6 +44,7 @@ import { createCodexAcpRuntime } from './acp/runtime';
 import { createCodexAppServerRuntime } from './appServer/runtime';
 import { resolveConfiguredCodexHome } from './utils/resolveConfiguredCodexHome';
 import { buildCodexAppServerConfigOverrides } from './appServer/buildCodexAppServerConfigOverrides';
+import { reconcileCodexAppServerOverridesBeforeTurn } from './appServer/reconcileCodexAppServerOverridesBeforeTurn';
 import { seedCodexAppServerPendingSessionOverrides } from './appServer/seedPendingSessionOverrides';
 import { SessionRollbackRpcParamsSchema } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -55,6 +56,8 @@ import { initializeBackendApiContext } from '@/agent/runtime/initializeBackendAp
 import { codexLocalLauncher, type CodexLauncherResult } from './codexLocalLauncher';
 import { sendReadyWithPushNotification } from '@/agent/runtime/sendReadyWithPushNotification';
 import { getSessionNotificationTitle } from '@/agent/runtime/readyNotificationContext';
+import { resolveReadyNotificationAssistantText } from '@/agent/runtime/readyNotificationAssistantText';
+import type { ReadyNotificationTurnContext } from '@/agent/runtime/runPermissionModePromptLoop';
 import { createTurnAssistantPreviewTracker } from '@/agent/runtime/turnAssistantPreviewTracker';
 import { applyLocalControlLaunchGating } from '@/agent/localControl/launchGating';
 import {
@@ -139,6 +142,7 @@ export async function runCodex(opts: {
     modelUpdatedAt?: number;
     existingSessionId?: string;
     resume?: string;
+    codexArgs?: string[];
     startingMode?: 'local' | 'remote';
     experimentalCodexAcp?: boolean;
     codexBackendMode?: CodexBackendMode;
@@ -410,6 +414,7 @@ export async function runCodex(opts: {
                     messageQueue,
                     permissionMode: initialPermissionMode,
                     resumeId: resumeIdFromArgs,
+                    codexArgs: opts.codexArgs ?? [],
                 });
             },
         };
@@ -667,7 +672,8 @@ export async function runCodex(opts: {
                 session,
                 messageQueue,
                 permissionMode: initialPermissionMode,
-                resumeId: null,
+                resumeId: resumeIdFromArgs,
+                codexArgs: opts.codexArgs ?? [],
             }));
         if (localResult.type === 'exit') {
             clearInterval(keepAliveInterval);
@@ -679,18 +685,25 @@ export async function runCodex(opts: {
         session.keepAlive(thinking, mode);
     }
 
-    const sendReady = () => {
+    const sendReady = (context?: ReadyNotificationTurnContext) => {
+        const includeAssistantPreviewText =
+            opts.accountSettingsContext?.settings?.notificationsSettingsV1?.readyIncludeMessageText !== false;
         sendReadyWithPushNotification({
             session,
             pushSender: api.push(),
             waitingForCommandLabel: 'Codex',
             logPrefix: '[Codex]',
             sessionTitle: getSessionNotificationTitle(session.getMetadataSnapshot.bind(session)),
-            assistantPreviewText: turnAssistantPreviewTracker.getPreview(),
+            assistantPreviewText: resolveReadyNotificationAssistantText({
+                includeMessageText: includeAssistantPreviewText,
+                explicitAssistantText: turnAssistantPreviewTracker.getPreview(),
+                session,
+                turnToken: context?.turnToken ?? null,
+                startSeqExclusive: context?.startSeqExclusive ?? null,
+            }),
             accountSettings: opts.accountSettingsContext?.settings ?? null,
             settingsSecretsReadKeys: opts.accountSettingsContext?.settingsSecretsReadKeys ?? [],
-            includeAssistantPreviewText:
-                opts.accountSettingsContext?.settings?.notificationsSettingsV1?.readyIncludeMessageText !== false,
+            includeAssistantPreviewText,
             shouldSendPush: () => shouldSendReadyPushNotification(opts.accountSettingsContext?.settings ?? null),
         });
     };
@@ -1338,6 +1351,7 @@ export async function runCodex(opts: {
                     api,
                     permissionMode: currentPermissionMode ?? initialPermissionMode,
                     resumeId: storedSessionIdForResume,
+                    codexArgs: opts.codexArgs ?? [],
                     formatError: formatErrorForUi,
                     launchLocal: codexLocalLauncher,
                 });
@@ -1547,11 +1561,15 @@ export async function runCodex(opts: {
                 continue;
             }
 
+            let readyTurnContext: ReadyNotificationTurnContext | undefined;
             try {
                 const localId =
                     typeof message.mode.localId === 'string' && message.mode.localId
                         ? message.mode.localId
                         : null;
+                const startSeqExclusive = session.getLastObservedMessageSeq();
+                const turnToken = session.beginTurnAssistantTextSnapshot({ startSeqExclusive });
+                readyTurnContext = { turnToken, startSeqExclusive };
                 let resolvedProviderPromptText: string | null = null;
                 const resolveProviderPromptText = async (): Promise<string> => {
                     if (resolvedProviderPromptText !== null) return resolvedProviderPromptText;
@@ -1734,6 +1752,14 @@ export async function runCodex(opts: {
                         } catch (e) {
                             logger.debug('[CodexACP] Failed to sync session mode before prompt (non-fatal)', e);
                         }
+                    } else if (useCodexAppServer) {
+                        await reconcileCodexAppServerOverridesBeforeTurn({
+                            session,
+                            syncOverridesFromMetadata,
+                            sessionModeSync,
+                            configOptionSync,
+                            modelSync,
+                        });
                     }
                     const systemPromptText = startedFreshSessionForTurn
                         ? await resolveFreshSessionSystemPrompt(
@@ -1869,7 +1895,7 @@ export async function runCodex(opts: {
                         pending,
                         queueSize: () => messageQueue.size(),
                         shouldExit,
-                        sendReady,
+                        sendReady: () => sendReady(readyTurnContext),
                     });
                 }
                 logActiveHandles('after-turn');

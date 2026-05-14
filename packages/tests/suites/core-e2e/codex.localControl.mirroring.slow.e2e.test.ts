@@ -123,6 +123,7 @@ setInterval(() => {}, 1000);
     const cliEnv: NodeJS.ProcessEnv = {
       ...process.env,
       CI: '1',
+      HAPPIER_SESSION_AUTOSTART_DAEMON: '0',
       HAPPIER_VARIANT: 'dev',
       HAPPIER_HOME_DIR: cliHome,
       HAPPIER_SERVER_URL: serverBaseUrl,
@@ -161,7 +162,20 @@ setInterval(() => {}, 1000);
     });
 
     try {
-      await waitFor(async () => existsSync(rolloutPath), { timeoutMs: 20_000 });
+      const baseline = await fetchSessionV2(serverBaseUrl, auth.token, sessionId);
+      const baselineAgentStateVersion = baseline.agentStateVersion;
+      await waitFor(async () => {
+        const snap = await fetchSessionV2(serverBaseUrl, auth.token, sessionId);
+        return snap.active === true || (typeof snap.agentStateVersion === 'number' && snap.agentStateVersion > baselineAgentStateVersion);
+      }, { timeoutMs: 45_000 });
+
+      await waitFor(async () => {
+        const snap = await fetchSessionV2(serverBaseUrl, auth.token, sessionId);
+        const agentState = snap.agentState ? (decryptLegacyBase64Normalized(snap.agentState, secret) as any) : null;
+        return agentState?.controlledByUser === true;
+      }, { timeoutMs: 60_000 });
+
+      await waitFor(async () => existsSync(rolloutPath), { timeoutMs: 60_000 });
 
       await waitFor(async () => {
         if (!existsSync(toolTraceFile)) return false;

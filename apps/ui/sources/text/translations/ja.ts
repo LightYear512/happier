@@ -888,6 +888,7 @@ export const ja: TranslationStructure = {
     copy: "コピー",
     copyWithLabel: ({ label }: { label: string }) => `${label} をコピー`,
     paste: "貼り付け",
+    pasteImage: "画像を貼り付け",
     expand: "展開",
     collapse: "折りたたむ",
     command: "コマンド",
@@ -2554,6 +2555,8 @@ localTailscale: {
       fileTooLargeTitle: "ファイルが大きすぎます",
       fileTooLargeBody: ({ count }: { count: number }) =>
         `最大添付サイズを超えるため、${count} 件のファイルをスキップしました。`,
+      noClipboardImageTitle: "クリップボードに画像がありません",
+      noClipboardImageBody: "画像をコピーしてから、添付ファイルとして貼り付けてください。",
     },
   },
 
@@ -3486,6 +3489,19 @@ localTailscale: {
     },
     display: "表示",
     displayDescription: "レイアウトと間隔を調整",
+    contentWidth: "コンテンツ幅",
+    contentWidthDescription: "メインコンテンツの最大幅を選択します",
+    contentWidthOptions: {
+      compact: "コンパクト",
+      compactDescription: "メインコンテンツを850 pxまでに制限します",
+      medium: "中",
+      mediumDescription: "メインコンテンツを960 pxまで許可します",
+      full: "全幅",
+      fullDescription: "利用可能なウィンドウ幅を使用します",
+    },
+    backdropBlur: "背景ぼかし",
+    backdropBlurDescription:
+      "モーダルやメニューの背後に背景ぼかしを適用します。ブラウザー性能を優先する場合は無効にしてください。",
     multiPanePanels: "右パネル",
     multiPanePanelsDescription:
       "ファイルとソース管理のための右側パネルを表示（Web/タブレット）",
@@ -5689,6 +5705,7 @@ localTailscale: {
       selectForCommit: "コミット対象に選択",
       stageFile: "ファイルをステージ",
       removeFromSelection: "選択から削除",
+      removeFromCommitSelection: "コミット選択から削除",
       unstageFile: "ステージ解除",
       selectionHint:
         "行選択を有効にするには「含めた」または「保留中」を選択してください。",
@@ -5978,9 +5995,27 @@ localTailscale: {
       aboutSubtitle: "各アクションをアプリ、音声、統合のどこに表示するかを選択します。利用不可のタイルは表示したままにして、機能、プライバシー、ランタイムのどれでブロックされているかを分かるようにします。",
       aboutFooter: "これらの設定はアカウント既定にグローバルに適用されます。利用不可のタイルは、対象が現在ブロックされている理由を示します。",
       searchPlaceholder: "アクションを検索",
+      detailSearchPlaceholder: "サーフェスを検索",
       noResults: "現在の検索に一致するアクションはありません。",
+      noTargetsMatch: "現在の検索に一致するサーフェスはありません。",
       noDescription: "まだ説明はありません。",
       requireApproval: "承認を必須にする",
+      invalidActionTitle: "アクションが見つかりません",
+      invalidActionSubtitle: "このアクションはこのビルドでは利用できなくなりました。",
+      configureActionAccessibilityLabel: "アクションを設定",
+      approvalHelpTitle: "承認モード",
+      approvalHelpBody: "「先に確認」では、このサーフェスからアクションを実行する前に確認を表示します。「許可」では、このサーフェスから承認プロンプトなしで実行できます。",
+      status: {
+          allowed: ({ count }: { count: number }) => `${count} 許可`,
+          askFirst: ({ count }: { count: number }) => `${count} 先に確認`,
+          off: ({ count }: { count: number }) => `${count} オフ`,
+          unavailable: ({ count }: { count: number }) => `${count} 利用不可`,
+      },
+      modes: {
+          off: "オフ",
+          askFirst: "先に確認",
+          allowed: "許可",
+      },
         sections: {
             app: "アプリ内",
             voice: "音声",
@@ -6403,7 +6438,7 @@ settingsSession: {
         wizardPresentationTitle: "ウィザード選択欄のレイアウト",
         wizardPresentationFooter:
           "Auto は短いセクションをリストのままにし、長いセクションを検索可能なドロップダウンに切り替えます。",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "自動",
         wizardPresentationAutoSubtitle:
           "コンテンツ量に応じて Happier が最適なレイアウトを選びます。",
         wizardPresentationListTitle: "リスト",
@@ -6412,14 +6447,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "完全な選択欄を開くコンパクトな行を表示します。",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'プロンプトのパーソナライズ',
+              footer: '新しいエージェントセッションに Happier が追加する組み込み指示を選びます。エージェントがすでに送信する選択肢は非表示になりません。',
+              askAgentToRenameSessionsTitle: 'エージェントにセッション名の変更を依頼',
+              askAgentToRenameSessionsEnabledSubtitle: 'プロンプトは、短く説明的なセッションタイトルを設定するようエージェントに依頼します。',
+              askAgentToRenameSessionsDisabledSubtitle: 'プロンプトはタイトル設定をエージェントに依頼しません。手動での名前変更は引き続き使えます。',
+              askAgentToSuggestReplyOptionsTitle: 'エージェントに返信候補の提案を依頼',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'プロンプトは、有用な場合にクイック返信候補を提案するようエージェントに依頼します。',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'プロンプトはクイック返信候補の追加をエージェントに依頼しません。',
           },
       defaultPermissions: {
         title: "デフォルト権限",
@@ -7446,6 +7481,133 @@ settingsSession: {
     noEntriesAvailable: "変更履歴はありません。",
   },
 
+  releaseNotes: {
+    viewFullChangelog: "リリースノートをすべて表示",
+    mediaUnavailable: "メディアを利用できません",
+    storyDeck: {
+      dragToDismiss: "ドラッグして閉じる",
+      letsGo: "始めましょう！",
+      slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+    },
+    defaultTitle: "新着情報",
+    onboardingShowcase: {
+                "title": "Happierへようこそ",
+                "subtitle": "あなたのAIエージェントを、働くすべての場所で。",
+                "cards": {
+                    "welcome": {
+                        "title": "Happierへようこそ",
+                        "everywhereTitle": "あなたのAIエージェントを、働くすべての場所で",
+                        "everywhereBody": "Claude Code、Codex、OpenCode、Piなどを、スマートフォン、タブレット、ブラウザ、デスクトップで使えます。",
+                        "cockpitTitle": "モバイル cockpit",
+                        "cockpitBody": "チャット、ファイル、Git、エディタ、ターミナル。次のプロジェクトを作って出荷するために必要なものが、すべて手元にあります。",
+                        "existingTitle": "既存のセッションも、そのまま表示",
+                        "existingBody": "あなたのマシンで動いているClaude、Codex、OpenCodeのセッションを、Happierでライブに開けます。",
+                        "voiceTitle": "一緒に考えられる音声アシスタント",
+                        "voiceBody": "エージェントが何をしているかを聞き、権限リクエストを承認し、メッセージを送信できます。ハンズフリーで。",
+                        "reviewTitle": "diffをレビューしてコメント",
+                        "reviewBody": "ファイルやdiffの特定行をマークし、送るメモを選び、そのままエージェントに渡せます。",
+                        "subagentsTitle": "プロバイダー横断のsubagents",
+                        "subagentsBody": "ClaudeセッションからCodex subagentsを起動できます。作業をエージェント間で分担し、セッション間でメッセージをルーティングできます。",
+                        "tuisTitle": "お気に入りのTUIをそのまま使う",
+                        "tuisBody": "Claude Code、Codex、OpenCodeをネイティブなターミナルUIで実行できます。Happierがそれをキャプチャし、すべてのデバイスへ同期します。",
+                        "inboxTitle": "1つのinbox。すべてのセッション。",
+                        "inboxBody": "すべての保留中の承認、権限リクエスト、未読アクティビティを、すべてのセッションとマシンから1か所に集約します。",
+                        "mcpTitle": "1つのMCP設定。すべてのプロバイダー。",
+                        "mcpBody": "MCPサーバーは一度定義するだけ。MCPをネイティブ対応していないプロバイダーを含め、すべてのbackendで動作します。",
+                        "controlTitle": "キュー、steer、fork、rollback",
+                        "controlBody": "エージェントが忙しい間にメッセージをキューへ。実行中のturnをsteer。任意のメッセージからfork。必要なら元に戻せます。",
+                        "automationsTitle": "自動化",
+                        "automationsBody": "PRの監視、issueの確認、定期タスクの実行のために、エージェントセッションをスケジュールできます。",
+                        "accountsTitle": "複数アカウントとクォータ追跡",
+                        "accountsBody": "個人、仕事、チーム用など複数のClaudeまたはOpenAIアカウントを連携。各アカウントの使用量をアプリ内で確認できます。",
+                        "promptsTitle": "Prompts、skills、profiles",
+                        "promptsBody": "再利用できるprompts、skill bundles、backend profilesを、すべてのセッションとデバイスで同期します。",
+                        "privacyTitle": "オープンソース。エンドツーエンド暗号化。セルフホスト可能。",
+                        "privacyBody": "あなたのセッションはプライベートに保たれます。ソースは公開されています。1コマンドでセルフホストできます。",
+                        "petsTitle": "Petsに会う",
+                        "petsBody": "長いセッションのための小さな相棒。役に立つ？たぶん。魅力的？もちろん。"
+                    },
+                    "anywhere": {
+                        "title": "どこでも始めて、どこでも続ける。",
+                        "wideTitle": "どこでも始めて。\nどこでも続ける。",
+                        "body": "どこからでもセッションを起動できます。スマートフォン、ブラウザ、デスクトップからライブで追跡し、メッセージを送り、権限を承認できます。",
+                        "alt": "デバイス横断のエージェントセッション用の抽象的なプレースホルダー画像。"
+                    },
+                    "terminalTuis": {
+                        "title": "ターミナルが好き？私たちもです！",
+                        "wideTitle": "ターミナルが好き？\n私たちもです！",
+                        "body": "Claude Code、Codex、OpenCodeをネイティブなターミナルUIで実行できます。スマートフォンから追跡し、メッセージを送り、権限を承認できます。",
+                        "alt": "ターミナルTUI同期用の抽象的なプレースホルダー画像。"
+                    },
+                    "cockpit": {
+                        "title": "必要なものを、ワンタップで。",
+                        "wideTitle": "必要なものを。\nワンタップで",
+                        "body": "チャット、ファイル、Git、エディタ、ターミナル。エージェントとやり取りし、ファイルを閲覧・編集し、diffをレビューし、Gitブランチを管理し、PRを開き、ライブターミナルを開けます。",
+                        "alt": "モバイルcockpit用の抽象的なプレースホルダー画像。"
+                    },
+                    "existingSessions": {
+                        "title": "既存のClaude、Codex、OpenCodeセッション？もうあります。",
+                        "body": "実行中かどうかに関係なく、Claude、Codex、OpenCodeのセッションを参照できます。",
+                        "alt": "既存プロバイダーセッション用の抽象的なプレースホルダー画像。"
+                    },
+                    "voiceAssistant": {
+                        "title": "話しかけられる同僚",
+                        "wideTitle": "音声アシスタント：話しかけられる同僚",
+                        "body": "音声アシスタントが実行中のすべてのセッションを監視します。次の変更を一緒に考え、権限を承認し、さらに多くのことをハンズフリーで行えます。",
+                        "alt": "音声アシスタント用の抽象的なプレースホルダー画像。"
+                    },
+                    "reviewComments": {
+                        "title": "コードをレビューしてコメントを残す",
+                        "body": "エージェントの変更とdiffを確認できます。対応したい正確な行をマークし、現在のセッションまたは新しいセッションのエージェントへ送信できます。",
+                        "alt": "レビューコメント用の抽象的なプレースホルダー画像。"
+                    },
+                    "subagents": {
+                        "title": "1つのセッションで、マルチプロバイダーsubagents",
+                        "body": "任意のセッションでCodex、Claude、その他のsubagentsを開始できます。それぞれの強みを活かし、同じセッション内で一緒に作業させられます。",
+                        "alt": "プロバイダー横断subagents用の抽象的なプレースホルダー画像。"
+                    },
+                    "inbox": {
+                        "title": "もう流れを見失わない",
+                        "body": "10個のセッションを同時に動かして、何に注意すべきか見失っていませんか？Inboxが、すべてのセッションとマシンのアクティビティを表示します。",
+                        "alt": "グローバルinbox用の抽象的なプレースホルダー画像。"
+                    },
+                    "mcp": {
+                        "title": "1つの設定。すべてのプロバイダー。",
+                        "wideTitle": "1つの設定。\nすべてのプロバイダー。",
+                        "body": "HappierでMCPを一度定義すれば、MCPをネイティブ対応していないものを含むすべてのbackendで動作します。Skills、promptsなどを管理できます！",
+                        "alt": "共有MCP設定用の抽象的なプレースホルダー画像。"
+                    },
+                    "queue": {
+                        "title": "キュー、steer、fork、rollback",
+                        "body": "エージェントが忙しい間にメッセージをキューに入れられます。実行中のセッションをsteerできます。任意のメッセージからforkできます。うまくいかなければrollbackできます。",
+                        "alt": "セッション制御ツール用の抽象的なプレースホルダー画像。"
+                    },
+                    "automations": {
+                        "title": "エージェントをスケジュールで",
+                        "body": "Pull requestの監視、issueの確認、定期タスクの実行のために、繰り返しセッションをスケジュールできます。",
+                        "alt": "スケジュールされたエージェント自動化用の抽象的なプレースホルダー画像。"
+                    },
+                    "accounts": {
+                        "title": "複数アカウントとクォータ追跡",
+                        "body": "複数のOpenAIまたはClaudeアカウントを連携できます。各アカウントの使用量とクォータをアプリ内で確認できます。",
+                        "alt": "連携アカウントとクォータ用の抽象的なプレースホルダー画像。"
+                    },
+                    "privacy": {
+                        "title": "オープンソース。エンドツーエンド暗号化。",
+                        "wideTitle": "オープンソース。\nエンドツーエンド暗号化。",
+                        "body": "コード、prompts、セッション内容は、サーバーに届く前にあなたのデバイス上で暗号化されます。Private by design. Open by default.",
+                        "alt": "プライバシーとセルフホスト用の抽象的なプレースホルダー画像。"
+                    },
+                    "pets": {
+                        "title": "一人で作業しなくていい。Petsに会おう。",
+                        "wideTitle": "一人で作業しなくていい。\nPetsに会おう。",
+                        "body": "セッションをまたいで集中を保つのを助ける小さな相棒。役に立つ？たぶん。魅力的？もちろん。",
+                        "alt": "Pets用の抽象的なプレースホルダー画像。"
+                    }
+                }
+            },
+  },
+
   terminal: {
     // Used by terminal connection screens
     webBrowserRequired: "Webブラウザが必要です",
@@ -7981,7 +8143,7 @@ settingsSession: {
     codeLabel: "コード",
   },
 
-  artifacts: {
+    artifacts: {
     // Artifacts feature
     title: "アーティファクト",
     countSingular: "1件のアーティファクト",

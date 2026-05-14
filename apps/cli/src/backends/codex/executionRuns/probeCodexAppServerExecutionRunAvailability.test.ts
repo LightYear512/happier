@@ -86,7 +86,7 @@ describe('probeCodexAppServerExecutionRunAvailability', () => {
     tempPaths.push(codex);
 
     expect(probeCodexAppServerExecutionRunAvailability({
-      env: { PATH: dir, HAPPIER_CODEX_PATH: codex } as NodeJS.ProcessEnv,
+      env: { PATH: dir, HAPPIER_CODEX_PATH: codex, HAPPIER_CODEX_APP_SERVER_PROBE_TIMEOUT_MS: '5000' } as NodeJS.ProcessEnv,
     })).toBe(true);
   });
 
@@ -119,6 +119,7 @@ describe('probeCodexAppServerExecutionRunAvailability', () => {
         env: {
           HOME: homeDir,
           HAPPIER_CODEX_APP_SERVER_BIN: '~/bin/codex-app-server',
+          HAPPIER_CODEX_APP_SERVER_PROBE_TIMEOUT_MS: '5000',
         } as NodeJS.ProcessEnv,
       })).toBe(true);
     } finally {
@@ -155,6 +156,7 @@ describe('probeCodexAppServerExecutionRunAvailability', () => {
         cwd,
         env: {
           HAPPIER_CODEX_APP_SERVER_BIN: './bin/codex-app-server',
+          HAPPIER_CODEX_APP_SERVER_PROBE_TIMEOUT_MS: '5000',
         } as NodeJS.ProcessEnv,
       })).toBe(true);
     } finally {

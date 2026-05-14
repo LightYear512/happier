@@ -112,12 +112,6 @@ installPickerCommonModuleMocks({
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
 });
 
-vi.mock('@react-navigation/native', () => ({
-    CommonActions: {
-        setParams: (params: Record<string, unknown>) => ({ type: 'SET_PARAMS', params }),
-    },
-}));
-
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -149,6 +143,7 @@ vi.mock('@/utils/navigation/safeRouterBack', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 920 },
+    useLayoutMaxWidth: () => 920,
 }));
 
 vi.mock('@/constants/Typography', () => ({

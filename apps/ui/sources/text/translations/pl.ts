@@ -928,6 +928,7 @@ export const pl: TranslationStructure = {
     copy: "Kopiuj",
     copyWithLabel: ({ label }: { label: string }) => `Kopiuj ${label}`,
     paste: "Wklej",
+    pasteImage: "Wklej obraz",
     expand: "Rozwiń",
     collapse: "Zwiń",
     command: "Polecenie",
@@ -2291,6 +2292,8 @@ export const pl: TranslationStructure = {
       fileTooLargeTitle: "Plik zbyt duży",
       fileTooLargeBody: ({ count }: { count: number }) =>
         `Pominięto ${count} ${plural({ count, one: "plik", few: "pliki", many: "plików" })}, które przekraczają maksymalny rozmiar załącznika.`,
+      noClipboardImageTitle: "Brak obrazu w schowku",
+      noClipboardImageBody: "Skopiuj obraz, a potem wklej go jako załącznik.",
     },
   },
 
@@ -3235,6 +3238,20 @@ export const pl: TranslationStructure = {
     },
     display: "Wyświetlanie",
     displayDescription: "Kontroluj układ i odstępy",
+    contentWidth: "Szerokość treści",
+    contentWidthDescription:
+      "Wybierz, jak szeroko może rozciągać się główna treść",
+    contentWidthOptions: {
+      compact: "Kompaktowa",
+      compactDescription: "Ogranicz główną treść do 850 px",
+      medium: "Średnia",
+      mediumDescription: "Pozwól głównej treści osiągać 960 px",
+      full: "Pełna szerokość",
+      fullDescription: "Użyj dostępnej szerokości okna",
+    },
+    backdropBlur: "Rozmycie tła",
+    backdropBlurDescription:
+      "Używaj rozmycia tła za modalami i menu. Wyłącz, aby poprawić wydajność przeglądarki.",
     multiPanePanels: "Panele po prawej",
     multiPanePanelsDescription:
       "Pokaż skalowalne panele po prawej stronie dla plików i kontroli wersji (web/tablet)",
@@ -5445,6 +5462,7 @@ export const pl: TranslationStructure = {
       selectForCommit: "Wybierz do commitu",
       stageFile: "Dodaj do stage",
       removeFromSelection: "Usuń z zaznaczenia",
+      removeFromCommitSelection: "Usuń z wyboru do commitu",
       unstageFile: "Usuń ze stage",
       selectionHint:
         "Wybierz Uwzględnione lub Oczekujące, aby włączyć wybór linii.",
@@ -5733,9 +5751,27 @@ export const pl: TranslationStructure = {
         aboutSubtitle: 'Wybierz, gdzie każda akcja ma być widoczna w aplikacji, w głosie i w integracjach. Niedostępne kafelki pozostają widoczne, aby było jasne, co blokują funkcje, prywatność lub obsługa środowiska uruchomieniowego.',
         aboutFooter: 'Te ustawienia obowiązują globalnie jako domyślne dla konta. Niedostępne kafelki wyjaśniają, dlaczego dany cel jest obecnie zablokowany.',
         searchPlaceholder: 'Wyszukaj akcje',
+        detailSearchPlaceholder: 'Szukaj powierzchni',
         noResults: 'Żadne akcje nie pasują do bieżącego wyszukiwania.',
+        noTargetsMatch: 'Żadne powierzchnie nie pasują do bieżącego wyszukiwania.',
         noDescription: 'Opis nie jest jeszcze dostępny.',
         requireApproval: 'Wymagaj zatwierdzenia',
+        invalidActionTitle: 'Nie znaleziono akcji',
+        invalidActionSubtitle: 'Ta akcja nie jest już dostępna w tej wersji.',
+        configureActionAccessibilityLabel: 'Skonfiguruj akcję',
+        approvalHelpTitle: 'Tryby zatwierdzania',
+        approvalHelpBody: '„Najpierw zapytaj” pokazuje potwierdzenie przed uruchomieniem tej akcji z tej powierzchni. „Dozwolone” pozwala uruchamiać akcję z tej powierzchni bez prośby o zatwierdzenie.',
+        status: {
+            allowed: ({ count }: { count: number }) => `${count} dozwolone`,
+            askFirst: ({ count }: { count: number }) => `${count} najpierw zapytaj`,
+            off: ({ count }: { count: number }) => `${count} wyłączone`,
+            unavailable: ({ count }: { count: number }) => `${count} niedostępne`,
+        },
+        modes: {
+            off: 'Wyłączone',
+            askFirst: 'Najpierw zapytaj',
+            allowed: 'Dozwolone',
+        },
         sections: {
             app: 'W aplikacji',
             voice: 'Głos',
@@ -6164,7 +6200,7 @@ settingsSession: {
         wizardPresentationTitle: "Układ selektorów kreatora",
         wizardPresentationFooter:
           "Auto zostawia krótkie sekcje jako listy i przełącza długie sekcje na przeszukiwalne menu rozwijane.",
-        wizardPresentationAutoTitle: "Auto",
+        wizardPresentationAutoTitle: "Automatycznie",
         wizardPresentationAutoSubtitle:
           "Pozwól Happier wybrać najlepszy układ dla ilości treści.",
         wizardPresentationListTitle: "Lista",
@@ -6173,14 +6209,14 @@ settingsSession: {
         wizardPresentationDropdownSubtitle: "Pokaż kompaktowy wiersz otwierający pełny selektor.",
       },
           promptPersonalization: {
-              title: 'Prompt personalization',
-              footer: 'Choose which built-in instructions Happier adds to new agent sessions. This does not hide options an agent already sends.',
-              askAgentToRenameSessionsTitle: 'Ask the agent to rename sessions',
-              askAgentToRenameSessionsEnabledSubtitle: 'The prompt asks agents to set short descriptive session titles.',
-              askAgentToRenameSessionsDisabledSubtitle: 'The prompt does not ask agents to set titles; manual renaming still works.',
-              askAgentToSuggestReplyOptionsTitle: 'Ask the agent to suggest reply options',
-              askAgentToSuggestReplyOptionsEnabledSubtitle: 'The prompt asks agents to propose quick reply options when useful.',
-              askAgentToSuggestReplyOptionsDisabledSubtitle: 'The prompt does not ask agents to add quick reply options.',
+              title: 'Personalizacja promptu',
+              footer: 'Wybierz, które wbudowane instrukcje Happier dodaje do nowych sesji agenta. Nie ukrywa to opcji, które agent już wysyła.',
+              askAgentToRenameSessionsTitle: 'Poproś agenta o zmianę nazw sesji',
+              askAgentToRenameSessionsEnabledSubtitle: 'Prompt prosi agentów o ustawianie krótkich, opisowych tytułów sesji.',
+              askAgentToRenameSessionsDisabledSubtitle: 'Prompt nie prosi agentów o ustawianie tytułów; ręczna zmiana nazwy nadal działa.',
+              askAgentToSuggestReplyOptionsTitle: 'Poproś agenta o sugerowanie odpowiedzi',
+              askAgentToSuggestReplyOptionsEnabledSubtitle: 'Prompt prosi agentów o proponowanie szybkich odpowiedzi, gdy jest to przydatne.',
+              askAgentToSuggestReplyOptionsDisabledSubtitle: 'Prompt nie prosi agentów o dodawanie szybkich odpowiedzi.',
           },
       defaultPermissions: {
         title: "Domyślne uprawnienia",
@@ -7220,6 +7256,133 @@ settingsSession: {
     noEntriesAvailable: "Brak dostępnych wpisów dziennika zmian.",
   },
 
+  releaseNotes: {
+    viewFullChangelog: "Zobacz pełne informacje o wydaniu",
+    mediaUnavailable: "Media niedostępne",
+    storyDeck: {
+      dragToDismiss: "Przeciągnij, aby zamknąć",
+      letsGo: "Zaczynajmy!",
+      slideAnnouncement: ({ title, current, total }: { title: string; current: number; total: number }) => `${title} - ${current} / ${total}`,
+    },
+    defaultTitle: "Co nowego",
+    onboardingShowcase: {
+                "title": "Witamy w Happier",
+                "subtitle": "Twoi agenci AI wszędzie tam, gdzie pracujesz.",
+                "cards": {
+                    "welcome": {
+                        "title": "Witamy w Happier",
+                        "everywhereTitle": "Twoi agenci AI wszędzie tam, gdzie pracujesz",
+                        "everywhereBody": "Claude Code, Codex, OpenCode, Pi i wiele więcej: na telefonie, tablecie, w przeglądarce albo na desktopie.",
+                        "cockpitTitle": "Twój mobilny kokpit",
+                        "cockpitBody": "Czat, pliki, Git, edytor, terminal. Wszystko, czego potrzebujesz, żeby budować i wysyłać kolejny projekt, pod ręką.",
+                        "existingTitle": "Istniejące sesje, już dostępne",
+                        "existingBody": "Każdą sesję Claude, Codex albo OpenCode uruchomioną na Twojej maszynie możesz otworzyć w Happier na żywo.",
+                        "voiceTitle": "Asystent głosowy do wspólnego myślenia",
+                        "voiceBody": "Zapytaj, co robią Twoi agenci, zatwierdzaj prośby o uprawnienia i wysyłaj wiadomości. Bez użycia rąk.",
+                        "reviewTitle": "Przeglądaj diffy i zostawiaj komentarze",
+                        "reviewBody": "Oznacz konkretne linie w plikach albo diffach, wybierz notatki do wysłania i przekaż je prosto agentowi.",
+                        "subagentsTitle": "Subagenci między providerami",
+                        "subagentsBody": "Uruchamiaj subagentów Codex z sesji Claude. Dziel pracę między agentów. Przekazuj wiadomości między sesjami.",
+                        "tuisTitle": "Używaj swoich ulubionych TUI",
+                        "tuisBody": "Uruchamiaj Claude Code, Codex albo OpenCode w ich natywnym terminalowym UI. Happier przechwytuje je i synchronizuje na wszystkie urządzenia.",
+                        "inboxTitle": "Jedna skrzynka. Każda sesja.",
+                        "inboxBody": "Wszystkie oczekujące zatwierdzenia, prośby o uprawnienia i nieprzeczytana aktywność, ze wszystkich sesji i maszyn, w jednym miejscu.",
+                        "mcpTitle": "Jedna konfiguracja MCP. Każdy provider.",
+                        "mcpBody": "Zdefiniuj serwery MCP raz. Działają we wszystkich backendach, także u providerów bez natywnego wsparcia MCP.",
+                        "controlTitle": "Kolejkuj, steruj, fork, rollback",
+                        "controlBody": "Kolejkuj wiadomości, gdy agent jest zajęty. Steruj trwającą turą. Forkuj z dowolnej wiadomości. Cofnij, gdy trzeba.",
+                        "automationsTitle": "Automatyzacje",
+                        "automationsBody": "Planuj cykliczne sesje agentów do monitorowania PR-ów, sprawdzania issue albo regularnego wykonywania dowolnych zadań.",
+                        "accountsTitle": "Wiele kont i śledzenie limitów",
+                        "accountsBody": "Połącz wiele kont Claude albo OpenAI: prywatne, służbowe, zespołowe. Monitoruj użycie każdego bezpośrednio w aplikacji.",
+                        "promptsTitle": "Prompty, skills i profile",
+                        "promptsBody": "Prompty wielokrotnego użytku, pakiety skills i profile backendów, synchronizowane między każdą sesją i urządzeniem.",
+                        "privacyTitle": "Open-source. Szyfrowanie end-to-end. Self-hosting.",
+                        "privacyBody": "Twoje sesje pozostają prywatne. Kod jest otwarty. Uruchom własny serwer jedną komendą.",
+                        "petsTitle": "Poznaj Pets",
+                        "petsBody": "Mały towarzysz na długie sesje. Przydatny? Może. Uroczy? Zdecydowanie."
+                    },
+                    "anywhere": {
+                        "title": "Zacznij gdziekolwiek. Kontynuuj wszędzie.",
+                        "wideTitle": "Zacznij gdziekolwiek.\nKontynuuj wszędzie.",
+                        "body": "Uruchom sesję z dowolnego miejsca. Śledź ją na żywo, wysyłaj wiadomości i zatwierdzaj uprawnienia z telefonu, przeglądarki albo desktopu.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla sesji agentów między urządzeniami."
+                    },
+                    "terminalTuis": {
+                        "title": "Kochasz terminal? My też!",
+                        "wideTitle": "Kochasz terminal?\nMy też!",
+                        "body": "Uruchamiaj Claude Code, Codex albo OpenCode w ich natywnym terminalowym UI. Śledź, wysyłaj wiadomości i zatwierdzaj uprawnienia z telefonu.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla synchronizacji terminalowego TUI."
+                    },
+                    "cockpit": {
+                        "title": "Wszystko, czego potrzebujesz. Jednym stuknięciem.",
+                        "wideTitle": "Wszystko, czego potrzebujesz.\nJednym stuknięciem",
+                        "body": "Czat, pliki, Git, edytor, terminal. Rozmawiaj z agentem, przeglądaj i edytuj pliki, sprawdzaj diffy, zarządzaj gałęziami Git, otwieraj PR-y i terminal na żywo.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla mobilnego kokpitu."
+                    },
+                    "existingSessions": {
+                        "title": "Istniejące sesje Claude, Codex, OpenCode? Już są.",
+                        "body": "Przeglądaj dowolne sesje Claude, Codex albo OpenCode, aktualnie uruchomione lub nie.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla istniejących sesji providerów."
+                    },
+                    "voiceAssistant": {
+                        "title": "Kolega, z którym możesz porozmawiać",
+                        "wideTitle": "Asystent głosowy: kolega, z którym możesz porozmawiać",
+                        "body": "Asystent głosowy monitoruje wszystkie uruchomione sesje. Omawiaj kolejne zmiany, zatwierdzaj uprawnienia i rób znacznie więcej bez użycia rąk.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla asystenta głosowego."
+                    },
+                    "reviewComments": {
+                        "title": "Przeglądaj kod i zostawiaj komentarze",
+                        "body": "Przeglądaj zmiany i diffy agenta. Oznacz dokładne linie, którymi chcesz się zająć. Wyślij je do agenta w bieżącej sesji albo nowej.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla komentarzy przeglądu."
+                    },
+                    "subagents": {
+                        "title": "Jedna sesja, subagenci wielu providerów",
+                        "body": "Uruchamiaj Codex, Claude albo innych subagentów w dowolnej sesji. Wykorzystaj moc każdego z nich i pozwól im pracować razem w tej samej sesji.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla subagentów między providerami."
+                    },
+                    "inbox": {
+                        "title": "Nigdy więcej nie zgub wątku",
+                        "body": "Masz 10 sesji naraz i tracisz z oczu, co wymaga Twojej uwagi? Skrzynka pokazuje całą aktywność ze wszystkich sesji i maszyn.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla globalnej skrzynki."
+                    },
+                    "mcp": {
+                        "title": "Jedna konfiguracja. Każdy provider.",
+                        "wideTitle": "Jedna konfiguracja.\nKażdy provider.",
+                        "body": "Zdefiniuj MCP raz w Happier, a zadziałają we wszystkich backendach, nawet tych bez natywnego wsparcia MCP. Zarządzaj skills, promptami i nie tylko!",
+                        "alt": "Abstrakcyjny obraz zastępczy dla współdzielonej konfiguracji MCP."
+                    },
+                    "queue": {
+                        "title": "Kolejkuj, steruj, fork, rollback",
+                        "body": "Kolejkuj wiadomości, gdy agent jest zajęty. Steruj trwającą sesją. Forkuj z dowolnej wiadomości. Cofnij, jeśli coś pójdzie nie tak.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla narzędzi kontroli sesji."
+                    },
+                    "automations": {
+                        "title": "Twój agent, według harmonogramu",
+                        "body": "Planuj cykliczne sesje do monitorowania pull requestów, sprawdzania issue albo regularnego wykonywania dowolnych zadań.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla zaplanowanych automatyzacji agentów."
+                    },
+                    "accounts": {
+                        "title": "Wiele kont i śledzenie limitów",
+                        "body": "Połącz wiele kont OpenAI albo Claude. Monitoruj użycie i limity każdego bezpośrednio w aplikacji.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla połączonych kont i limitów."
+                    },
+                    "privacy": {
+                        "title": "Open-source. Szyfrowanie end-to-end.",
+                        "wideTitle": "Open-source.\nSzyfrowanie end-to-end.",
+                        "body": "Twój kod, prompty i treść sesji są szyfrowane na urządzeniu, zanim trafią na jakikolwiek serwer. Prywatne z założenia. Otwarte domyślnie.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla prywatności i self-hostingu."
+                    },
+                    "pets": {
+                        "title": "Nigdy nie czuj się sam. Poznaj Pets.",
+                        "wideTitle": "Nigdy nie czuj się sam.\nPoznaj Pets.",
+                        "body": "Mały towarzysz, który pomaga trzymać rytm między sesjami. Przydatny? Może. Uroczy? Zdecydowanie.",
+                        "alt": "Abstrakcyjny obraz zastępczy dla Pets."
+                    }
+                }
+            },
+  },
+
   terminal: {
     // Used by terminal connection screens
     webBrowserRequired: "Wymagana przeglądarka internetowa",
@@ -7755,7 +7918,7 @@ settingsSession: {
       codeLabel: "Kod",
     },
 
-  artifacts: {
+    artifacts: {
     // Artifacts feature
     title: "Artefakty",
     countSingular: "1 artefakt",

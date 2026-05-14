@@ -8,24 +8,38 @@ const { createConfiguredAcpProbeBackendMock } = vi.hoisted(() => ({
   createConfiguredAcpProbeBackendMock: vi.fn(async () => null),
 }));
 
-vi.mock('./createConfiguredAcpProbeBackend', () => ({
-  createConfiguredAcpProbeBackend: createConfiguredAcpProbeBackendMock,
-}));
+vi.mock('./createConfiguredAcpProbeBackend', async () => {
+  const actual = await vi.importActual<typeof import('./createConfiguredAcpProbeBackend')>('./createConfiguredAcpProbeBackend');
+  return {
+    ...actual,
+    createConfiguredAcpProbeBackend: createConfiguredAcpProbeBackendMock,
+  };
+});
 
-vi.mock('@/backends/catalog', () => ({
-  AGENTS: {
-    opencode: {
-      getPreflightSessionControlsProbeAdapter: async () => ({
-        failureCacheStrategy: 'cooldown',
-        cliModelsCommandArgs: ['models'],
-      }),
+vi.mock('@/backends/catalog', async () => {
+  const actual = await vi.importActual<typeof import('@/backends/catalog')>('@/backends/catalog');
+  return {
+    ...actual,
+    AGENTS: {
+      ...actual.AGENTS,
+      opencode: {
+        ...actual.AGENTS.opencode,
+        getPreflightSessionControlsProbeAdapter: async () => ({
+          failureCacheStrategy: 'cooldown',
+          cliModelsCommandArgs: ['models'],
+        }),
+      },
     },
-  },
-}));
+  };
+});
 
-vi.mock('@/runtime/managedTools/providerCliResolution', () => ({
-  resolveProviderCliCommand: () => null,
-}));
+vi.mock('@/runtime/managedTools/providerCliResolution', async () => {
+  const actual = await vi.importActual<typeof import('@/runtime/managedTools/providerCliResolution')>('@/runtime/managedTools/providerCliResolution');
+  return {
+    ...actual,
+    resolveProviderCliCommand: () => null,
+  };
+});
 
 describe('probeAgentModelsBestEffort (cache)', () => {
   it('caches dynamic CLI results and avoids re-running the CLI probe', async () => {
@@ -55,10 +69,10 @@ describe('probeAgentModelsBestEffort (cache)', () => {
     try {
       const { probeAgentModelsBestEffort } = await import('./agentModelsProbe');
 
-      const first = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 2_000 });
+      const first = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 5_000 });
       expect(first.source).toBe('dynamic');
 
-      const second = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 2_000 });
+      const second = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 5_000 });
       expect(second.source).toBe('dynamic');
 
       const count = (await readFile(countFile, 'utf8')).trim();

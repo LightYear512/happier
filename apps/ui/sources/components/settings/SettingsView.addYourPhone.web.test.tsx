@@ -146,6 +146,7 @@ vi.mock('@/hooks/ui/useMultiClick', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1024 },
+    useLayoutMaxWidth: () => 1024,
 }));
 
 vi.mock('@/hooks/ui/useHappyAction', () => ({

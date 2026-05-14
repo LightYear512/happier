@@ -54,6 +54,7 @@ vi.mock('@/components/ui/lists/ItemList', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 720 },
+    useLayoutMaxWidth: () => 720,
 }));
 
 vi.mock('@/components/sessions/new/components/PathSelector', () => ({
@@ -80,11 +81,6 @@ vi.mock('@/utils/sessions/recentPaths', () => ({
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
-vi.mock('@react-navigation/native', () => ({
-    CommonActions: {
-        setParams: (params: Record<string, unknown>) => ({ type: 'SET_PARAMS', payload: { params } }),
-    },
-}));
 installPickerCommonModuleMocks({
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     reactNative: async () =>

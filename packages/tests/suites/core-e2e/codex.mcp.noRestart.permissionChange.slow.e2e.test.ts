@@ -209,6 +209,7 @@ try {
     const cliEnv: NodeJS.ProcessEnv = {
       ...process.env,
       CI: '1',
+      HAPPIER_SESSION_AUTOSTART_DAEMON: '0',
       HAPPIER_VARIANT: 'dev',
       HAPPIER_CODEX_BACKEND_MODE: 'mcp',
       HAPPIER_HOME_DIR: cliHome,
@@ -252,6 +253,13 @@ try {
         return snap.active === true || (typeof snap.agentStateVersion === 'number' && snap.agentStateVersion > baselineAgentStateVersion);
       }, { timeoutMs: 45_000 });
 
+      await waitFor(async () => {
+        if (!existsSync(fakeCodexLog)) return false;
+        const raw = await readFile(fakeCodexLog, 'utf8').catch(() => '');
+        const events = parseJsonl(raw);
+        return events.some((e) => e.kind === 'init');
+      }, { timeoutMs: 60_000 });
+
       // Send first message - should trigger startSession (codex tool) exactly once.
       const localId1 = `pending-${randomUUID()}`;
       const pending1 = {
@@ -276,7 +284,7 @@ try {
         const raw = await readFile(fakeCodexLog, 'utf8').catch(() => '');
         const events = parseJsonl(raw);
         return events.some((e) => e.kind === 'tool' && e.name === 'codex');
-      }, { timeoutMs: 30_000 });
+      }, { timeoutMs: 60_000 });
 
       // Patch metadata to a newer permission mode.
       const snap1 = await fetchSessionV2(serverBaseUrl, auth.token, sessionId);

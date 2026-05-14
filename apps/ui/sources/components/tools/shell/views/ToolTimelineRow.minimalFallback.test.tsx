@@ -48,9 +48,10 @@ vi.mock('@/components/tools/renderers/core/_registry', () => ({
     getToolViewComponent: () => null,
 }));
 
-vi.mock('@/components/tools/shell/presentation/ToolSectionView', () => ({
-    ToolSectionView: ({ children }: any) => React.createElement('ToolSectionView', null, children),
-}));
+vi.mock('@/components/tools/shell/presentation/ToolSectionView', async (importOriginal) => {
+    const { installToolSectionViewModuleMock } = await import('@/dev/testkit/mocks/toolSectionView');
+    return installToolSectionViewModuleMock('host')(importOriginal);
+});
 
 vi.mock('@/components/ui/media/CodeView', () => ({
     CodeView: (props: any) => React.createElement('CodeView', props),

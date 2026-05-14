@@ -1,6 +1,48 @@
+import React from 'react';
+import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('UI testkit mock factories', () => {
+    it('creates a ToolSectionView mock that preserves sibling exports', async () => {
+        const { createToolSectionViewModuleMock } = await import('./toolSectionView');
+        type ToolSectionViewModule = typeof import('@/components/tools/shell/presentation/ToolSectionView');
+        const ToolSectionSpacingProvider: ToolSectionViewModule['ToolSectionSpacingProvider'] = ({ children }) =>
+            React.createElement('ToolSectionSpacingProvider', null, children);
+        const ToolSectionView: ToolSectionViewModule['ToolSectionView'] = React.memo(({ children }) =>
+            React.createElement(React.Fragment, null, children));
+        const actual: ToolSectionViewModule = {
+            ToolSectionSpacingProvider,
+            ToolSectionView,
+        };
+
+        const moduleMock = await createToolSectionViewModuleMock({
+            importOriginal: async <T,>() => actual as T,
+            mode: 'host',
+        });
+
+        expect(moduleMock.ToolSectionSpacingProvider).toBe(ToolSectionSpacingProvider);
+
+        let screen: ReturnType<typeof renderer.create> | undefined;
+        await act(async () => {
+            screen = renderer.create(
+                React.createElement(moduleMock.ToolSectionView, { title: 'Input', fullWidth: true, children: 'Body' }),
+            );
+        });
+        const rendered = screen;
+        if (!rendered) {
+            throw new Error('Expected ToolSectionView mock to render');
+        }
+        const section = rendered.root.findByType('ToolSectionView');
+
+        expect(section.props.title).toBe('Input');
+        expect(section.props.fullWidth).toBe(true);
+        expect(section.children).toEqual(['Body']);
+
+        await act(async () => {
+            rendered.unmount();
+        });
+    });
+
     it('creates a React Native web mock with merged platform and AppState overrides', async () => {
         const { createReactNativeWebMock } = await import('./reactNative');
 
@@ -136,6 +178,21 @@ describe('UI testkit mock factories', () => {
         });
         expect(moduleMock.tLoose('settings.title')).toBe('settings.title');
         expect(moduleMock.getPreferredLanguage()).toBe('en');
+    });
+
+    it('creates a react-navigation native mock with focus hooks and CommonActions', async () => {
+        const { createReactNavigationNativeMock } = await import('./reactNavigation');
+
+        const moduleMock = createReactNavigationNativeMock({
+            isFocused: false,
+        });
+
+        expect(moduleMock.useIsFocused()).toBe(false);
+        expect(moduleMock.CommonActions.setParams({ id: 'abc' })).toEqual({
+            type: 'SET_PARAMS',
+            payload: { params: { id: 'abc' } },
+        });
+        expect(typeof moduleMock.useFocusEffect).toBe('function');
     });
 
     it('creates a text module mock with distinct tLoose and language overrides', async () => {
@@ -531,9 +588,14 @@ describe('UI testkit mock factories', () => {
         expect(installedColors?.text).toBe('#abcdef');
     });
 
-    it('installs importOriginal-based vi.mock factories for storage and sync ops modules', async () => {
+    it('installs importOriginal-based vi.mock factories for storage, persistence, sync ops, and server-scope resolver modules', async () => {
         const { installPartialStorageModuleMock } = await import('./storage');
+        const { installPersistenceModuleMock } = await import('./persistence');
         const { installSyncOpsModuleMock } = await import('./syncOps');
+        const {
+            installResolvePreferredServerIdForSessionIdModuleMock,
+            installResolveServerIdForSessionIdFromLocalCacheModuleMock,
+        } = await import('./serverScopedRpc');
 
         const storageModule = await installPartialStorageModuleMock({
             useSetting: () => 'mock-setting',
@@ -541,6 +603,13 @@ describe('UI testkit mock factories', () => {
             ({
                 useSetting: () => 'actual-setting',
                 useAllMachines: () => ['machine-a'],
+            }) as any);
+        const persistenceModule = await installPersistenceModuleMock({
+            loadSettings: () => ({ settings: { analyticsOptOut: true }, version: null }),
+        })(async () =>
+            ({
+                loadSettings: () => ({ settings: { analyticsOptOut: false }, version: null }),
+                loadLocalPetSourcesBySourceKey: () => ({}),
             }) as any);
         const syncOpsModule = await installSyncOpsModuleMock({
             sessionAbort: vi.fn(async (_sessionId: string) => {}),
@@ -551,14 +620,35 @@ describe('UI testkit mock factories', () => {
                     throw new Error('expected override');
                 }),
             }) as any);
+        const resolveServerModule = await installResolveServerIdForSessionIdFromLocalCacheModuleMock({
+            resolveServerIdForSessionIdFromLocalCache: vi.fn(() => 'server-cache'),
+        })(async () =>
+            ({
+                resolveServerIdForSessionIdFromLocalCache: vi.fn(() => null),
+                resolveServerIdForSessionIdFromLocalState: vi.fn(() => null),
+            }) as any);
+        const resolvePreferredModule = await installResolvePreferredServerIdForSessionIdModuleMock({
+            resolvePreferredServerIdForSessionId: vi.fn(() => 'server-owned'),
+        })(async () =>
+            ({
+                resolvePreferredServerIdForSessionId: vi.fn(() => null),
+            }) as any);
 
         expect(storageModule.useSetting('agentInputEnterToSend')).toBe('mock-setting');
         expect(storageModule.useAllMachines()).toEqual(['machine-a']);
+        const loadedSettings = persistenceModule.loadSettings() as {
+            settings: { analyticsOptOut: boolean };
+        };
+        expect(loadedSettings.settings.analyticsOptOut).toBe(true);
+        expect(persistenceModule.loadLocalPetSourcesBySourceKey()).toEqual({});
 
         await syncOpsModule.sessionAbort('session-1');
 
         expect(syncOpsModule.machinePreviewEnv).toBeTypeOf('function');
         expect(vi.mocked(syncOpsModule.sessionAbort)).toHaveBeenCalledWith('session-1');
+        expect(resolveServerModule.resolveServerIdForSessionIdFromLocalCache('session-1')).toBe('server-cache');
+        expect(resolveServerModule.resolveServerIdForSessionIdFromLocalState({}, 'session-1')).toBeNull();
+        expect(resolvePreferredModule.resolvePreferredServerIdForSessionId('session-1')).toBe('server-owned');
     });
 
     it('creates a capturing FlashList mock that stores props, renders rows, and assigns ref handles', async () => {

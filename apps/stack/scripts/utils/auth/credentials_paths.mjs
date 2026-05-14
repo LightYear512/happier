@@ -1,11 +1,49 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileHasContent } from '../fs/file_has_content.mjs';
 
 const SERVER_ID_SAFE_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const require = createRequire(import.meta.url);
+
+let protocolComparableKeyFactory;
+function getProtocolComparableKeyFactory() {
+  if (protocolComparableKeyFactory !== undefined) return protocolComparableKeyFactory;
+  try {
+    const protocol = require('@happier-dev/protocol');
+    protocolComparableKeyFactory =
+      typeof protocol?.createServerUrlComparableKey === 'function' ? protocol.createServerUrlComparableKey : null;
+  } catch {
+    protocolComparableKeyFactory = null;
+  }
+  return protocolComparableKeyFactory;
+}
 
 function normalizeServerUrl(url) {
   return String(url ?? '').trim().replace(/\/+$/, '');
+}
+
+function safeCreateComparableServerUrlKey(url) {
+  const normalized = normalizeServerUrl(url);
+  if (!normalized) return '';
+  const protocolFactory = getProtocolComparableKeyFactory();
+  if (protocolFactory) {
+    try {
+      return protocolFactory(normalized);
+    } catch {
+      // fall through to local normalization
+    }
+  }
+  try {
+    const parsed = new URL(normalized);
+    const protocol = parsed.protocol.toLowerCase();
+    const host = parsed.hostname.toLowerCase();
+    const port = parsed.port ? `:${parsed.port}` : '';
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return `${protocol}//${host}${port}${pathname}`;
+  } catch {
+    return '';
+  }
 }
 
 function normalizeLoopbackHost(rawHost) {
@@ -44,6 +82,7 @@ function readStackCliSettingsSnapshot({ cliHomeDir }) {
 function profileMatchesServerUrl(profile, serverUrl) {
   const target = normalizeServerUrl(serverUrl);
   if (!target || !profile || typeof profile !== 'object') return false;
+  const targetComparable = safeCreateComparableServerUrlKey(target);
 
   const values = [
     profile.serverUrl,
@@ -53,7 +92,12 @@ function profileMatchesServerUrl(profile, serverUrl) {
     .map((value) => normalizeServerUrl(value))
     .filter(Boolean);
 
-  return values.some((value) => value === target);
+  return values.some((value) => {
+    if (value === target) return true;
+    const comparable = safeCreateComparableServerUrlKey(value);
+    if (!comparable || !targetComparable) return false;
+    return comparable === targetComparable;
+  });
 }
 
 export function resolvePreferredStackServerIdFromCliSettings({ cliHomeDir, serverUrl = '' } = {}) {
@@ -101,7 +145,7 @@ function hasExplicitServerContext({ serverUrl = '', env = process.env }) {
 }
 
 function deriveServerIdFromUrl(url) {
-  const normalized = normalizeServerUrl(url);
+  const normalized = safeCreateComparableServerUrlKey(url) || normalizeServerUrl(url);
   let h = 2166136261;
   for (let i = 0; i < normalized.length; i += 1) {
     h ^= normalized.charCodeAt(i);

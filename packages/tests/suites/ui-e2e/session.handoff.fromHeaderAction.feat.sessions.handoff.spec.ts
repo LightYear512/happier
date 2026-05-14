@@ -10,9 +10,11 @@ import { fetchJson } from '../../src/testkit/http';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
 import { startCliAuthLoginForTerminalConnect, type StartedCliTerminalConnect } from '../../src/testkit/uiE2e/cliTerminalConnect';
+import { approveTerminalConnect } from '../../src/testkit/uiE2e/approveTerminalConnect';
 import { createSessionFromNewSessionComposer } from '../../src/testkit/uiE2e/createSessionFromNewSessionComposer';
-import { gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
+import { gotoDomContentLoadedWithPathFallback, gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 import { spawnSessionFromDaemon } from '../../src/testkit/uiE2e/spawnSessionFromDaemon';
+import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAccountReadyForConnect';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const uiWebExportTimeoutMs = process.env.HAPPIER_E2E_UI_WEB_EXPORT_TIMEOUT_MS ?? '900000';
@@ -189,6 +191,7 @@ async function connectTerminalForHome(params: {
     cliHomeDir: params.cliHomeDir,
     serverUrl: params.serverBaseUrl,
     webappUrl: params.uiBaseUrl,
+    connectUrlTimeoutMs: 180_000,
     env: {
       ...process.env,
       HOME: params.cliHomeDir,
@@ -204,17 +207,14 @@ async function connectTerminalForHome(params: {
       connectUrl: cliLogin.connectUrl,
       uiBaseUrl: params.uiBaseUrl,
     });
-    await gotoDomContentLoadedWithRetries(params.page, connectUrlForBrowser);
-    const approveButton = params.page.getByTestId('terminal-connect-approve');
-    await expect(approveButton).toHaveCount(1, { timeout: 60_000 });
-    await expect(approveButton).toBeEnabled({ timeout: 60_000 });
-    await approveButton.click({ noWaitAfter: true });
+    await gotoDomContentLoadedWithPathFallback(params.page, connectUrlForBrowser, '/terminal/connect', 180_000);
+    await approveTerminalConnect({ page: params.page });
     await cliLogin.waitForSuccess();
   } finally {
     await cliLogin.stop().catch(() => {});
   }
 
-  await gotoDomContentLoadedWithRetries(params.page, `${params.uiBaseUrl}/`);
+  await gotoDomContentLoadedWithPathFallback(params.page, `${params.uiBaseUrl}/`, '/', 180_000);
 }
 
 async function spawnClaudeSessionInWorkspace(params: Readonly<{
@@ -311,8 +311,7 @@ test.describe('ui e2e: session handoff from header action menu via direct peer',
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
-    await page.getByTestId('welcome-create-account').click();
-    await expect(page.getByTestId('session-getting-started-kind-connect_machine')).not.toHaveCount(0, { timeout: 120_000 });
+    await ensureAccountReadyForConnect({ page, timeoutMs: 120_000 });
 
     const sourceDir = resolve(join(suiteDir, 't1-source'));
     const targetDir = resolve(join(suiteDir, 't1-target'));
@@ -512,8 +511,7 @@ test.describe('ui e2e: session handoff from header action menu via forced server
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
-    await page.getByTestId('welcome-create-account').click();
-    await expect(page.getByTestId('session-getting-started-kind-connect_machine')).not.toHaveCount(0, { timeout: 120_000 });
+    await ensureAccountReadyForConnect({ page, timeoutMs: 120_000 });
 
     const sourceDir = resolve(join(suiteDir, 't1-source'));
     const targetDir = resolve(join(suiteDir, 't1-target'));
@@ -709,8 +707,7 @@ test.describe('ui e2e: session handoff failure recovery from header action menu'
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
-    await page.getByTestId('welcome-create-account').click();
-    await expect(page.getByTestId('session-getting-started-kind-connect_machine')).not.toHaveCount(0, { timeout: 120_000 });
+    await ensureAccountReadyForConnect({ page, timeoutMs: 120_000 });
 
     const sourceDir = resolve(join(suiteDir, 't1-source'));
     const targetDir = resolve(join(suiteDir, 't1-target'));

@@ -80,6 +80,7 @@ vi.mock('@/components/ui/buttons/RoundButton', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1024 },
+    useLayoutMaxWidth: () => 1024,
 }));
 
 vi.mock('@/auth/flows/qrStart', () => ({

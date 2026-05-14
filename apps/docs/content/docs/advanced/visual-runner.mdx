@@ -1,0 +1,340 @@
+---
+title: Visual Runner
+description: Proposed AI-native browser automation runner for visual feedback, screenshots, traces, and user-visible verification artifacts.
+---
+
+Visual Runner is a proposed AI-native execution surface for browser-based development feedback.
+
+It is not a generic embedded WebView preview. The goal is to let an agent open and operate a real browser, collect visual and runtime evidence, and show that evidence to the user as part of the Happier session.
+
+## Goal
+
+Visual Runner should let an agent:
+
+- start or connect to a local development server
+- open a browser in an isolated runtime context
+- click, type, navigate, scroll, and inspect the page
+- collect screenshots, accessibility snapshots, console output, network summaries, and Playwright traces
+- return stable artifacts that the user can view from the session transcript
+- later expose the same run through a Happier visual panel
+
+The first version should be delivered as an external runner plus MCP server, not as a deep Happier core change. Happier is moving quickly, so the safest path is to prove the workflow outside core first and then upstream the smallest stable integration points.
+
+## Non-goals
+
+The MVP should not try to provide:
+
+- a general-purpose browser tab for manual browsing
+- a native mobile WebView replacement for browser automation
+- real-time video streaming as the default viewing mode
+- access to a user's real Chrome profile by default
+- unrestricted access to external URLs or local network services
+
+Real-time viewing can be added later after the screenshot, trace, artifact, and security model is stable.
+
+## Architecture
+
+The initial implementation is a separate package named `@happier-dev/visual-runner`, with a `happier-visual-runner` executable.
+
+```text
+Agent session
+  -> MCP tools: visual.*
+    -> happier-visual-runner
+      -> Playwright browser context
+      -> artifact store
+      -> local dashboard
+    -> Happier transcript artifacts
+```
+
+The runner owns browser lifecycle, Playwright integration, artifact retention, and security policy. Happier only needs to treat the returned screenshots and trace links as user-visible artifacts during the first phase.
+
+## Current implementation slice
+
+This PR starts with an external runner package plus a real browser execution path, while keeping Happier core integration limited to docs and MCP quick install.
+
+Implemented now:
+
+- `@happier-dev/visual-runner` workspace package and `happier-visual-runner mcp` executable
+- MCP stdio server wiring through the official MCP SDK
+- conservative URL policy resolution for loopback and explicitly allowlisted origins
+- text artifact redaction for authorization, cookie, and common token fields
+- session metadata tools: `visual.create_session`, `visual.get_session`, and `visual.close_session`
+- real Playwright Chromium launch on first `visual.navigate`
+- `visual.navigate` for allowed URLs
+- `visual.type` and `visual.click` for deterministic target interaction
+- `visual.inspect` for current URL, title, and body text
+- `visual.get_console` and `visual.get_network` for runtime evidence
+- `visual.screenshot` for PNG screenshot artifacts
+- `visual.get_trace` for Playwright trace ZIP artifacts
+- `visual.get_dashboard` for a localhost artifact dashboard URL
+- runner-local artifact store with TTL and quota pruning
+- visual e2e coverage that drives the runner through MCP stdio, opens a real local page, validates screenshot and trace artifacts, downloads an artifact through the dashboard, and checks console/network evidence
+- Happier MCP quick-install preset for the external runner package
+
+Still planned for follow-up PRs:
+
+- natural-language `visual.act`
+- accessibility snapshot artifacts
+- richer action timeline tools
+- first-class transcript artifact rendering
+
+## Industry baseline
+
+The runner should reuse Playwright rather than reimplement browser automation.
+
+The baseline capabilities to build around are:
+
+- Playwright MCP for LLM-facing browser tools
+- Playwright traces for action timelines, DOM snapshots, screenshots, console events, and network events
+- Playwright accessibility snapshots for selector-light interactions
+
+The Happier-specific value is not browser automation itself. It is the session identity, policy layer, artifact lifecycle, and user-visible collaboration flow around those browser runs.
+
+## Implemented Tool Surface
+
+The first MCP tool set stays small and deterministic:
+
+```ts
+visual.create_session({
+  cwd,
+  policy?,
+})
+
+visual.get_session({ sessionId })
+visual.close_session({ sessionId })
+visual.resolve_url_policy({ url, policy? })
+visual.redact_text_artifact({ text })
+visual.navigate({ sessionId, url })
+visual.type({ sessionId, target, text })
+visual.click({ sessionId, target })
+visual.inspect({ sessionId })
+visual.get_console({ sessionId })
+visual.get_network({ sessionId })
+visual.screenshot({ sessionId })
+visual.get_trace({ sessionId })
+visual.get_dashboard({ sessionId })
+```
+
+`visual.act` remains a planned AI-native layer. It should accept a natural-language interaction target and let the runner resolve that target through Playwright locators, accessibility snapshots, and page state.
+
+## Session and artifact contract
+
+The runner should not return long-lived raw filesystem paths as its main contract. It should return stable references with explicit type, size, and expiry metadata.
+
+```ts
+type VisualSession = {
+  id: string;
+  cwd: string;
+  createdAt: string;
+  status: "starting" | "running" | "failed" | "closed";
+  policy: VisualPolicy;
+};
+
+type VisualStep = {
+  id: string;
+  sessionId: string;
+  action: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: "ok" | "error";
+  screenshotRef?: ArtifactRef;
+  a11ySnapshotRef?: ArtifactRef;
+  consoleRef?: ArtifactRef;
+  networkRef?: ArtifactRef;
+  traceRef?: ArtifactRef;
+  error?: VisualError;
+};
+
+type ArtifactRef = {
+  id: string;
+  kind: "screenshot" | "trace" | "console" | "network" | "a11y";
+  mimeType: string;
+  createdAt: string;
+  expiresAt: string;
+  sizeBytes: number;
+};
+```
+
+The runner may expose local URLs for immediate viewing, but those URLs should be derived from artifact ids. The artifact id is the durable reference.
+
+## Security defaults
+
+Visual Runner expands what an agent can see and operate, so the default policy must be conservative.
+
+Required MVP defaults:
+
+- allow `localhost`, `127.0.0.1`, and `[::1]`
+- deny non-loopback URLs unless explicitly allowlisted
+- use a fresh browser context per visual session
+- do not use the user's real browser profile by default
+- redact cookies, auth headers, local storage values, and common token fields from textual artifacts
+- disable camera, microphone, clipboard, downloads, and file uploads unless explicitly approved
+- enforce artifact TTL and maximum disk quota
+- return structured error codes for policy denials, timeouts, navigation failures, and browser crashes
+
+External URL access, persistent profiles, downloads, uploads, and device permissions should be opt-in policy choices.
+
+## Failure model
+
+Tools should fail with stable error codes rather than generic messages.
+
+Minimum error codes:
+
+- `policy_denied`
+- `session_not_found`
+- `browser_launch_failed`
+- `browser_crashed`
+- `navigation_timeout`
+- `action_timeout`
+- `target_not_found`
+- `dev_server_unreachable`
+- `artifact_write_failed`
+- `artifact_expired`
+
+Every error should include the visual session id, step id when available, and a short remediation hint.
+
+## Testing matrix
+
+The runner should ship with tests before any Happier core integration.
+
+Minimum coverage:
+
+- MCP schema validation for every tool
+- loopback URL allow and external URL deny behavior
+- browser context isolation between sessions
+- screenshot artifact creation, lookup, expiry, and cleanup
+- trace artifact creation
+- console and network redaction
+- browser crash recovery
+- unreachable dev server handling
+- action timeout handling
+- transcript-friendly artifact output
+- no-core-change smoke test proving the runner can work as a normal Happier-managed MCP server
+
+Integration tests should use real Playwright browser contexts. Unit tests can cover schema, policy, redaction, and retention logic.
+
+## Phased delivery
+
+### Phase 1: External runner
+
+Build `@happier-dev/visual-runner` outside Happier core.
+
+Deliverables:
+
+- npm package or local binary
+- MCP server exposing `visual.*` tools
+- Playwright session manager
+- artifact store with TTL and quota
+- local dashboard for artifact viewing
+- README with a Happier MCP configuration example
+
+The Happier side should only need a normal MCP server entry, for example:
+
+```json
+{
+  "mcpServers": {
+    "visual": {
+      "command": "happier-visual-runner",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Phase 2: Happier MCP preset PR
+
+After the external runner proves useful, open a small Happier PR that adds a curated MCP quick-install preset.
+
+PR scope:
+
+- add a `Visual Runner` preset to the MCP quick-install catalog
+- document install prerequisites
+- keep the runner external
+- do not add new protocol events or UI panels yet
+
+Acceptance criteria:
+
+- users can install or configure the runner through Happier's MCP settings
+- the new preset appears in MCP preview
+- tests cover preset resolution and validation
+
+### Phase 3: Artifact integration PR
+
+Once the artifact contract is stable, open a second Happier PR for first-class artifact display.
+
+PR scope:
+
+- recognize visual artifact references in transcript output
+- render screenshots as attachments or rich transcript media
+- link trace artifacts to the runner dashboard
+- preserve backward compatibility with plain markdown links
+
+Acceptance criteria:
+
+- sessions show screenshots returned by the runner without manual file handling
+- trace links remain stable for the artifact TTL
+- expired artifacts produce a clear user-facing state
+
+### Phase 4: Visual panel PR
+
+After transcript artifacts are reliable, add a dedicated visual panel.
+
+PR scope:
+
+- session-side `Visual` panel
+- step timeline
+- latest screenshot
+- console and network summaries
+- user-visible trace link
+- optional "open dashboard" action
+
+Acceptance criteria:
+
+- the panel can subscribe to runner state without blocking normal session rendering
+- the panel degrades cleanly when the runner is offline
+- mobile and desktop layouts remain usable
+
+### Phase 5: Native protocol evaluation
+
+Only after the above phases should Happier consider native protocol events.
+
+Possible events:
+
+- `visualSession.created`
+- `visualSession.updated`
+- `visualStep.completed`
+- `visualArtifact.created`
+- `visualArtifact.expired`
+
+Native protocol support should only be added if the MCP-plus-artifact model proves insufficient.
+
+## PR guidance
+
+Keep each PR narrow.
+
+Recommended PR order:
+
+1. external runner repository or package
+2. Happier docs page for the runner and MCP setup
+3. Happier MCP quick-install preset
+4. transcript artifact rendering
+5. visual panel
+6. native protocol, only if required
+
+Avoid combining the runner, UI panel, artifact protocol, and core protocol changes in a single PR. The risk is too high while Happier is iterating quickly.
+
+Each PR should include:
+
+- a clear user workflow
+- tests for the changed package
+- no provider-specific branching in shared code
+- no changes to provider registries unless the feature needs provider-specific behavior
+- a rollback path that leaves normal Happier sessions unaffected
+
+## Open questions
+
+- Should the runner live under the Happier organization or remain a third-party integration until the API stabilizes?
+- Should artifact storage be runner-local only, or should selected artifacts sync through the Happier relay server?
+- Which approval level should be required for external URL access?
+- Should persistent browser profiles ever be supported, and if so, how should profile selection be gated?
+- How long should visual artifacts be retained by default?

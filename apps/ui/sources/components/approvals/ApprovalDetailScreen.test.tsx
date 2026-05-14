@@ -272,6 +272,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionI
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 960 },
+    useLayoutMaxWidth: () => 960,
 }));
 
 describe('ApprovalDetailScreen', () => {

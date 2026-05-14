@@ -1,7 +1,8 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import * as React from 'react';
-import { StyleSheet as ReactNativeStyleSheet, View } from 'react-native';
+import { View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 export type SurfaceGradient = Readonly<{
     colors: readonly [string, string, ...string[]];
@@ -36,7 +37,7 @@ export const GradientSurface = React.memo(function GradientSurface(props: Gradie
                     colors={props.gradient.colors}
                     start={props.gradient.start}
                     end={props.gradient.end}
-                    style={ReactNativeStyleSheet.absoluteFill}
+                    style={StyleSheet.absoluteFill}
                 />
             ) : null}
             {props.children}

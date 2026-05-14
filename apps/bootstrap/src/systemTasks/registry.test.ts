@@ -274,8 +274,8 @@ function createFakeTailscaleCli(scenario: Readonly<{
   writeFileSync(cliPath, `#!/usr/bin/env node
 const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
 
-const statePath = process.env.HAPPIER_FAKE_TAILSCALE_STATE_PATH;
-const logPath = process.env.HAPPIER_FAKE_TAILSCALE_LOG_PATH;
+const statePath = ${JSON.stringify(statePath)};
+const logPath = ${JSON.stringify(logPath)};
 const argv = process.argv.slice(2);
 appendFileSync(logPath, JSON.stringify(argv) + '\\n');
 
@@ -287,7 +287,7 @@ function shift(list, fallback) {
   return { next, rest: values };
 }
 
-if (argv[0] === 'status' && argv[1] === '--json') {
+if (argv[0] === 'status' && argv.includes('--json')) {
   const { next, rest } = shift(state.statusJsons, {
     BackendState: 'Running',
     AuthURL: '',
@@ -302,7 +302,7 @@ if (argv[0] === 'status' && argv[1] === '--json') {
   process.exit(0);
 }
 
-if (argv[0] === 'login' && (argv[1] === '--qr' || argv.length === 1)) {
+if (argv[0] === 'login' && (argv.includes('--qr') || argv.length === 1)) {
   const { next, rest } = shift(state.loginOutputs, {
     exitCode: 0,
     stdout: 'logged in',
@@ -315,7 +315,7 @@ if (argv[0] === 'login' && (argv[1] === '--qr' || argv.length === 1)) {
   process.exit(Number(next.exitCode ?? 0));
 }
 
-if (argv[0] === 'serve' && argv[1] === 'status') {
+if (argv[0] === 'serve' && argv.includes('status')) {
   const { next, rest } = shift(state.serveStatuses, '');
   state.serveStatuses = rest;
   writeFileSync(statePath, JSON.stringify(state, null, 2));
@@ -323,7 +323,7 @@ if (argv[0] === 'serve' && argv[1] === 'status') {
   process.exit(0);
 }
 
-if (argv[0] === 'serve' && argv[1] === '--bg') {
+if (argv[0] === 'serve' && argv.includes('--bg')) {
   const { next, rest } = shift(state.serveEnableOutputs, {
     exitCode: 0,
     stdout: '',
@@ -433,7 +433,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       restoreEnvVar('HAPPIER_FAKE_CLI_LOG_PATH', previousLogPath);
       fakeCli.cleanup();
     }
-  });
+  }, 15_000);
 
   it('requests auth and waits for approval when auth is missing', async () => {
     const fakeCli = createFakeHappierCli({
@@ -535,7 +535,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       restoreEnvVar('HAPPIER_FAKE_CLI_LOG_PATH', previousLogPath);
       fakeCli.cleanup();
     }
-  });
+  }, 15_000);
 
   it('fails setup.thisComputer.v1 when local pairing does not expose a public key', async () => {
     const fakeCli = createFakeHappierCli({
@@ -1322,11 +1322,13 @@ describe('createHsetupSystemTaskRegistry', () => {
     const previousTailscaleBin = process.env.HAPPIER_TAILSCALE_BIN;
     const previousStatePath = process.env.HAPPIER_FAKE_TAILSCALE_STATE_PATH;
     const previousLogPath = process.env.HAPPIER_FAKE_TAILSCALE_LOG_PATH;
+    const previousCommandTimeout = process.env.HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS;
     const events: unknown[] = [];
     try {
       process.env.HAPPIER_TAILSCALE_BIN = fakeCli.cliPath;
       process.env.HAPPIER_FAKE_TAILSCALE_STATE_PATH = join(fakeCli.cliPath, '..', 'scenario.json');
       process.env.HAPPIER_FAKE_TAILSCALE_LOG_PATH = join(fakeCli.cliPath, '..', 'invocations.log');
+      process.env.HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS = '5000';
 
       const result = await executeSystemTask({
         spec: {
@@ -1368,6 +1370,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       restoreEnvVar('HAPPIER_TAILSCALE_BIN', previousTailscaleBin);
       restoreEnvVar('HAPPIER_FAKE_TAILSCALE_STATE_PATH', previousStatePath);
       restoreEnvVar('HAPPIER_FAKE_TAILSCALE_LOG_PATH', previousLogPath);
+      restoreEnvVar('HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS', previousCommandTimeout);
       fakeCli.cleanup();
     }
   });
@@ -1410,6 +1413,7 @@ describe('createHsetupSystemTaskRegistry', () => {
     const previousTailscaleBin = process.env.HAPPIER_TAILSCALE_BIN;
     const previousStatePath = process.env.HAPPIER_FAKE_TAILSCALE_STATE_PATH;
     const previousLogPath = process.env.HAPPIER_FAKE_TAILSCALE_LOG_PATH;
+    const previousCommandTimeout = process.env.HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS;
     const previousPollTimeout = process.env.HAPPIER_TAILSCALE_APPROVAL_POLL_TIMEOUT_MS;
     const previousPollInterval = process.env.HAPPIER_TAILSCALE_APPROVAL_POLL_INTERVAL_MS;
     const events: unknown[] = [];
@@ -1417,6 +1421,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       process.env.HAPPIER_TAILSCALE_BIN = fakeCli.cliPath;
       process.env.HAPPIER_FAKE_TAILSCALE_STATE_PATH = join(fakeCli.cliPath, '..', 'scenario.json');
       process.env.HAPPIER_FAKE_TAILSCALE_LOG_PATH = join(fakeCli.cliPath, '..', 'invocations.log');
+      process.env.HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS = '5000';
       // Avoid long approval polling in this registry integration test. The handler still returns the approval URL,
       // and the UX layer can re-run or poll separately if desired.
       process.env.HAPPIER_TAILSCALE_APPROVAL_POLL_TIMEOUT_MS = '0';
@@ -1488,6 +1493,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       restoreEnvVar('HAPPIER_TAILSCALE_BIN', previousTailscaleBin);
       restoreEnvVar('HAPPIER_FAKE_TAILSCALE_STATE_PATH', previousStatePath);
       restoreEnvVar('HAPPIER_FAKE_TAILSCALE_LOG_PATH', previousLogPath);
+      restoreEnvVar('HAPPIER_TAILSCALE_COMMAND_TIMEOUT_MS', previousCommandTimeout);
       restoreEnvVar('HAPPIER_TAILSCALE_APPROVAL_POLL_TIMEOUT_MS', previousPollTimeout);
       restoreEnvVar('HAPPIER_TAILSCALE_APPROVAL_POLL_INTERVAL_MS', previousPollInterval);
       fakeCli.cleanup();

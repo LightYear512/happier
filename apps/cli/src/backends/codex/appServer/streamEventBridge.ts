@@ -3,6 +3,7 @@ import { readCodexMessageContentText } from '../utils/readCodexMessageContentTex
 import { canonicalizeCodexMcpToolName } from '../utils/canonicalizeCodexMcpToolName';
 import { extractCodexGeneratedMedia } from '../media/extractCodexGeneratedMedia';
 import type { SessionMediaSource } from '@/agent/core/AgentMessage';
+import { sniffSessionMediaMimeTypeFromBase64 } from '@/session/sessionMedia/sessionMediaMime';
 
 type RecordLike = Record<string, unknown>;
 
@@ -170,6 +171,20 @@ function readFinalReasoningText(item: RecordLike): string | null {
     return summary.length > 0 ? summary.join('\n\n') : null;
 }
 
+function enrichGeneratedMedia(item: RecordLike, media: SessionMediaSource[]): SessionMediaSource[] {
+    const result = readString(item.result) ?? readString(item.image) ?? readString(item.image_b64);
+    const inferredMimeType = result ? sniffSessionMediaMimeTypeFromBase64(result) : null;
+    if (!inferredMimeType) return media;
+
+    return media.map((entry) => {
+        if (entry.kind !== 'local-file' || entry.mimeType) return entry;
+        return {
+            ...entry,
+            mimeType: inferredMimeType,
+        };
+    });
+}
+
 export function createCodexAppServerStreamEventBridge(): Readonly<{
     onNotification: (notification: NotificationEnvelope) => CodexAppServerStreamUpdate[];
     onServerRequest: (request: ServerRequestEnvelope) => CodexAppServerStreamUpdate[];
@@ -264,7 +279,7 @@ export function createCodexAppServerStreamEventBridge(): Readonly<{
             }
 
             if (itemType === 'imagegenerationcall' || itemType === 'imagegeneration') {
-                const media = extractCodexGeneratedMedia(item);
+                const media = enrichGeneratedMedia(item, extractCodexGeneratedMedia(item));
                 return media.length > 0 ? [{ type: 'session-media', itemId, media }] : [];
             }
 

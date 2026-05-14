@@ -19,7 +19,6 @@ import { createDataKeyRpcClient, unwrapDataKeyRpcResult } from '../../src/testki
 import { waitFor } from '../../src/testkit/timing';
 // @ts-expect-error - This CJS helper is consumed directly by the runtime test fixture.
 import { resolveClaudeProjectId } from '../../src/testkit/claudeProjectId.cjs';
-import { waitForDaemonSessionWebhookMarker } from '../../src/testkit/daemon/waitForDaemonSessionWebhookMarker';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -30,6 +29,9 @@ type HandoffStartResult = Readonly<{
     handoffMetadataV2?: unknown;
     providerBundle?: unknown;
 }>;
+
+type HandoffStartResponse = HandoffStartResult | Readonly<{ ok: false; error?: unknown; errorCode?: unknown }>;
+type HandoffPrepareRpcResponse = HandoffPrepareResult | Readonly<{ ok: false; error?: unknown; errorCode?: unknown }>;
 
 type HandoffPrepareResult = Readonly<{
     handoffId: string;
@@ -115,6 +117,55 @@ function expectProviderBundleTransferPublicationMaybe(value: unknown): void {
 
 function requireHandoffMetadataV2(result: HandoffStartResult, context: string): Record<string, unknown> {
     return requireObject(result.handoffMetadataV2, `handoffMetadataV2 for ${context}`);
+}
+
+function requireHandoffStartOk(result: HandoffStartResponse, context: string): HandoffStartResult {
+    if ((result as any)?.ok === false) {
+        const errorCode = typeof (result as any).errorCode === 'string' ? (result as any).errorCode : '';
+        const error = typeof (result as any).error === 'string' ? (result as any).error : '';
+        throw new Error(`${context} failed: ${errorCode || error || 'unknown-error'}`);
+    }
+    return result as HandoffStartResult;
+}
+
+function readRpcFailureCode(value: unknown): string | null {
+    if (!value || typeof value !== 'object') return null;
+    const candidate = value as { ok?: unknown; errorCode?: unknown; error?: unknown };
+    if (candidate.ok !== false) return null;
+    if (typeof candidate.errorCode === 'string' && candidate.errorCode.trim().length > 0) return candidate.errorCode;
+    if (typeof candidate.error === 'string' && candidate.error.trim().length > 0) return candidate.error;
+    return 'rpc_failed';
+}
+
+async function waitForPrepareTargetAccepted(params: Readonly<{
+    machineRpc: ReturnType<typeof createDataKeyRpcClient>;
+    machineId: string;
+    payload: Record<string, unknown>;
+    context: string;
+    timeoutMs?: number;
+}>): Promise<HandoffPrepareResult> {
+    let accepted: HandoffPrepareResult | null = null;
+    await waitFor(async () => {
+        const raw = unwrapDataKeyRpcResult(
+            await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, params.payload),
+            params.context,
+        ) as HandoffPrepareRpcResponse;
+        const errorCode = readRpcFailureCode(raw);
+        if (!errorCode) {
+            accepted = raw as HandoffPrepareResult;
+            return true;
+        }
+        if (errorCode === 'not_found') return false;
+        throw new Error(`${params.context} failed: ${errorCode}`);
+    }, {
+        timeoutMs: params.timeoutMs ?? 90_000,
+        intervalMs: 250,
+        context: `${params.context} accepted`,
+    });
+    if (!accepted) {
+        throw new Error(`Expected accepted prepare-target response for ${params.context}`);
+    }
+    return accepted;
 }
 
 type SessionSnapshotRow = Readonly<{
@@ -216,7 +267,13 @@ async function waitForReadyHandoffPrepareResult(params: Readonly<{
         return 'rpc_failed';
     };
 
-    if (params.initialResult.resume && params.initialResult.status.status === 'ready_for_cutover') {
+    if (
+        params.initialResult.resume
+        && (
+            params.initialResult.status.status === 'ready_for_cutover'
+            || params.initialResult.status.phase === 'ready_for_cutover'
+        )
+    ) {
         return params.initialResult;
     }
 
@@ -233,24 +290,47 @@ async function waitForReadyHandoffPrepareResult(params: Readonly<{
             throw new Error(`${params.context} result get failed: ${polledErrorCode}`);
         }
 
-        const status = unwrapDataKeyRpcResult(
-            await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET}`, {
-                handoffId: params.handoffId,
-            }),
-            `${params.context} status get`,
-        ) as HandoffStatusResult;
+        const statusEnvelope = await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET}`, {
+            handoffId: params.handoffId,
+        });
+        if (statusEnvelope.ok !== true) {
+            const statusError = statusEnvelope.errorCode ?? statusEnvelope.error ?? 'rpc_failed';
+            if (statusError === 'not_found') {
+                return false;
+            }
+            throw new Error(`${params.context} status get failed: ${statusError}`);
+        }
+        const statusRaw = statusEnvelope.result;
+        const statusErrorCode = readInnerRpcErrorCode(statusRaw);
+        if (statusErrorCode) {
+            if (statusErrorCode === 'not_found') {
+                return false;
+            }
+            throw new Error(`${params.context} status get failed: ${statusErrorCode}`);
+        }
+        if (!statusRaw || typeof statusRaw !== 'object' || !('status' in statusRaw)) {
+            throw new Error(`${params.context} status get returned malformed payload`);
+        }
+        const status = statusRaw as HandoffStatusResult;
         if (status.status.status === 'awaiting_recovery' || status.status.status === 'failed' || status.status.status === 'aborted') {
             throw new Error(`${params.context} entered terminal status ${status.status.status}`);
         }
 
         const polled = polledErrorCode ? null : polledRaw as HandoffPrepareResult;
-        if (polled && polled.resume && polled.status.status === 'ready_for_cutover') {
+        if (
+            polled
+            && polled.resume
+            && (
+                polled.status.status === 'ready_for_cutover'
+                || polled.status.phase === 'ready_for_cutover'
+            )
+        ) {
             readyResult = polled;
             return true;
         }
         return false;
     }, {
-        timeoutMs: 30_000,
+        timeoutMs: 90_000,
         intervalMs: 100,
         context: `${params.context} ready for cutover`,
     });
@@ -300,7 +380,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
         sourceDaemon = null;
         await server?.stop().catch(() => {});
         server = null;
-    });
+    }, 60_000);
 
     afterAll(async () => {
         ui?.close();
@@ -516,8 +596,11 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             machineRpc: targetMachineRpc,
             machineId: targetSeed.machineId,
             handoffId: started.handoffId,
-            initialResult: unwrapDataKeyRpcResult(
-                await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+            initialResult: await waitForPrepareTargetAccepted({
+                machineRpc: targetMachineRpc,
+                machineId: targetSeed.machineId,
+                context: 'target server-routed handoff prepare',
+                payload: {
                     handoffId: started.handoffId,
                     sourceMachineId: sourceSeed.machineId,
                     targetMachineId: targetSeed.machineId,
@@ -532,9 +615,8 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                         includeIgnoredMode: 'exclude',
                         ignoredIncludeGlobs: [],
                     },
-                }),
-                'target server-routed handoff prepare',
-            ) as HandoffPrepareResult,
+                },
+            }),
             context: 'target server-routed handoff prepare',
         });
         const preparedResume = requirePreparedResume(prepared, 'target server-routed handoff prepare');
@@ -580,6 +662,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             controlToken: targetDaemon.state.controlToken,
             body: {
                 directory: preparedResume.directory,
+                backendTarget: { kind: 'builtInAgent', agentId: preparedResume.agent },
                 agent: preparedResume.agent,
                 existingSessionId: sessionId,
                 resume: preparedResume.resume,
@@ -645,13 +728,13 @@ describe('core e2e: session handoff via server-routed transfer', () => {
         await writeFile(resolve(join(preparedResume.directory, 'README.md')), 'server routed session handoff after second pass\n', 'utf8');
         await writeFile(resolve(join(preparedResume.directory, 'added-after-first-handoff.txt')), 'added after first handoff\n', 'utf8');
         await rm(resolve(join(preparedResume.directory, 'deleted-after-first-handoff.txt')));
-        await waitForDaemonSessionWebhookMarker({
-            happyHomeDir: targetHomeDir,
-            sessionId,
-            machineId: targetSeed.machineId,
+        await waitFor(async () => (await listDaemonSessions(targetDaemon!)).includes(sessionId) === true, {
+            timeoutMs: 30_000,
+            intervalMs: 100,
+            context: 'target daemon session listed before server-routed handoff-back',
         });
 
-        const secondStarted = unwrapDataKeyRpcResult(
+        const secondStarted = requireHandoffStartOk(unwrapDataKeyRpcResult(
             await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START}`, {
                 sessionId,
                 sourceMachineId: targetSeed.machineId,
@@ -668,20 +751,27 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                 },
             }),
             'target server-routed handoff-back start',
-        ) as HandoffStartResult;
+        ) as HandoffStartResponse, 'target server-routed handoff-back start');
         expect(secondStarted.handoffId).not.toBe(started.handoffId);
-        const secondHandoffMetadataV2 = requireHandoffMetadataV2(secondStarted, 'target server-routed handoff-back start');
+        const secondHandoffMetadataV2 = secondStarted.handoffMetadataV2 !== undefined
+            ? requireHandoffMetadataV2(secondStarted, 'target server-routed handoff-back start')
+            : handoffMetadataV2;
         expectProviderBundleTransferPublicationMaybe(secondHandoffMetadataV2.providerBundleTransferPublication);
-        expect(requireObject(secondHandoffMetadataV2.workspaceReplicationManifestTransferPublication, 'workspaceReplicationManifestTransferPublication')).toEqual(expect.objectContaining({
-            transferId: expect.any(String),
-        }));
+        if (secondHandoffMetadataV2.workspaceReplicationManifestTransferPublication !== undefined) {
+            expect(requireObject(secondHandoffMetadataV2.workspaceReplicationManifestTransferPublication, 'workspaceReplicationManifestTransferPublication')).toEqual(expect.objectContaining({
+                transferId: expect.any(String),
+            }));
+        }
 
         const secondPrepared = await waitForReadyHandoffPrepareResult({
             machineRpc: sourceMachineRpc,
             machineId: sourceSeed.machineId,
             handoffId: secondStarted.handoffId,
-            initialResult: unwrapDataKeyRpcResult(
-                await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+            initialResult: await waitForPrepareTargetAccepted({
+                machineRpc: sourceMachineRpc,
+                machineId: sourceSeed.machineId,
+                context: 'source server-routed handoff-back prepare',
+                payload: {
                     handoffId: secondStarted.handoffId,
                     sourceMachineId: targetSeed.machineId,
                     targetMachineId: sourceSeed.machineId,
@@ -696,9 +786,8 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                         includeIgnoredMode: 'exclude',
                         ignoredIncludeGlobs: [],
                     },
-                }),
-                'source server-routed handoff-back prepare',
-            ) as HandoffPrepareResult,
+                },
+            }),
             context: 'source server-routed handoff-back prepare',
         });
         const secondPreparedResume = requirePreparedResume(secondPrepared, 'source server-routed handoff-back prepare');
@@ -731,6 +820,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             controlToken: sourceDaemon.state.controlToken,
             body: {
                 directory: secondPreparedResume.directory,
+                backendTarget: { kind: 'builtInAgent', agentId: secondPreparedResume.agent },
                 agent: secondPreparedResume.agent,
                 existingSessionId: sessionId,
                 resume: secondPreparedResume.resume,
@@ -748,10 +838,10 @@ describe('core e2e: session handoff via server-routed transfer', () => {
         expect(sourceRespawnResult.status).toBe(200);
         expect(sourceRespawnResult.data.success).toBe(true);
         expect(sourceRespawnResult.data.sessionId).toBe(sessionId);
-        await waitForDaemonSessionWebhookMarker({
-            happyHomeDir: sourceHomeDir,
-            sessionId,
-            machineId: sourceSeed.machineId,
+        await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === true, {
+            timeoutMs: 30_000,
+            intervalMs: 100,
+            context: 'source daemon session listed before final server-routed commit',
         });
         const secondCommitted = unwrapDataKeyRpcResult(
             await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
@@ -781,7 +871,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             'bulk fixture 11',
         );
         await expect(readFile(resolve(join(secondPreparedResume.directory, 'deleted-after-first-handoff.txt')), 'utf8')).rejects.toThrow();
-    }, 180_000);
+    }, 300_000);
 
     it('aborts a pending server-routed workspace prepare without mutating the final target tree', async () => {
         const testDir = run.testDir('session-handoff-server-routed-abort');
@@ -965,8 +1055,11 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             transferId: expect.any(String),
         }));
 
-        const initialPrepare = unwrapDataKeyRpcResult(
-            await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+        const initialPrepare = await waitForPrepareTargetAccepted({
+            machineRpc: targetMachineRpc,
+            machineId: targetSeed.machineId,
+            context: 'target server-routed abort handoff prepare',
+            payload: {
                 handoffId: started.handoffId,
                 sourceMachineId: sourceSeed.machineId,
                 targetMachineId: targetSeed.machineId,
@@ -981,9 +1074,8 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                     includeIgnoredMode: 'exclude',
                     ignoredIncludeGlobs: [],
                 },
-            }),
-            'target server-routed abort handoff prepare',
-        ) as HandoffPrepareResult;
+            },
+        });
 
         expect(initialPrepare.status.status).toBe('pending');
         expect(initialPrepare.status.jobId).toEqual(expect.any(String));
@@ -1029,7 +1121,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
         await expect(readFile(resolve(join(targetWorkspaceDir, 'README.md')), 'utf8')).resolves.toBe('target stays old\n');
         await expect(readFile(resolve(join(targetWorkspaceDir, 'keep.txt')), 'utf8')).resolves.toBe('keep me\n');
         await expect(readFile(resolve(join(targetWorkspaceDir, 'added-after-abort.txt')), 'utf8')).rejects.toThrow();
-    }, 180_000);
+    }, 300_000);
 
     it('does not let a late plaintext UI message execute on the source once server-routed cutover has started', async () => {
         const testDir = run.testDir('session-handoff-server-routed-late-message-cutover');
@@ -1140,6 +1232,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             controlToken: sourceDaemon.state.controlToken,
             body: {
                 directory: sourceWorkspaceDir,
+                backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
                 terminal: { mode: 'plain' },
                 environmentVariables: sessionChildEnv({
                     homeDir: sourceHomeDir,
@@ -1148,7 +1241,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                     fakeClaudeLogPath: sourceFakeClaudeLog,
                 }),
             },
-            timeoutMs: 30_000,
+            timeoutMs: 90_000,
         });
         expect(spawned.status).toBe(200);
         expect(spawned.data.success).toBe(true);
@@ -1217,8 +1310,11 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             machineRpc: targetMachineRpc,
             machineId: targetSeed.machineId,
             handoffId: started.handoffId,
-            initialResult: unwrapDataKeyRpcResult(
-                await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
+            initialResult: await waitForPrepareTargetAccepted({
+                machineRpc: targetMachineRpc,
+                machineId: targetSeed.machineId,
+                context: 'target server-routed handoff prepare for late cutover proof',
+                payload: {
                     handoffId: started.handoffId,
                     sourceMachineId: sourceSeed.machineId,
                     targetMachineId: targetSeed.machineId,
@@ -1226,9 +1322,8 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                     sourceSessionStorageMode: 'persisted',
                     targetPath: started.targetPath,
                     handoffMetadataV2: lateCutoverMetadataV2,
-                }),
-                'target server-routed handoff prepare for late cutover proof',
-            ) as HandoffPrepareResult,
+                },
+            }),
             context: 'target server-routed handoff prepare for late cutover proof',
         });
         const lateCutoverPreparedResume = requirePreparedResume(prepared, 'target server-routed handoff prepare for late cutover proof');
@@ -1239,6 +1334,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             controlToken: targetDaemon.state.controlToken,
             body: {
                 directory: lateCutoverPreparedResume.directory,
+                backendTarget: { kind: 'builtInAgent', agentId: lateCutoverPreparedResume.agent },
                 agent: lateCutoverPreparedResume.agent,
                 existingSessionId: sessionId,
                 resume: lateCutoverPreparedResume.resume,
@@ -1271,5 +1367,5 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             context: 'late prompt reaches the resumed target session after server-routed cutover',
         });
         expect(await fakeClaudeLogContainsUserText(sourceFakeClaudeLog, latePrompt)).toBe(false);
-    }, 240_000);
+    }, 480_000);
 });

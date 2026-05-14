@@ -226,6 +226,16 @@ function collectUserFacingStringsFromExpression(args: Readonly<{
             return;
         }
 
+        if (ts.isSwitchStatement(node)) {
+            visit(node.expression);
+            for (const clause of node.caseBlock.clauses) {
+                for (const statement of clause.statements) {
+                    visit(statement);
+                }
+            }
+            return;
+        }
+
         if (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node) || ts.isSpreadAssignment(node)) {
             if (!ts.isPropertyAssignment(node)) {
                 ts.forEachChild(node, visit);
@@ -247,6 +257,31 @@ function collectUserFacingStringsFromExpression(args: Readonly<{
                 return;
             }
 
+            return;
+        }
+
+        if (ts.isJsxAttribute(node)) {
+            const name = node.name.getText(sourceFile);
+            const init = node.initializer;
+            if (JSX_ATTRIBUTE_NON_USER_FACING_NAMES.has(name)) {
+                return;
+            }
+            if (JSX_ATTRIBUTE_USER_FACING_NAMES.has(name)) {
+                if (init && ts.isStringLiteral(init)) {
+                    pushHit(init, init.text);
+                    return;
+                }
+                if (init && ts.isJsxExpression(init) && init.expression) {
+                    visit(init.expression);
+                }
+                return;
+            }
+            if (init && ts.isJsxExpression(init) && init.expression) {
+                const expr = init.expression;
+                if (ts.isObjectLiteralExpression(expr) || ts.isArrayLiteralExpression(expr)) {
+                    collectUserFacingStringLiteralsFromExpression({ filePath, sourceFile, expression: expr, hits });
+                }
+            }
             return;
         }
 
@@ -307,7 +342,9 @@ function collectUserFacingStringLiteralsFromExpression(args: Readonly<{
                 }
             }
 
-            ts.forEachChild(node, visit);
+            if (ts.isObjectLiteralExpression(init) || ts.isArrayLiteralExpression(init)) {
+                visit(init);
+            }
             return;
         }
 

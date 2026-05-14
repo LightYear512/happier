@@ -27,7 +27,7 @@ import {
 } from '@/agent/localControl/turnLifecycle';
 import { startLocalPendingQueueRemoteSwitchWatcher } from '@/agent/localControl/pendingQueue/startLocalPendingQueueRemoteSwitchWatcher';
 
-export type CodexLauncherResult = { type: 'switch'; resumeId: string } | { type: 'exit'; code: number };
+export type CodexLauncherResult = { type: 'switch'; resumeId: string | null } | { type: 'exit'; code: number };
 
 export type CodexRolloutDiscoveryConfig = Readonly<{
   /**
@@ -70,6 +70,7 @@ async function resolveCodexTuiInvocation(opts: {
   cwd: string;
   resumeId?: string | null;
   permissionMode: PermissionMode;
+  codexArgs?: readonly string[];
 }): Promise<{ command: string; args: string[] }> {
   return await resolveCodexCliInvocation({
     args: buildCodexTuiArgs(opts),
@@ -116,13 +117,13 @@ function buildCodexTuiChildEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function buildCodexTuiArgs(opts: { cwd: string; resumeId?: string | null; permissionMode: PermissionMode }): string[] {
+function buildCodexTuiArgs(opts: {
+  cwd: string;
+  resumeId?: string | null;
+  permissionMode: PermissionMode;
+  codexArgs?: readonly string[];
+}): string[] {
   const args: string[] = [];
-
-  const resumeId = typeof opts.resumeId === 'string' && opts.resumeId.trim().length > 0 ? opts.resumeId.trim() : null;
-  if (resumeId) {
-    args.push('resume', resumeId);
-  }
 
   // Always enforce working directory to match the Happy session path.
   args.push('--cd', opts.cwd);
@@ -135,6 +136,16 @@ function buildCodexTuiArgs(opts: { cwd: string; resumeId?: string | null; permis
     const { approvalPolicy, sandbox } = resolveCodexMcpPolicyForPermissionMode(opts.permissionMode);
     args.push('--ask-for-approval', approvalPolicy);
     args.push('--sandbox', sandbox);
+  }
+
+  if (opts.codexArgs && opts.codexArgs.length > 0) {
+    args.push(...opts.codexArgs);
+    return args;
+  }
+
+  const resumeId = typeof opts.resumeId === 'string' && opts.resumeId.trim().length > 0 ? opts.resumeId.trim() : null;
+  if (resumeId) {
+    args.push('resume', resumeId);
   }
 
   return args;
@@ -152,6 +163,7 @@ export async function codexLocalLauncher<TMode>(opts: {
   messageQueue: MessageQueue2<TMode>;
   permissionMode?: PermissionMode;
   resumeId?: string | null;
+  codexArgs?: readonly string[];
   debugMirroring?: boolean;
   rolloutDiscovery?: Partial<CodexRolloutDiscoveryConfig>;
 }): Promise<CodexLauncherResult> {
@@ -182,6 +194,8 @@ export async function codexLocalLauncher<TMode>(opts: {
 
   let exitReason: CodexLauncherResult | null = null;
   let switchRequested = false;
+  let remoteSwitchIntentObserved = false;
+  const hasNativeCodexArgs = (opts.codexArgs?.length ?? 0) > 0;
   let switchNotified = false;
   let mirror: CodexRolloutMirror | null = null;
   let pendingQueueWatcher: { stop: () => void } | null = null;
@@ -189,6 +203,20 @@ export async function codexLocalLauncher<TMode>(opts: {
   let childStopRequested = false;
   const turnLifecycle = createLocalTurnLifecycleController({ completionQuiescenceMs: 0 });
   turnLifecycle.observe({ type: 'turn_started', providerTurnId: null, source: 'codex_rollout_discovery_pending' });
+
+  const stopChildIfRunning = (): void => {
+    if (!child || child.exitCode !== null) return;
+    childStopRequested = true;
+    if (isWindows) {
+      void killProcessTree(child, { graceMs: 250 }).catch(() => undefined);
+      return;
+    }
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+  };
 
   const publishRemoteControlState = (tag: 'switch' | 'exit' | 'launch_error'): void => {
     try {
@@ -326,19 +354,24 @@ export async function codexLocalLauncher<TMode>(opts: {
     // in an active local turn, the deferred switch controller waits for the
     // rollout terminal event before asking the launcher to stop the child.
     opts.messageQueue.setOnMessage((message, mode) => {
+      remoteSwitchIntentObserved = true;
       deferredRemoteSwitch.onQueuedMessage(message, mode);
     });
 
     pendingQueueWatcher = startLocalPendingQueueRemoteSwitchWatcher({
       peekPendingCount: () => opts.session.peekPendingMessageQueueV2Count(),
       pollIntervalMs: configuration.pendingQueueIdleWakePollIntervalMs,
-      requestRemoteSwitch: () => deferredRemoteSwitch.requestRemoteSwitch('server_pending_queue'),
+      requestRemoteSwitch: () => {
+        remoteSwitchIntentObserved = true;
+        return deferredRemoteSwitch.requestRemoteSwitch('server_pending_queue');
+      },
     });
 
     // Allow the UI to request a switch explicitly.
     opts.session.rpcHandlerManager.registerHandler('switch', async (params: any) => {
       const to = params && typeof params === 'object' ? (params as any).to : undefined;
       if (to === 'local') return true;
+      remoteSwitchIntentObserved = true;
       return await deferredRemoteSwitch.requestRemoteSwitch('rpc_switch');
     });
 
@@ -346,6 +379,7 @@ export async function codexLocalLauncher<TMode>(opts: {
       cwd: opts.path,
       resumeId: opts.resumeId,
       permissionMode: opts.permissionMode ?? 'default',
+      codexArgs: opts.codexArgs ?? [],
     });
 
     const invocation = resolveWindowsCommandInvocation({
@@ -449,6 +483,16 @@ export async function codexLocalLauncher<TMode>(opts: {
         });
       }
 
+      if (remoteSwitchIntentObserved && !opts.resumeId && !hasNativeCodexArgs && now >= deadline) {
+        logger.debug('[codex] switch: starting fresh remote because no local rollout was discovered', {
+          elapsedSinceStartMs: now - startedAtMs,
+        });
+        exitReason = { type: 'switch', resumeId: null };
+        stopChildIfRunning();
+        childExited = true;
+        break;
+      }
+
       candidateFile = await discoverCodexRolloutFileOnce({
         sessionsRootDir,
         startedAtMs,
@@ -474,6 +518,11 @@ export async function codexLocalLauncher<TMode>(opts: {
     }
 
     if (!candidateFile) {
+      if (exitReason) {
+        await childExitPromise;
+        publishRemoteControlState('switch');
+        return exitReason;
+      }
       logger.debug('[codex] rollout discovery: aborted without candidate', {
         elapsedMs: Date.now() - startedAtMs,
         childExited,
@@ -518,18 +567,7 @@ export async function codexLocalLauncher<TMode>(opts: {
         // We can now safely switch because the session id is known.
         exitReason = { type: 'switch', resumeId };
       }
-      if (child && child.exitCode === null) {
-        childStopRequested = true;
-        if (isWindows) {
-          void killProcessTree(child, { graceMs: 250 }).catch(() => undefined);
-        } else {
-          try {
-            child.kill('SIGTERM');
-          } catch {
-            // ignore
-          }
-        }
-      }
+      stopChildIfRunning();
     }
 
     mirror = new CodexRolloutMirror({
@@ -563,18 +601,7 @@ export async function codexLocalLauncher<TMode>(opts: {
               elapsedSinceStartMs: Date.now() - startedAtMs,
             });
             exitReason = { type: 'switch', resumeId };
-            if (child && child.exitCode === null) {
-              childStopRequested = true;
-              if (isWindows) {
-                void killProcessTree(child, { graceMs: 250 }).catch(() => undefined);
-              } else {
-                try {
-                  child.kill('SIGTERM');
-                } catch {
-                  // ignore
-                }
-              }
-            }
+            stopChildIfRunning();
           }
           await delay(50);
         }
@@ -616,17 +643,6 @@ export async function codexLocalLauncher<TMode>(opts: {
     } catch {
       // ignore
     }
-    if (child && child.exitCode === null) {
-      childStopRequested = true;
-      if (isWindows) {
-        void killProcessTree(child, { graceMs: 250 }).catch(() => undefined);
-      } else {
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          // ignore
-        }
-      }
-    }
+    stopChildIfRunning();
   }
 }
