@@ -64,6 +64,10 @@ vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: Record<string, unknown>) => React.createElement('Item', props),
 }));
 
+vi.mock('@/components/ui/lists/ItemGroup', () => ({
+    ItemGroup: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemGroup', props, props.children),
+}));
+
 vi.mock('./EnvironmentVariableCard', () => ({
     EnvironmentVariableCard: (props: Record<string, unknown>) => {
         environmentVariableCardProps.push(props);
@@ -80,6 +84,7 @@ type UseEnvironmentVariablesArgs = [
 async function renderList(params: {
     environmentVariables: Array<{ name: string; value: string; isSecret?: boolean }>;
     profileDocs?: ProfileDocumentation | null;
+    autoProvisionedEnvVarNames?: readonly string[];
     onChange?: ReturnType<typeof vi.fn<(next: Array<{ name: string; value: string; isSecret?: boolean }>) => void>>;
 }) {
     const onChange =
@@ -95,6 +100,7 @@ async function renderList(params: {
             onUpdateSourceRequirement: () => {},
             getDefaultSecretNameForSourceVar: () => null,
             onPickDefaultSecretForSourceVar: () => {},
+            autoProvisionedEnvVarNames: params.autoProvisionedEnvVarNames,
         }),
     );
     return { screen, onChange };
@@ -146,6 +152,42 @@ describe('EnvironmentVariablesList', () => {
             expect(onChange).toHaveBeenCalledTimes(1);
             expect(onChange.mock.calls[0]?.[0]).toEqual([{ name: 'FOO', value: 'bar' }]);
         });
+
+        it('prevents adding daemon-managed env var names', async () => {
+            const { screen } = await renderList({
+                environmentVariables: [],
+                autoProvisionedEnvVarNames: ['CODEX_HOME'],
+            });
+
+            let addExpander = screen.findByType(InlineAddExpander);
+            await act(async () => {
+                addExpander.props.onOpenChange(true);
+                await flushHookEffects({ cycles: 1, turns: 1 });
+            });
+
+            const textInputs = screen.findAllByType('TextInput');
+            await act(async () => {
+                textInputs[0]?.props.onChangeText?.('codex_home');
+                await flushHookEffects({ cycles: 1, turns: 1 });
+            });
+
+            addExpander = screen.findByType(InlineAddExpander);
+            expect(addExpander.props.saveDisabled).toBe(true);
+        });
+    });
+
+    it('renders daemon-managed existing env vars as read-only rows', async () => {
+        const { screen } = await renderList({
+            environmentVariables: [
+                { name: 'CLAUDE_CONFIG_DIR', value: '/tmp/old' },
+                { name: 'OTHER_VAR', value: 'ok' },
+            ],
+            autoProvisionedEnvVarNames: ['CLAUDE_CONFIG_DIR'],
+        });
+
+        expect(environmentVariableCardProps).toHaveLength(1);
+        expect(environmentVariableCardProps[0]?.variable).toEqual({ name: 'OTHER_VAR', value: 'ok' });
+        expect(screen.findAllByType('Item').some((item) => item.props.title === 'CLAUDE_CONFIG_DIR')).toBe(true);
     });
 
     describe('sensitive key propagation', () => {

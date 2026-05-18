@@ -18,6 +18,20 @@ function parseBooleanEnv(name, defaultValue) {
   return defaultValue;
 }
 
+function parseAbsolutePathListEnv(name) {
+  const raw = String(process.env[name] ?? "").trim();
+  if (!raw) return [];
+  return raw
+    .split(path.delimiter)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0 && path.isAbsolute(value));
+}
+
+function isPathWithin(parentPath, candidatePath) {
+  const relativePath = path.relative(parentPath, candidatePath);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
 const workletsBundleModeEnabled = parseBooleanEnv("HAPPIER_UI_WORKLETS_BUNDLE_MODE", false);
 let workletsPackageRoot = null;
 try {
@@ -167,8 +181,11 @@ const isStackRun = Boolean((process.env.HAPPIER_STACK_STACK ?? '').toString().tr
 const isWatchmanDisabledForLocalRun = /^(1|true|yes|on)$/i.test(
   (process.env.HAPPIER_UI_METRO_DISABLE_WATCHMAN ?? '').toString().trim(),
 );
+const isWatchmanForcedForCiStyleRun = /^(1|true|yes|on)$/i.test(
+  (process.env.HAPPIER_UI_METRO_FORCE_WATCHMAN ?? '').toString().trim(),
+);
 
-if (process.env.CI || isStackRun || isWatchmanDisabledForLocalRun) {
+if ((process.env.CI || isStackRun || isWatchmanDisabledForLocalRun) && !isWatchmanForcedForCiStyleRun) {
   config.resolver.useWatchman = false;
   // `metro-file-map`'s watcher selection is driven by `watcher.useWatchman`, not
   // `resolver.useWatchman`. Set both to avoid "Failed to start watch mode"
@@ -220,6 +237,7 @@ config.watchFolders = existingWatchFolders.filter(
 
 const rootNodeModules = path.resolve(__dirname, "../../node_modules");
 const appNodeModules = path.resolve(__dirname, "node_modules");
+const extraWatchFoldersFromEnv = parseAbsolutePathListEnv("HAPPIER_UI_METRO_EXTRA_WATCH_FOLDERS");
 const generatedWorkletsWatchFolders = resolveGeneratedWorkletsWatchFolders() || [];
 for (const generatedWorkletsWatchFolder of generatedWorkletsWatchFolders) {
   if (!config.watchFolders.includes(generatedWorkletsWatchFolder)) {
@@ -232,16 +250,80 @@ for (const workletsRuntimeWatchFolder of workletsRuntimeWatchFolders) {
     config.watchFolders.push(workletsRuntimeWatchFolder);
   }
 }
+for (const extraWatchFolder of extraWatchFoldersFromEnv) {
+  if (!config.watchFolders.includes(extraWatchFolder)) {
+    config.watchFolders.push(extraWatchFolder);
+  }
+}
+for (const externalNodeModulesRoot of resolveExternalNodeModulesWatchFolders([appNodeModules, rootNodeModules])) {
+  if (!config.watchFolders.includes(externalNodeModulesRoot)) {
+    config.watchFolders.push(externalNodeModulesRoot);
+  }
+}
+
+function hasWatchedParentFolder(candidateFolderPath) {
+  const normalizedCandidatePath = path.resolve(candidateFolderPath);
+  return config.watchFolders.some((watchedFolderPath) => {
+    if (typeof watchedFolderPath !== "string" || watchedFolderPath.length === 0) return false;
+    return isPathWithin(path.resolve(watchedFolderPath), normalizedCandidatePath);
+  });
+}
+
+function collectSymlinkedPackageRoots(nodeModulesRoot) {
+  if (!fs.existsSync(nodeModulesRoot)) return [];
+
+  const packageRoots = [];
+  for (const entry of fs.readdirSync(nodeModulesRoot, { withFileTypes: true })) {
+    const entryPath = path.join(nodeModulesRoot, entry.name);
+    if (entry.isSymbolicLink()) {
+      packageRoots.push(entryPath);
+      continue;
+    }
+    if (!entry.isDirectory() || !entry.name.startsWith("@")) {
+      continue;
+    }
+    for (const scopedEntry of fs.readdirSync(entryPath, { withFileTypes: true })) {
+      if (!scopedEntry.isSymbolicLink()) continue;
+      packageRoots.push(path.join(entryPath, scopedEntry.name));
+    }
+  }
+  return packageRoots;
+}
+
+function resolveExternalNodeModulesWatchFolders(nodeModulesRoots) {
+  const externalNodeModulesRoots = [];
+  for (const nodeModulesRoot of nodeModulesRoots) {
+    for (const packageRoot of collectSymlinkedPackageRoots(nodeModulesRoot)) {
+      let realPackageRoot = null;
+      try {
+        realPackageRoot = fs.realpathSync.native(packageRoot);
+      } catch {
+        realPackageRoot = null;
+      }
+      if (!realPackageRoot) continue;
+
+      const realNodeModulesRoot = path.dirname(realPackageRoot);
+      if (!path.isAbsolute(realNodeModulesRoot) || realNodeModulesRoot === nodeModulesRoot) {
+        continue;
+      }
+      if (!externalNodeModulesRoots.includes(realNodeModulesRoot)) {
+        externalNodeModulesRoots.push(realNodeModulesRoot);
+      }
+    }
+  }
+  return externalNodeModulesRoots;
+}
 
 // Expo packages can be hoisted into the monorepo root `node_modules/**` and ship TypeScript entrypoints.
-// Metro needs these files in its watch set to compute SHA-1 hashes during export/build, but we still want
-// to avoid watching the entire monorepo `node_modules/**` tree.
+// Metro needs these files in its watch set to compute SHA-1 hashes during export/build, but if the parent
+// `node_modules` root is already watched we must not also add the symlinked package root or Metro's file map
+// can see the same package as both a file (the symlink entry) and a directory.
 const watchedHoistedNodeModuleRoots = [
   path.resolve(rootNodeModules, "expo-modules-core"),
   path.resolve(rootNodeModules, "expo-system-ui"),
 ];
 for (const folder of watchedHoistedNodeModuleRoots) {
-  if (!config.watchFolders.includes(folder)) {
+  if (!config.watchFolders.includes(folder) && !hasWatchedParentFolder(folder)) {
     config.watchFolders.push(folder);
   }
 }

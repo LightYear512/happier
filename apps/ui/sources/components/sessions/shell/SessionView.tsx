@@ -32,6 +32,8 @@ import { continueSessionWithReplay, sessionAbort, resumeSession } from '@/sync/o
 import { storage, useAllMachines, useAutomations, useEndpointConnectivity, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionPendingMessages, useSessionTranscriptIds, useSessionUsage, useSetting, useSettings, useSyncError, useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
 import { setActiveViewingSessionId, clearActiveViewingSessionId } from '@/sync/domains/session/activeViewingSession';
 import { beginSessionViewingActivation, clearManualUnreadHold, endSessionViewingActivation, shouldSuppressAutomaticMarkViewed } from '@/sync/domains/session/readState/sessionManualUnreadHold';
+import { useSessionSwitchingState } from '@/sync/domains/profiles/sessionSwitchingStore';
+import { resolveSessionSwitchingProfileIdOverride } from '@/sync/domains/profiles/deriveSwitchProfileUiState';
 import { canResumeSessionWithOptions } from '@/agents/runtime/resumeCapabilities';
 import { DEFAULT_AGENT_ID, getAgentCore, resolveAgentIdFromFlavor, buildResumeSessionExtrasFromUiState } from '@/agents/catalog/catalog';
 import { buildSessionComposerNextMessageMetaOverridesFromUiState } from '@/agents/registry/registryUiBehavior';
@@ -845,6 +847,7 @@ function SessionViewLoaded({
     const isCliOutdated = cliVersion && !isVersionSupported(cliVersion, MINIMUM_CLI_VERSION);
     const isAcknowledged = machineId && acknowledgedCliVersions[machineId] === cliVersion;
     const shouldShowCliWarning = isCliOutdated && !isAcknowledged;
+    const sessionSwitchingState = useSessionSwitchingState(sessionId);
     // Get model mode from session object - default is agent-specific (Gemini needs an explicit default)
     const agentId = resolveAgentIdFromSessionMetadata(session.metadata) ?? resolveAgentIdFromFlavor(session.metadata?.flavor) ?? DEFAULT_AGENT_ID;
     const liveAuthoringContext = React.useMemo(() => {
@@ -855,8 +858,9 @@ function SessionViewLoaded({
     const liveComposerState = React.useMemo(() => {
         return resolveSessionComposerStateFromAuthoringContext(liveAuthoringContext, {
             fallbackAgentId: agentId,
+            profileIdOverride: resolveSessionSwitchingProfileIdOverride(sessionSwitchingState),
         });
-    }, [agentId, liveAuthoringContext]);
+    }, [agentId, liveAuthoringContext, sessionSwitchingState.state, sessionSwitchingState.targetProfileId]);
     const permissionMode = liveComposerState.permissionMode;
     const sessionModeOptionIds = React.useMemo(() => {
         const modeState =

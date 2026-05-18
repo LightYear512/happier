@@ -91,4 +91,24 @@ describe('SpawnDaemonSessionRequestSchema', () => {
       accountSettingsVersionHint: 7,
     });
   });
+
+  it('accepts an explicit null profile id from the transport request', () => {
+    const parsed = SpawnDaemonSessionRequestSchema.parse({
+      directory: '/tmp',
+      profileId: null,
+    });
+
+    expect(parsed.profileId).toBeNull();
+  });
+
+  it('preserves explicit null profile ids through spawn option merging', () => {
+    const options = {
+      directory: '/tmp',
+      profileId: null,
+    } satisfies Partial<SpawnSessionOptions>;
+
+    expect(mergeSpawnSessionOptions(options)).toMatchObject({
+      profileId: null,
+    });
+  });
 });

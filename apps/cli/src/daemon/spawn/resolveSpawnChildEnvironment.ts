@@ -102,7 +102,7 @@ export async function resolveSpawnChildEnvironment(params: {
   ]));
 
   const sessionProfileEnv: Record<string, string> = {};
-  if (params.options.profileId !== undefined) {
+  if (typeof params.options.profileId === 'string' && params.options.profileId.length > 0) {
     sessionProfileEnv.HAPPIER_SESSION_PROFILE_ID = params.options.profileId;
   }
 

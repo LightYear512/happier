@@ -43,6 +43,7 @@ import { DEFAULT_AGENT_ID, getAgentBehavior, getAgentCore, resolveAgentIdFromFla
 import { AgentIcon } from '@/agents/registry/AgentIcon';
 import { getAgentPickerIconScale } from '@/agents/registry/registryUi';
 import { resolveProfileById } from '@/sync/domains/profiles/profileUtils';
+import { useIsSessionSwitchingInFlight } from '@/sync/domains/profiles/sessionSwitchingStore';
 import { getProfileDisplayName } from '@/components/profiles/profileDisplay';
 import { useScrollEdgeFades } from '@/components/ui/scroll/useScrollEdgeFades';
 import { AgentInputScrollableChipRow } from './layout/AgentInputScrollableChipRow';
@@ -859,7 +860,9 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         sessionId: props.sessionId ?? null,
     });
 
-    const sendActionDisabled = Boolean(props.disabled || props.isSendDisabled || props.isSending);
+    const profileSwitchInFlight = useIsSessionSwitchingInFlight(props.sessionId);
+    const composerDisabled = Boolean(props.disabled || profileSwitchInFlight);
+    const sendActionDisabled = Boolean(composerDisabled || props.isSendDisabled || props.isSending);
     const inputRef = React.useRef<MultiTextInputHandle>(null);
 
     const handleSend = React.useCallback((options?: Readonly<{ forceImmediate?: boolean }>) => {
@@ -935,7 +938,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     }, []);
 
     React.useEffect(() => {
-        if (Platform.OS !== 'ios' || !enterToSendEnabled || !isInputFocused || props.disabled) {
+        if (Platform.OS !== 'ios' || !enterToSendEnabled || !isInputFocused || composerDisabled) {
             return;
         }
 
@@ -952,7 +955,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         return () => {
             subscription?.remove();
         };
-    }, [enterToSendEnabled, isInputFocused, props.disabled]);
+    }, [composerDisabled, enterToSendEnabled, isInputFocused]);
 
     // Use the tracked selection from inputState
     const activeWord = useActiveWord(inputState.text, inputState.selection, props.autocompletePrefixes);
@@ -1776,7 +1779,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 submitBehavior={submitBehavior}
                 onSubmitEditing={handleSubmitEditing}
                 maxHeight={resolvedInputMaxHeight}
-                editable={!props.disabled}
+                editable={!composerDisabled}
                 onFilesDropped={props.onAttachmentsAdded}
                 onFilesPasted={props.onAttachmentsAdded}
                 onFileDragActiveChange={typeof props.onAttachmentsAdded === 'function' ? setFileDragActive : undefined}
@@ -1853,7 +1856,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                         testID={props.sessionId ? AGENT_INPUT_TEST_IDS.sessionSend : AGENT_INPUT_TEST_IDS.newSessionSend}
                         sessionId={props.sessionId}
                         submitAccessibilityLabel={props.submitAccessibilityLabel}
-                        disabled={Boolean(props.disabled || props.isSendDisabled || props.isSending || (!hasSendableContent && !micPressHandler))}
+                        disabled={Boolean(sendActionDisabled || (!hasSendableContent && !micPressHandler))}
                         isSending={props.isSending}
                         hasSendableContent={hasSendableContent}
                         micPressHandler={micPressHandler}

@@ -21,4 +21,12 @@ describe('CLAUDE_CORE install banner', () => {
             connectRoute: '/settings/connect/claude',
         });
     });
+
+    it('declares the daemon-managed Claude config env var', () => {
+        expect(CLAUDE_CORE.autoProvisionedEnvVars).toEqual(['CLAUDE_CONFIG_DIR']);
+    });
+
+    it('declares Claude profile provisioning support', () => {
+        expect(CLAUDE_CORE.profileProvisioning).toEqual({ backendId: 'claude' });
+    });
 });

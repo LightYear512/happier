@@ -7532,12 +7532,14 @@ settingsSession: {
         environmentVariables: {
             title: 'Variables d\'entorn',
             addVariable: 'Afegeix variable',
+            systemManagedSubtitle: 'Gestionada automàticament per a aquest perfil.',
             namePlaceholder: 'Nom de variable (p. ex., MY_CUSTOM_VAR)',
             valuePlaceholder: 'Valor (p. ex., my-value o ${MY_VAR})',
             validation: {
                 nameRequired: 'Introdueix un nom de variable.',
                 invalidNameFormat: 'Els noms de variable han de ser lletres majúscules, números i guions baixos, i no poden començar amb un número.',
                 duplicateName: 'Aquesta variable ja existeix.',
+                autoProvisionedReserved: 'Aquesta variable es gestiona automàticament per a aquest perfil.',
             },
             card: {
                 valueLabel: 'Valor:',
@@ -7593,6 +7595,25 @@ settingsSession: {
                     missing: 'Falta',
                 },
             },
+        },
+        provision: {
+            title: 'Aprovisiona a la màquina',
+            provisionOnMachine: 'Aprovisiona a la màquina',
+            modalTitle: ({ backend }: { backend: string }) => `Aprovisiona ${backend}`,
+            inProgressHint: 'Segueix les indicacions del CLI per acabar l’inici de sessió.',
+            alreadyProvisioned: 'Aquest perfil ja està aprovisionat en aquesta màquina.',
+            successHint: 'L’aprovisionament del perfil ha finalitzat.',
+            errorBody: 'No s’ha pogut aprovisionar el perfil.',
+            runInBackground: 'Executa en segon pla',
+        },
+        switch: {
+            title: 'Canvia de perfil',
+            count: ({ count }: { count: number }) => `${count} perfils disponibles`,
+            confirmTitle: 'Canviar de perfil?',
+            confirmBody: 'La sessió actual es reiniciarà amb el perfil seleccionat.',
+            errorTitle: 'No s’ha pogut canviar el perfil',
+            errorBody: 'No s’ha pogut canviar el perfil de la sessió.',
+            turnInProgress: 'Espera que acabi el torn actual i torna-ho a provar.',
         },
         delete: {
             title: 'Eliminar Perfil',

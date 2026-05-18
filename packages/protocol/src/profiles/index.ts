@@ -36,3 +36,5 @@ export {
   type BackendProfileRefCandidate,
   type ResolveBackendProfileResult,
 } from './resolveBackendProfile.js';
+
+export type { SwitchProfileEvent } from './switchProfileEvents.js';

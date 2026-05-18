@@ -18,6 +18,8 @@ export const CODEX_CORE: AgentCoreConfig = {
     // Persisted metadata has used a few aliases over time.
     flavorAliases: ['codex', 'openai', 'gpt'],
     cli: buildCatalogProviderCliUiConfig('codex'),
+    autoProvisionedEnvVars: ['CODEX_HOME'],
+    profileProvisioning: { backendId: 'codex' },
     permissions: {
         modeGroup: 'codexLike',
         promptProtocol: 'codexDecision',

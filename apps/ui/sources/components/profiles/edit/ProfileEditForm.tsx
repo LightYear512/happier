@@ -33,6 +33,7 @@ import { buildBackendTargetKey } from '@happier-dev/protocol';
 import { supportsDirectTranscriptStorageForNewSession } from '@/components/sessions/new/modules/newSessionTranscriptStorage';
 import { readAccountTranscriptStorageDefaults, type SessionTranscriptStorageMode } from '@/sync/domains/session/transcriptStorageDefaults';
 import { MachinePreviewModal } from './MachinePreviewModal';
+import { ProvisionPtyModal } from '@/components/profiles/provision/ProvisionPtyModal';
 import { resolveMachineLoginRequirementForProfileTargets } from './resolveMachineLoginRequirementForProfileTargets';
 import {
     isProfileCompatibleWithResolvedBackendEntry,
@@ -120,6 +121,16 @@ export function ProfileEditForm({
             backendEnabledByTargetKey,
         });
     }, [backendEnabledByTargetKey, enabledAgentIds, settings.acpCatalogSettingsV1]);
+    const autoProvisionedEnvVarNames = React.useMemo(() => {
+        const names = new Set<string>();
+        for (const entry of resolvedBackendEntries) {
+            const core = getAgentCore(entry.iconAgentId);
+            for (const name of core.autoProvisionedEnvVars ?? []) {
+                names.add(name);
+            }
+        }
+        return Array.from(names);
+    }, [resolvedBackendEntries]);
     const cliDetection = useCLIDetection(resolvedMachineId, {
         includeLoginStatus: Boolean(resolvedMachineId),
         serverId: activeServerId,
@@ -444,6 +455,29 @@ export function ProfileEditForm({
     const compatibleBackendEntries = React.useMemo(() => {
         return resolvedBackendEntries.filter((entry) => compatibilityByTargetKeyState[entry.targetKey] === true);
     }, [compatibilityByTargetKeyState, resolvedBackendEntries]);
+    const provisionableBackendEntries = React.useMemo(() => {
+        if (!resolvedMachineId) return [];
+        return compatibleBackendEntries
+            .map((entry) => {
+                const core = getAgentCore(entry.iconAgentId);
+                if (!core.profileProvisioning) return null;
+                return { entry, core, provisioning: core.profileProvisioning };
+            })
+            .filter((value): value is NonNullable<typeof value> => value !== null);
+    }, [compatibleBackendEntries, resolvedMachineId]);
+    const openProvisionModal = React.useCallback((params: Readonly<{
+        backendId: 'claude' | 'codex';
+        machineId: string;
+    }>) => {
+        Modal.show({
+            component: ProvisionPtyModal,
+            props: {
+                profileId: profile.id,
+                backendId: params.backendId,
+                machineId: params.machineId,
+            },
+        });
+    }, [profile.id]);
     const compatibleMachineLoginTargets = React.useMemo(() => {
         return compatibleBackendEntries.map((entry) => ({
             targetKey: entry.targetKey,
@@ -1004,6 +1038,24 @@ export function ProfileEditForm({
                 </ItemGroup>
             )}
 
+            {resolvedMachineId && provisionableBackendEntries.length > 0 ? (
+                <ItemGroup title={t('profiles.provision.title')}>
+                    {provisionableBackendEntries.map(({ entry, core, provisioning }, index) => (
+                        <Item
+                            key={`provision-${entry.targetKey}`}
+                            title={t('profiles.provision.provisionOnMachine')}
+                            subtitle={t(core.displayNameKey)}
+                            icon={<Ionicons name="cloud-download-outline" size={29} color={theme.colors.button.secondary.tint} />}
+                            showDivider={index < provisionableBackendEntries.length - 1}
+                            onPress={() => openProvisionModal({
+                                backendId: provisioning.backendId,
+                                machineId: resolvedMachineId,
+                            })}
+                        />
+                    ))}
+                </ItemGroup>
+            ) : null}
+
             <EnvironmentVariablesList
                 environmentVariables={environmentVariables}
                 machineId={resolvedMachineId}
@@ -1014,6 +1066,7 @@ export function ProfileEditForm({
                 onUpdateSourceRequirement={updateSourceRequirement}
                 getDefaultSecretNameForSourceVar={getDefaultSecretNameForSourceVar}
                 onPickDefaultSecretForSourceVar={openDefaultSecretModalForSourceVar}
+                autoProvisionedEnvVarNames={autoProvisionedEnvVarNames}
             />
 
             <View style={{ paddingHorizontal: Platform.select({ ios: 16, default: 12 }), paddingTop: 12 }}>

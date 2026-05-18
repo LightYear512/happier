@@ -88,6 +88,13 @@ function resolveTranscriptPath(params: Readonly<{
     return resolve(derived);
 }
 
+function getStatFingerprint(stat: Readonly<{ size: number; mtime: Date; mtimeMs: number }>): Readonly<{ size: number; mtimeMs: number }> {
+    return {
+        size: Number.isFinite(stat.size) ? Math.max(0, Math.trunc(stat.size)) : 0,
+        mtimeMs: Number.isFinite(stat.mtimeMs) ? Math.trunc(stat.mtimeMs) : Math.trunc(stat.mtime.getTime()),
+    };
+}
+
 async function waitForTranscriptToSettle(params: Readonly<{ transcriptPath: string }>): Promise<boolean> {
     const timeoutMs = configuration.claudeTranscriptRepairWaitForToolUseIdsTimeoutMs;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return true;
@@ -99,28 +106,21 @@ async function waitForTranscriptToSettle(params: Readonly<{ transcriptPath: stri
     const handle = await open(params.transcriptPath, 'r');
     try {
         let stat = await handle.stat();
-        let lastSize = Number.isFinite(stat.size) ? Math.max(0, Math.trunc(stat.size)) : 0;
-        let lastMtimeMs = Number.isFinite((stat as any).mtimeMs)
-            ? Math.trunc((stat as any).mtimeMs as number)
-            : Math.trunc(stat.mtime.getTime());
+        let lastFingerprint = getStatFingerprint(stat);
+        let changedDuringSettleWindow = false;
 
         while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, effectivePollIntervalMs));
             stat = await handle.stat();
-            const size = Number.isFinite(stat.size) ? Math.max(0, Math.trunc(stat.size)) : 0;
-            const mtimeMs = Number.isFinite((stat as any).mtimeMs)
-                ? Math.trunc((stat as any).mtimeMs as number)
-                : Math.trunc(stat.mtime.getTime());
+            const fingerprint = getStatFingerprint(stat);
 
-            if (size === lastSize && mtimeMs === lastMtimeMs) {
-                return true;
+            if (fingerprint.size !== lastFingerprint.size || fingerprint.mtimeMs !== lastFingerprint.mtimeMs) {
+                changedDuringSettleWindow = true;
+                lastFingerprint = fingerprint;
             }
-
-            lastSize = size;
-            lastMtimeMs = mtimeMs;
         }
 
-        return false;
+        return !changedDuringSettleWindow;
     } finally {
         await handle.close();
     }
