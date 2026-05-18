@@ -2559,6 +2559,14 @@ class Sync {
         return (path: string) => request(path, { method: 'GET' });
     }
 
+    private getSocketOfflineDurationMs = (): number => {
+        const offlineForMs = this.lastSocketDisconnectedAtMs != null
+            ? Date.now() - this.lastSocketDisconnectedAtMs
+            : (this.lastSocketOfflineDurationMs ?? 0);
+
+        return Number.isFinite(offlineForMs) ? Math.max(0, offlineForMs) : 0;
+    }
+
     /**
      * Export the per-session data key for UI-assisted resume (dataKey mode only).
      * Returns null when the session uses legacy encryption or the key is unavailable.
@@ -3348,7 +3356,7 @@ class Sync {
 
           const viewport = this.sessionViewport.get(sessionId) ?? null;
           const isPinned = viewport?.isPinned ?? true;
-          const offlineForMs = this.lastSocketDisconnectedAtMs ? (Date.now() - this.lastSocketDisconnectedAtMs) : 0;
+          const offlineForMs = this.getSocketOfflineDurationMs();
           const requestMessages = this.createSessionMessagesRequest(sessionId);
           const sessionEncryptionMode = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
 
@@ -4328,7 +4336,7 @@ class Sync {
               return false;
           };
 
-          const offlineForMs = this.lastSocketDisconnectedAtMs ? (Date.now() - this.lastSocketDisconnectedAtMs) : 0;
+          const offlineForMs = this.getSocketOfflineDurationMs();
           const forceSnapshotRefresh = offlineForMs >= this.syncTuning.messageForceSnapshotOfflineMs;
 
           const catchUp = await runSocketReconnectCatchUpViaChanges({
