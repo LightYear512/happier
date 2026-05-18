@@ -1,10 +1,42 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolve } from 'node:path';
 
+function requireFreshMetroConfig() {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const resolved = require.resolve('../../metro.config.js');
+  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+  delete require.cache[resolved];
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require('../../metro.config.js');
+}
+
 describe('metro.config.js (kokoro)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock('@sentry/react-native/metro', () => ({
+      getSentryExpoConfig: (projectRoot: string) => ({
+        projectRoot,
+        watchFolders: [],
+        resolver: {
+          assetExts: [],
+          resolveRequest: (_context: unknown, moduleName: string) => ({
+            type: 'sourceFile',
+            filePath: moduleName,
+          }),
+        },
+        serializer: {},
+        transformer: {},
+      }),
+    }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock('@sentry/react-native/metro');
+    vi.resetModules();
+  });
+
   it('overrides kokoro-js for web bundling', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const config = require('../../metro.config.js');
+    const config = requireFreshMetroConfig();
 
     expect(config?.resolver?.resolveRequest).toEqual(expect.any(Function));
 
@@ -31,8 +63,7 @@ describe('metro.config.js (kokoro)', () => {
   });
 
   it('shims Node builtins used by kokoro/transformers for native bundling', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const config = require('../../metro.config.js');
+    const config = requireFreshMetroConfig();
 
     const resPath = config.resolver.resolveRequest(
       { resolveRequest: () => ({ type: 'empty' }) },
@@ -62,8 +93,7 @@ describe('metro.config.js (kokoro)', () => {
   });
 
   it('normalizes the monorepo web entry request back to the UI workspace entry file', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const config = require('../../metro.config.js');
+    const config = requireFreshMetroConfig();
 
     const res = config.resolver.resolveRequest(
       {
@@ -79,8 +109,7 @@ describe('metro.config.js (kokoro)', () => {
   });
 
   it('does not inject the monorepo root into watchFolders when the workspace entry file already lives under projectRoot', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const config = require('../../metro.config.js');
+    const config = requireFreshMetroConfig();
     const repoRoot = resolve(process.cwd(), '../..');
 
     expect(config.projectRoot).toBe(resolve(process.cwd()));

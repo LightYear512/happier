@@ -129,6 +129,8 @@ import { waitForInitialCredentials } from './startup/waitForInitialCredentials';
 import { resolveDaemonDiagnosticSubsystemGates } from './startup/diagnosticSubsystemGates';
 import { waitForSessionWebhook } from './spawn/waitForSessionWebhook';
 import { resolveSpawnChildEnvironment } from './spawn/resolveSpawnChildEnvironment';
+import { resolveDaemonSpawnProfileEnvForChild } from './spawn/resolveDaemonSpawnProfileEnvForChild';
+import { createSuspendedProfileSessionRegistry } from './profiles/suspendedProfileSessions';
 import { buildSpawnChildProcessEnv } from './spawn/buildSpawnChildProcessEnv';
 import { resolveStackProcessKindOverrideForSessionSpawn } from './spawn/resolveStackProcessKindOverrideForSessionSpawn';
 import { createSpawnConcurrencyGate } from './spawn/createSpawnConcurrencyGate';
@@ -1625,6 +1627,19 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               const daemonSpawnHooks = catalogEntry.getDaemonSpawnHooks
                 ? await catalogEntry.getDaemonSpawnHooks()
                 : null;
+              const profileEnvForChild = resolveDaemonSpawnProfileEnvForChild({
+                daemonSpawnHooks,
+                profileId: normalizedOptions.profileId,
+                processEnv: process.env,
+                activeServerDir: configuration.activeServerDir,
+              });
+              if (!profileEnvForChild.ok) {
+                return {
+                  type: 'error',
+                  errorCode: profileEnvForChild.errorCode,
+                  errorMessage: profileEnvForChild.errorMessage,
+                };
+              }
 
               let spawnResourceCleanupOnFailure: (() => void) | null = null;
               let spawnResourceCleanupOnExit: (() => void) | null = null;
@@ -1871,8 +1886,11 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   };
                 }
                 const extraEnv = spawnEnvironment.expandedEnvironmentVariables;
-                const extraEnvForChild = spawnEnvironment.extraEnvForChild;
                 const materializationDiagnostics = spawnEnvironment.materializationDiagnostics;
+                const extraEnvForChild = {
+                  ...spawnEnvironment.extraEnvForChild,
+                  ...profileEnvForChild.env,
+                };
                 const trackedSessionEnvironmentVariables = buildTrackedSessionRespawnEnvironmentVariables({
                   expandedEnvironmentVariables: extraEnv,
                   extraEnvForChild,
@@ -2966,6 +2984,11 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           return true;
         };
 
+        const suspendedProfileSessions = createSuspendedProfileSessionRegistry({
+          spawnSession,
+          logDebug: (message, payload) => logger.debug(message, payload),
+        });
+
     const controlToken = randomBytes(32).toString('base64url');
 
     // Start control server
@@ -3961,6 +3984,50 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                 stopSession,
                 isSessionActive: isSessionAlreadyRunning,
                 loadLocalSessionMetadata: loadLocalSessionMetadataForHandoff,
+                tryRecoverSuspendedSessions: (profileId, backendId) => {
+                  void suspendedProfileSessions.recover({ profileId, backendId }).then((result) => {
+                    if (result.recoveredSessionIds.length > 0 || result.failedSessionIds.length > 0) {
+                      logger.debug('[DAEMON RUN] Suspended profile session recovery finished', result);
+                    }
+                  }).catch((error) => {
+                    logger.debug('[DAEMON RUN] Suspended profile session recovery failed', error);
+                  });
+                },
+                sessionSwitchProfile: {
+                  activeServerDir: configuration.activeServerDir,
+                  findSessionByHappyId: (sessionId) => {
+                    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+                    if (!normalizedSessionId) return null;
+                    for (const trackedSession of pidToTrackedSession.values()) {
+                      const happySessionId =
+                        typeof trackedSession.happySessionId === 'string'
+                          ? trackedSession.happySessionId.trim()
+                          : '';
+                      const existingSessionId =
+                        typeof trackedSession.spawnOptions?.existingSessionId === 'string'
+                          ? trackedSession.spawnOptions.existingSessionId.trim()
+                          : '';
+                      if (happySessionId !== normalizedSessionId && existingSessionId !== normalizedSessionId) {
+                        continue;
+                      }
+                      if (!trackedSession.spawnOptions) return null;
+                      return {
+                        backendId: resolveCatalogAgentIdFromBackendTarget(trackedSession.spawnOptions.backendTarget),
+                        profileId: trackedSession.spawnOptions.profileId ?? null,
+                        spawnOptions: trackedSession.spawnOptions,
+                      };
+                    }
+                    return null;
+                  },
+                  stopSession,
+                  spawnSession,
+                  addSuspendedSession: (sessionId, backendId, profileId, spawnOptions) => {
+                    suspendedProfileSessions.add({ sessionId, backendId, profileId, spawnOptions });
+                  },
+                  removeSuspendedSession: (sessionId) => {
+                    suspendedProfileSessions.remove(sessionId);
+                  },
+                },
                 requestShutdown: () => {
                   void beforeShutdown().finally(() => requestShutdown('happier-app'));
                 },

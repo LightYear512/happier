@@ -134,6 +134,14 @@ function normalizeDaemonSpawnSessionEnvelope(result: unknown): SpawnSessionResul
   };
 }
 import { isAuthenticationError } from '@/api/client/httpStatusError';
+import {
+  registerProfileProvisionHandlers,
+  type TryRecoverSuspendedSessionsFn,
+} from '@/rpc/handlers/profileProvision';
+import {
+  registerSessionSwitchProfileHandler,
+  type SessionSwitchProfileDeps,
+} from '@/rpc/handlers/sessionSwitchProfile';
 
 function parseSessionConnectedServiceAuthSwitchRpcParams(raw: unknown): Readonly<{
   sessionId: string;
@@ -157,6 +165,8 @@ export type MachineRpcHandlers = {
   stopSession: (sessionId: string) => Promise<boolean>;
   isSessionActive?: (sessionId: string) => Promise<boolean>;
   loadLocalSessionMetadata?: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
+  tryRecoverSuspendedSessions?: TryRecoverSuspendedSessionsFn | null;
+  sessionSwitchProfile?: SessionSwitchProfileDeps | null;
   requestShutdown: () => void;
   memory?: MemoryWorkerHandle;
   daemonServerWorkScheduler?: Pick<DaemonServerWorkScheduler, 'getSnapshot'>;
@@ -275,6 +285,12 @@ export function registerMachineRpcHandlers(params: Readonly<{
     }
     return await requestDaemonSessionConnectedServiceAuthSwitch(parsed);
   });
+  registerProfileProvisionHandlers(rpcHandlerManager, {
+    tryRecoverSuspendedSessions: handlers.tryRecoverSuspendedSessions ?? null,
+  });
+  if (handlers.sessionSwitchProfile) {
+    registerSessionSwitchProfileHandler(rpcHandlerManager, handlers.sessionSwitchProfile);
+  }
 
   // Register spawn session handler
   rpcHandlerManager.registerHandler(RPC_METHODS.SPAWN_HAPPY_SESSION, async (params: any) => {

@@ -9633,6 +9633,7 @@ settingsSession: {
     environmentVariables: {
       title: "Zmienne środowiskowe",
       addVariable: "Dodaj zmienną",
+      systemManagedSubtitle: "Zarządzana automatycznie dla tego profilu.",
       namePlaceholder: "Nazwa zmiennej (np. MY_CUSTOM_VAR)",
       valuePlaceholder: "Wartość (np. my-value lub ${MY_VAR})",
       validation: {
@@ -9640,6 +9641,8 @@ settingsSession: {
         invalidNameFormat:
           "Nazwy zmiennych muszą zawierać wielkie litery, cyfry i podkreślenia oraz nie mogą zaczynać się od cyfry.",
         duplicateName: "Taka zmienna już istnieje.",
+        autoProvisionedReserved:
+          "Ta zmienna jest zarządzana automatycznie dla tego profilu.",
       },
       card: {
         valueLabel: "Wartość:",
@@ -9716,6 +9719,29 @@ settingsSession: {
           missing: "Brak",
         },
       },
+    },
+    provision: {
+      title: "Przygotuj na maszynie",
+      provisionOnMachine: "Przygotuj na maszynie",
+      modalTitle: ({ backend }: { backend: string }) => `Przygotuj ${backend}`,
+      inProgressHint:
+        "Postępuj zgodnie z komunikatami CLI, aby dokończyć logowanie.",
+      alreadyProvisioned:
+        "Ten profil jest już przygotowany na tej maszynie.",
+      successHint: "Przygotowanie profilu zakończone.",
+      errorBody: "Nie udało się przygotować profilu.",
+      runInBackground: "Uruchom w tle",
+    },
+    switch: {
+      title: "Zmień profil",
+      count: ({ count }: { count: number }) => `${count} dostępnych profili`,
+      confirmTitle: "Zmienić profil?",
+      confirmBody:
+        "Bieżąca sesja zostanie ponownie uruchomiona z wybranym profilem.",
+      errorTitle: "Nie udało się zmienić profilu",
+      errorBody: "Nie udało się zmienić profilu sesji.",
+      turnInProgress:
+        "Poczekaj, aż bieżąca tura się zakończy, i spróbuj ponownie.",
     },
     delete: {
       title: "Usuń Profil",

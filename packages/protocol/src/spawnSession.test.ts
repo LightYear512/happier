@@ -100,3 +100,9 @@ describe('spawn-session error detail contract (D2 structured continuity)', () =>
     })).toBe(false);
   });
 });
+
+describe('SPAWN_SESSION_ERROR_CODES', () => {
+  it('includes profile provisioning failures as a stable spawn error code', () => {
+    expect(SPAWN_SESSION_ERROR_CODES.PROFILE_NOT_PROVISIONED).toBe('PROFILE_NOT_PROVISIONED');
+  });
+});

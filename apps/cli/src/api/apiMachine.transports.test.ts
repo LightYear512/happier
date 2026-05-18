@@ -519,4 +519,42 @@ describe('ApiMachineClient transports', () => {
       nextCursor: 'cursor-2',
     }));
   });
+
+  it('threads session profile switching handlers into machine RPC registration', async () => {
+    const machineSocket = createApiSessionSocketStub();
+    bindApiSessionSocketMock(mockIo, machineSocket);
+
+    const mod = await import('./apiMachine');
+    const rpcHandlers = await import('./machine/rpcHandlers');
+    const registerMachineRpcHandlers = vi.mocked(rpcHandlers.registerMachineRpcHandlers);
+
+    const machine: Machine = {
+      id: 'test-machine',
+      encryptionKey: new Uint8Array(32),
+      encryptionVariant: 'legacy',
+      metadata: null,
+      metadataVersion: 0,
+      daemonState: null,
+      daemonStateVersion: 0,
+    };
+    const sessionSwitchProfile = {
+      findSessionByHappyId: () => null,
+      stopSession: async () => false,
+      spawnSession: async () => ({ type: 'success', sessionId: 'session-1' } as const),
+      addSuspendedSession: () => {},
+      removeSuspendedSession: () => {},
+      activeServerDir: '/tmp/happier-test-active-server',
+    };
+
+    const client = new mod.ApiMachineClient('fake-token', machine);
+    client.setRPCHandlers({
+      spawnSession: async () => ({ type: 'success', sessionId: 'session-1' }),
+      stopSession: async () => true,
+      sessionSwitchProfile,
+      requestShutdown: () => {},
+    });
+
+    const lastCall = registerMachineRpcHandlers.mock.calls.at(-1)?.[0];
+    expect(lastCall?.handlers.sessionSwitchProfile).toBe(sessionSwitchProfile);
+  });
 });
