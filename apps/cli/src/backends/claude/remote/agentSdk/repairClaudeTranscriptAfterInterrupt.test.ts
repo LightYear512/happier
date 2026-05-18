@@ -337,10 +337,10 @@ describe('repairClaudeTranscriptAfterInterrupt', () => {
         expect(updated).not.toContain('Interrupted');
     });
 
-    it('skips repair when the transcript is still actively being written (requires a settled file)', async () => {
+    it('skips repair when the transcript changes during the settle window', async () => {
         const previousTimeout = process.env.HAPPIER_CLAUDE_TRANSCRIPT_REPAIR_WAIT_TOOL_USE_IDS_TIMEOUT_MS;
         const previousPoll = process.env.HAPPIER_CLAUDE_TRANSCRIPT_REPAIR_WAIT_TOOL_USE_IDS_POLL_INTERVAL_MS;
-        process.env.HAPPIER_CLAUDE_TRANSCRIPT_REPAIR_WAIT_TOOL_USE_IDS_TIMEOUT_MS = '50';
+        process.env.HAPPIER_CLAUDE_TRANSCRIPT_REPAIR_WAIT_TOOL_USE_IDS_TIMEOUT_MS = '80';
         process.env.HAPPIER_CLAUDE_TRANSCRIPT_REPAIR_WAIT_TOOL_USE_IDS_POLL_INTERVAL_MS = '10';
         try {
             const baseDir = await mkdtemp(join(tmpdir(), 'happier-claude-repair-settle-skip-'));
@@ -374,32 +374,27 @@ describe('repairClaudeTranscriptAfterInterrupt', () => {
                 'utf8',
             );
 
-            let tick = 0;
-            const interval = setInterval(() => {
-                tick += 1;
-                void appendFile(
-                    transcriptPath,
-                    `${JSON.stringify({
-                        type: 'system',
-                        uuid: `tick_${tick}`,
-                        isSidechain: false,
-                        message: { role: 'system', content: [{ type: 'text', text: 'busy' }] },
-                    })}\n`,
-                    'utf8',
-                ).catch(() => {});
-            }, 5);
-
             vi.resetModules();
             const { repairClaudeTranscriptAfterInterrupt } = await import('./repairClaudeTranscriptAfterInterrupt');
-            await repairClaudeTranscriptAfterInterrupt({
+            const repairPromise = repairClaudeTranscriptAfterInterrupt({
                 sessionId: 'sess_1',
                 transcriptPath,
                 workDir,
                 claudeConfigDir,
             });
 
-            clearInterval(interval);
-            await new Promise((resolve) => setTimeout(resolve, 175));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            await appendFile(
+                transcriptPath,
+                `${JSON.stringify({
+                    type: 'system',
+                    uuid: 'tick_1',
+                    isSidechain: false,
+                    message: { role: 'system', content: [{ type: 'text', text: 'busy' }] },
+                })}\n`,
+                'utf8',
+            );
+            await repairPromise;
 
             const updated = await readFile(transcriptPath, 'utf8');
             expect(updated).not.toContain('\"type\":\"tool_result\"');

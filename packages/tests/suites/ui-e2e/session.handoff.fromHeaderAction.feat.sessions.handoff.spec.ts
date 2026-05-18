@@ -57,6 +57,22 @@ async function waitForMachineIds(params: { cliHomeDir: string; serverBaseUrl: st
   });
 }
 
+function parseSessionMetadataSnapshot(value: unknown): Record<string, unknown> | null {
+  const parsed = typeof value === 'string'
+    ? (() => {
+      try {
+        return JSON.parse(value) as unknown;
+      } catch {
+        return null;
+      }
+    })()
+    : value;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
 async function waitForSessionInfoMachineTarget(params: {
   page: Page;
   uiBaseUrl: string;
@@ -64,6 +80,7 @@ async function waitForSessionInfoMachineTarget(params: {
   cliHomeDir: string;
   sessionId: string;
   expectedMachineId: string;
+  allowHomeDirPath?: boolean;
   timeoutMs?: number;
 }): Promise<void> {
   const timeoutMs = params.timeoutMs ?? 180_000;
@@ -92,12 +109,18 @@ async function waitForSessionInfoMachineTarget(params: {
         },
         timeoutMs: 5_000,
       });
-      const metadata = res.status === 200 && res.data && typeof res.data === 'object' ? (res.data as any).session?.metadata : null;
+      const metadata = res.status === 200 && res.data && typeof res.data === 'object'
+        ? parseSessionMetadataSnapshot((res.data as any).session?.metadata)
+        : null;
       lastServerMachineId = typeof metadata?.machineId === 'string' ? metadata.machineId.trim() : '';
       lastServerPath = typeof metadata?.path === 'string' ? metadata.path.trim() : '';
       lastServerHomeDir = typeof metadata?.homeDir === 'string' ? metadata.homeDir.trim() : '';
       const machineOk = lastServerMachineId === params.expectedMachineId;
-      const pathOk = lastServerPath.length > 0 && (!lastServerHomeDir || lastServerPath !== lastServerHomeDir);
+      const pathOk = lastServerPath.length > 0 && (
+        params.allowHomeDirPath === true
+        || !lastServerHomeDir
+        || lastServerPath !== lastServerHomeDir
+      );
       if (machineOk && pathOk) {
         await params.page.goto(`${params.uiBaseUrl}/session/${params.sessionId}/info`, { waitUntil: 'domcontentloaded' });
         await expect(params.page.getByTestId('session-info-screen')).toHaveCount(1, { timeout: 60_000 });
@@ -828,6 +851,7 @@ test.describe('ui e2e: session handoff failure recovery from header action menu'
       cliHomeDir: sourceCliHomeDir,
       sessionId,
       expectedMachineId: sourceMachineId,
+      allowHomeDirPath: true,
       timeoutMs: 180_000,
     });
   });

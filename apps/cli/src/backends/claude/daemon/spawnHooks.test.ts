@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmod, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -115,6 +115,45 @@ describe('claudeDaemonSpawnHooks.buildExtraEnvForChild', () => {
     const { claudeDaemonSpawnHooks } = await import('./spawnHooks');
     expect(claudeDaemonSpawnHooks.buildExtraEnvForChild?.({} as any)).toEqual({
       CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+    });
+  });
+});
+
+describe('claudeDaemonSpawnHooks.resolveProfileEnvForChild', () => {
+  it('returns CLAUDE_CONFIG_DIR for provisioned profiles', async () => {
+    const activeServerDir = await createTempDir('happier-claude-profile-env-');
+    tempDirs.add(activeServerDir);
+    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    await mkdir(profileDir, { recursive: true });
+    await writeFile(join(profileDir, '.credentials.json'), '{"accessToken":"token"}', 'utf8');
+
+    const { claudeDaemonSpawnHooks } = await import('./spawnHooks');
+    expect(claudeDaemonSpawnHooks.resolveProfileEnvForChild?.({
+      profileId: 'work',
+      env: {},
+      activeServerDir,
+    })).toEqual({
+      ok: true,
+      env: { CLAUDE_CONFIG_DIR: profileDir },
+    });
+  });
+
+  it('rejects directory-only profiles as not provisioned', async () => {
+    const activeServerDir = await createTempDir('happier-claude-profile-env-empty-');
+    tempDirs.add(activeServerDir);
+    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    await mkdir(profileDir, { recursive: true });
+
+    const { claudeDaemonSpawnHooks } = await import('./spawnHooks');
+    expect(claudeDaemonSpawnHooks.resolveProfileEnvForChild?.({
+      profileId: 'work',
+      env: {},
+      activeServerDir,
+    })).toEqual({
+      ok: false,
+      reason: 'profile_not_provisioned',
+      profileId: 'work',
+      expectedDir: profileDir,
     });
   });
 });

@@ -1,8 +1,10 @@
 import { validateCodexAcpSpawnAvailability } from '@/backends/codex/acp/spawnAvailability';
 import { resolveCodexAcpSpawn } from '@/backends/codex/acp/resolveCommand';
+import { resolveCodexHomeForSession } from '@/backends/codex/utils/resolveCodexHomeForSession';
 import {
   resolveDaemonSpawnRuntimeCodexBackendMode,
   type DaemonSpawnHooks,
+  type DaemonSpawnProfileEnvResult,
   type DaemonSpawnRuntimeSelection,
 } from '@/daemon/spawnHooks';
 
@@ -49,4 +51,21 @@ export const codexDaemonSpawnHooks: DaemonSpawnHooks = {
   buildExtraEnvForChild: (runtimeSelection) => ({
     ...(resolveCodexDaemonBackendMode(runtimeSelection) === 'acp' ? { HAPPIER_EXPERIMENTAL_CODEX_ACP: '1' } : {}),
   }),
+
+  resolveProfileEnvForChild: (params): DaemonSpawnProfileEnvResult => {
+    const resolved = resolveCodexHomeForSession(params);
+    if (resolved.status === 'ok') {
+      return { ok: true, env: { CODEX_HOME: resolved.codexHome } };
+    }
+    if (resolved.status === 'profile_not_provisioned') {
+      return {
+        ok: false,
+        reason: 'profile_not_provisioned',
+        profileId: resolved.profileId,
+        expectedDir: resolved.expectedDir,
+      };
+    }
+    const env: Record<string, string> = {};
+    return { ok: true, env };
+  },
 };

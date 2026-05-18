@@ -17,6 +17,8 @@ export const CLAUDE_CORE: AgentCoreConfig = {
     uiConnectedService: { serviceId: 'anthropic', label: 'Claude Code', connectRoute: '/settings/connect/claude' },
     flavorAliases: ['claude'],
     cli: buildCatalogProviderCliUiConfig('claude'),
+    autoProvisionedEnvVars: ['CLAUDE_CONFIG_DIR'],
+    profileProvisioning: { backendId: 'claude' },
     permissions: {
         modeGroup: 'claude',
         promptProtocol: 'claude',

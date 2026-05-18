@@ -8167,12 +8167,14 @@ settingsSession: {
         environmentVariables: {
             title: 'Environment Variables',
             addVariable: 'Add Variable',
+            systemManagedSubtitle: 'Managed automatically for this profile.',
             namePlaceholder: 'Variable name (e.g., MY_CUSTOM_VAR)',
             valuePlaceholder: 'Value (e.g., my-value or ${MY_VAR})',
             validation: {
                 nameRequired: 'Enter a variable name.',
                 invalidNameFormat: 'Variable names must be uppercase letters, numbers, and underscores, and cannot start with a number.',
                 duplicateName: 'That variable already exists.',
+                autoProvisionedReserved: 'This variable is managed automatically for this profile.',
             },
             card: {
                 valueLabel: 'Value:',
@@ -8228,6 +8230,25 @@ settingsSession: {
                     missing: 'Missing',
                 },
             },
+        },
+        provision: {
+            title: 'Provision on machine',
+            provisionOnMachine: 'Provision on machine',
+            modalTitle: ({ backend }: { backend: string }) => `Provision ${backend}`,
+            inProgressHint: 'Follow the CLI prompts to finish login.',
+            alreadyProvisioned: 'This profile is already provisioned on this machine.',
+            successHint: 'Profile provisioning completed.',
+            errorBody: 'Profile provisioning failed.',
+            runInBackground: 'Run in background',
+        },
+        switch: {
+            title: 'Switch profile',
+            count: ({ count }: { count: number }) => `${count} available profiles`,
+            confirmTitle: 'Switch profile?',
+            confirmBody: 'The current session will restart with the selected profile.',
+            errorTitle: 'Profile switch failed',
+            errorBody: 'Could not switch the session profile.',
+            turnInProgress: 'Wait for the current turn to finish, then try again.',
         },
         delete: {
             title: 'Delete Profile',

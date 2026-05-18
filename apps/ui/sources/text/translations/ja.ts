@@ -1407,6 +1407,7 @@ export const ja: TranslationStructure = {
     environmentVariables: {
       title: "環境変数",
       addVariable: "変数を追加",
+      systemManagedSubtitle: "このプロファイル用に自動管理されています。",
       namePlaceholder: "変数名（例: MY_CUSTOM_VAR）",
       valuePlaceholder: "値（例: my-value または ${MY_VAR}）",
       validation: {
@@ -1414,6 +1415,8 @@ export const ja: TranslationStructure = {
         invalidNameFormat:
           "変数名は大文字、数字、アンダースコアのみで、数字から始めることはできません。",
         duplicateName: "その変数は既に存在します。",
+        autoProvisionedReserved:
+          "この変数はこのプロファイル用に自動管理されています。",
       },
       card: {
         valueLabel: "値:",
@@ -1488,6 +1491,29 @@ export const ja: TranslationStructure = {
           missing: "未設定",
         },
       },
+    },
+    provision: {
+      title: "マシンでプロビジョニング",
+      provisionOnMachine: "マシンでプロビジョニング",
+      modalTitle: ({ backend }: { backend: string }) => `${backend} をプロビジョニング`,
+      inProgressHint:
+        "CLI の案内に従ってログインを完了してください。",
+      alreadyProvisioned:
+        "このプロファイルはこのマシンで既にプロビジョニング済みです。",
+      successHint: "プロファイルのプロビジョニングが完了しました。",
+      errorBody: "プロファイルのプロビジョニングに失敗しました。",
+      runInBackground: "バックグラウンドで実行",
+    },
+    switch: {
+      title: "プロファイルを切り替え",
+      count: ({ count }: { count: number }) => `${count} 件の利用可能なプロファイル`,
+      confirmTitle: "プロファイルを切り替えますか？",
+      confirmBody:
+        "現在のセッションは選択したプロファイルで再起動します。",
+      errorTitle: "プロファイルの切り替えに失敗しました",
+      errorBody: "セッションのプロファイルを切り替えられませんでした。",
+      turnInProgress:
+        "現在のターンが完了してから、もう一度お試しください。",
     },
     delete: {
       title: "プロファイルを削除",

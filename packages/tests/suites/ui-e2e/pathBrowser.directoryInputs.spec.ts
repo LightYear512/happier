@@ -112,7 +112,7 @@ async function selectDirectoryFromPathBrowser(
         const firstSuggested = page.getByRole('button', { name: /\/Users\// }).first();
         await expect(firstSuggested).toHaveCount(1, { timeout: 30_000 });
         const firstSuggestedText = (await firstSuggested.textContent()) ?? '';
-        const selectedPath = firstSuggestedText.match(/\/Users\/[^\s]+/)?.[0] ?? '/Users/leeroy';
+        const selectedPath = firstSuggestedText.match(/\/Users\/[^\uE000-\uF8FF]+/)?.[0].trim() ?? '/Users/leeroy';
         await firstSuggested.click();
         await expect(inlinePathTextbox).toHaveValue(selectedPath, { timeout: 30_000 });
         return selectedPath;

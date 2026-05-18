@@ -2307,6 +2307,7 @@ export {
   type SecretSatisfactionParams,
   type SecretSatisfactionResult,
   type SecretSatisfactionSource,
+  type SwitchProfileEvent,
 } from './profiles/index.js';
 
 export { normalizeMachineHost, compareMachineHosts } from './machineHost/normalizeMachineHost.js';

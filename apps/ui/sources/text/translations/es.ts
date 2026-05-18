@@ -8848,6 +8848,7 @@ settingsSession: {
     environmentVariables: {
       title: "Variables de entorno",
       addVariable: "Añadir variable",
+      systemManagedSubtitle: "Gestionada automáticamente para este perfil.",
       namePlaceholder: "Nombre de variable (p. ej., MY_CUSTOM_VAR)",
       valuePlaceholder: "Valor (p. ej., mi-valor o ${MY_VAR})",
       validation: {
@@ -8855,6 +8856,8 @@ settingsSession: {
         invalidNameFormat:
           "Los nombres de variables deben ser letras mayúsculas, números y guiones bajos, y no pueden empezar por un número.",
         duplicateName: "Esa variable ya existe.",
+        autoProvisionedReserved:
+          "Esta variable se gestiona automáticamente para este perfil.",
       },
       card: {
         valueLabel: "Valor:",
@@ -8931,6 +8934,29 @@ settingsSession: {
           missing: "Falta",
         },
       },
+    },
+    provision: {
+      title: "Aprovisionar en la máquina",
+      provisionOnMachine: "Aprovisionar en la máquina",
+      modalTitle: ({ backend }: { backend: string }) => `Aprovisionar ${backend}`,
+      inProgressHint:
+        "Sigue las indicaciones del CLI para completar el inicio de sesión.",
+      alreadyProvisioned:
+        "Este perfil ya está aprovisionado en esta máquina.",
+      successHint: "El aprovisionamiento del perfil se completó.",
+      errorBody: "No se pudo aprovisionar el perfil.",
+      runInBackground: "Ejecutar en segundo plano",
+    },
+    switch: {
+      title: "Cambiar perfil",
+      count: ({ count }: { count: number }) => `${count} perfiles disponibles`,
+      confirmTitle: "¿Cambiar perfil?",
+      confirmBody:
+        "La sesión actual se reiniciará con el perfil seleccionado.",
+      errorTitle: "No se pudo cambiar el perfil",
+      errorBody: "No se pudo cambiar el perfil de la sesión.",
+      turnInProgress:
+        "Espera a que termine el turno actual y vuelve a intentarlo.",
     },
     delete: {
       title: "Eliminar Perfil",

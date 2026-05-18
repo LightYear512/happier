@@ -155,9 +155,9 @@ export interface SpawnSessionOptions {
      * This is NOT the profile content; actual runtime behavior is still driven
      * by environmentVariables passed for this spawn.
      *
-     * Empty string is allowed and means "no profile".
+     * Null or an empty string means "no profile".
      */
-    profileId?: string;
+    profileId?: string | null;
     /**
      * Arbitrary environment variables for the spawned session.
      *

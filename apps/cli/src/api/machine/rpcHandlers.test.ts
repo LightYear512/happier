@@ -206,6 +206,55 @@ describe('registerMachineRpcHandlers', () => {
     }));
   });
 
+  it('registers profile provisioning RPC handlers', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+
+    expect(registered.has(RPC_METHODS.PROFILE_PROVISION)).toBe(true);
+    expect(registered.has(RPC_METHODS.PROFILE_PROVISION_POLL_PROGRESS)).toBe(true);
+  });
+
+  it('registers session profile switching RPC handler when provided', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        sessionSwitchProfile: {
+          findSessionByHappyId: () => null,
+          stopSession: async () => false,
+          spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+          addSuspendedSession: () => {},
+          removeSuspendedSession: () => {},
+          activeServerDir: '/tmp/happier-test-active-server',
+        },
+        requestShutdown: () => {},
+      },
+    });
+
+    expect(registered.has(RPC_METHODS.SESSION_SWITCH_PROFILE)).toBe(true);
+  });
+
   it('expands ~/ in session directories before forwarding spawn requests to the daemon', async () => {
     const previousHome = process.env.HOME;
     process.env.HOME = '/Users/tester';

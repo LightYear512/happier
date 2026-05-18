@@ -40,8 +40,11 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
         expect(fs.existsSync(expectedStubPath)).toBe(true);
     });
 
-    it('falls back to resolving hoisted Expo modules from the monorepo root node_modules', () => {
+    it('falls back to resolving hoisted Expo modules through Node-resolved package paths', () => {
         const config = requireFreshMetroConfig();
+        const expectedResolvedPath = require.resolve('expo-modules-core', {
+            paths: [config.projectRoot],
+        });
 
         const result = config.resolver.resolveRequest(
             // Provide a minimal context; the default resolver can throw in this unit-test harness,
@@ -51,8 +54,29 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
             'web',
         );
 
-        expect(result?.type).toBe('sourceFile');
-        expect(String(result?.filePath)).toMatch(/[/\\\\]expo-modules-core[/\\\\].+[/\\\\]index\.ts$/u);
+        expect(result).toEqual({
+            type: 'sourceFile',
+            filePath: expectedResolvedPath,
+        });
+        expect(fs.existsSync(String(result?.filePath))).toBe(true);
+    });
+
+    it('falls back to resolving transitive dependency paths through Node resolution', () => {
+        const config = requireFreshMetroConfig();
+        const expectedResolvedPath = require.resolve('fbjs/lib/invariant', {
+            paths: [config.projectRoot],
+        });
+
+        const result = config.resolver.resolveRequest(
+            {},
+            'fbjs/lib/invariant',
+            'web',
+        );
+
+        expect(result).toEqual({
+            type: 'sourceFile',
+            filePath: expectedResolvedPath,
+        });
         expect(fs.existsSync(String(result?.filePath))).toBe(true);
     });
 

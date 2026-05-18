@@ -417,6 +417,38 @@ describe('AgentInput (send button accessibility)', () => {
         await screen.unmount();
     });
 
+    it('locks session composer input while a profile switch is pending', async () => {
+        const [{ AgentInput }, { useSessionSwitchingStore }] = await Promise.all([
+            import('./AgentInput'),
+            import('@/sync/domains/profiles/sessionSwitchingStore'),
+        ]);
+        useSessionSwitchingStore.getState().clearAll();
+        useSessionSwitchingStore.getState().setFromEvents('session-1', [
+            { type: 'switch_pending', targetProfileId: 'work' },
+        ]);
+
+        const screen = await renderScreen(<AgentInput
+            sessionId="session-1"
+            value="hello"
+            placeholder="Type"
+            onChangeText={() => {}}
+            onSend={() => {}}
+            autocompletePrefixes={[]}
+            autocompleteSuggestions={async () => []}
+        />);
+
+        const input = screen.findByTestId('session-composer-input');
+        const send = screen.findByTestId('session-composer-send');
+        if (!input || !send) {
+            throw new Error('Expected session composer controls to render.');
+        }
+        expect(input.props.editable).toBe(false);
+        expect(send.props.disabled).toBe(true);
+
+        await screen.unmount();
+        useSessionSwitchingStore.getState().clearAll();
+    });
+
     it('keeps the voice icon visible while mic is enabled and inactive (no text)', async () => {
         const { AgentInput } = await import('./AgentInput');
 

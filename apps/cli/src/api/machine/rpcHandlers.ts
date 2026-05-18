@@ -79,12 +79,22 @@ import { createPromptAssetAdapterRegistry } from '@/promptAssets/createPromptAss
 import { createPromptRegistryAdapterRegistry } from '@/promptRegistries/createPromptRegistryAdapterRegistry';
 import { normalizeSpawnSessionDirectory } from '@/rpc/handlers/spawnSessionOptionsContract';
 import { isAuthenticationError } from '@/api/client/httpStatusError';
+import {
+  registerProfileProvisionHandlers,
+  type TryRecoverSuspendedSessionsFn,
+} from '@/rpc/handlers/profileProvision';
+import {
+  registerSessionSwitchProfileHandler,
+  type SessionSwitchProfileDeps,
+} from '@/rpc/handlers/sessionSwitchProfile';
 
 export type MachineRpcHandlers = {
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   stopSession: (sessionId: string) => Promise<boolean>;
   isSessionActive?: (sessionId: string) => Promise<boolean>;
   loadLocalSessionMetadata?: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
+  tryRecoverSuspendedSessions?: TryRecoverSuspendedSessionsFn | null;
+  sessionSwitchProfile?: SessionSwitchProfileDeps | null;
   requestShutdown: () => void;
   memory?: MemoryWorkerHandle;
   machineTransferChannel?: Readonly<{
@@ -191,6 +201,13 @@ export function registerMachineRpcHandlers(params: Readonly<{
         accessPolicy,
       })
       : machineRpcWorkingDirectory;
+
+  registerProfileProvisionHandlers(rpcHandlerManager, {
+    tryRecoverSuspendedSessions: handlers.tryRecoverSuspendedSessions ?? null,
+  });
+  if (handlers.sessionSwitchProfile) {
+    registerSessionSwitchProfileHandler(rpcHandlerManager, handlers.sessionSwitchProfile);
+  }
 
   // Register spawn session handler
   rpcHandlerManager.registerHandler(RPC_METHODS.SPAWN_HAPPY_SESSION, async (params: any) => {

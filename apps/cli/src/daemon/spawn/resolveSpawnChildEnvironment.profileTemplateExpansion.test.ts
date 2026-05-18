@@ -58,4 +58,28 @@ describe('resolveSpawnChildEnvironment (profile template expansion)', () => {
     expect(result.errorCode).toBe(SPAWN_SESSION_ERROR_CODES.AUTH_ENV_UNEXPANDED);
     expect(result.errorMessage).toContain('ANTHROPIC_AUTH_TOKEN references ${DEEPSEEK_AUTH_TOKEN}');
   });
+
+  it('does not inject a session profile environment variable for explicit null profile ids', async () => {
+    const options: SpawnSessionOptions = {
+      directory: '.',
+      environmentVariables: {},
+      profileId: null,
+    };
+
+    const result = await resolveSpawnChildEnvironment({
+      options,
+      profileEnvironmentVariables: {},
+      daemonSpawnHooks: null,
+      processEnv: {},
+      logDebug: () => {},
+      logInfo: () => {},
+      logWarn: () => {},
+      connectedServiceAuth: null,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.expandedEnvironmentVariables).not.toHaveProperty('HAPPIER_SESSION_PROFILE_ID');
+    expect(result.extraEnvForChild).not.toHaveProperty('HAPPIER_SESSION_PROFILE_ID');
+  });
 });

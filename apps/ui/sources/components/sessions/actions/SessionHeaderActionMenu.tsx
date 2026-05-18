@@ -7,7 +7,12 @@ import { useRouter } from 'expo-router';
 
 import { storage, useSetting, useSettings } from '@/sync/domains/state/storage';
 import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
+import { getAgentCore, resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import {
+  isProfileCompatibleWithAgent,
+  type AIBackendProfile,
+} from '@/sync/domains/profiles/profileCompatibility';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { isActionEnabledInState } from '@/sync/domains/settings/actionsSettings';
 import { buildExecutionRunActionDraftInputForUi } from '@/sync/domains/actions/buildExecutionRunActionDraftInputForUi';
@@ -35,6 +40,13 @@ import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { useSessionHandoffSourceReachability } from '@/sync/domains/sessionHandoff/useSessionHandoffSourceReachability';
 import { resolveSessionReadStateAction } from '@/sync/domains/session/readState/sessionReadState';
+import { callSessionSwitchProfile } from '@/sync/domains/profiles/profileProvisionRpc';
+import { useSessionSwitchingState, useSessionSwitchingStore } from '@/sync/domains/profiles/sessionSwitchingStore';
+import { resolveSessionSwitchingProfileIdOverride } from '@/sync/domains/profiles/deriveSwitchProfileUiState';
+import {
+  filterSwitchableProfiles,
+  runSwitchProfile,
+} from '@/components/sessions/sessionSwitchProfile/runSwitchProfile';
 import {
   createSessionReadStateDropdownItem,
   resolveSessionReadStateFromActionId,
@@ -131,6 +143,66 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     [props.sessionId, voice],
   );
   const showTeleportAction = teleportAvailability.ok && hasGlobalVoiceAgentConversation;
+  const sessionSwitchingState = useSessionSwitchingState(props.sessionId);
+  const sessionAgentId = React.useMemo(() => {
+    const flavor = (props.session.metadata as Readonly<{ flavor?: unknown }> | null | undefined)?.flavor;
+    return typeof flavor === 'string' ? resolveAgentIdFromFlavor(flavor) : null;
+  }, [props.session.metadata]);
+  const currentProfileId = React.useMemo(() => {
+    const profileIdOverride = resolveSessionSwitchingProfileIdOverride(sessionSwitchingState);
+    if (profileIdOverride) return profileIdOverride;
+    const profileId = (props.session.metadata as Readonly<{ profileId?: unknown }> | null | undefined)?.profileId;
+    return typeof profileId === 'string' ? profileId : null;
+  }, [props.session.metadata, sessionSwitchingState]);
+  const sessionSwitchProfileAction = React.useMemo(() => {
+    if (!reachableMachineId || !sessionAgentId) return null;
+    if (!enabledAgentIds.includes(sessionAgentId)) return null;
+    const core = getAgentCore(sessionAgentId);
+    if (!core.profileProvisioning) return null;
+    const profiles = Array.isArray(settings.profiles)
+      ? settings.profiles as readonly AIBackendProfile[]
+      : [];
+    const candidates = filterSwitchableProfiles(profiles, {
+      currentProfileId,
+      isCompatibleWithSession: (profile) => isProfileCompatibleWithAgent(profile, sessionAgentId),
+    });
+    if (candidates.length === 0) return null;
+    return {
+      backendId: core.profileProvisioning.backendId,
+      machineId: reachableMachineId,
+      candidates,
+    };
+  }, [currentProfileId, enabledAgentIds, reachableMachineId, sessionAgentId, settings.profiles]);
+  const executeSessionProfileSwitch = React.useCallback((targetProfileId: string) => {
+    const action = sessionSwitchProfileAction;
+    if (!action) return;
+    fireAndForget((async () => {
+      const confirmed = await Modal.confirm(
+        t('profiles.switch.confirmTitle'),
+        t('profiles.switch.confirmBody'),
+      );
+      if (!confirmed) return;
+
+      useSessionSwitchingStore.getState().setFromEvents(props.sessionId, [
+        { type: 'switch_pending', targetProfileId },
+      ]);
+      const outcome = await runSwitchProfile({
+        sessionId: props.sessionId,
+        targetProfileId,
+        machineId: action.machineId,
+      }, {
+        call: callSessionSwitchProfile,
+        errorFallback: () => t('profiles.switch.errorBody'),
+      });
+      useSessionSwitchingStore.getState().setFromEvents(props.sessionId, outcome.events);
+
+      if (outcome.kind === 'turn_in_progress') {
+        Modal.alert(t('profiles.switch.errorTitle'), t('profiles.switch.turnInProgress'));
+      } else if (outcome.kind === 'error') {
+        Modal.alert(t('profiles.switch.errorTitle'), outcome.message);
+      }
+    })(), { tag: 'SessionHeaderActionMenu.execute.sessionSwitchProfile' });
+  }, [props.sessionId, sessionSwitchProfileAction]);
   const actions = React.useMemo(() => {
     const actionItems: DropdownMenuItem[] = listActionSpecs()
       .filter((spec) => spec.surfaces.ui_button === true)
@@ -168,6 +240,16 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
       });
     }
 
+    if (sessionSwitchProfileAction) {
+      out.push({
+        id: 'session.switchProfile',
+        title: t('profiles.switch.title'),
+        subtitle: sessionSwitchProfileAction.candidates.length === 1
+          ? sessionSwitchProfileAction.candidates[0]?.name
+          : t('profiles.switch.count', { count: sessionSwitchProfileAction.candidates.length }),
+      });
+    }
+
     out.push(...actionItems);
     return out;
   }, [
@@ -177,6 +259,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     sessionReplayEnabled,
     settings,
     showTeleportAction,
+    sessionSwitchProfileAction,
     handoffAvailability.available,
     theme.colors.chrome.header.foreground,
   ]);
@@ -203,6 +286,12 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           fireAndForget(teleportVoiceAgentToSessionRoot({ sessionId: props.sessionId }), {
             tag: 'SessionHeaderActionMenu.execute.voiceTeleport',
           });
+          return;
+        }
+        if (actionId === 'session.switchProfile') {
+          const targetProfileId = sessionSwitchProfileAction?.candidates[0]?.id;
+          if (!targetProfileId) return;
+          executeSessionProfileSwitch(targetProfileId);
           return;
         }
         const manualReadState = resolveSessionReadStateFromActionId(actionId);

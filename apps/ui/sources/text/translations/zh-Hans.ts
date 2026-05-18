@@ -8387,6 +8387,7 @@ settingsSession: {
     environmentVariables: {
       title: "环境变量",
       addVariable: "添加变量",
+      systemManagedSubtitle: "由此配置文件自动管理。",
       namePlaceholder: "变量名（例如 MY_CUSTOM_VAR）",
       valuePlaceholder: "值（例如 my-value 或 ${MY_VAR}）",
       validation: {
@@ -8394,6 +8395,7 @@ settingsSession: {
         invalidNameFormat:
           "变量名必须由大写字母、数字和下划线组成，且不能以数字开头。",
         duplicateName: "该变量已存在。",
+        autoProvisionedReserved: "此变量由该配置文件自动管理。",
       },
       card: {
         valueLabel: "值：",
@@ -8463,6 +8465,25 @@ settingsSession: {
           missing: "缺失",
         },
       },
+    },
+    provision: {
+      title: "在设备上配置",
+      provisionOnMachine: "在设备上配置",
+      modalTitle: ({ backend }: { backend: string }) => `配置 ${backend}`,
+      inProgressHint: "按照 CLI 提示完成登录。",
+      alreadyProvisioned: "此配置文件已在这台设备上配置。",
+      successHint: "配置文件配置完成。",
+      errorBody: "配置文件配置失败。",
+      runInBackground: "在后台运行",
+    },
+    switch: {
+      title: "切换配置文件",
+      count: ({ count }: { count: number }) => `${count} 个可用配置文件`,
+      confirmTitle: "切换配置文件？",
+      confirmBody: "当前会话将使用所选配置文件重新启动。",
+      errorTitle: "配置文件切换失败",
+      errorBody: "无法切换会话配置文件。",
+      turnInProgress: "等待当前回合结束后再重试。",
     },
     delete: {
       title: "删除配置",
