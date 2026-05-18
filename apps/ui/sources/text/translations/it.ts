@@ -1507,6 +1507,7 @@ export const it: TranslationStructure = {
     environmentVariables: {
       title: "Variabili ambiente",
       addVariable: "Aggiungi variabile",
+      systemManagedSubtitle: "Gestita automaticamente per questo profilo.",
       namePlaceholder: "Nome variabile (es., MY_CUSTOM_VAR)",
       valuePlaceholder: "Valore (es., my-value o ${MY_VAR})",
       validation: {
@@ -1514,6 +1515,8 @@ export const it: TranslationStructure = {
         invalidNameFormat:
           "I nomi delle variabili devono usare lettere maiuscole, numeri e underscore e non possono iniziare con un numero.",
         duplicateName: "Questa variabile esiste già.",
+        autoProvisionedReserved:
+          "Questa variabile è gestita automaticamente per questo profilo.",
       },
       card: {
         valueLabel: "Valore:",
@@ -1589,6 +1592,29 @@ export const it: TranslationStructure = {
           missing: "Mancante",
         },
       },
+    },
+    provision: {
+      title: "Provisioning sulla macchina",
+      provisionOnMachine: "Provisioning sulla macchina",
+      modalTitle: ({ backend }: { backend: string }) => `Provisioning ${backend}`,
+      inProgressHint:
+        "Segui i prompt della CLI per completare l'accesso.",
+      alreadyProvisioned:
+        "Questo profilo è già predisposto su questa macchina.",
+      successHint: "Provisioning del profilo completato.",
+      errorBody: "Provisioning del profilo non riuscito.",
+      runInBackground: "Esegui in background",
+    },
+    switch: {
+      title: "Cambia profilo",
+      count: ({ count }: { count: number }) => `${count} profili disponibili`,
+      confirmTitle: "Cambiare profilo?",
+      confirmBody:
+        "La sessione corrente verrà riavviata con il profilo selezionato.",
+      errorTitle: "Cambio profilo non riuscito",
+      errorBody: "Impossibile cambiare il profilo della sessione.",
+      turnInProgress:
+        "Attendi la fine del turno corrente, poi riprova.",
     },
     delete: {
       title: "Elimina profilo",

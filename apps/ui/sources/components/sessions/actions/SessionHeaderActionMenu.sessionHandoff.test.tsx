@@ -99,6 +99,10 @@ const storageState = vi.hoisted(() => ({
 }));
 
 installSessionActionsCommonModuleMocks({
+  modal: async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ confirmResult: true }).module;
+  },
   reactNative: async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -130,6 +134,7 @@ installSessionActionsCommonModuleMocks({
         if (key === 'actionsSettingsV1') return actionsSettingsState.current;
         if (key === 'sessionReplayEnabled') return true;
         if (key === 'voice') return voiceSettingState.current;
+        if (key === 'profiles') return (storageState.current.settings as { profiles?: unknown }).profiles ?? [];
         return null;
       },
     });
@@ -752,6 +757,105 @@ describe('SessionHeaderActionMenu handoff', () => {
     expect(dropdown.props.items.some((item: any) => item?.id === SESSION_ACTION_MARK_READ_ID || item?.id === SESSION_ACTION_MARK_UNREAD_ID)).toBe(false);
   });
 
+  it('surfaces switch-profile action for compatible provisionable profiles and invokes the daemon RPC', async () => {
+    readMachineTargetForSessionMock.mockReturnValue({
+      machineId: 'machine_live',
+      basePath: '/workspace/repo',
+    });
+    storageState.current.settings = {
+      ...storageState.current.settings,
+      profiles: [
+        {
+          id: 'current',
+          name: 'Current',
+          compatibility: { claude: true },
+          compatibilityByTargetKey: { 'agent:claude': true },
+          environmentVariables: [],
+          envVarRequirements: [],
+          isBuiltIn: false,
+          createdAt: 1,
+          updatedAt: 1,
+          version: '1.0.0',
+        },
+        {
+          id: 'work',
+          name: 'Work',
+          compatibility: { claude: true },
+          compatibilityByTargetKey: { 'agent:claude': true },
+          environmentVariables: [],
+          envVarRequirements: [],
+          isBuiltIn: false,
+          createdAt: 1,
+          updatedAt: 1,
+          version: '1.0.0',
+        },
+        {
+          id: 'codex-only',
+          name: 'Codex Only',
+          compatibility: { claude: false, codex: true },
+          compatibilityByTargetKey: { 'agent:codex': true },
+          environmentVariables: [],
+          envVarRequirements: [],
+          isBuiltIn: false,
+          createdAt: 1,
+          updatedAt: 1,
+          version: '1.0.0',
+        },
+      ],
+    } as any;
+    machineRpcWithServerScopeMock.mockResolvedValue({
+      type: 'success',
+      events: [
+        { type: 'switch_pending', targetProfileId: 'work' },
+        { type: 'switch_complete', targetProfileId: 'work' },
+      ],
+    });
+
+    const [{ SessionHeaderActionMenu }, { useSessionSwitchingStore }] = await Promise.all([
+      import('./SessionHeaderActionMenu'),
+      import('@/sync/domains/profiles/sessionSwitchingStore'),
+    ]);
+    useSessionSwitchingStore.getState().clearAll();
+
+    const screen = await renderScreen(<SessionHeaderActionMenu
+      sessionId="sess_1"
+      session={{
+        id: 'sess_1',
+        archivedAt: null,
+        metadata: {
+          machineId: 'machine_stale',
+          flavor: 'claude',
+          profileId: 'current',
+        },
+      } as any}
+    />);
+
+    const dropdown = screen.findByType('DropdownMenu' as any);
+    expect(dropdown.props.items.find((item: any) => item?.id === 'session.switchProfile')?.subtitle).toBe('Work');
+
+    await act(async () => {
+      dropdown.props.onSelect('session.switchProfile');
+      await fireAndForgetMock.mock.calls.at(-1)?.[0];
+    });
+    await flushHookEffects({ cycles: 2, turns: 2 });
+
+    expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
+      method: 'daemon.sessionSwitchProfile',
+      machineId: 'machine_live',
+      payload: {
+        sessionId: 'sess_1',
+        targetProfileId: 'work',
+      },
+    });
+    expect(useSessionSwitchingStore.getState().bySessionId.sess_1?.state).toBe('completed');
+    expect(
+      screen.findByType('DropdownMenu' as any).props.items.find((item: any) => item?.id === 'session.switchProfile')?.subtitle,
+    ).toBe('Current');
+    await act(async () => {
+      useSessionSwitchingStore.getState().clearAll();
+    });
+  });
+
   it('does not show read-state actions for archived sessions', async () => {
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
 
@@ -884,7 +988,7 @@ describe('SessionHeaderActionMenu handoff', () => {
     expect(dropdown.props.items.some((item: any) => item?.id === 'session.handoff')).toBe(false);
   });
 
-  it('fails closed when the selected server only offers server-routed handoff transport', async () => {
+  it('surfaces session.handoff when the selected server only offers server-routed handoff transport', async () => {
     const { FeaturesResponseSchema } = await import('@happier-dev/protocol');
     serverSnapshotState.current = {
       status: 'ready',
@@ -919,7 +1023,7 @@ describe('SessionHeaderActionMenu handoff', () => {
 
     const dropdown = screen.findByType('DropdownMenu' as any);
     expect(Array.isArray(dropdown.props.items)).toBe(true);
-    expect(dropdown.props.items.some((item: any) => item?.id === 'session.handoff')).toBe(false);
+    expect(dropdown.props.items.some((item: any) => item?.id === 'session.handoff')).toBe(true);
   });
 
   it('reacts when machine-rpc direct-peer viability becomes available after mount', async () => {

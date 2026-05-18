@@ -7,6 +7,7 @@ import type { connectedServiceQuotaRecoveryCreditConsume } from '@/sync/ops/conn
 
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { useSessionSwitchingStore } from '@/sync/domains/profiles/sessionSwitchingStore';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 import { listOpenApprovalArtifactsForSession } from '@/sync/domains/artifacts/approvalArtifacts';
@@ -791,6 +792,7 @@ describe('SessionView (direct sessions)', () => {
     draftHookState.valuesBySessionId.clear();
     quotaSnapshotsState.current = {};
     quotaSnapshotsState.requestedProfiles = [];
+    useSessionSwitchingStore.getState().clearAll();
     storageState.sessions.s1 = {
       id: 's1',
       seq: 1,
@@ -2408,6 +2410,23 @@ describe('SessionView (direct sessions)', () => {
     expect(agentInput.props.permissionMode).toBe('default');
     expect(agentInput.props.modelMode).toBe('claude-sonnet-4-5');
     expect(agentInput.props.profileId).toBe('profile-metadata');
+  });
+
+  it('prefers a completed session-switch profile override over the live snapshot profile', async () => {
+    const session = (await import('@/sync/domains/state/storage')).storage.getState().sessions.s1 as any;
+    session.metadata = {
+      ...session.metadata,
+      profileId: 'profile-metadata',
+    };
+    useSessionSwitchingStore.getState().setFromEvents('s1', [
+      { type: 'switch_pending', targetProfileId: 'profile-switched' },
+      { type: 'switch_complete', targetProfileId: 'profile-switched' },
+    ]);
+
+    const screen = await renderSessionViewAndSettle();
+
+    const agentInput = findAgentInput(screen);
+    expect(agentInput.props.profileId).toBe('profile-switched');
   });
 
   it('passes recipient controls through canonical extra action chips', async () => {

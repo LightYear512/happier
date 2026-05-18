@@ -69,6 +69,10 @@ import { scmStatusSync } from '@/scm/scmStatusSync';
 import { continueSessionWithReplay, sessionAbort, resumeSession } from '@/sync/ops';
 import { storage, useActiveServerAccountScope, useEndpointConnectivity, useIsDataReady, useLaunchSelectionMachines, useLocalSetting, useOpenApprovalArtifactsForSession, useProfile, useRealtimeStatus, useSessionAutomationsEnabledCount, useSessionConnectedServiceAccountSwitchEvents, useSessionMessages, useSessionPendingMessages, useSessionSubagentSourceMessages, useSessionTranscriptIds, useSessionUsage, useSessionVisibleReadSeq, useSetting, useSettingMutable, useSettings, useSyncError, useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
 import { canContinueSessionWithFreshSpawn, canResumeSessionWithOptions } from '@/agents/runtime/resumeCapabilities';
+import { setActiveViewingSessionId, clearActiveViewingSessionId } from '@/sync/domains/session/activeViewingSession';
+import { beginSessionViewingActivation, clearManualUnreadHold, endSessionViewingActivation, shouldSuppressAutomaticMarkViewed } from '@/sync/domains/session/readState/sessionManualUnreadHold';
+import { useSessionSwitchingState } from '@/sync/domains/profiles/sessionSwitchingStore';
+import { resolveSessionSwitchingProfileIdOverride } from '@/sync/domains/profiles/deriveSwitchProfileUiState';
 import { DEFAULT_AGENT_ID, getAgentCore, resolveAgentIdFromFlavor, buildResumeSessionExtrasFromUiState } from '@/agents/catalog/catalog';
 import {
     buildSessionComposerNextMessageMetaOverridesFromUiState,
@@ -2168,6 +2172,7 @@ function SessionViewLoaded({
     const isCliOutdated = cliVersion && !isVersionSupported(cliVersion, MINIMUM_CLI_VERSION);
     const isAcknowledged = machineId && acknowledgedCliVersions[machineId] === cliVersion;
     const shouldShowCliWarning = isCliOutdated && !isAcknowledged;
+    const sessionSwitchingState = useSessionSwitchingState(sessionId);
     // Get model mode from session object - default is agent-specific (Gemini needs an explicit default)
     const agentId = resolveAgentIdFromSessionMetadata(session.metadata) ?? resolveAgentIdFromFlavor(session.metadata?.flavor) ?? DEFAULT_AGENT_ID;
     const liveAuthoringContext = React.useMemo(() => {
@@ -2178,8 +2183,9 @@ function SessionViewLoaded({
     const liveComposerState = React.useMemo(() => {
         return resolveSessionComposerStateFromAuthoringContext(liveAuthoringContext, {
             fallbackAgentId: agentId,
+            profileIdOverride: resolveSessionSwitchingProfileIdOverride(sessionSwitchingState),
         });
-    }, [agentId, liveAuthoringContext]);
+    }, [agentId, liveAuthoringContext, sessionSwitchingState.state, sessionSwitchingState.targetProfileId]);
     const permissionMode = liveComposerState.permissionMode;
     const sessionWorkStateSnapshot = React.useMemo(
         () => readSessionWorkStateFromMetadata(session.metadata),

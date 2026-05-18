@@ -68,7 +68,7 @@ const SpawnDaemonSessionRequestCompatSchema = z.object({
   windowsRemoteSessionLaunchMode: z.enum(['hidden', 'windows_terminal', 'console']).optional(),
   windowsRemoteSessionConsole: z.enum(['hidden', 'visible']).optional(),
   windowsTerminalWindowName: z.string().optional(),
-  profileId: z.string().optional(),
+  profileId: z.string().nullable().optional(),
   environmentVariables: z.record(z.string(), z.string()).optional(),
   connectedServices: z.unknown().optional(),
   connectedServicesUpdatedAt: z.number().int().optional(),

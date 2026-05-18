@@ -12,6 +12,8 @@ import { useEnvironmentVariables } from '@/hooks/server/useEnvironmentVariables'
 import { parseEnvVarTemplate } from '@/utils/profiles/envVarTemplate';
 import { shadowLevelStyle } from '@/shadowElevation';
 import { Text, TextInput } from '@/components/ui/text/Text';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 
 
 export interface EnvironmentVariablesListProps {
@@ -27,6 +29,7 @@ export interface EnvironmentVariablesListProps {
     ) => void;
     getDefaultSecretNameForSourceVar: (sourceVarName: string) => string | null;
     onPickDefaultSecretForSourceVar: (sourceVarName: string) => void;
+    autoProvisionedEnvVarNames?: readonly string[];
 }
 
 const SECRET_NAME_REGEX = /TOKEN|KEY|SECRET|AUTH|PASS|PASSWORD|COOKIE/i;
@@ -46,9 +49,18 @@ export function EnvironmentVariablesList({
     onUpdateSourceRequirement,
     getDefaultSecretNameForSourceVar,
     onPickDefaultSecretForSourceVar,
+    autoProvisionedEnvVarNames,
 }: EnvironmentVariablesListProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
+    const autoProvisionedSet = React.useMemo(() => {
+        const names = new Set<string>();
+        for (const name of autoProvisionedEnvVarNames ?? []) {
+            const normalized = name.trim().toUpperCase();
+            if (normalized) names.add(normalized);
+        }
+        return names;
+    }, [autoProvisionedEnvVarNames]);
 
     const extractVarRefsFromValue = React.useCallback((value: string): string[] => {
         const refs: string[] = [];
@@ -193,13 +205,23 @@ export function EnvironmentVariablesList({
             return;
         }
 
+        if (autoProvisionedSet.has(normalizedName)) {
+            Modal.alert(t('common.error'), t('profiles.environmentVariables.validation.autoProvisionedReserved'));
+            return;
+        }
+
         onChange([...environmentVariables, {
             name: normalizedName,
             value: newVarValue.trim() || '',
         }]);
 
         resetAddDraft();
-    }, [environmentVariables, newVarName, newVarValue, onChange, resetAddDraft]);
+    }, [autoProvisionedSet, environmentVariables, newVarName, newVarValue, onChange, resetAddDraft]);
+
+    const newVarNameCollidesWithAutoProvisioned = React.useMemo(
+        () => autoProvisionedSet.has(newVarName.trim().toUpperCase()),
+        [autoProvisionedSet, newVarName],
+    );
 
     return (
         <View style={styles.container}>
@@ -212,6 +234,18 @@ export function EnvironmentVariablesList({
             {environmentVariables.length > 0 && (
                 <View>
                     {environmentVariables.map((envVar, index) => {
+                        if (autoProvisionedSet.has(envVar.name.trim().toUpperCase())) {
+                            return (
+                                <ItemGroup key={envVar.name}>
+                                    <Item
+                                        title={envVar.name}
+                                        subtitle={t('profiles.environmentVariables.systemManagedSubtitle')}
+                                        leftElement={<Ionicons name="lock-closed-outline" size={24} color={theme.colors.text.secondary} />}
+                                        showChevron={false}
+                                    />
+                                </ItemGroup>
+                            );
+                        }
                         const refs = extractVarRefsFromValue(envVar.value);
                         const primaryRef = refs[0] ?? null;
                         const primaryDocs = getDocumentation(envVar.name);
@@ -271,7 +305,7 @@ export function EnvironmentVariablesList({
                     icon={<Ionicons name="add-circle-outline" size={29} color={theme.colors.button.secondary.tint} />}
                     onCancel={resetAddDraft}
                     onSave={handleAddVariable}
-                    saveDisabled={!newVarName.trim()}
+                    saveDisabled={!newVarName.trim() || newVarNameCollidesWithAutoProvisioned}
                     cancelLabel={t('common.cancel')}
                     saveLabel={t('common.save')}
                     autoFocusRef={nameInputRef}
@@ -291,6 +325,11 @@ export function EnvironmentVariablesList({
                             autoCorrect={false}
                         />
                     </View>
+                    {newVarNameCollidesWithAutoProvisioned && (
+                        <Text style={styles.reservedNameHint}>
+                            {t('profiles.environmentVariables.validation.autoProvisionedReserved')}
+                        </Text>
+                    )}
 
                     <Text style={styles.fieldLabel}>
                         {t('secrets.fields.value')}
@@ -359,6 +398,11 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     addInputRowLast: {
         marginBottom: 12,
+    },
+    reservedNameHint: {
+        color: theme.colors.state.warning.foreground,
+        marginTop: -4,
+        marginBottom: 8,
     },
     addTextInput: {
         flex: 1,

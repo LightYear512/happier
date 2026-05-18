@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 
@@ -229,6 +229,49 @@ describe('metro.config.js (web)', () => {
 
         expect(config.resolver.useWatchman).toBe(false);
         expect(config.watcher?.useWatchman).toBe(false);
+    });
+
+    it('allows CI-style runs to force Watchman back on when explicitly requested', () => {
+        const config = loadMetroConfig({
+            CI: '1',
+            HAPPIER_UI_METRO_FORCE_WATCHMAN: '1',
+        });
+
+        expect(config.resolver.useWatchman).not.toBe(false);
+        expect(config.watcher?.useWatchman).not.toBe(false);
+    });
+
+    it('does not redundantly watch hoisted Expo package roots when the parent node_modules root is already watched', () => {
+        const uiDir = getUiDir();
+        const repoNodeModulesDir = join(uiDir, '..', '..', 'node_modules');
+        const config = loadMetroConfig();
+
+        expect(config.watchFolders).toContain(repoNodeModulesDir);
+        expect(config.watchFolders).toEqual(expect.not.arrayContaining([
+            join(repoNodeModulesDir, 'expo-modules-core'),
+            join(repoNodeModulesDir, 'expo-system-ui'),
+        ]));
+    });
+
+    it('watches the real node_modules root for symlinked dependency targets that escape the worktree', () => {
+        const uiDir = getUiDir();
+        const repoNodeModulesDir = join(uiDir, '..', '..', 'node_modules');
+        const externalNodeModulesDir = dirname(realpathSync(join(repoNodeModulesDir, 'expo-modules-core')));
+        const config = loadMetroConfig();
+
+        expect(config.watchFolders).toContain(externalNodeModulesDir);
+    });
+
+    it('watches additional absolute folders when explicitly provided for external dependency roots', () => {
+        const extraWatchFolders = [
+            '/tmp/happier-metro-extra-a',
+            '/tmp/happier-metro-extra-b',
+        ];
+        const config = loadMetroConfig({
+            HAPPIER_UI_METRO_EXTRA_WATCH_FOLDERS: extraWatchFolders.join(delimiter),
+        });
+
+        expect(config.watchFolders).toEqual(expect.arrayContaining(extraWatchFolders));
     });
 
 });

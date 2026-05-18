@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -139,5 +140,44 @@ describe('codexDaemonSpawnHooks.buildExtraEnvForChild', () => {
         experimentalCodexAcp: true,
       } as any),
     ).toEqual({});
+  });
+});
+
+describe('codexDaemonSpawnHooks.resolveProfileEnvForChild', () => {
+  it('returns CODEX_HOME for provisioned profiles', async () => {
+    const activeServerDir = await createTempDir('happier-codex-profile-env-');
+    tempDirs.add(activeServerDir);
+    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    await mkdir(profileDir, { recursive: true });
+    await writeFile(join(profileDir, 'auth.json'), '{"tokens":{"access_token":"token"}}', 'utf8');
+
+    const { codexDaemonSpawnHooks } = await import('./spawnHooks');
+    expect(codexDaemonSpawnHooks.resolveProfileEnvForChild?.({
+      profileId: 'work',
+      env: {},
+      activeServerDir,
+    })).toEqual({
+      ok: true,
+      env: { CODEX_HOME: profileDir },
+    });
+  });
+
+  it('rejects directory-only profiles as not provisioned', async () => {
+    const activeServerDir = await createTempDir('happier-codex-profile-env-empty-');
+    tempDirs.add(activeServerDir);
+    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    await mkdir(profileDir, { recursive: true });
+
+    const { codexDaemonSpawnHooks } = await import('./spawnHooks');
+    expect(codexDaemonSpawnHooks.resolveProfileEnvForChild?.({
+      profileId: 'work',
+      env: {},
+      activeServerDir,
+    })).toEqual({
+      ok: false,
+      reason: 'profile_not_provisioned',
+      profileId: 'work',
+      expectedDir: profileDir,
+    });
   });
 });

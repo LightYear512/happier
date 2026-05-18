@@ -14,6 +14,7 @@ export function resolveSessionComposerStateFromAuthoringContext(
     context: SessionComposerAuthoringContext,
     params?: Readonly<{
         fallbackAgentId?: AgentId | null;
+        profileIdOverride?: string | null;
     }>,
 ): SessionComposerState {
     if (context.kind === 'automationExistingSession') {
@@ -31,5 +32,6 @@ export function resolveSessionComposerStateFromAuthoringContext(
         snapshot: context.snapshot,
         session: context.session,
         fallbackAgentId: params?.fallbackAgentId ?? null,
+        profileIdOverride: params?.profileIdOverride ?? null,
     });
 }

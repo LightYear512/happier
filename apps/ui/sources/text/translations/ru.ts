@@ -10010,6 +10010,7 @@ settingsSession: {
     environmentVariables: {
       title: "Переменные окружения",
       addVariable: "Добавить переменную",
+      systemManagedSubtitle: "Автоматически управляется для этого профиля.",
       namePlaceholder: "Имя переменной (например, MY_CUSTOM_VAR)",
       valuePlaceholder: "Значение (например, my-value или ${MY_VAR})",
       validation: {
@@ -10017,6 +10018,8 @@ settingsSession: {
         invalidNameFormat:
           "Имена переменных должны содержать заглавные буквы, цифры и подчёркивания и не могут начинаться с цифры.",
         duplicateName: "Такая переменная уже существует.",
+        autoProvisionedReserved:
+          "Эта переменная автоматически управляется для этого профиля.",
       },
       card: {
         valueLabel: "Значение:",
@@ -10093,6 +10096,29 @@ settingsSession: {
           missing: "Отсутствует",
         },
       },
+    },
+    provision: {
+      title: "Подготовить на машине",
+      provisionOnMachine: "Подготовить на машине",
+      modalTitle: ({ backend }: { backend: string }) => `Подготовить ${backend}`,
+      inProgressHint:
+        "Следуйте подсказкам CLI, чтобы завершить вход.",
+      alreadyProvisioned:
+        "Этот профиль уже подготовлен на этой машине.",
+      successHint: "Подготовка профиля завершена.",
+      errorBody: "Не удалось подготовить профиль.",
+      runInBackground: "Выполнять в фоне",
+    },
+    switch: {
+      title: "Сменить профиль",
+      count: ({ count }: { count: number }) => `Доступно профилей: ${count}`,
+      confirmTitle: "Сменить профиль?",
+      confirmBody:
+        "Текущая сессия будет перезапущена с выбранным профилем.",
+      errorTitle: "Не удалось сменить профиль",
+      errorBody: "Не удалось сменить профиль сессии.",
+      turnInProgress:
+        "Дождитесь завершения текущего хода и повторите попытку.",
     },
     delete: {
       title: "Удалить Профиль",

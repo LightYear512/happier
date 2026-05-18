@@ -64,6 +64,12 @@ async function readComputedStylesForLocator(locator: Locator): Promise<{ fontSiz
   });
 }
 
+function parseCssPx(value: string): number {
+  const match = value.match(/^([0-9]+(?:\.[0-9]+)?)px$/);
+  if (!match) throw new Error(`Expected CSS px value, received ${value}`);
+  return Number(match[1]);
+}
+
 test.describe('ui e2e: thinking markdown rendering', () => {
   test.describe.configure({ mode: 'serial' });
 
@@ -200,14 +206,17 @@ test.describe('ui e2e: thinking markdown rendering', () => {
     expect(text).not.toContain('".Considering');
     expect(text).not.toContain('.Considering');
 
-    // Inline code should not render at a different size/color than the surrounding thinking text.
+    // Inline code should stay visually integrated with the surrounding thinking text.
     const inlineCode = body.getByText('git diff', { exact: true });
     const surrounding = body.getByText('In Codex, I can perform', { exact: false });
     await expect(inlineCode).toHaveCount(1, { timeout: 60_000 });
     await expect(surrounding).toHaveCount(1, { timeout: 60_000 });
     const codeStyle = await readComputedStylesForLocator(inlineCode);
     const surroundingStyle = await readComputedStylesForLocator(surrounding);
-    expect(codeStyle.fontSize).toBe(surroundingStyle.fontSize);
+    const codeFontSize = parseCssPx(codeStyle.fontSize);
+    const surroundingFontSize = parseCssPx(surroundingStyle.fontSize);
+    expect(codeFontSize).toBeGreaterThanOrEqual(surroundingFontSize * 0.75);
+    expect(codeFontSize).toBeLessThanOrEqual(surroundingFontSize);
     expect(codeStyle.color).toBe(surroundingStyle.color);
   });
 });

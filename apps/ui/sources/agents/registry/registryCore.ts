@@ -112,6 +112,10 @@ export type AgentCoreConfig = Readonly<{
          */
         spawnAgent: AgentId;
     }>;
+    autoProvisionedEnvVars?: readonly string[];
+    profileProvisioning?: Readonly<{
+        backendId: 'claude' | 'codex';
+    }>;
     permissions: Readonly<{
         modeGroup: PermissionModeGroupId;
         promptProtocol: PermissionPromptProtocol;
