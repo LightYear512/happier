@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type FetchChanges = typeof import('./api/session/apiChanges').fetchChanges;
 type FetchCurrentChangesCursor = typeof import('./api/session/apiChanges').fetchCurrentChangesCursor;
+type ApiMessage = import('./api/types/apiTypes').ApiMessage;
 type MachineDirectSessionTranscriptPage = typeof import('@/sync/ops/machineDirectSessions').machineDirectSessionTranscriptPage;
 type MachineDirectSessionTranscriptReadAfter = typeof import('@/sync/ops/machineDirectSessions').machineDirectSessionTranscriptReadAfter;
+type ApiSocketRequest = (path: string, init?: RequestInit) => Promise<Response>;
 
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
 const kvStore = vi.hoisted(() => new Map<string, string>());
@@ -28,10 +30,10 @@ vi.mock('react-native-mmkv', () => {
 
 const statusListeners = vi.hoisted(() => new Set<(status: 'disconnected' | 'connecting' | 'connected' | 'error') => void>());
 const apiSocketRequestMock = vi.hoisted(() =>
-  vi.fn(async () => new Response(
-    JSON.stringify({ messages: [], nextAfterSeq: null }),
-    { status: 200, headers: { 'Content-Type': 'application/json' } },
-  )),
+  vi.fn<ApiSocketRequest>(async () => new Response(JSON.stringify({ messages: [], nextAfterSeq: null }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })),
 );
 const fetchChangesMock = vi.hoisted(() =>
   vi.fn<FetchChanges>(async () => ({
@@ -122,7 +124,7 @@ vi.mock('@/voice/context/voiceHooks', () => ({
 
 import { sync } from './sync';
 import { storage } from './domains/state/storage';
-import type { Machine } from './domains/state/storageTypes';
+import type { Machine, Session } from './domains/state/storageTypes';
 import { loadChangesCursor, loadDirectSessionTailCursor, saveProfile } from './domains/state/persistence';
 import { profileDefaults } from './domains/profiles/profile';
 import { getActiveServerSnapshot, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
@@ -189,6 +191,59 @@ function stubSnapshotRefreshFetch(): ReturnType<typeof vi.fn> {
   return fetchMock;
 }
 
+function createPlainSession(sessionId: string, seq: number): Session {
+  const now = Date.now();
+  return {
+    id: sessionId,
+    seq,
+    encryptionMode: 'plain',
+    createdAt: now,
+    updatedAt: now,
+    active: true,
+    activeAt: now,
+    metadata: null,
+    metadataVersion: 0,
+    agentState: null,
+    agentStateVersion: 0,
+    thinking: false,
+    thinkingAt: 0,
+    presence: 'online',
+    optimisticThinkingAt: null,
+  };
+}
+
+function createPlainApiMessage(params: Readonly<{ id: string; seq: number; text: string }>): ApiMessage {
+  return {
+    id: params.id,
+    seq: params.seq,
+    localId: null,
+    sidechainId: null,
+    content: {
+      t: 'plain',
+      v: { role: 'user', content: { type: 'text', text: params.text } },
+    },
+    createdAt: 1_000 + params.seq,
+    updatedAt: 2_000 + params.seq,
+  };
+}
+
+type SyncSocketOfflineTrackingTestAccess = {
+  activeServerSessionIds: Set<string>;
+  hasFetchedSessionsSnapshotForActiveServer: boolean;
+  credentials: { token: string; secret: string } | null;
+  encryption: {
+    decryptEncryptionKey: (encryptedKey: string | null | undefined) => Promise<null>;
+    initializeSessions: () => Promise<void>;
+    initializeMachines: () => Promise<void>;
+    getSessionEncryption: (sessionId: string) => null;
+  };
+  isForeground: boolean;
+  lastSocketDisconnectedAtMs: number | null;
+  lastSocketOfflineDurationMs: number | null;
+  sessionMaterializedMaxSeqById: Record<string, number>;
+  fetchMessages: (sessionId: string) => Promise<void>;
+};
+
 describe('sync socket offline tracking', () => {
   const initialStorageState = storage.getState();
 
@@ -234,10 +289,10 @@ describe('sync socket offline tracking', () => {
       truncated: false,
     });
     apiSocketRequestMock.mockReset();
-    apiSocketRequestMock.mockImplementation(async () => new Response(
-      JSON.stringify({ messages: [], nextAfterSeq: null }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } },
-    ));
+    apiSocketRequestMock.mockResolvedValue(new Response(JSON.stringify({ messages: [], nextAfterSeq: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
     appStateAddListener.mockClear();
     vi.unstubAllGlobals();
   });
@@ -258,45 +313,46 @@ describe('sync socket offline tracking', () => {
     expect((sync as any).lastSocketDisconnectedAtMs ?? null).toBeNull();
   }, 60_000);
 
-  it('uses captured offline duration for loaded transcript catch-up after connected status clears the disconnect timestamp', async () => {
-    (sync as any).subscribeToUpdates();
+  it('uses the completed socket offline duration for loaded session catch-up after reconnect', async () => {
+    const sessionId = 's-completed-offline-duration';
+    const caughtUpText = 'caught up after reconnect';
+    storage.getState().applySessions([createPlainSession(sessionId, 5)]);
+    storage.getState().applyMessagesLoaded(sessionId);
+    apiSocketRequestMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      messages: [createPlainApiMessage({ id: 'm-completed-offline-duration', seq: 6, text: caughtUpText })],
+      nextAfterSeq: null,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
 
-    for (const listener of statusListeners) {
-      listener('disconnected');
-    }
-    const disconnectedAt = (sync as any).lastSocketDisconnectedAtMs;
-    expect(typeof disconnectedAt).toBe('number');
-    (sync as any).lastSocketDisconnectedAtMs = Date.now() - 1000;
+    const syncAccess = sync as unknown as SyncSocketOfflineTrackingTestAccess;
+    syncAccess.activeServerSessionIds = new Set([sessionId]);
+    syncAccess.hasFetchedSessionsSnapshotForActiveServer = true;
+    syncAccess.credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+    syncAccess.encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeSessions: async () => {},
+      initializeMachines: async () => {},
+      getSessionEncryption: () => null,
+    };
+    syncAccess.isForeground = true;
+    syncAccess.lastSocketDisconnectedAtMs = null;
+    syncAccess.lastSocketOfflineDurationMs = 2500;
+    syncAccess.sessionMaterializedMaxSeqById = { [sessionId]: 5 };
 
-    for (const listener of statusListeners) {
-      listener('connected');
-    }
-    expect((sync as any).lastSocketDisconnectedAtMs ?? null).toBeNull();
+    await syncAccess.fetchMessages(sessionId);
 
-    storage.setState((state) => ({
-      ...state,
-      sessions: {
-        ...state.sessions,
-        s_reconnect_gap: {
-          id: 's_reconnect_gap',
-          seq: 20,
-          encryptionMode: 'plain',
-          metadata: {},
-          agentState: null,
-        } as any,
-      },
-    }), true);
-    storage.getState().applyMessagesLoaded('s_reconnect_gap');
-    (sync as any).sessionMaterializedMaxSeqById = { s_reconnect_gap: 20 };
-    (sync as any).isForeground = true;
-    markSessionVisible('s_reconnect_gap');
-
-    await (sync as any).fetchMessages('s_reconnect_gap');
-
-    expect(apiSocketRequestMock).toHaveBeenCalledWith(
-      '/v1/sessions/s_reconnect_gap/messages?afterSeq=20&limit=150&scope=main',
-      { method: 'GET' },
+    expect(apiSocketRequestMock.mock.calls.map((call) => String(call[0]))).toEqual(
+      expect.arrayContaining([expect.stringContaining('afterSeq=5')]),
     );
+    const sessionMessages = storage.getState().sessionMessages[sessionId];
+    const texts = (sessionMessages?.messageIdsOldestFirst ?? [])
+      .map((id) => sessionMessages?.messagesById[id])
+      .filter((message): message is NonNullable<typeof message> => Boolean(message))
+      .filter((message) => message.kind === 'user-text')
+      .map((message) => message.text);
+    expect(texts).toContain(caughtUpText);
   }, 60_000);
 
   it('uses configured message page size for loaded transcript catch-up fetches', async () => {
@@ -364,35 +420,28 @@ describe('sync socket offline tracking', () => {
     );
   }, 60_000);
 
-  it('does not reuse captured offline duration for the same loaded transcript after catch-up succeeds', async () => {
-    (sync as any).subscribeToUpdates();
+  it('does not reuse the completed socket offline duration for the same loaded session after catch-up succeeds', async () => {
+    const sessionId = 's-completed-offline-duration-consumed';
+    storage.getState().applySessions([createPlainSession(sessionId, 20)]);
+    storage.getState().applyMessagesLoaded(sessionId);
 
-    for (const listener of statusListeners) {
-      listener('disconnected');
-      (sync as any).lastSocketDisconnectedAtMs = Date.now() - 1000;
-      listener('connected');
-    }
+    const syncAccess = sync as unknown as SyncSocketOfflineTrackingTestAccess;
+    syncAccess.activeServerSessionIds = new Set([sessionId]);
+    syncAccess.hasFetchedSessionsSnapshotForActiveServer = true;
+    syncAccess.credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+    syncAccess.encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeSessions: async () => {},
+      initializeMachines: async () => {},
+      getSessionEncryption: () => null,
+    };
+    syncAccess.isForeground = true;
+    syncAccess.lastSocketDisconnectedAtMs = null;
+    syncAccess.lastSocketOfflineDurationMs = 2500;
+    syncAccess.sessionMaterializedMaxSeqById = { [sessionId]: 20 };
 
-    storage.setState((state) => ({
-      ...state,
-      sessions: {
-        ...state.sessions,
-        s_reconnect_consumed: {
-          id: 's_reconnect_consumed',
-          seq: 20,
-          encryptionMode: 'plain',
-          metadata: {},
-          agentState: null,
-        } as any,
-      },
-    }), true);
-    storage.getState().applyMessagesLoaded('s_reconnect_consumed');
-    (sync as any).sessionMaterializedMaxSeqById = { s_reconnect_consumed: 20 };
-    (sync as any).isForeground = true;
-    markSessionVisible('s_reconnect_consumed');
-
-    await (sync as any).fetchMessages('s_reconnect_consumed');
-    await (sync as any).fetchMessages('s_reconnect_consumed');
+    await syncAccess.fetchMessages(sessionId);
+    await syncAccess.fetchMessages(sessionId);
 
     expect(apiSocketRequestMock).toHaveBeenCalledTimes(1);
   }, 60_000);
