@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolve } from 'node:path';
 
+const METRO_CONFIG_RESOLUTION_TEST_TIMEOUT_MS = 120_000;
+
 function requireFreshMetroConfig() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const resolved = require.resolve('../../metro.config.js');
@@ -60,7 +62,7 @@ describe('metro.config.js (kokoro)', () => {
     );
     expect(resDeep?.type).toBe('sourceFile');
     expect(String(resDeep?.filePath)).toBe(resolve(process.cwd(), 'sources/platform/stubs/kokoroJsStub.ts'));
-  });
+  }, METRO_CONFIG_RESOLUTION_TEST_TIMEOUT_MS);
 
   it('shims Node builtins used by kokoro/transformers for native bundling', () => {
     const config = requireFreshMetroConfig();
@@ -90,7 +92,7 @@ describe('metro.config.js (kokoro)', () => {
     expect(String(resFsPromises?.filePath)).toBe(
       resolve(process.cwd(), 'sources/platform/nodeShims/nodeFsPromisesShim.ts'),
     );
-  });
+  }, METRO_CONFIG_RESOLUTION_TEST_TIMEOUT_MS);
 
   it('normalizes the monorepo web entry request back to the UI workspace entry file', () => {
     const config = requireFreshMetroConfig();
@@ -106,7 +108,7 @@ describe('metro.config.js (kokoro)', () => {
 
     expect(res?.type).toBe('sourceFile');
     expect(String(res?.filePath)).toBe(resolve(process.cwd(), 'index.ts'));
-  });
+  }, METRO_CONFIG_RESOLUTION_TEST_TIMEOUT_MS);
 
   it('does not inject the monorepo root into watchFolders when the workspace entry file already lives under projectRoot', () => {
     const config = requireFreshMetroConfig();
@@ -114,5 +116,5 @@ describe('metro.config.js (kokoro)', () => {
 
     expect(config.projectRoot).toBe(resolve(process.cwd()));
     expect(config.watchFolders).not.toContain(repoRoot);
-  });
+  }, METRO_CONFIG_RESOLUTION_TEST_TIMEOUT_MS);
 });

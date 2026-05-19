@@ -1,6 +1,8 @@
-import { parseBooleanEnv, type FeatureId } from '@happier-dev/protocol';
+import { parseBooleanEnv, type AccountSettings, type FeatureId } from '@happier-dev/protocol';
 
-type FeatureLocalPolicyResolver = (env: NodeJS.ProcessEnv) => boolean;
+import { resolveExperimentalSettingsFeatureToggleEnabled } from './settingsFeatureToggles';
+
+type FeatureLocalPolicyResolver = (env: NodeJS.ProcessEnv, accountSettings?: AccountSettings | null) => boolean;
 
 const LOCAL_POLICY_BY_FEATURE: Readonly<Partial<Record<FeatureId, FeatureLocalPolicyResolver>>> = {
   automations: (env) => parseBooleanEnv(env.HAPPIER_FEATURE_AUTOMATIONS__ENABLED, true),
@@ -11,10 +13,19 @@ const LOCAL_POLICY_BY_FEATURE: Readonly<Partial<Record<FeatureId, FeatureLocalPo
   'connectedServices.quotas': (env) => parseBooleanEnv(env.HAPPIER_FEATURE_CONNECTED_SERVICES_QUOTAS__ENABLED, true),
   channelBridges: (env) => parseBooleanEnv(env.HAPPIER_FEATURE_CHANNEL_BRIDGES__ENABLED, true),
   'channelBridges.telegram': (env) => parseBooleanEnv(env.HAPPIER_FEATURE_CHANNEL_BRIDGES_TELEGRAM__ENABLED, true),
+  'sessions.devPreview': (_env, accountSettings) => resolveExperimentalSettingsFeatureToggleEnabled({
+    settings: accountSettings ?? null,
+    featureId: 'sessions.devPreview',
+    defaultEnabled: false,
+  }),
 };
 
-export function resolveCliLocalFeaturePolicyEnabled(featureId: FeatureId, env: NodeJS.ProcessEnv): boolean {
+export function resolveCliLocalFeaturePolicyEnabled(
+  featureId: FeatureId,
+  env: NodeJS.ProcessEnv,
+  accountSettings?: AccountSettings | null,
+): boolean {
   const resolver = LOCAL_POLICY_BY_FEATURE[featureId];
   if (!resolver) return true;
-  return resolver(env);
+  return resolver(env, accountSettings);
 }

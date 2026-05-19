@@ -338,6 +338,7 @@ vi.mock('@/agent/runtime/initializeBackendApiContext', () => ({
         getLastObservedMessageSeq: vi.fn(() => 0),
         beginTurnAssistantTextSnapshot: vi.fn(() => ({ id: 'turn-token' })),
         materializeNextPendingMessageSafely: vi.fn(async () => ({ type: 'no_pending' })),
+        getTurnAssistantTextSnapshot: vi.fn(() => null),
         sendSessionDeath: vi.fn(),
         flush: vi.fn(async () => {}),
         close: vi.fn(async () => {}),
@@ -365,10 +366,11 @@ const initializeBackendRunSessionSpy = vi.fn(async (opts: any) => {
   // Ensure optional methods exist for codepaths that may call them during startup.
   Object.assign(session, {
     fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
-    getLastObservedMessageSeq: vi.fn(() => 0),
-    beginTurnAssistantTextSnapshot: vi.fn(() => ({ id: 'turn-token' })),
     sendCodexMessage: vi.fn(),
     sendAgentMessage: vi.fn(),
+    beginTurnAssistantTextSnapshot: vi.fn(() => 'turn-1'),
+    getTurnAssistantTextSnapshot: vi.fn(() => null),
+    getLastObservedMessageSeq: vi.fn(() => 0),
   });
   return {
     session,
@@ -393,8 +395,9 @@ function mockAttachedSessionMetadata(metadata: Record<string, unknown>): void {
       fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
       sendCodexMessage: vi.fn(),
       sendAgentMessage: vi.fn(),
+      beginTurnAssistantTextSnapshot: vi.fn(() => 'turn-1'),
+      getTurnAssistantTextSnapshot: vi.fn(() => null),
       getLastObservedMessageSeq: vi.fn(() => 0),
-      beginTurnAssistantTextSnapshot: vi.fn(() => ({ id: 'turn-token' })),
       getMetadataSnapshot: vi.fn(() => ({ ...metadata })),
     });
     return {

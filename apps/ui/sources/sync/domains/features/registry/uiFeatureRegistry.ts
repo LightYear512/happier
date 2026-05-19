@@ -155,6 +155,12 @@ export const UI_FEATURE_REGISTRY = {
             icon: { ioniconName: 'folder-outline', color: '#5856D6' },
         },
     },
+    'sessions.devPreview': {
+        settingsToggle: undefined,
+    },
+    'sessions.devPreview.relay': {
+        settingsToggle: undefined,
+    },
     'sessions.handoff': {
         settingsToggle: undefined,
     },

@@ -88,7 +88,28 @@ describe('FeatureGatesSchema', () => {
     expect(readServerEnabledBit(parsed, 'sessions.usageLimitRecovery')).toBe(true);
   });
 
-  it('defaults missing usage-limit and account-group gates to disabled', () => {
+  it('preserves session dev preview relay gates', () => {
+    const parsed = FeaturesResponseSchema.parse({
+      features: {
+        sessions: {
+          enabled: true,
+          devPreview: {
+            enabled: true,
+            relay: {
+              enabled: true,
+            },
+          },
+        },
+      },
+      capabilities: {},
+    });
+
+    expect(readServerEnabledBit(parsed, 'sessions')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'sessions.devPreview')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'sessions.devPreview.relay')).toBe(true);
+  });
+
+  it('defaults missing usage-limit, account-group, and dev-preview gates to disabled', () => {
     const parsed = FeaturesResponseSchema.parse({
       features: {},
       capabilities: {},
@@ -97,5 +118,7 @@ describe('FeatureGatesSchema', () => {
     expect(readServerEnabledBit(parsed, 'sessions.usageLimitRecovery')).toBe(false);
     expect(readServerEnabledBit(parsed, 'connectedServices.accountGroups')).toBe(false);
     expect(readServerEnabledBit(parsed, 'connectedServices.accountFallback')).toBe(false);
+    expect(readServerEnabledBit(parsed, 'sessions.devPreview')).toBe(false);
+    expect(readServerEnabledBit(parsed, 'sessions.devPreview.relay')).toBe(false);
   });
 });

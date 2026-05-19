@@ -210,21 +210,43 @@ function runChecked(command, args, options, runCommandImpl) {
   }
 }
 
+function resolveCliCommonBuildTscCandidatePaths(packageDir) {
+  const resolvedPackageDir = resolve(packageDir);
+  const repoRoot = resolve(resolvedPackageDir, '..', '..');
+  return [
+    resolve(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
+    resolve(resolvedPackageDir, 'node_modules', 'typescript', 'bin', 'tsc'),
+  ];
+}
+
 export function resolveCliCommonBuildTscInvocations({
   env = process.env,
   platform = process.platform,
+  processExecPath = process.execPath,
+  packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..'),
   tscArgs,
+  existsSync: existsSyncImpl = existsSync,
 } = {}) {
   const args = Array.isArray(tscArgs) ? tscArgs : [];
   const npmExecPath = typeof env?.npm_execpath === 'string' ? env.npm_execpath.trim() : '';
-  return [
-    resolveYarnCommandInvocation(args, {
+  const invocations = [];
+
+  for (const tscPath of resolveCliCommonBuildTscCandidatePaths(packageDir)) {
+    if (!existsSyncImpl(tscPath)) continue;
+    invocations.push({
+      command: processExecPath,
+      args: [tscPath, ...args],
+    });
+  }
+
+  invocations.push(resolveYarnCommandInvocation(['-s', 'tsc', ...args], {
       npmExecPath,
       platform,
-      processExecPath: process.execPath,
+      processExecPath,
       comspec: env?.COMSPEC ?? env?.ComSpec ?? env?.comspec,
-    }),
-  ];
+    }));
+
+  return invocations;
 }
 
 function runFirstAvailableChecked(candidates, options, runCommandImpl) {
@@ -331,7 +353,9 @@ export async function buildCliCommonDist(options = {}) {
         resolveCliCommonBuildTscInvocations({
           env: commandEnv,
           platform: options.platform ?? process.platform,
-          tscArgs: ['-s', 'tsc', '-p', tempTsconfigPath],
+          packageDir,
+          processExecPath: process.execPath,
+          tscArgs: ['-p', tempTsconfigPath],
         }),
         {
           cwd: packageDir,

@@ -14,6 +14,7 @@ import {
 } from '@/agents/registry/sessionSubagentUiBehavior';
 import { SessionExecutionRunLauncherView } from '@/components/sessions/runs/launcher/SessionExecutionRunLauncherView';
 import { SessionEmbeddedTerminalPane } from '@/components/sessions/terminal/SessionEmbeddedTerminalPane';
+import { SessionLocalServicePreviewPane } from '@/components/sessions/devPreview/SessionLocalServicePreviewPane';
 import { PinIcon, PinSlashIcon } from '@/components/sessions/shell/sessionPinIcons';
 import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
@@ -222,6 +223,30 @@ type FileEditStartCallbackEntry = Readonly<{
     callback: () => void;
 }>;
 
+function isLocalServicePreviewResource(value: unknown): value is Readonly<{
+    kind: 'localServicePreview';
+    resourceId: string;
+    sessionId: string;
+    machineId: string;
+    port: number;
+    routeKey: string;
+    rewriteUrls: boolean;
+    supportsWebSocket: boolean;
+    healthStatus?: string;
+    name?: string;
+}> {
+    if (!value || typeof value !== 'object') return false;
+    const maybe = value as Record<string, unknown>;
+    return maybe.kind === 'localServicePreview'
+        && typeof maybe.resourceId === 'string'
+        && typeof maybe.sessionId === 'string'
+        && typeof maybe.machineId === 'string'
+        && typeof maybe.port === 'number'
+        && typeof maybe.routeKey === 'string'
+        && typeof maybe.rewriteUrls === 'boolean'
+        && typeof maybe.supportsWebSocket === 'boolean';
+}
+
 export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) => {
     const styles = stylesheet;
     const { theme } = useUnistyles();
@@ -402,6 +427,24 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                 );
             }
         }
+        if (resource?.kind === 'localServicePreview') {
+            if (isLocalServicePreviewResource(tab.resource)) {
+                return (
+                    <SessionLocalServicePreviewPane
+                        scopeId={props.scopeId}
+                        resourceId={tab.resource.resourceId}
+                        sessionId={tab.resource.sessionId}
+                        machineId={tab.resource.machineId}
+                        port={tab.resource.port}
+                        routeKey={tab.resource.routeKey}
+                        rewriteUrls={tab.resource.rewriteUrls}
+                        supportsWebSocket={tab.resource.supportsWebSocket}
+                        name={typeof tab.resource.name === 'string' ? tab.resource.name : undefined}
+                        healthStatus={typeof tab.resource.healthStatus === 'string' ? tab.resource.healthStatus : undefined}
+                    />
+                );
+            }
+        }
         const providerDetailsTab = renderProviderSessionDetailsTab({
             sessionId: props.sessionId,
             scopeId: props.scopeId,
@@ -456,6 +499,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                             ? 'terminal'
                                             : tab.kind === 'executionRunLauncher'
                                                 ? 'play'
+                                                : tab.kind === 'localServicePreview'
+                                                    ? 'globe'
                                                 : resolveProviderSessionDetailsTabIconName(tab) ?? 'circle';
                         return (
                             <View

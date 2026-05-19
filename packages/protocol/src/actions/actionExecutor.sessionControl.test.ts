@@ -91,6 +91,26 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionTitleSet).toHaveBeenCalledWith({ sessionId: 's1', title: 'New title' });
   });
 
+  it('executes session.devPreview.register via deps.sessionDevPreviewRegister', async () => {
+    const sessionDevPreviewRegister = vi.fn(async () => ({ ok: true, resourceId: 'preview_1' }));
+    const executor = createExecutor({ sessionDevPreviewRegister } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.devPreview.register' as any,
+      { port: 3000, framework: 'vite', rewriteUrls: true, healthPath: '/readyz' },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true, resourceId: 'preview_1' } });
+    expect(sessionDevPreviewRegister).toHaveBeenCalledWith({
+      sessionId: 's1',
+      port: 3000,
+      framework: 'vite',
+      rewriteUrls: true,
+      healthPath: '/readyz',
+    });
+  });
+
   it('executes session.stop via deps.sessionStop', async () => {
     const sessionStop = vi.fn(async () => ({ ok: true, stopped: true }));
     const executor = createExecutor({

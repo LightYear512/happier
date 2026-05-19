@@ -50,6 +50,8 @@ const harness = vi.hoisted(() => {
         shutdown: vi.fn(),
         onMachineTransferEnvelope: vi.fn(() => () => {}),
         sendMachineTransferEnvelope: vi.fn(),
+        onSessionDevPreviewEnvelope: vi.fn(() => () => {}),
+        sendSessionDevPreviewEnvelope: vi.fn(),
     };
     const lockHandle = { release: vi.fn(async () => {}) };
     const createDaemonShutdownController = vi.fn(() => {

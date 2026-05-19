@@ -71,6 +71,10 @@ export type SessionFoldersFeatureEnv = Readonly<{
   foldersEnabled: boolean;
 }>;
 
+export type SessionDevPreviewFeatureEnv = Readonly<{
+  relayEnabled: boolean;
+}>;
+
 export type MachineTransferFeatureEnv = Readonly<{
   directPeerEnabled: boolean;
   serverRoutedEnabled: boolean;
@@ -315,6 +319,12 @@ export function readSessionUsageLimitRecoveryFeatureEnv(env: NodeJS.ProcessEnv):
 export function readSessionFoldersFeatureEnv(env: NodeJS.ProcessEnv): SessionFoldersFeatureEnv {
   return {
     foldersEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsFoldersEnabled], true),
+  };
+}
+
+export function readSessionDevPreviewFeatureEnv(env: NodeJS.ProcessEnv): SessionDevPreviewFeatureEnv {
+  return {
+    relayEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayEnabled], true),
   };
 }
 

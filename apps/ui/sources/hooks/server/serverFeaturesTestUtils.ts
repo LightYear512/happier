@@ -113,6 +113,12 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 usageLimitRecovery: {
                     enabled: false,
                 },
+                devPreview: {
+                    enabled: false,
+                    relay: {
+                        enabled: false,
+                    },
+                },
                 handoff: {
                     enabled: false,
                 },

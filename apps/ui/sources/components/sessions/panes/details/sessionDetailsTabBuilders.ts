@@ -1,3 +1,6 @@
+import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReducer';
+import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
+
 import { createSessionDetailsTerminalTab } from '@/components/sessions/terminal/embeddedTerminalDocking';
 import { t } from '@/text';
 
@@ -41,6 +44,32 @@ export function createSessionScmStashDetailsTab() {
         kind: 'scmStash' as const,
         title: t('files.stash.detailsTitle'),
         resource: { kind: 'scmStash' as const },
+    };
+}
+
+export function createSessionLocalServicePreviewDetailsTab(payload: LocalServicePreviewV1): DetailsTab {
+    const title = typeof payload.name === 'string' && payload.name.trim().length > 0
+        ? payload.name.trim()
+        : `127.0.0.1:${payload.port}`;
+
+    return {
+        key: `localServicePreview:${payload.resourceId}`,
+        kind: 'localServicePreview',
+        title,
+        subtitle: payload.machineId,
+        resource: {
+            kind: 'localServicePreview',
+            resourceId: payload.resourceId,
+            sessionId: payload.sessionId,
+            machineId: payload.machineId,
+            port: payload.port,
+            routeKey: payload.preview.routeKey,
+            rewriteUrls: payload.preview.rewriteUrls,
+            supportsWebSocket: payload.preview.supportsWebSocket,
+            healthStatus: payload.health.status,
+            ...(payload.name ? { name: payload.name } : {}),
+            ...(payload.framework ? { framework: payload.framework } : {}),
+        },
     };
 }
 

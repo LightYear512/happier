@@ -93,6 +93,8 @@ const harness = vi.hoisted(() => {
     updateDaemonState: vi.fn(async () => {}),
     awaitPendingRpcRequests: vi.fn(async () => {}),
     shutdown: vi.fn(),
+    onSessionDevPreviewEnvelope: vi.fn(() => () => {}),
+    sendSessionDevPreviewEnvelope: vi.fn(),
   };
 
   return {

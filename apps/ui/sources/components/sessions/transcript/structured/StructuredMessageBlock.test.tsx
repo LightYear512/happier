@@ -6,6 +6,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { StructuredMessageBlock } from './StructuredMessageBlock';
 import { renderScreen } from '@/dev/testkit';
 
+vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
+    useAppPaneScope: () => ({
+        openDetailsTab: vi.fn(),
+    }),
+}));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -197,5 +202,49 @@ describe('StructuredMessageBlock', () => {
         const serialized = JSON.stringify(tree!.toJSON());
         expect(serialized).toContain('alpha');
         expect(serialized).toContain('Shut alpha down');
+    });
+
+    it('renders local service preview card for valid payload', async () => {
+        let tree: renderer.ReactTestRenderer | null = null;
+        tree = (await renderScreen(<StructuredMessageBlock
+                    message={{
+                        kind: 'user-text',
+                        id: 'm_preview',
+                        localId: null,
+                        createdAt: 1,
+                        text: 'preview',
+                        meta: {
+                            happier: {
+                                kind: 'local_service_preview.v1',
+                                payload: {
+                                    resourceId: 'preview_1',
+                                    sessionId: 's1',
+                                    machineId: 'machine-1',
+                                    port: 3000,
+                                    name: 'Preview app',
+                                    framework: 'vite',
+                                    source: 'mcp_tool',
+                                    registeredAtMs: 1,
+                                    health: {
+                                        status: 'ready',
+                                        checkedAtMs: 1,
+                                    },
+                                    preview: {
+                                        rewriteUrls: true,
+                                        supportsWebSocket: true,
+                                        routeKey: 'route_1',
+                                    },
+                                },
+                            },
+                        },
+                    } as any}
+                    sessionId="s1"
+                    onJumpToAnchor={() => {}}
+                />)).tree;
+
+        const serialized = JSON.stringify(tree!.toJSON());
+        expect(serialized).toContain('Preview app');
+        expect(serialized).toContain('3000');
+        expect(serialized).toContain('ready');
     });
 });

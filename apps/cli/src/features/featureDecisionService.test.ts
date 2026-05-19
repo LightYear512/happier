@@ -110,4 +110,20 @@ describe('resolveCliFeatureDecision', () => {
     expect(decision.blockedBy).toBe('dependency');
     expect(decision.blockerCode).toBe('dependency_disabled');
   });
+
+  it('enables sessions.devPreview when the experimental settings toggle is on', () => {
+    const decision = resolveCliFeatureDecision({
+      featureId: 'sessions.devPreview',
+      env: {} as NodeJS.ProcessEnv,
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      } as any,
+    });
+
+    expect(decision.state).toBe('enabled');
+    expect(decision.blockedBy).toBeNull();
+  });
 });

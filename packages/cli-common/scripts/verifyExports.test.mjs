@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -133,6 +133,24 @@ describe('cli-common build export verification', () => {
     } finally {
       rmSync(fixtureDir, { recursive: true, force: true });
     }
+  });
+
+  it('prefers the repo-root TypeScript binary over `yarn tsc` when it is available', async () => {
+    const { resolveCliCommonBuildTscInvocations } = await import(pathToFileURL(join(scriptsDir, 'build.mjs')).href);
+    const packageDir = '/repo/packages/cli-common';
+    const rootTscPath = resolve('/repo', 'node_modules', 'typescript', 'bin', 'tsc');
+    const invocations = resolveCliCommonBuildTscInvocations({
+      packageDir,
+      processExecPath: '/node',
+      tscArgs: ['-p', '/repo/packages/cli-common/.tsconfig.build.json'],
+      existsSync: (path) => path === rootTscPath,
+    });
+
+    expect(invocations[0]).toEqual({
+      command: '/node',
+      args: [rootTscPath, '-p', '/repo/packages/cli-common/.tsconfig.build.json'],
+    });
+    expect(invocations.at(-1)?.args).toContain('tsc');
   });
 
   it('detects missing files for declared export targets', () => {

@@ -35,7 +35,13 @@ describe("startSocket redis adapter config", () => {
         // startSocket reads process.env at call time, so module caching does not affect these tests.
         // Avoid vi.resetModules(): it would re-evaluate modules that register global prom-client metrics.
         vi.clearAllMocks();
-        serverCtor.mockReturnValue({ on: vi.fn(), close: vi.fn(), to: vi.fn(), use: vi.fn() });
+        serverCtor.mockReturnValue({
+            on: vi.fn(),
+            close: vi.fn(),
+            to: vi.fn(),
+            use: vi.fn(),
+            of: vi.fn(() => ({ adapter: { constructor: { name: "Adapter" } } })),
+        });
         resetSocketAdapterEnv();
     });
 
