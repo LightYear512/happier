@@ -99,6 +99,12 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
             folders: {
                 enabled: false,
             },
+            devPreview: {
+                enabled: false,
+                relay: {
+                    enabled: false,
+                },
+            },
             handoff: {
                 enabled: false,
             },
@@ -299,6 +305,14 @@ export function createRootLayoutFeaturesResponse(overrides?: RootLayoutFeaturesO
                 folders: {
                     ...BASE_ROOT_LAYOUT_FEATURES.features.sessions.folders,
                     ...(nextSessions.folders ?? {}),
+                },
+                devPreview: {
+                    ...BASE_ROOT_LAYOUT_FEATURES.features.sessions.devPreview,
+                    ...(nextSessions.devPreview ?? {}),
+                    relay: {
+                        ...BASE_ROOT_LAYOUT_FEATURES.features.sessions.devPreview.relay,
+                        ...(nextSessions.devPreview?.relay ?? {}),
+                    },
                 },
                 handoff: {
                     ...BASE_ROOT_LAYOUT_FEATURES.features.sessions.handoff,

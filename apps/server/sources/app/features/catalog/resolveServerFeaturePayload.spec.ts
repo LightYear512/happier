@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { resolveMachineTransferFeature } from "../machineTransferFeature";
 import { resolveChannelBridgesFeature } from "../channelBridgesFeature";
 import { resolveSessionHandoffFeature } from "../sessionHandoffFeature";
+import { resolveSessionDevPreviewFeature } from "../sessionDevPreviewFeature";
 import { resolveTerminalFeature } from "../terminalFeature";
 import { resolveServerFeaturePayload } from "./resolveServerFeaturePayload";
 import { resolveServerFeatureBuildPolicy } from "./serverFeatureBuildPolicy";
@@ -162,6 +163,39 @@ describe("resolveServerFeaturePayload", () => {
         } as NodeJS.ProcessEnv, serverFeatureRegistry);
 
         expect(payload.features.sessions.folders.enabled).toBe(false);
+    });
+
+    it("enables session dev preview relay support bits by default", () => {
+        const payload = resolveServerFeaturePayload({} as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+    });
+
+    it("disables only session dev preview relay when the env toggle is off", () => {
+        const payload = resolveServerFeaturePayload(
+            {
+                HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: "0",
+            } as NodeJS.ProcessEnv,
+            [resolveSessionDevPreviewFeature],
+        );
+
+        expect(payload.features.sessions.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(false);
+    });
+
+    it("deep-merges session subfeatures across multiple resolvers", () => {
+        const payload = resolveServerFeaturePayload(
+            {} as NodeJS.ProcessEnv,
+            [resolveSessionDevPreviewFeature, resolveSessionHandoffFeature],
+        );
+
+        expect(payload.features.sessions.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+        expect(payload.features.sessions.handoff.enabled).toBe(true);
     });
 
     it("enables channel bridges by default so the experimental UI toggle can appear", () => {

@@ -104,6 +104,12 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 folders: {
                     enabled: false,
                 },
+                devPreview: {
+                    enabled: false,
+                    relay: {
+                        enabled: false,
+                    },
+                },
                 handoff: {
                     enabled: false,
                 },

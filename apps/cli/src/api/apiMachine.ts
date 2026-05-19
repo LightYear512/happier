@@ -21,11 +21,14 @@ import type { ScmConnectedAccountCredentialResolver } from '@/scm/types';
 import { encodeBase64, decodeBase64, encrypt, decrypt } from './encryption';
 import { backoff } from '@/utils/time';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import type {
     DirectSessionTranscriptDeltaEphemeral,
     MachineTransferReceiveEnvelope,
     MachineTransferSendEnvelope,
+    SessionDevPreviewSocketMachineToServerMessage,
+    SessionDevPreviewSocketServerToMachineMessage,
 } from '@happier-dev/protocol';
 import { fetchChanges, fetchChangesAccountId } from './changes';
 import { readLastChangesCursor, writeLastChangesCursor } from '@/persistence';
@@ -73,6 +76,7 @@ export class ApiMachineClient {
     private updateListeners = new Set<(update: Update) => boolean | void>();
     private accountSettingsVersionHintListeners = new Set<(hint: AccountSettingsVersionHintNotification) => void | Promise<void>>();
     private machineTransferListeners = new Set<(payload: MachineTransferReceiveEnvelope) => void>();
+    private sessionDevPreviewListeners = new Set<(payload: SessionDevPreviewSocketServerToMachineMessage) => void>();
     private connectionStateListeners = new Set<(state: ManagedConnectionState) => void>();
     private connectionSupervisor: ManagedConnectionSupervisor | null = null;
     private readonly machineRpcWorkingDirectory: string;
@@ -146,6 +150,7 @@ export class ApiMachineClient {
             scopePrefix: this.machine.id,
             encryptionKey: this.machine.encryptionKey,
             encryptionVariant: this.machine.encryptionVariant,
+            plaintextMethods: new Set([`${this.machine.id}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}`]),
             logger: (msg, data) => logger.debug(msg, data)
         });
 
@@ -261,6 +266,13 @@ export class ApiMachineClient {
         };
     }
 
+    onSessionDevPreviewEnvelope(listener: (payload: SessionDevPreviewSocketServerToMachineMessage) => void): () => void {
+        this.sessionDevPreviewListeners.add(listener);
+        return () => {
+            this.sessionDevPreviewListeners.delete(listener);
+        };
+    }
+
     onConnectionStateChange(listener: (state: ManagedConnectionState) => void): () => void {
         this.connectionStateListeners.add(listener);
         listener(this.currentConnectionState);
@@ -272,6 +284,11 @@ export class ApiMachineClient {
     sendMachineTransferEnvelope(payload: MachineTransferSendEnvelope): void {
         if (!this.socket) return;
         this.socket.emit(SOCKET_RPC_EVENTS.MACHINE_TRANSFER_ENVELOPE, payload);
+    }
+
+    sendSessionDevPreviewEnvelope(payload: SessionDevPreviewSocketMachineToServerMessage): void {
+        if (!this.socket) return;
+        this.socket.emit(SOCKET_RPC_EVENTS.DEV_PREVIEW_FROM_MACHINE_ENVELOPE, payload);
     }
 
     emitDirectSessionTranscriptUpdate(payload: DirectSessionTranscriptDeltaEphemeral): void {
@@ -518,6 +535,18 @@ export class ApiMachineClient {
                     listener(data);
                 } catch (error) {
                     logger.warn('[API MACHINE] Machine transfer listener threw (ignored)', {
+                        message: error instanceof Error ? error.message : String(error),
+                    });
+                }
+            }
+        });
+
+        socket.on(SOCKET_RPC_EVENTS.DEV_PREVIEW_TO_MACHINE_ENVELOPE, (data: SessionDevPreviewSocketServerToMachineMessage) => {
+            for (const listener of this.sessionDevPreviewListeners) {
+                try {
+                    listener(data);
+                } catch (error) {
+                    logger.warn('[API MACHINE] Session dev preview listener threw (ignored)', {
                         message: error instanceof Error ? error.message : String(error),
                     });
                 }

@@ -6,6 +6,7 @@
 import { logger } from '@/ui/logger';
 import { clearDaemonState, readDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
+import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
 import { projectPath } from '@/projectPath';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { configuration } from '@/configuration';
@@ -120,6 +121,27 @@ export type DaemonRunningInspection =
   | { status: 'not-running' }
   | { status: 'starting'; state: NonNullable<Awaited<ReturnType<typeof readDaemonState>>> }
   | { status: 'running'; state: NonNullable<Awaited<ReturnType<typeof readDaemonState>>> };
+
+export type DaemonDevPreviewRegisterRequest = Readonly<{
+  sessionId: string;
+  expectedMachineId?: string;
+  port: number;
+  name?: string;
+  framework?: string;
+  healthPath?: string;
+  rewriteUrls?: boolean;
+}>;
+
+export type DaemonDevPreviewRegisterResult =
+  | Readonly<{ success: true; preview: LocalServicePreviewV1 }>
+  | Readonly<{
+      success: false;
+      error?: string;
+      errorCode?: string;
+      machineId?: string;
+      expectedMachineId?: string;
+    }>
+  | Readonly<{ error: string; errorCode?: string }>;
 
 export async function inspectDaemonRunningStateAndCleanupStaleState(): Promise<DaemonRunningInspection> {
   const state = await readDaemonState();
@@ -281,6 +303,13 @@ export async function spawnDaemonSession(
 
   const result = await daemonPost('/spawn-session', request);
   return result;
+}
+
+export async function registerDaemonSessionDevPreview(
+  request: DaemonDevPreviewRegisterRequest,
+  options: DaemonControlRequestOptions = {},
+): Promise<DaemonDevPreviewRegisterResult> {
+  return await daemonPost('/dev-preview/register', request, options) as DaemonDevPreviewRegisterResult;
 }
 
 export async function stopDaemonHttp(params: { stopSessions?: boolean } = {}): Promise<void> {

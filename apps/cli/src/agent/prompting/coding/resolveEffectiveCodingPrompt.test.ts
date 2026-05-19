@@ -148,6 +148,51 @@ describe('resolveEffectiveCodingPromptText', () => {
     expect(out).toContain('use `memory_get_window`');
   });
 
+  it('appends local dev preview registration guidance when the feature toggle is enabled', async () => {
+    const credentials = createCredentials();
+
+    const out = await resolveEffectiveCodingPromptText({
+      credentials,
+      settings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      },
+      profileId: null,
+      baseOverride: 'BASE',
+      executionRunsFeatureEnabled: false,
+      fetchPromptArtifactRecord: async () => null,
+    });
+
+    expect(out).toContain('BASE');
+    expect(out).toContain('happier_dev_preview_register');
+    expect(out).toContain('npm run dev');
+    expect(out).toContain('next dev');
+  });
+
+  it('omits local dev preview registration guidance when Happier tool delivery is unavailable', async () => {
+    const credentials = createCredentials();
+
+    const out = await resolveEffectiveCodingPromptText({
+      credentials,
+      settings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      },
+      profileId: null,
+      baseOverride: 'BASE',
+      executionRunsFeatureEnabled: false,
+      toolDelivery: 'unsupported',
+      fetchPromptArtifactRecord: async () => null,
+    });
+
+    expect(out).toContain('BASE');
+    expect(out).not.toContain('happier_dev_preview_register');
+  });
+
   it('appends provider behavior blocks after the shared base and prompt library blocks', async () => {
     const credentials = createCredentials();
 

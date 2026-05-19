@@ -5,7 +5,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,6 +58,10 @@ function resolveProtocolSourcePackageJsonPath(projectRoot: string): string {
   return resolve(projectRoot, '..', '..', 'packages', 'protocol', 'package.json')
 }
 
+function resolveProtocolSourceDistDir(projectRoot: string): string {
+  return resolve(projectRoot, '..', '..', 'packages', 'protocol', 'dist')
+}
+
 function resolveExternalProtocolRuntimeDependencyNames(projectRoot: string): string[] {
   const packageJsonPath = resolveProtocolSourcePackageJsonPath(projectRoot)
   if (!existsSync(packageJsonPath)) return []
@@ -93,6 +97,53 @@ function resolveBundledProtocolReadyMarkers(projectRoot: string): string[] {
   ]
 }
 
+function readPathLatestMtimeMs(path: string): number {
+  if (!existsSync(path)) return -1
+
+  const stats = statSync(path)
+  if (!stats.isDirectory()) return stats.mtimeMs
+
+  let latestMtimeMs = -1
+
+  const queue = [path]
+
+  while (queue.length > 0) {
+    const currentPath = queue.shift()
+    if (!currentPath) continue
+
+    for (const entry of readdirSync(currentPath, { withFileTypes: true })) {
+      const entryPath = join(currentPath, entry.name)
+      const entryStats = statSync(entryPath)
+      if (entry.isDirectory()) {
+        queue.push(entryPath)
+      } else {
+        latestMtimeMs = Math.max(latestMtimeMs, entryStats.mtimeMs)
+      }
+    }
+  }
+
+  return latestMtimeMs >= 0 ? latestMtimeMs : stats.mtimeMs
+}
+
+export function isBundledProtocolWorkspaceCurrent(projectRoot: string): boolean {
+  const sourcePackageJsonPath = resolveProtocolSourcePackageJsonPath(projectRoot)
+  const sourceDistDir = resolveProtocolSourceDistDir(projectRoot)
+  const bundledProtocolPackageDir = resolveBundledProtocolPackageDir(projectRoot)
+  const bundledPackageJsonPath = join(bundledProtocolPackageDir, 'package.json')
+  const bundledDistDir = join(bundledProtocolPackageDir, 'dist')
+
+  const sourceLatestMtimeMs = Math.max(
+    readPathLatestMtimeMs(sourcePackageJsonPath),
+    readPathLatestMtimeMs(sourceDistDir),
+  )
+  const bundledLatestMtimeMs = Math.max(
+    readPathLatestMtimeMs(bundledPackageJsonPath),
+    readPathLatestMtimeMs(bundledDistDir),
+  )
+
+  return sourceLatestMtimeMs > 0 && bundledLatestMtimeMs >= sourceLatestMtimeMs
+}
+
 function spawnYarnSync(args: readonly string[], cwd: string) {
   const invocation = resolveYarnCommandInvocation(args)
   return spawnSync(invocation.command, invocation.args, {
@@ -111,6 +162,7 @@ async function ensureSharedDepsBuiltOnce(projectRoot: string): Promise<void> {
     lockPath: resolveSharedDepsLockPath(projectRoot),
     markerPaths: markers,
     lockLabel: 'CLI shared deps build',
+    isReady: () => isBundledProtocolWorkspaceCurrent(projectRoot),
     runBuild: () => {
       const buildResult = spawnYarnSync(['-s', 'build:shared'], projectRoot)
 

@@ -51,6 +51,21 @@ describe('featureDecisionInputs', () => {
     expect(inputs.localPolicyEnabled).toBe(false);
   });
 
+  it('derives local policy for sessions.devPreview from account settings experimental toggles', () => {
+    const inputs = createCliFeatureDecisionInputs({
+      featureId: 'sessions.devPreview',
+      env: {} as NodeJS.ProcessEnv,
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      } as any,
+    });
+
+    expect(inputs.localPolicyEnabled).toBe(true);
+  });
+
   it('loads server snapshot when resolving inputs for a server URL', async () => {
     const fetchSpy = vi.fn(async () => ({
       ok: true,

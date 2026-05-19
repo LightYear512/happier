@@ -1,5 +1,6 @@
 import {
   featureRequiresServerSnapshot,
+  type AccountSettings,
   type FeatureId,
 } from '@happier-dev/protocol';
 
@@ -16,19 +17,22 @@ export type CliFeatureDecisionInputs = Readonly<{
   env: NodeJS.ProcessEnv;
   buildPolicy: 'allow' | 'deny' | 'neutral';
   localPolicyEnabled: boolean;
+  accountSettings?: AccountSettings | null;
   serverSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
 export function createCliFeatureDecisionInputs(params: {
   featureId: FeatureId;
   env: NodeJS.ProcessEnv;
+  accountSettings?: AccountSettings | null;
   serverSnapshot?: CliServerFeaturesSnapshot;
 }): CliFeatureDecisionInputs {
   return {
     featureId: params.featureId,
     env: params.env,
     buildPolicy: getCliFeatureBuildPolicyDecision(params.featureId, params.env),
-    localPolicyEnabled: resolveCliLocalFeaturePolicyEnabled(params.featureId, params.env),
+    localPolicyEnabled: resolveCliLocalFeaturePolicyEnabled(params.featureId, params.env, params.accountSettings ?? null),
+    accountSettings: params.accountSettings ?? null,
     serverSnapshot: params.serverSnapshot,
   };
 }
@@ -36,6 +40,7 @@ export function createCliFeatureDecisionInputs(params: {
 export async function loadCliFeatureDecisionInputsForServer(params: {
   featureId: FeatureId;
   env: NodeJS.ProcessEnv;
+  accountSettings?: AccountSettings | null;
   serverUrl: string;
   timeoutMs?: number;
 }): Promise<CliFeatureDecisionInputs> {
@@ -44,6 +49,7 @@ export async function loadCliFeatureDecisionInputsForServer(params: {
     return createCliFeatureDecisionInputs({
       featureId: params.featureId,
       env: params.env,
+      accountSettings: params.accountSettings ?? null,
       serverSnapshot: undefined,
     });
   }
@@ -52,6 +58,7 @@ export async function loadCliFeatureDecisionInputsForServer(params: {
     return createCliFeatureDecisionInputs({
       featureId: params.featureId,
       env: params.env,
+      accountSettings: params.accountSettings ?? null,
       serverSnapshot: undefined,
     });
   }
@@ -64,6 +71,7 @@ export async function loadCliFeatureDecisionInputsForServer(params: {
   return createCliFeatureDecisionInputs({
     featureId: params.featureId,
     env: params.env,
+    accountSettings: params.accountSettings ?? null,
     serverSnapshot,
   });
 }

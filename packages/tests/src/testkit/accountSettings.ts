@@ -1,15 +1,25 @@
 import { randomBytes } from 'node:crypto';
 
-import { sealAccountScopedBlobCiphertext } from '@happier-dev/protocol';
+import { sealAccountScopedBlobCiphertext, type AccountScopedCryptoMaterial } from '@happier-dev/protocol';
 
 import { fetchJson } from './http';
 
-export async function upsertEncryptedAccountSettingsV2(params: Readonly<{
+export type UpsertEncryptedAccountSettingsV2Params = Readonly<{
   baseUrl: string;
   token: string;
-  secret: Uint8Array;
   settings: unknown;
-}>): Promise<void> {
+}> & (
+  | Readonly<{ secret: Uint8Array }>
+  | Readonly<{ material: AccountScopedCryptoMaterial }>
+);
+
+function resolveAccountSettingsMaterial(params: UpsertEncryptedAccountSettingsV2Params): AccountScopedCryptoMaterial {
+  return 'material' in params
+    ? params.material
+    : { type: 'legacy', secret: params.secret };
+}
+
+export async function upsertEncryptedAccountSettingsV2(params: UpsertEncryptedAccountSettingsV2Params): Promise<void> {
   const getRes = await fetchJson<any>(`${params.baseUrl}/v2/account/settings`, {
     headers: { Authorization: `Bearer ${params.token}` },
     timeoutMs: 20_000,
@@ -30,7 +40,7 @@ export async function upsertEncryptedAccountSettingsV2(params: Readonly<{
         t: 'encrypted',
         c: sealAccountScopedBlobCiphertext({
           kind: 'account_settings',
-          material: { type: 'legacy', secret: params.secret },
+          material: resolveAccountSettingsMaterial(params),
           payload: params.settings,
           randomBytes: (length) => Uint8Array.from(randomBytes(length)),
         }),
