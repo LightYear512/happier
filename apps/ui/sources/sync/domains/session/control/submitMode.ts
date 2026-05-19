@@ -9,6 +9,7 @@ export type BusySteerSendPolicy = 'steer_immediately' | 'server_pending';
 export function chooseSubmitMode(opts: {
     configuredMode: MessageSendMode;
     busySteerSendPolicy?: BusySteerSendPolicy;
+    explicitMode?: MessageSendMode;
     session: Session | null;
 }): MessageSendMode {
     const configuredMode = opts.configuredMode;
@@ -32,6 +33,10 @@ export function chooseSubmitMode(opts: {
         if (!isVersionSupported(trimmedCliVersion, MINIMUM_CLI_PENDING_QUEUE_V2_VERSION)) {
             return configuredMode === 'server_pending' ? 'agent_queue' : configuredMode;
         }
+    }
+
+    if (opts.explicitMode === 'server_pending') {
+        return 'server_pending';
     }
 
     const controlledByUser = isSessionExclusiveLocalControl(session);
