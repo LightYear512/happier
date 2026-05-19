@@ -41,6 +41,7 @@ import type { MemoryWorkerHandle } from '@/daemon/memory/memoryWorker';
 import { registerMachineMemoryRpcHandlers } from './rpcHandlers.memory';
 import { registerMachineTerminalRpcHandlers } from './rpcHandlers.terminal';
 import { registerMachineMcpServersRpcHandlers } from './rpcHandlers.mcpServers';
+import { registerMachineDevPreviewRpcHandlers } from './rpcHandlers.devPreview';
 import { registerMachineDirectSessionsRpcHandlers } from './rpcHandlers.directSessions';
 import {
   registerMachineSessionHandoffRpcHandlers,
@@ -439,6 +440,9 @@ export function registerMachineRpcHandlers(params: Readonly<{
     });
   }
 
+  registerMachineDevPreviewRpcHandlers({
+    rpcHandlerManager,
+  });
   registerMachineTerminalRpcHandlers({
     rpcHandlerManager,
     deps: {

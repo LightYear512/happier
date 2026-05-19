@@ -9,6 +9,7 @@ import type { Metadata } from "@/api/types";
 import { configuration } from "@/configuration";
 import type { Credentials } from '@/persistence';
 import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/session/services/executionRuns";
+import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
 import type { AccountSettings } from '@happier-dev/protocol';
 import { createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
 
@@ -37,6 +38,7 @@ export async function startHappyServer(
 ) {
     // Do not eagerly construct an MCP server on startup; only snapshot the names.
     // Full server creation is done per request inside the handler.
+    const devPreviewRegistry = getSharedSessionDevPreviewRegistry();
     const isActionEnabled = createMcpActionEnablement({
         accountSettings: opts?.accountSettings ?? null,
         surface: 'session_agent',
@@ -66,6 +68,7 @@ export async function startHappyServer(
         const { mcp } = createHappierMcpServer(client, {
             credentials: opts?.credentials ?? null,
             accountSettings: opts?.accountSettings ?? null,
+            devPreviewRegistry,
         });
 
         const transport = new StreamableHTTPServerTransport({

@@ -13,6 +13,7 @@ import { resolveUpdatesFeature } from '../updatesFeature';
 import { resolveAttachmentsUploadsFeature } from '../attachmentsUploadsFeature';
 import { resolvePetsFeature } from '../petsFeature';
 import { resolveMachineTransferFeature } from '../machineTransferFeature';
+import { resolveSessionDevPreviewFeature } from '../sessionDevPreviewFeature';
 import { resolveSessionHandoffFeature } from '../sessionHandoffFeature';
 import { resolveTerminalFeature } from '../terminalFeature';
 import { resolveEncryptionFeature } from '../encryptionFeature';
@@ -35,6 +36,7 @@ export const serverFeatureRegistry: readonly ServerFeatureResolver[] = Object.fr
     (env) => resolveAttachmentsUploadsFeature(env),
     (env) => resolvePetsFeature(env),
     (env) => resolveMachineTransferFeature(env),
+    (env) => resolveSessionDevPreviewFeature(env),
     (env) => resolveSessionHandoffFeature(env),
     (env) => resolveTerminalFeature(env),
     (env) => resolveFriendsFeature(env),

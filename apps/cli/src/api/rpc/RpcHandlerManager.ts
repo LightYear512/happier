@@ -21,6 +21,7 @@ export class RpcHandlerManager {
     private readonly encryptionKey: Uint8Array;
     private readonly encryptionVariant: 'legacy' | 'dataKey';
     private readonly encryptionMode: 'e2ee' | 'plain';
+    private readonly plaintextMethods: ReadonlySet<string>;
     private readonly logger: (message: string, data?: any) => void;
     private socket: Socket | null = null;
     private inFlightRequestCount = 0;
@@ -31,6 +32,7 @@ export class RpcHandlerManager {
         this.encryptionKey = config.encryptionKey;
         this.encryptionVariant = config.encryptionVariant;
         this.encryptionMode = config.encryptionMode ?? 'e2ee';
+        this.plaintextMethods = config.plaintextMethods ?? new Set<string>();
         this.logger = config.logger || ((msg, data) => defaultLogger.debug(msg, data));
     }
 
@@ -64,22 +66,23 @@ export class RpcHandlerManager {
         this.inFlightRequestCount += 1;
         try {
             const handler = this.handlers.get(request.method);
+            const usePlaintextTransport = this.shouldUsePlaintextTransport(request.method);
 
             if (!handler) {
                 this.logger('[RPC] [ERROR] Method not found', { method: request.method });
                 const errorResponse = { error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
-                if (this.encryptionMode === 'plain') return errorResponse;
+                if (usePlaintextTransport) return errorResponse;
                 const encryptedError = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, errorResponse));
                 return encryptedError;
             }
 
             // Decrypt the incoming params (unless session is plaintext).
-            const decryptedParams = this.encryptionMode === 'plain'
+            const decryptedParams = usePlaintextTransport
               ? request.params
               : typeof request.params === 'string'
                 ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(request.params))
                 : null;
-            if (this.encryptionMode !== 'plain' && decryptedParams === null) {
+            if (!usePlaintextTransport && decryptedParams === null) {
               const errorResponse = {
                 error: 'Invalid RPC params',
               };
@@ -92,7 +95,7 @@ export class RpcHandlerManager {
             this.logger('[RPC] Handler returned', { method: request.method, hasResult: result !== undefined });
 
             // Encrypt and return the response
-            if (this.encryptionMode === 'plain') {
+            if (usePlaintextTransport) {
               return result;
             }
             const encryptedResponse = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, result));
@@ -103,7 +106,7 @@ export class RpcHandlerManager {
             const errorResponse = {
                 error: error instanceof Error ? error.message : 'Unknown error'
             };
-            if (this.encryptionMode === 'plain') return errorResponse;
+            if (this.shouldUsePlaintextTransport(request.method)) return errorResponse;
             return encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, errorResponse));
         } finally {
             this.inFlightRequestCount = Math.max(0, this.inFlightRequestCount - 1);
@@ -115,6 +118,10 @@ export class RpcHandlerManager {
                 }
             }
         }
+    }
+
+    private shouldUsePlaintextTransport(method: string): boolean {
+        return this.encryptionMode === 'plain' || this.plaintextMethods.has(method);
     }
 
     /**

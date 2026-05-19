@@ -123,6 +123,18 @@ const FEATURE_CATALOG_DEFINITION = {
     dependencies: [],
     representation: 'client',
   },
+  'sessions.devPreview': {
+    description: 'Local dev-server preview registration and in-app preview surfaces.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions'],
+    representation: 'client',
+  },
+  'sessions.devPreview.relay': {
+    description: 'Server-routed local dev preview relay and preview-token routes.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions.devPreview'],
+    representation: 'server',
+  },
   'sessions.handoff': {
     description: 'Session handoff between machines.',
     defaultFailMode: 'fail_closed',

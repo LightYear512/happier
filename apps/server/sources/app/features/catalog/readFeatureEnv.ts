@@ -61,6 +61,10 @@ export type SessionHandoffFeatureEnv = Readonly<{
   handoffEnabled: boolean;
 }>;
 
+export type SessionDevPreviewFeatureEnv = Readonly<{
+  relayEnabled: boolean;
+}>;
+
 export type MachineTransferFeatureEnv = Readonly<{
   directPeerEnabled: boolean;
   serverRoutedEnabled: boolean;
@@ -291,6 +295,12 @@ export function readPetsFeatureEnv(env: NodeJS.ProcessEnv): PetsFeatureEnv {
 export function readSessionHandoffFeatureEnv(env: NodeJS.ProcessEnv): SessionHandoffFeatureEnv {
   return {
     handoffEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsHandoffEnabled], true),
+  };
+}
+
+export function readSessionDevPreviewFeatureEnv(env: NodeJS.ProcessEnv): SessionDevPreviewFeatureEnv {
+  return {
+    relayEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayEnabled], true),
   };
 }
 

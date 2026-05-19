@@ -5,6 +5,7 @@ import { registerSessionArchiveRoutes } from "./registerSessionArchiveRoutes";
 import { registerSessionListingRoutes } from "./registerSessionListingRoutes";
 import { registerSessionMessageRoutes } from "./registerSessionMessageRoutes";
 import { registerSessionPatchRoute } from "./registerSessionPatchRoute";
+import { registerSessionDevPreviewRoutes } from "./registerSessionDevPreviewRoutes";
 import { registerSessionReadStateRoutes } from "./registerSessionReadStateRoutes";
 
 export function sessionRoutes(app: Fastify) {
@@ -13,6 +14,7 @@ export function sessionRoutes(app: Fastify) {
     registerSessionArchiveRoutes(app);
     registerSessionMessageRoutes(app);
     registerSessionPatchRoute(app);
+    registerSessionDevPreviewRoutes(app);
     registerSessionReadStateRoutes(app);
     registerSessionDeleteRoute(app);
 }

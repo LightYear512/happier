@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { request as httpRequest } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -372,6 +372,88 @@ describe('startHappyServer (MCP integration)', () => {
     } finally {
       await (client as any)?.close?.();
       server.stop();
+    }
+  });
+
+  it('registers session dev previews through the MCP bridge and emits structured transcript metadata', async () => {
+    const previewServer = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => previewServer.listen(0, '127.0.0.1', () => resolve()));
+    const previewPort = Number((previewServer.address() as { port: number }).port);
+
+    const sendClaudeSessionMessage = vi.fn();
+    const fakeClient: HappyMcpSessionClient = {
+      sessionId: 'sess_mcp_dev_preview_1',
+      rpcHandlerManager: {
+        invokeLocal: vi.fn(async () => ({})),
+      } as any,
+      sendClaudeSessionMessage,
+      updateMetadata: () => {},
+      getMetadataSnapshot: () => ({
+        machineId: 'machine-1',
+        path: '/tmp/project',
+        host: 'localhost',
+      } as Metadata),
+    };
+
+    const server = await startHappyServer(fakeClient, {
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      } as any,
+    });
+    let client: Client | null = null;
+    try {
+      client = new Client({ name: 'mcp-test-dev-preview', version: '1.0.0' }, { capabilities: {} });
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+
+      const tools = await client.listTools();
+      const names = new Set((tools.tools ?? []).map((tool: any) => String(tool.name)));
+      expect(names.has('happier_dev_preview_register')).toBe(true);
+
+      const resultRaw = await client.callTool({
+        name: 'happier_dev_preview_register',
+        arguments: {
+          port: previewPort,
+          name: 'Preview app',
+          framework: 'vite',
+        },
+      });
+
+      expect(resultRaw.isError).toBe(false);
+      const result = parseMcpJsonText(resultRaw);
+      expect(result.resourceId).toEqual(expect.any(String));
+      expect(result.preview?.routeKey).toEqual(expect.any(String));
+      expect(result.health?.status).toBe('ready');
+
+      expect(sendClaudeSessionMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'user',
+        }),
+        expect.objectContaining({
+          happier: expect.objectContaining({
+            kind: 'local_service_preview.v1',
+            payload: expect.objectContaining({
+              sessionId: 'sess_mcp_dev_preview_1',
+              machineId: 'machine-1',
+              port: previewPort,
+              name: 'Preview app',
+              framework: 'vite',
+              health: expect.objectContaining({
+                status: 'ready',
+              }),
+            }),
+          }),
+        }),
+      );
+    } finally {
+      await (client as any)?.close?.();
+      server.stop();
+      await new Promise<void>((resolve, reject) => previewServer.close((error) => (error ? reject(error) : resolve())));
     }
   });
 

@@ -52,4 +52,25 @@ describe('FeatureGatesSchema', () => {
     expect(readServerEnabledBit(parsed, 'attachments.uploads')).toBe(true);
     expect(readServerEnabledBit(parsed, 'session.media.generated')).toBe(true);
   });
+
+  it('preserves session dev preview relay gates', () => {
+    const parsed = FeaturesResponseSchema.parse({
+      features: {
+        sessions: {
+          enabled: true,
+          devPreview: {
+            enabled: true,
+            relay: {
+              enabled: true,
+            },
+          },
+        },
+      },
+      capabilities: {},
+    });
+
+    expect(readServerEnabledBit(parsed, 'sessions')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'sessions.devPreview')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'sessions.devPreview.relay')).toBe(true);
+  });
 });

@@ -153,6 +153,23 @@ describe('Action Spec Registry', () => {
     expect(spec.bindings?.mcpToolName).toBe('session_spawn_new');
   });
 
+  it('registers the session dev preview action as a feature-gated session-agent tool', () => {
+    const spec = getActionSpec('session.devPreview.register' as any);
+
+    expect(spec.requiredFeatureId).toBe('sessions.devPreview');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.surfaces.mcp).toBe(false);
+    expect(spec.surfaces.cli).toBe(false);
+    expect(spec.bindings?.mcpToolName).toBe('happier_dev_preview_register');
+    expect(spec.inputSchema.parse({ port: 3000 })).toEqual({ port: 3000 });
+    expect(spec.inputSchema.parse({ port: 3000, healthPath: '/readyz', rewriteUrls: false })).toEqual({
+      port: 3000,
+      healthPath: '/readyz',
+      rewriteUrls: false,
+    });
+    expect(() => spec.inputSchema.parse({ port: 3000, healthPath: 'http://127.0.0.1:3000/' })).toThrow();
+  });
+
   it('does not expose legacy voice_mediator intent in ExecutionRunIntentSchema', () => {
     expect(ExecutionRunIntentSchema.safeParse('voice_agent').success).toBe(true);
     expect(ExecutionRunIntentSchema.safeParse('voice_mediator').success).toBe(false);

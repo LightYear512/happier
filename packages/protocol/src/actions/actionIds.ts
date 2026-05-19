@@ -10,6 +10,7 @@ export const ACTION_IDS = [
   'session.fork',
   'session.rollback',
   'session.handoff',
+  'session.devPreview.register',
   'session.spawn_new',
   'session.spawn_picker',
   // Local inventory + discovery (voice)

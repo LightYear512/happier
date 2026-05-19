@@ -138,6 +138,12 @@ export const UI_FEATURE_REGISTRY = {
     sessions: {
         settingsToggle: undefined,
     },
+    'sessions.devPreview': {
+        settingsToggle: undefined,
+    },
+    'sessions.devPreview.relay': {
+        settingsToggle: undefined,
+    },
     'sessions.handoff': {
         settingsToggle: undefined,
     },

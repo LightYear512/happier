@@ -92,6 +92,18 @@ export const FeatureGatesSchema = z.object({
   sessions: z
     .object({
       enabled: z.boolean(),
+      devPreview: z
+        .object({
+          enabled: z.boolean(),
+          relay: z
+            .object({
+              enabled: z.boolean(),
+            })
+            .optional()
+            .default({ enabled: false }),
+        })
+        .optional()
+        .default({ enabled: false, relay: { enabled: false } }),
       handoff: z
         .object({
           enabled: z.boolean(),
@@ -100,7 +112,11 @@ export const FeatureGatesSchema = z.object({
         .default({ enabled: false }),
     })
     .optional()
-    .default({ enabled: false, handoff: { enabled: false } }),
+    .default({
+      enabled: false,
+      devPreview: { enabled: false, relay: { enabled: false } },
+      handoff: { enabled: false },
+    }),
   machines: z
     .object({
       enabled: z.boolean(),

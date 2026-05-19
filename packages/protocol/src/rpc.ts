@@ -21,6 +21,7 @@ export const RPC_METHODS = {
   DAEMON_MCP_SERVERS_TEST: 'daemon.mcpServers.test',
   DAEMON_MCP_SERVERS_DETECT: 'daemon.mcpServers.detect',
   DAEMON_MCP_SERVERS_PREVIEW: 'daemon.mcpServers.preview',
+  DAEMON_SESSION_DEV_PREVIEW_HTTP: 'daemon.sessionDevPreview.http',
   DAEMON_BULK_TRANSFER_UPLOAD_INIT: 'daemon.bulkTransfer.upload.init',
   DAEMON_BULK_TRANSFER_UPLOAD_CHUNK: 'daemon.bulkTransfer.upload.chunk',
   DAEMON_BULK_TRANSFER_UPLOAD_FINALIZE: 'daemon.bulkTransfer.upload.finalize',

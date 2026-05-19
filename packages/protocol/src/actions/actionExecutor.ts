@@ -82,6 +82,14 @@ export type ActionExecutorDeps = Readonly<{
     workspaceTransfer?: SessionHandoffWorkspaceTransfer;
     serverId?: string | null;
   }>) => Promise<unknown>;
+  sessionDevPreviewRegister?: (args: Readonly<{
+    sessionId: string;
+    port: number;
+    name?: string;
+    framework?: string;
+    rewriteUrls?: boolean;
+    healthPath?: string;
+  }>) => Promise<unknown>;
   sessionSpawnNew: (args: Readonly<{
     tag?: string;
     agentId?: string;
@@ -907,6 +915,30 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(targetSessionStorageMode ? { targetSessionStorageMode } : {}),
             ...(workspaceTransfer ? { workspaceTransfer } : {}),
             ...(serverId ? { serverId } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.devPreview.register') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionDevPreviewRegister) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.devPreview.register' };
+          }
+          const port = Number((parsed.data as any).port ?? 0);
+          if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const name = normalizeId((parsed.data as any).name);
+          const framework = normalizeId((parsed.data as any).framework);
+          const healthPath = normalizeId((parsed.data as any).healthPath);
+          const res = await deps.sessionDevPreviewRegister({
+            sessionId,
+            port,
+            ...(name ? { name } : {}),
+            ...(framework ? { framework } : {}),
+            ...(typeof (parsed.data as any).rewriteUrls === 'boolean' ? { rewriteUrls: (parsed.data as any).rewriteUrls } : {}),
+            ...(healthPath ? { healthPath } : {}),
           });
           return { ok: true, result: res };
         }

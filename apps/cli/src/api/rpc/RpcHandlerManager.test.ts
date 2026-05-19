@@ -75,6 +75,53 @@ describe('RpcHandlerManager.handleRequest (plaintext)', () => {
 });
 
 describe('RpcHandlerManager.handleRequest (encrypted)', () => {
+  it('allows explicitly configured methods to receive plaintext server params', async () => {
+    const encryptionKey = new Uint8Array(32).fill(6);
+    const rpc = new RpcHandlerManager({
+      scopePrefix: 'machine_1',
+      encryptionKey,
+      encryptionVariant: 'dataKey',
+      plaintextMethods: new Set(['machine_1:daemon.sessionDevPreview.http']),
+      logger: () => {},
+    });
+
+    rpc.registerHandler('daemon.sessionDevPreview.http', async (params: unknown) => {
+      return { ok: true, echoed: params };
+    });
+
+    const res = await rpc.handleRequest({
+      method: 'machine_1:daemon.sessionDevPreview.http',
+      params: { path: '/', routeKey: 'route_1' },
+    });
+
+    expect(res).toEqual({
+      ok: true,
+      echoed: { path: '/', routeKey: 'route_1' },
+    });
+  });
+
+  it('returns plaintext errors for explicitly configured plaintext methods', async () => {
+    const encryptionKey = new Uint8Array(32).fill(8);
+    const rpc = new RpcHandlerManager({
+      scopePrefix: 'machine_1',
+      encryptionKey,
+      encryptionVariant: 'dataKey',
+      plaintextMethods: new Set(['machine_1:daemon.sessionDevPreview.http']),
+      logger: () => {},
+    });
+
+    rpc.registerHandler('daemon.sessionDevPreview.http', async () => {
+      throw new Error('preview relay failed');
+    });
+
+    const res = await rpc.handleRequest({
+      method: 'machine_1:daemon.sessionDevPreview.http',
+      params: { path: '/', routeKey: 'route_1' },
+    });
+
+    expect(res).toEqual({ error: 'preview relay failed' });
+  });
+
   it('passes encrypted undefined params through to the handler', async () => {
     const encryptionKey = new Uint8Array(32).fill(7);
     const rpc = new RpcHandlerManager({

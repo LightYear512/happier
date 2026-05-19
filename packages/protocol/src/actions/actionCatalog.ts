@@ -14,6 +14,7 @@ export type SerializedActionSpec = Readonly<{
   title: string;
   description: string | null;
   safety: ActionSpec['safety'];
+  requiredFeatureId: ActionSpec['requiredFeatureId'] | null;
   placements: readonly string[];
   slash: ActionSpec['slash'] | null;
   bindings: ActionSpec['bindings'] | null;
@@ -96,6 +97,7 @@ export function serializeActionSpec(spec: ActionSpec): SerializedActionSpec {
     title: spec.title,
     description: spec.description ?? null,
     safety: spec.safety,
+    requiredFeatureId: spec.requiredFeatureId ?? null,
     placements: spec.placements ?? [],
     slash: spec.slash ?? null,
     bindings: spec.bindings ?? null,

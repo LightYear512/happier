@@ -101,6 +101,12 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
             },
             sessions: {
                 enabled: false,
+                devPreview: {
+                    enabled: false,
+                    relay: {
+                        enabled: false,
+                    },
+                },
                 handoff: {
                     enabled: false,
                 },

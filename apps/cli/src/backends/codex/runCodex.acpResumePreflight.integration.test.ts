@@ -330,6 +330,9 @@ const initializeBackendRunSessionSpy = vi.fn(async (opts: any) => {
     fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
     sendCodexMessage: vi.fn(),
     sendAgentMessage: vi.fn(),
+    beginTurnAssistantTextSnapshot: vi.fn(() => 'turn-1'),
+    getTurnAssistantTextSnapshot: vi.fn(() => null),
+    getLastObservedMessageSeq: vi.fn(() => 0),
   });
   return {
     session,
@@ -354,6 +357,9 @@ function mockAttachedSessionMetadata(metadata: Record<string, unknown>): void {
       fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
       sendCodexMessage: vi.fn(),
       sendAgentMessage: vi.fn(),
+      beginTurnAssistantTextSnapshot: vi.fn(() => 'turn-1'),
+      getTurnAssistantTextSnapshot: vi.fn(() => null),
+      getLastObservedMessageSeq: vi.fn(() => 0),
       getMetadataSnapshot: vi.fn(() => ({ ...metadata })),
     });
     return {

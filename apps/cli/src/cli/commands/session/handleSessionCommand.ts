@@ -32,6 +32,7 @@ import { cmdSessionVoiceAgentStart } from './voiceAgent/start';
 import { cmdSessionActionsList } from './actions/list';
 import { cmdSessionActionsDescribe } from './actions/describe';
 import { cmdSessionActionsExecute } from './actions/execute';
+import { cmdSessionPreviewRegister } from './preview/register';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 
 function inferSessionKind(argv: readonly string[]): string {
@@ -55,6 +56,11 @@ function inferSessionKind(argv: readonly string[]): string {
     if (actionSub === 'describe') return 'session_actions_describe';
     if (actionSub === 'execute') return 'session_actions_execute';
     return 'session_actions_unknown';
+  }
+  if (sub === 'preview') {
+    const previewSub = String(argv[1] ?? '').trim();
+    if (previewSub === 'register') return 'session_preview_register';
+    return 'session_preview_unknown';
   }
   if (sub === 'run') {
     const runSub = String(argv[1] ?? '').trim();
@@ -100,6 +106,9 @@ function printSessionSubcommandHelp(subcommand: string): boolean {
     case 'set-model':
       console.log('happier session set-model <session-id-or-prefix> <model-id> [--json]');
       return true;
+    case 'preview':
+      console.log('happier session preview register <session-id-or-prefix> --port <port> [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
+      return true;
     default:
       return false;
   }
@@ -137,6 +146,7 @@ export async function handleSessionCommand(
       console.log('happier session actions list [--json]');
       console.log('happier session actions describe <action-id> [--json]');
       console.log('happier session actions execute <session-id> <action-id> [--input-json <json>] [--json]');
+      console.log('happier session preview register <session-id-or-prefix> --port <port> [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
       console.log('happier session run start <session-id> --intent <intent> --backend <backend-target> [--json]');
       console.log('happier session run list <session-id> [--json]');
       console.log('happier session run get <session-id> <run-id> [--include-structured] [--json]');
@@ -210,6 +220,15 @@ export async function handleSessionCommand(
       case 'history':
         await cmdSessionHistory(argv, { readCredentialsFn });
         return;
+      case 'preview': {
+        const previewSub = String(argv[1] ?? '').trim();
+        if (!previewSub) throw new Error('Usage: happier session preview <subcommand> ...');
+        if (previewSub === 'register') {
+          await cmdSessionPreviewRegister(argv, { readCredentialsFn });
+          return;
+        }
+        throw new Error(`Unknown session preview subcommand: ${previewSub}`);
+      }
       case 'run': {
         const runSub = String(argv[1] ?? '').trim();
         if (!runSub) throw new Error('Usage: happier session run <subcommand> ...');

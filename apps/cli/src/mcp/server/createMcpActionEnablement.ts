@@ -1,4 +1,5 @@
 import {
+  getActionSpec,
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
   type AccountSettings,
@@ -6,6 +7,7 @@ import {
   type ActionSurfaces,
 } from '@happier-dev/protocol';
 
+import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { isActionApprovalRequiredByEnv, isActionEnabledByEnv } from '@/settings/actionsSettings';
 
 export function createMcpActionEnablement(params: Readonly<{
@@ -13,14 +15,24 @@ export function createMcpActionEnablement(params: Readonly<{
   surface: keyof ActionSurfaces;
 }>): (id: ActionId) => boolean {
   const actionsSettings = params.accountSettings?.actionsSettingsV1 ?? null;
-  if (actionsSettings) {
-    return (id) => isActionEnabledByActionsSettings(id, actionsSettings, {
-      surface: params.surface,
-      placement: null,
-    });
-  }
+  return (id) => {
+    const actionEnabled = actionsSettings
+      ? isActionEnabledByActionsSettings(id, actionsSettings, {
+        surface: params.surface,
+        placement: null,
+      })
+      : isActionEnabledByEnv(id, { surface: params.surface });
+    if (!actionEnabled) return false;
 
-  return (id) => isActionEnabledByEnv(id, { surface: params.surface });
+    const requiredFeatureId = getActionSpec(id).requiredFeatureId;
+    if (!requiredFeatureId) return true;
+
+    return resolveCliFeatureDecision({
+      featureId: requiredFeatureId,
+      env: process.env,
+      accountSettings: params.accountSettings ?? null,
+    }).state === 'enabled';
+  };
 }
 
 export function createMcpActionApprovalRequirement(params: Readonly<{
