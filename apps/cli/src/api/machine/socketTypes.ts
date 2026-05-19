@@ -4,6 +4,8 @@ import type {
   DirectSessionTranscriptDeltaEphemeral,
   MachineTransferReceiveEnvelope,
   MachineTransferSendEnvelope,
+  SessionDevPreviewSocketMachineToServerMessage,
+  SessionDevPreviewSocketServerToMachineMessage,
 } from '@happier-dev/protocol';
 
 export interface ServerToDaemonEvents {
@@ -13,6 +15,7 @@ export interface ServerToDaemonEvents {
   [SOCKET_RPC_EVENTS.UNREGISTERED]: (data: { method: string }) => void;
   [SOCKET_RPC_EVENTS.ERROR]: (data: { type: string; error: string }) => void;
   [SOCKET_RPC_EVENTS.MACHINE_TRANSFER_ENVELOPE]: (data: MachineTransferReceiveEnvelope) => void;
+  [SOCKET_RPC_EVENTS.DEV_PREVIEW_TO_MACHINE_ENVELOPE]: (data: SessionDevPreviewSocketServerToMachineMessage) => void;
   auth: (data: { success: boolean; user: string }) => void;
   error: (data: { message: string }) => void;
 }
@@ -49,4 +52,5 @@ export interface DaemonToServerEvents {
     callback: (response: SocketRpcCallResponse) => void
   ) => void;
   [SOCKET_RPC_EVENTS.MACHINE_TRANSFER_ENVELOPE]: (data: MachineTransferSendEnvelope) => void;
+  [SOCKET_RPC_EVENTS.DEV_PREVIEW_FROM_MACHINE_ENVELOPE]: (data: SessionDevPreviewSocketMachineToServerMessage) => void;
 }

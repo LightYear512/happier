@@ -346,6 +346,7 @@ vi.mock('@/agent/runtime/initializeBackendApiContext', () => ({
         confirmUserMessageDeliveredToProvider: vi.fn(),
         beginTurnAssistantTextSnapshot: vi.fn(() => ({ id: 'turn-token' })),
         materializeNextPendingMessageSafely: vi.fn(async () => ({ type: 'no_pending' })),
+        getTurnAssistantTextSnapshot: vi.fn(() => null),
         sendSessionDeath: vi.fn(),
         flush: vi.fn(async () => {}),
         close: vi.fn(async () => {}),
@@ -377,6 +378,7 @@ async function initializeDefaultBackendRunSession(opts: any): Promise<any> {
     deferDeliveredUserMessageWatermarkToProviderAcceptance: vi.fn(),
     confirmUserMessageDeliveredToProvider: vi.fn(),
     beginTurnAssistantTextSnapshot: vi.fn(() => ({ id: 'turn-token' })),
+    getTurnAssistantTextSnapshot: vi.fn(() => null),
     sendCodexMessage: vi.fn(),
     sendAgentMessage: vi.fn(),
   });
@@ -405,6 +407,7 @@ function mockAttachedSessionMetadata(metadata: Record<string, unknown>): void {
       fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
       sendCodexMessage: vi.fn(),
       sendAgentMessage: vi.fn(),
+      getTurnAssistantTextSnapshot: vi.fn(() => null),
       getLastObservedMessageSeq: vi.fn(() => 0),
       deferDeliveredUserMessageWatermarkToProviderAcceptance: vi.fn(),
       confirmUserMessageDeliveredToProvider: vi.fn(),

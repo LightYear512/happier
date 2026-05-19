@@ -66,6 +66,37 @@ describe('createHappierMcpServer', () => {
     expect(toolNames).toContain('session_list');
   });
 
+  it('hides the session dev preview tool until the experimental feature toggle is enabled', async () => {
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const fakeClient = {
+      sessionId: 'sess_mcp_tool_names_dev_preview_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any;
+
+    const disabled = createHappierMcpServer(fakeClient, {
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': false,
+        },
+      },
+    } as any);
+    const enabled = createHappierMcpServer(fakeClient, {
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      },
+    } as any);
+
+    expect(disabled.toolNames).not.toContain('happier_dev_preview_register');
+    expect(enabled.toolNames).toContain('happier_dev_preview_register');
+  });
+
   it('uses account action settings for in-session MCP approval policy when provided', async () => {
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,

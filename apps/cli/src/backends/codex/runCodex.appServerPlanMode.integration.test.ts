@@ -239,6 +239,8 @@ function createFakeSession(initialMetadata: Record<string, unknown>): {
     sendAgentMessage: vi.fn(() => {
       lastObservedMessageSeq += 1;
     }),
+    beginTurnAssistantTextSnapshot: vi.fn(() => 'turn-1'),
+    getTurnAssistantTextSnapshot: vi.fn(() => null),
     getLastObservedMessageSeq: vi.fn(() => lastObservedMessageSeq),
     getLastObservedUserMessageSeq: vi.fn(() => lastObservedUserMessageSeq),
     markObservedUserMessage: vi.fn(() => {

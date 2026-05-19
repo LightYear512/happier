@@ -1,4 +1,5 @@
 import {
+  type AccountSettings,
   buildCodingSessionPromptPlanBaseV1,
   buildPromptPlanDiagnosticsV1,
   buildPromptPlanV1,
@@ -9,6 +10,8 @@ import {
 
 import type { Credentials } from '@/persistence';
 import { resolveCliMemoryRecallGuidanceEnabled } from '@/agent/promptLibrary/resolveCliMemoryRecallGuidanceEnabled';
+import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
+import { trimIdent } from '@/utils/trimIdent';
 import {
   resolveCliPromptStackSystemAppendBlocks,
   type PromptArtifactRecord,
@@ -19,12 +22,20 @@ import { resolveCodingToolDeliveryBlocks } from './toolDeliveryPromptRegistry';
 type FetchPromptArtifactRecord = (artifactId: string) => Promise<PromptArtifactRecord | null>;
 export type { PromptArtifactRecord };
 
+const DEV_PREVIEW_PROMPT_GUIDANCE = trimIdent(`
+  Local dev preview:
+  - After starting a local web dev server, register it with \`happier_dev_preview_register\` once you know the port.
+  - Do this after commands such as \`npm run dev\`, \`yarn dev\`, \`pnpm dev\`, \`bun dev\`, \`vite\`, \`next dev\`, \`astro dev\`, and \`sveltekit dev\`.
+  - Include the detected port and, when obvious, the app name or framework.
+`);
+
 type ResolveEffectiveCodingPromptArgs = Readonly<{
   credentials: Credentials;
   settings: Record<string, unknown> | null | undefined;
   profileId: string | null | undefined;
   baseOverride?: string | null;
   executionRunsFeatureEnabled?: boolean;
+  devPreviewFeatureEnabled?: boolean;
   memoryRecallGuidanceEnabled?: boolean;
   providerId?: string | null | undefined;
   disableTodos?: boolean;
@@ -58,6 +69,15 @@ export async function resolveEffectiveCodingPromptPlan(
     typeof args.memoryRecallGuidanceEnabled === 'boolean'
       ? args.memoryRecallGuidanceEnabled
       : await resolveCliMemoryRecallGuidanceEnabled();
+  const devPreviewFeatureEnabled =
+    typeof args.devPreviewFeatureEnabled === 'boolean'
+      ? args.devPreviewFeatureEnabled
+      : resolveCliFeatureDecision({
+        featureId: 'sessions.devPreview',
+        env: process.env,
+        accountSettings: settings as AccountSettings,
+      }).state === 'enabled';
+  const hasSupportedToolDelivery = (args.toolDelivery ?? 'native_mcp') !== 'unsupported';
 
   const basePlan = buildCodingSessionPromptPlanBaseV1({
     settings,
@@ -79,6 +99,13 @@ export async function resolveEffectiveCodingPromptPlan(
     scope: 'user_prompt',
     text,
   }));
+  const featureBlocks: PromptBlockV1[] = devPreviewFeatureEnabled && hasSupportedToolDelivery
+    ? [{
+      id: 'feature.dev_preview_register',
+      scope: 'session',
+      text: DEV_PREVIEW_PROMPT_GUIDANCE,
+    }]
+    : [];
   const providerBehaviorBlocks = resolveCodingProviderBehaviorBlocks({
     providerId: args.providerId,
     disableTodos: args.disableTodos,
@@ -101,7 +128,7 @@ export async function resolveEffectiveCodingPromptPlan(
   })();
   const plan = buildPromptPlanV1({
     modality: 'coding',
-    blocks: [...basePlan.blocks, ...promptStackBlocks, ...providerBehaviorBlocks, ...toolDeliveryBlocks],
+    blocks: [...basePlan.blocks, ...promptStackBlocks, ...featureBlocks, ...providerBehaviorBlocks, ...toolDeliveryBlocks],
   });
 
   return {

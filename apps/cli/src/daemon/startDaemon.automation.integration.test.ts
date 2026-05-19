@@ -127,6 +127,8 @@ const harness = vi.hoisted(() => {
     updateMachineMetadata: vi.fn(async () => {}),
     updateDaemonState: vi.fn(async () => {}),
     shutdown: vi.fn(),
+    onSessionDevPreviewEnvelope: vi.fn(() => () => {}),
+    sendSessionDevPreviewEnvelope: vi.fn(),
   };
 
   const lockHandle = { release: vi.fn(async () => {}) };

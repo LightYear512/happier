@@ -14,6 +14,7 @@ import { resolveAttachmentsUploadsFeature } from '../attachmentsUploadsFeature';
 import { resolvePetsFeature } from '../petsFeature';
 import { resolveMachineTransferFeature } from '../machineTransferFeature';
 import { resolveSessionFoldersFeature } from '../sessionFoldersFeature';
+import { resolveSessionDevPreviewFeature } from '../sessionDevPreviewFeature';
 import { resolveSessionHandoffFeature } from '../sessionHandoffFeature';
 import { resolveSessionUsageLimitRecoveryFeature } from '../sessionUsageLimitRecoveryFeature';
 import { resolveTerminalFeature } from '../terminalFeature';
@@ -38,6 +39,7 @@ export const serverFeatureRegistry: readonly ServerFeatureResolver[] = Object.fr
     (env) => resolvePetsFeature(env),
     (env) => resolveMachineTransferFeature(env),
     (env) => resolveSessionFoldersFeature(env),
+    (env) => resolveSessionDevPreviewFeature(env),
     (env) => resolveSessionHandoffFeature(env),
     (env) => resolveSessionUsageLimitRecoveryFeature(env),
     (env) => resolveTerminalFeature(env),

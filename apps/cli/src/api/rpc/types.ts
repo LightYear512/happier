@@ -50,6 +50,7 @@ export interface RpcHandlerConfig {
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
     encryptionMode?: 'e2ee' | 'plain';
+    plaintextMethods?: ReadonlySet<string>;
     logger?: (message: string, data?: any) => void;
 }
 

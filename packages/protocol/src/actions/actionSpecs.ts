@@ -22,6 +22,7 @@ import {
 } from '../sessionWorkState/sessionWorkStateRpc.js';
 import { SessionTerminalComposerClearRequestV1Schema } from '../sessionControl/sessionTerminalComposerClearV1.js';
 import { SessionWorkStateStatusV1Schema } from '../sessionWorkState/sessionWorkStateV1.js';
+import { FEATURE_ID_ENUM, type FeatureId } from '../features/catalog.js';
 
 export {
   ActionApprovalFlowSchema,
@@ -38,6 +39,7 @@ const ZodSchemaLike = z.custom<z.ZodTypeAny>((value) => {
   const v = value as any;
   return typeof v.safeParse === 'function' && typeof v.parse === 'function';
 }, { message: 'Expected a Zod schema' });
+const FeatureIdSchema = z.enum(FEATURE_ID_ENUM);
 
 export const ActionSurfaceSchema = z.object({
   ui_button: z.boolean(),
@@ -160,6 +162,7 @@ export const ActionSpecSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1).optional(),
   safety: ActionSafetySchema,
+  requiredFeatureId: FeatureIdSchema.optional(),
   // UI placements where the action can appear when the relevant surface is enabled.
   placements: z.array(ActionUiPlacementSchema).default([]),
   // Optional stable slash command token for ui_slash_command.
@@ -199,6 +202,7 @@ export const ActionSpecSchema = z.object({
 
 export type ActionSpec = z.infer<typeof ActionSpecSchema> & Readonly<{
   placements: readonly ActionUiPlacement[];
+  requiredFeatureId?: FeatureId;
 }>;
 
 const EmptyObjectSchema = z.object({}).strict();
@@ -370,6 +374,24 @@ const SessionCatalogListInputSchema = z.object({
   sessionId: z.string().min(1),
   cwd: z.string().min(1).optional(),
 }).passthrough();
+
+const SessionDevPreviewRegisterInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  port: z.number().int().min(1).max(65535),
+  name: z.string().trim().min(1).max(200).optional(),
+  framework: z.string().trim().min(1).max(50).optional(),
+  rewriteUrls: z.boolean().optional(),
+  healthPath: z.string().trim().min(1).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (typeof value.healthPath !== 'string') return;
+  if (!value.healthPath.startsWith('/') || value.healthPath.startsWith('//') || value.healthPath.includes('://')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'healthPath must be a path-only value that starts with /',
+      path: ['healthPath'],
+    });
+  }
+});
 
 const IntentStartCommonSchema = z.object({
   sessionId: z.string().min(1).optional(),
@@ -1410,6 +1432,50 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: SessionHandoffInputSchema,
+  },
+  {
+    id: 'session.devPreview.register',
+    title: 'Register local dev preview',
+    description: 'Register a local loopback dev server for in-app preview surfaces.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_dev_preview_register' },
+    examples: {
+      mcp: { argsExample: '{"port":3000,"name":"Preview app","framework":"vite","rewriteUrls":true}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Register a local loopback preview',
+      description: 'Use after starting a dev server on the current session machine.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'port', title: 'Port', widget: 'text', required: true },
+        { path: 'name', title: 'Name', widget: 'text' },
+        { path: 'framework', title: 'Framework', widget: 'select', options: [
+          { value: 'vite', label: 'Vite' },
+          { value: 'next', label: 'Next.js' },
+          { value: 'webpack', label: 'Webpack' },
+          { value: 'cra', label: 'Create React App' },
+          { value: 'expo-web', label: 'Expo Web' },
+          { value: 'astro', label: 'Astro' },
+          { value: 'sveltekit', label: 'SvelteKit' },
+          { value: 'other', label: 'Other' },
+        ] },
+        { path: 'rewriteUrls', title: 'Rewrite URLs', widget: 'toggle' },
+        { path: 'healthPath', title: 'Health path', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionDevPreviewRegisterInputSchema,
   },
   {
     id: 'session.spawn_new',

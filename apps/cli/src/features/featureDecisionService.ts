@@ -1,5 +1,6 @@
 import {
   applyFeatureDependencies,
+  type AccountSettings,
   createFeatureDecision,
   evaluateFeatureDecisionBase,
   isFeatureServerRepresented,
@@ -33,6 +34,7 @@ function resolveCliFeatureDecisionFromInputs(
     const featureInputs = createCliFeatureDecisionInputs({
       featureId,
       env: inputs.env,
+      accountSettings: inputs.accountSettings ?? null,
       serverSnapshot: inputs.serverSnapshot,
     });
 
@@ -132,11 +134,13 @@ function resolveCliFeatureDecisionFromInputs(
 export function resolveCliFeatureDecision(params: {
   featureId: FeatureId;
   env: NodeJS.ProcessEnv;
+  accountSettings?: AccountSettings | null;
   serverSnapshot?: CliServerFeaturesSnapshot;
 }): FeatureDecision {
   const inputs = createCliFeatureDecisionInputs({
     featureId: params.featureId,
     env: params.env,
+    accountSettings: params.accountSettings ?? null,
     serverSnapshot: params.serverSnapshot,
   });
   return resolveCliFeatureDecisionFromInputs(inputs);
@@ -145,12 +149,14 @@ export function resolveCliFeatureDecision(params: {
 export async function resolveCliFeatureDecisionForServer(params: {
   featureId: FeatureId;
   env: NodeJS.ProcessEnv;
+  accountSettings?: AccountSettings | null;
   serverUrl: string;
   timeoutMs?: number;
 }): Promise<Readonly<{ decision: FeatureDecision; serverSnapshot?: CliServerFeaturesSnapshot }>> {
   const inputs = await loadCliFeatureDecisionInputsForServer({
     featureId: params.featureId,
     env: params.env,
+    accountSettings: params.accountSettings ?? null,
     serverUrl: params.serverUrl,
     timeoutMs: params.timeoutMs,
   });

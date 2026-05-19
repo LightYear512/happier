@@ -11,11 +11,12 @@ import { normalizeExecutionRunRpcPayload } from '@/session/services/executionRun
 import { registerHappierMcpBuiltInTools } from '@/mcp/server/registerHappierMcpBuiltInTools';
 import type { Credentials } from '@/persistence';
 import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
+import { createSessionDevPreviewRegistry, type SessionDevPreviewRegistry } from '@/session/devPreview/createSessionDevPreviewRegistry';
+import { emitLocalServicePreviewMessage } from '@/session/devPreview/emitLocalServicePreviewMessage';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
   PromptRegistryInstallResponseV1Schema,
-  type ActionId,
   type AccountSettings,
   getActionSpec,
   isActionSpecSurfacedOn,
@@ -26,7 +27,11 @@ import { createMcpActionApprovalRequirement, createMcpActionEnablement } from '@
 
 export function createHappierMcpServer(
   client: HappyMcpSessionClient,
-  opts?: Readonly<{ credentials?: Credentials | null; accountSettings?: AccountSettings | null }>,
+  opts?: Readonly<{
+    credentials?: Credentials | null;
+    accountSettings?: AccountSettings | null;
+    devPreviewRegistry?: SessionDevPreviewRegistry | null;
+  }>,
 ): { mcp: McpServer; toolNames: string[] } {
   // This server is the per-session MCP bridge that a running session agent uses.
   // It must use the `session_agent` surface so action enablement + approvals can be
@@ -34,6 +39,7 @@ export function createHappierMcpServer(
   const toolSurface = 'session_agent' as const;
   const credentials = opts?.credentials ?? null;
   const actionsSettings = opts?.accountSettings?.actionsSettingsV1 ?? null;
+  const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -125,6 +131,36 @@ export function createHappierMcpServer(
         }
 
         return { ok: true as const, sessionId: normalizedSessionId, title: normalizedTitle };
+      },
+      sessionDevPreviewRegister: async ({ sessionId, port, name, framework, rewriteUrls, healthPath }) => {
+        if (sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+        if (!machineId) {
+          return {
+            ok: false as const,
+            errorCode: 'missing_machine_id' as const,
+            error: 'missing_machine_id' as const,
+          };
+        }
+
+        const preview = await devPreviewRegistry.register({
+          sessionId,
+          machineId,
+          port,
+          name,
+          framework,
+          rewriteUrls,
+          healthPath,
+          source: 'mcp_tool',
+        });
+        emitLocalServicePreviewMessage({
+          preview,
+          sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
+        });
+        return preview;
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),
       executionRunList: async (_sessionId, request) => await executionRuns.list(request),

@@ -6,6 +6,7 @@
 import { logger } from '@/ui/logger';
 import { clearDaemonState, readDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
+import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
 import { projectPath } from '@/projectPath';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { configuration } from '@/configuration';
@@ -152,6 +153,27 @@ async function inspectDaemonLockStartupProgress(): Promise<DaemonRunningInspecti
   logger.debug('[DAEMON RUN] Daemon lock is held by a live daemon before state was written, treating startup as in progress');
   return { status: 'starting', pid: lockPid };
 }
+
+export type DaemonDevPreviewRegisterRequest = Readonly<{
+  sessionId: string;
+  expectedMachineId?: string;
+  port: number;
+  name?: string;
+  framework?: string;
+  healthPath?: string;
+  rewriteUrls?: boolean;
+}>;
+
+export type DaemonDevPreviewRegisterResult =
+  | Readonly<{ success: true; preview: LocalServicePreviewV1 }>
+  | Readonly<{
+      success: false;
+      error?: string;
+      errorCode?: string;
+      machineId?: string;
+      expectedMachineId?: string;
+    }>
+  | Readonly<{ error: string; errorCode?: string }>;
 
 export async function inspectDaemonRunningStateAndCleanupStaleState(): Promise<DaemonRunningInspection> {
   const state = await readDaemonState();
@@ -487,6 +509,13 @@ export async function resolveDaemonSpawnSessionByNonce(spawnNonce: string): Prom
   }
 
   return { status: 'not_found' };
+}
+
+export async function registerDaemonSessionDevPreview(
+  request: DaemonDevPreviewRegisterRequest,
+  options: DaemonControlRequestOptions = {},
+): Promise<DaemonDevPreviewRegisterResult> {
+  return await daemonPost('/dev-preview/register', request, options) as DaemonDevPreviewRegisterResult;
 }
 
 export async function stopDaemonHttp(params: { stopSessions?: boolean } = {}): Promise<void> {

@@ -1,6 +1,8 @@
-import { parseBooleanEnv, type FeatureId } from '@happier-dev/protocol';
+import { parseBooleanEnv, type AccountSettings, type FeatureId } from '@happier-dev/protocol';
 
-type FeatureLocalPolicyResolver = (env: NodeJS.ProcessEnv) => boolean;
+import { resolveExperimentalSettingsFeatureToggleEnabled } from './settingsFeatureToggles';
+
+type FeatureLocalPolicyResolver = (env: NodeJS.ProcessEnv, accountSettings?: AccountSettings | null) => boolean;
 
 const LOCAL_POLICY_BY_FEATURE: Readonly<Partial<Record<FeatureId, FeatureLocalPolicyResolver>>> = {
   automations: (env) => parseBooleanEnv(env.HAPPIER_FEATURE_AUTOMATIONS__ENABLED, true),
@@ -17,10 +19,19 @@ const LOCAL_POLICY_BY_FEATURE: Readonly<Partial<Record<FeatureId, FeatureLocalPo
   // kill-switch restores the legacy restart-notice path.
   'providers.claude.unifiedTerminal.tuiRuntimeControl': (env) =>
     parseBooleanEnv(env.HAPPIER_FEATURE_CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL__ENABLED, true),
+  'sessions.devPreview': (_env, accountSettings) => resolveExperimentalSettingsFeatureToggleEnabled({
+    settings: accountSettings ?? null,
+    featureId: 'sessions.devPreview',
+    defaultEnabled: false,
+  }),
 };
 
-export function resolveCliLocalFeaturePolicyEnabled(featureId: FeatureId, env: NodeJS.ProcessEnv): boolean {
+export function resolveCliLocalFeaturePolicyEnabled(
+  featureId: FeatureId,
+  env: NodeJS.ProcessEnv,
+  accountSettings?: AccountSettings | null,
+): boolean {
   const resolver = LOCAL_POLICY_BY_FEATURE[featureId];
   if (!resolver) return true;
-  return resolver(env);
+  return resolver(env, accountSettings);
 }

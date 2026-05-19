@@ -14,7 +14,7 @@ export function isServerFeatureEnabledForRequest(featureId: FeatureId, env: Node
 }
 
 type RouteHandler = (request: any, reply: any) => unknown | Promise<unknown>;
-type RoutePreHandler = (request: any, reply: any) => unknown | Promise<unknown>;
+type RoutePreHandler = (request: any, reply: any) => void | Promise<unknown>;
 
 export function createServerFeatureGatePreHandler(
     featureId: FeatureId,

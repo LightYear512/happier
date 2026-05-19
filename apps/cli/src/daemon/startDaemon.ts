@@ -336,6 +336,8 @@ import {
 import { tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
 import { sendSessionMessage } from '@/session/services/sendSessionMessage';
 import { hasCommittedUserMessageAfterMs } from '@/api/session/transcriptQueries';
+import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
+import { startSessionDevPreviewSocketRelay } from '@/session/devPreview/startSessionDevPreviewSocketRelay';
 
 function resolvePositiveIntEnv(raw: string | undefined, fallback: number, bounds: { min: number; max: number }): number {
   const value = (raw ?? '').trim();
@@ -1911,6 +1913,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
       let apiMachineForSessions: ApiMachineClient | null = null;
       let automationWorker: AutomationWorkerHandle | null = null;
       let memoryWorker: MemoryWorkerHandle | null = null;
+      let stopSessionDevPreviewSocketRelay: (() => void) | null = null;
       let apiMachine: ApiMachineClient | null = null;
 	      let machineConnectionStateCleanup: (() => void) | null = null;
 	      let shutdownInitiated = false;
@@ -5188,6 +5191,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           chatgptPlanType: input.chatgptPlanType,
         });
       },
+      devPreviewRegistry: getSharedSessionDevPreviewRegistry(),
     });
     const directPeerRuntimeConfig = resolveMachineTransferRuntimeConfig();
     const directPeerFeatureEnabled = directPeerRuntimeConfig.directPeer.featureEnabled;
@@ -5878,6 +5882,16 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
             })();
 
             if (connectedApiMachine) {
+              if (!stopSessionDevPreviewSocketRelay) {
+                stopSessionDevPreviewSocketRelay = startSessionDevPreviewSocketRelay({
+                  registry: getSharedSessionDevPreviewRegistry(),
+                  channel: {
+                    onEnvelope: (listener) => connectedApiMachine.onSessionDevPreviewEnvelope(listener),
+                    sendEnvelope: (payload) => connectedApiMachine.sendSessionDevPreviewEnvelope(payload),
+                  },
+                });
+              }
+
               connectedApiMachine.setRPCHandlers({
                 spawnSession,
                 resolveSpawnSessionByNonce: resolveDaemonSpawnSessionByNonce,
@@ -6305,6 +6319,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
       if (memoryWorker) {
         memoryWorker.stop();
       }
+      stopSessionDevPreviewSocketRelay?.();
 
       // Best-effort cleanup for provider-managed background processes (e.g. shared OpenCode server).
       // Important: do not tear down shared provider background processes while session runners are still

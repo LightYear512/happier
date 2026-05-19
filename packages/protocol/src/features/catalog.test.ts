@@ -114,10 +114,16 @@ describe('feature catalog', () => {
 
   it('includes session handoff feature ids', () => {
     expect(isFeatureId('sessions.handoff')).toBe(true);
+    expect(isFeatureId('sessions.devPreview')).toBe(true);
+    expect(isFeatureId('sessions.devPreview.relay')).toBe(true);
     expect(isFeatureId('sessions.handoff.serverRoutedTransfer')).toBe(false);
     expect(isFeatureId('machines.transfer.serverRouted')).toBe(true);
     expect(isFeatureId('machines.transfer.directPeer')).toBe(true);
     expect(isFeatureId('machines.transfer.directPeer.transportRns')).toBe(false);
+    expect(FEATURE_CATALOG['sessions.devPreview']?.representation).toBe('client');
+    expect(FEATURE_CATALOG['sessions.devPreview']?.dependencies).toEqual(['sessions']);
+    expect(FEATURE_CATALOG['sessions.devPreview.relay']?.representation).toBe('server');
+    expect(FEATURE_CATALOG['sessions.devPreview.relay']?.dependencies).toEqual(['sessions.devPreview']);
   });
 
   it('includes session folders as a server-represented sessions feature', () => {

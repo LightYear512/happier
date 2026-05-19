@@ -101,6 +101,18 @@ export const FeatureGatesSchema = z.object({
       enabled: z.boolean(),
       folders: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       usageLimitRecovery: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      devPreview: z
+        .object({
+          enabled: z.boolean(),
+          relay: z
+            .object({
+              enabled: z.boolean(),
+            })
+            .optional()
+            .default({ enabled: false }),
+        })
+        .optional()
+        .default({ enabled: false, relay: { enabled: false } }),
       handoff: z
         .object({
           enabled: z.boolean(),
@@ -113,6 +125,7 @@ export const FeatureGatesSchema = z.object({
       enabled: false,
       folders: DEFAULT_GATE_DISABLED,
       usageLimitRecovery: DEFAULT_GATE_DISABLED,
+      devPreview: { enabled: false, relay: { enabled: false } },
       handoff: { enabled: false },
     }),
   machines: z

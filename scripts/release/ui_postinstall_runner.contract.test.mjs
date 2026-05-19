@@ -83,3 +83,37 @@ test('ui production Metro/Babel runtime owns babel-plugin-transform-remove-conso
     'apps/ui should not keep babel-plugin-transform-remove-console in devDependencies once production bundling depends on it'
   );
 });
+
+test('ui test and typecheck lanes self-heal patched dependency drift before execution', async () => {
+  const uiPackageJson = JSON.parse(await readFile(uiPackagePath, 'utf8'));
+  const scripts = uiPackageJson?.scripts ?? {};
+
+  assert.equal(
+    typeof scripts['ensure:patched:deps'],
+    'string',
+    'apps/ui package.json should define scripts.ensure:patched:deps'
+  );
+  assert.match(
+    scripts['ensure:patched:deps'],
+    /postinstall:real|tools\/postinstall\.mjs/,
+    'apps/ui patched dependency ensure should delegate to the existing postinstall implementation'
+  );
+  assert.match(
+    scripts['ensure:patched:deps'],
+    /HAPPIER_UI_VENDOR_WEB_ASSETS=0/,
+    'apps/ui patched dependency ensure should skip heavyweight web asset vendoring'
+  );
+
+  for (const scriptName of ['test:unit', 'test:integration', 'typecheck']) {
+    assert.equal(
+      typeof scripts[scriptName],
+      'string',
+      `apps/ui package.json should define scripts.${scriptName}`
+    );
+    assert.match(
+      scripts[scriptName],
+      /ensure:patched:deps/,
+      `apps/ui scripts.${scriptName} should self-heal patched dependency drift before running`
+    );
+  }
+});

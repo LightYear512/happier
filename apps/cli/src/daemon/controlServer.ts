@@ -7,6 +7,7 @@ import fastify, { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { LocalServicePreviewV1Schema } from '@happier-dev/protocol';
 import { logger } from '@/ui/logger';
 import { Metadata } from '@/api/types';
 import { resolveCatalogAgentIdForCliSubcommand } from '@/backends/catalog';
@@ -53,6 +54,8 @@ import {
   buildRuntimeAuthRecoveryTerminalResult,
 } from './connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoveryProjection';
 import { buildRuntimeAuthRecoveryKey } from './connectedServices/runtimeAuth/recoveryKey/runtimeAuthRecoveryKey';
+import type { SessionDevPreviewRegistry } from '@/session/devPreview/createSessionDevPreviewRegistry';
+import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
 
 const DEFAULT_DAEMON_CONTROL_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 const DAEMON_CONTROL_BODY_LIMIT_BYTES_ENV_KEY = 'HAPPIER_DAEMON_CONTROL_BODY_LIMIT_BYTES';
@@ -259,6 +262,7 @@ export function createDaemonControlApp({
   handleCodexChatGptAuthTokensRefresh,
   runtimeAuthRecoveryScheduler,
   isShuttingDown,
+  devPreviewRegistry,
 }: {
   getChildren: () => TrackedSession[];
   machineId: string;
@@ -307,8 +311,10 @@ export function createDaemonControlApp({
     selection: CodexChatGptAuthTokensRefreshSelection;
     chatgptPlanType: string | null;
   }>) => Promise<CodexChatGptAuthTokensRefreshResponse>;
+  devPreviewRegistry?: SessionDevPreviewRegistry;
 }): FastifyInstance {
-  void machineId;
+  const normalizedMachineId = machineId.trim();
+  const resolvedDevPreviewRegistry = devPreviewRegistry ?? getSharedSessionDevPreviewRegistry();
   const normalizedControlToken = controlToken.trim();
   if (!normalizedControlToken) {
     throw new Error('Daemon control token is required');
@@ -410,6 +416,21 @@ export function createDaemonControlApp({
   const authSchema401 = z.object({
     success: z.literal(false),
     error: z.string(),
+  });
+  const controlErrorSchema = z.object({
+    success: z.literal(false),
+    error: z.string(),
+    errorCode: z.string().optional(),
+  });
+
+  const devPreviewRegisterRequestSchema = z.object({
+    sessionId: z.string().min(1),
+    expectedMachineId: z.string().min(1).optional(),
+    port: z.number().int().min(1).max(65535),
+    name: z.string().min(1).max(200).optional(),
+    framework: z.string().min(1).max(80).optional(),
+    healthPath: z.string().min(1).max(200).optional(),
+    rewriteUrls: z.boolean().optional(),
   });
 
   const requireAuth = async (request: { headers: Record<string, unknown> }, reply: any): Promise<void> => {
@@ -1002,6 +1023,70 @@ export function createDaemonControlApp({
     }
   });
 
+  typed.post('/dev-preview/register', {
+    schema: {
+      body: devPreviewRegisterRequestSchema,
+      response: {
+        200: z.object({
+          success: z.literal(true),
+          preview: LocalServicePreviewV1Schema,
+        }),
+        400: controlErrorSchema,
+        401: authSchema401,
+        409: controlErrorSchema.extend({
+          errorCode: z.literal('machine_mismatch'),
+          machineId: z.string(),
+          expectedMachineId: z.string(),
+        }),
+        500: controlErrorSchema,
+      },
+    },
+    preHandler: requireAuth,
+  }, async (request, reply) => {
+    if (!normalizedMachineId) {
+      reply.code(500);
+      return {
+        success: false as const,
+        error: 'missing_machine_id',
+        errorCode: 'missing_machine_id',
+      };
+    }
+
+    const expectedMachineId = request.body.expectedMachineId?.trim();
+    if (expectedMachineId && expectedMachineId !== normalizedMachineId) {
+      reply.code(409);
+      return {
+        success: false as const,
+        error: 'machine_mismatch',
+        errorCode: 'machine_mismatch' as const,
+        machineId: normalizedMachineId,
+        expectedMachineId,
+      };
+    }
+
+    try {
+      const preview = await resolvedDevPreviewRegistry.register({
+        sessionId: request.body.sessionId,
+        machineId: normalizedMachineId,
+        port: request.body.port,
+        ...(request.body.name ? { name: request.body.name } : {}),
+        ...(request.body.framework ? { framework: request.body.framework } : {}),
+        ...(request.body.healthPath ? { healthPath: request.body.healthPath } : {}),
+        ...(typeof request.body.rewriteUrls === 'boolean' ? { rewriteUrls: request.body.rewriteUrls } : {}),
+        source: 'manual',
+      });
+      return { success: true as const, preview };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(500);
+      return {
+        success: false as const,
+        error: message,
+        errorCode: 'preview_register_failed',
+      };
+    }
+  });
+
   // Stop specific session
   typed.post('/stop-session', {
     schema: {
@@ -1419,6 +1504,7 @@ export function startDaemonControlServer({
   handleCodexChatGptAuthTokensRefresh,
   runtimeAuthRecoveryScheduler,
   isShuttingDown,
+  devPreviewRegistry,
 }: {
   getChildren: () => TrackedSession[];
   machineId: string;
@@ -1464,6 +1550,7 @@ export function startDaemonControlServer({
     selection: CodexChatGptAuthTokensRefreshSelection;
     chatgptPlanType: string | null;
   }>) => Promise<CodexChatGptAuthTokensRefreshResponse>;
+  devPreviewRegistry?: SessionDevPreviewRegistry;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = createDaemonControlApp({
@@ -1485,6 +1572,7 @@ export function startDaemonControlServer({
       handleCodexChatGptAuthTokensRefresh,
       runtimeAuthRecoveryScheduler,
       isShuttingDown,
+      devPreviewRegistry,
     });
 
     app.listen({ port: 0, host: '127.0.0.1' }, (err, address) => {

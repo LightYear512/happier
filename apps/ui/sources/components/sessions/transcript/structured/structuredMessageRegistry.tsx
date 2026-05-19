@@ -4,6 +4,7 @@ import type { ZodSchema } from 'zod';
 import { ReviewCommentsV1Schema } from '@/sync/domains/input/reviewComments/reviewCommentMeta';
 import { ReviewCommentsMessageCard } from '@/components/sessions/reviews/messages/ReviewCommentsMessageCard';
 import {
+    LocalServicePreviewV1Schema,
     DelegateOutputV1Schema,
     PlanOutputV1Schema,
     ParticipantMessageV1Schema,
@@ -20,6 +21,7 @@ import { ReviewFindingsMessageCard } from '@/components/sessions/reviews/message
 import { ReviewFollowUpMessageCard } from '@/components/sessions/reviews/messages/ReviewFollowUpMessageCard';
 import { PlanOutputMessageCard } from '@/components/sessions/plans/messages/PlanOutputMessageCard';
 import { DelegateOutputMessageCard } from '@/components/sessions/delegations/messages/DelegateOutputMessageCard';
+import { LocalServicePreviewMessageCard } from '@/components/sessions/devPreview/LocalServicePreviewMessageCard';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { ReviewCommentAnchor, ReviewCommentSource } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import { ParticipantMessageCard } from '@/components/sessions/participants/messages/ParticipantMessageCard';
@@ -36,6 +38,7 @@ export type StructuredMessageKind =
     | 'review_follow_up.v1'
     | 'plan_output.v1'
     | 'delegate_output.v1'
+    | 'local_service_preview.v1'
     | 'voice_agent_turn.v1'
     | 'session_synopsis.v1'
     | 'session_summary_shard.v1';
@@ -106,6 +109,13 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
         schema: DelegateOutputV1Schema,
         render: (payload) => (
             <DelegateOutputMessageCard payload={payload} />
+        ),
+    },
+    {
+        kind: 'local_service_preview.v1',
+        schema: LocalServicePreviewV1Schema,
+        render: (payload, params) => (
+            <LocalServicePreviewMessageCard payload={payload} sessionId={params.sessionId} />
         ),
     },
     {

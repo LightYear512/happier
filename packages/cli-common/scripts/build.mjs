@@ -232,10 +232,10 @@ export function resolveCliCommonBuildTscInvocations({
   const args = Array.isArray(tscArgs) ? tscArgs : [];
   const npmExecPath = typeof env?.npm_execpath === 'string' ? env.npm_execpath.trim() : '';
   const yarnInvocation = resolveYarnCommandInvocation(args, {
-      npmExecPath,
-      platform,
-      processExecPath: process.execPath,
-      comspec: env?.COMSPEC ?? env?.ComSpec ?? env?.comspec,
+    npmExecPath,
+    platform,
+    processExecPath: process.execPath,
+    comspec: env?.COMSPEC ?? env?.ComSpec ?? env?.comspec,
   });
   const invocations = [];
 

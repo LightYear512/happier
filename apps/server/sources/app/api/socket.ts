@@ -13,6 +13,7 @@ import { pingHandler } from "./socket/pingHandler";
 import { sessionUpdateHandler } from "./socket/sessionUpdateHandler";
 import { machineUpdateHandler } from "./socket/machineUpdateHandler";
 import { machineTransferHandler } from "./socket/machineTransferHandler";
+import { sessionDevPreviewSocketRelayHandler } from "./socket/sessionDevPreviewSocketRelayHandler";
 import { artifactUpdateHandler } from "./socket/artifactUpdateHandler";
 import { accessKeyHandler } from "./socket/accessKeyHandler";
 import { createServerRpcForwarder } from "./socket/serverRpcForwarder";
@@ -26,6 +27,7 @@ import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverF
 import { readMachineTransferFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { resolveSessionScopedSocketBinding } from "./socket/sessionScopedBinding";
 import { createMachineSocketOwnershipRegistry } from "./socket/machineSocketOwnershipRegistry";
+import { createSessionDevPreviewSocketRelayBridge } from "@/app/devPreview/sessionDevPreviewSocketRelayBridge";
 
 export const DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE = 25_000_000;
 
@@ -96,6 +98,8 @@ export function startSocket(app: Fastify) {
         allRpcListeners: rpcListeners,
         redisRegistry: shouldEnableRedisAdapter ? { enabled: true, instanceId } : { enabled: false },
     });
+    const sessionDevPreviewSocketRelay = createSessionDevPreviewSocketRelayBridge(io);
+    app.sessionDevPreviewSocketRelay = sessionDevPreviewSocketRelay;
     const machineSocketOwnershipRegistry = createMachineSocketOwnershipRegistry({
         io,
         config: shouldEnableRedisAdapter ? { enabled: true, instanceId } : { enabled: false },
@@ -352,6 +356,7 @@ export function startSocket(app: Fastify) {
             serverRoutedTransferMaxBytes: machineTransferFeatureEnv.serverRoutedMaxBytes,
             serverRoutedTransferMaxActiveTransfersPerSocket: machineTransferFeatureEnv.serverRoutedMaxActiveTransfersPerSocket,
         });
+        sessionDevPreviewSocketRelayHandler(userId, socket, sessionDevPreviewSocketRelay);
         artifactUpdateHandler(userId, socket);
         accessKeyHandler(userId, socket);
 
