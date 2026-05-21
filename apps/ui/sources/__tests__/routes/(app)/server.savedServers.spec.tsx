@@ -180,6 +180,11 @@ describe('ServerConfigScreen', () => {
         return renderScreen(React.createElement(Screen));
     }
 
+    async function renderLegacyServerRoute() {
+        const Route = (await import('@/app/(app)/server')).default;
+        return renderScreen(React.createElement(Route));
+    }
+
     function findItemByTitle(
         screen: Awaited<ReturnType<typeof renderServerScreen>>,
         title: string,
@@ -202,6 +207,26 @@ describe('ServerConfigScreen', () => {
         const screen = await renderServerScreen();
         expect(findItemByTitle(screen, 'Company')).toBeTruthy();
     }, SLOW_TEST_TIMEOUT_MS);
+
+    it('preserves auto-add params when redirecting from the legacy server route', async () => {
+        localSearchParamsMock = {
+            auto: '1',
+            source: 'notification',
+            url: 'http://127.0.0.1:26037',
+        };
+
+        const screen = await renderLegacyServerRoute();
+        const redirect = screen.findByType('Redirect' as any);
+
+        expect(redirect.props.href).toEqual({
+            pathname: '/settings/server',
+            params: {
+                auto: '1',
+                source: 'notification',
+                url: 'http://127.0.0.1:26037',
+            },
+        });
+    });
 
     it('auto=1 upserts and activates server then redirects away', async () => {
         localSearchParamsMock = { url: 'https://company.example.test', auto: '1' };

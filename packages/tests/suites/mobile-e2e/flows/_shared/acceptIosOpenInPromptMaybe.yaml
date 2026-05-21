@@ -13,3 +13,9 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
       visible: "Open in .*"
     commands:
       - tapOn: "Open"
+- runFlow:
+    when:
+      platform: iOS
+      visible: "在.*中打开.*"
+    commands:
+      - tapOn: "打开"

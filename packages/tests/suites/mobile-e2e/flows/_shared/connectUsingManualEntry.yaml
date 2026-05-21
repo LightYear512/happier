@@ -26,10 +26,33 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
           commands:
             - tapOn: "Enter URL manually"
 
-- assertVisible: "Connect"
-- tapOn: "(http://localhost:8081|exp://)"
-- eraseText
-- setClipboard: ${HAPPIER_E2E_DEV_CLIENT_METRO_URL}
-- pasteText
-- hideKeyboard
-- tapOn: "Connect"
+- runFlow:
+    when:
+      visible: "(Loading from|Bundling.*|Downloading.*|Loading\\.\\.\\.)"
+    commands:
+      - extendedWaitUntil:
+          visible: "(Error loading app|Could not connect to development server|There was a problem loading the project|This is the developer menu.*|Continue|Go home|Go To Home|Login with mobile app|Create account|What would you like to work on\\?|Hi! How can I help you today\\?|Sessions|Start a session from your computer)"
+          timeout: 300000
+
+- runFlow:
+    when:
+      visible: "Connect"
+      notVisible: "(Loading from|Bundling.*|Downloading.*|Loading\\.\\.\\.)"
+    commands:
+      - tapOn: "(http://.*:[0-9]+|exp://.*)"
+      - eraseText
+      - setClipboard: ${HAPPIER_E2E_DEV_CLIENT_METRO_URL}
+      - pasteText
+      - runFlow:
+          when:
+            platform: Android
+          commands:
+            - hideKeyboard
+      - runFlow:
+          when:
+            visible: "Connect"
+          commands:
+            - tapOn: "Connect"
+      - extendedWaitUntil:
+          visible: "(Loading from|Bundling.*|Downloading.*|Loading\\.\\.\\.|Error loading app|Could not connect to development server|There was a problem loading the project|This is the developer menu.*|Continue|Go home|Go To Home|Login with mobile app|Create account|What would you like to work on\\?|Hi! How can I help you today\\?|Sessions|Start a session from your computer)"
+          timeout: 300000

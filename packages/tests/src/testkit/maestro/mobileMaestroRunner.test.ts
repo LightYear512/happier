@@ -197,6 +197,89 @@ describe('mobileMaestroRunner', () => {
     expect(runMaestro).toHaveBeenCalledTimes(1);
   });
 
+  it('sets a longer iOS Maestro driver startup timeout by default', async () => {
+    const { runMobileMaestro } = await import('./mobileMaestroRunner');
+
+    const runMaestro = vi.fn(async (params: { env: NodeJS.ProcessEnv }) => {
+      expect(params.env.MAESTRO_DRIVER_STARTUP_TIMEOUT).toBe('300000');
+      return { exitCode: 0 };
+    });
+
+    await runMobileMaestro(
+      {
+        argv: [
+          'node',
+          'script',
+          '--platform',
+          'ios',
+          '--flows',
+          'suites/mobile-e2e/flows',
+          '--appId',
+          'dev.happier.app.dev.internal',
+          '--serverUrl',
+          'http://127.0.0.1:26050',
+          '--skip-app-install-check',
+        ],
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          MAESTRO_CLI_NO_ANALYTICS: '1',
+          HAPPIER_E2E_MOBILE_MANAGE_METRO: '0',
+        },
+      },
+      {
+        runMaestro,
+        isAppInstalled: vi.fn(async () => true),
+        adbReversePorts: vi.fn(() => ({ enabled: false, reversedPorts: [] })),
+        primeAppLaunch: vi.fn(async () => {}),
+      },
+    );
+
+    expect(runMaestro).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an explicit Maestro driver startup timeout', async () => {
+    const { runMobileMaestro } = await import('./mobileMaestroRunner');
+
+    const runMaestro = vi.fn(async (params: { env: NodeJS.ProcessEnv }) => {
+      expect(params.env.MAESTRO_DRIVER_STARTUP_TIMEOUT).toBe('123456');
+      return { exitCode: 0 };
+    });
+
+    await runMobileMaestro(
+      {
+        argv: [
+          'node',
+          'script',
+          '--platform',
+          'ios',
+          '--flows',
+          'suites/mobile-e2e/flows',
+          '--appId',
+          'dev.happier.app.dev.internal',
+          '--serverUrl',
+          'http://127.0.0.1:26050',
+          '--skip-app-install-check',
+        ],
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          MAESTRO_CLI_NO_ANALYTICS: '1',
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '123456',
+          HAPPIER_E2E_MOBILE_MANAGE_METRO: '0',
+        },
+      },
+      {
+        runMaestro,
+        isAppInstalled: vi.fn(async () => true),
+        adbReversePorts: vi.fn(() => ({ enabled: false, reversedPorts: [] })),
+        primeAppLaunch: vi.fn(async () => {}),
+      },
+    );
+
+    expect(runMaestro).toHaveBeenCalledTimes(1);
+  });
+
   it('passes full restore secret chunks to Maestro and redacts them from debug artifacts', async () => {
     const { runMobileMaestro } = await import('./mobileMaestroRunner');
 
@@ -641,7 +724,7 @@ describe('mobileMaestroRunner', () => {
     expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:8085/?platform=android', expect.any(Object));
     expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:8085/apps/ui/index.ts.bundle?platform=android&dev=true', expect.any(Object));
     expect(cancelBundleBody).toHaveBeenCalledTimes(1);
-    expect(arrayBufferSpy).not.toHaveBeenCalled();
+    expect(arrayBufferSpy).toHaveBeenCalledTimes(1);
     expect(result.server?.baseUrl).toBe('http://127.0.0.1:43210');
   }, 15_000);
 
@@ -803,6 +886,99 @@ describe('mobileMaestroRunner', () => {
     expect(events).toEqual(['bundle-cancelled', 'maestro']);
   }, 15_000);
 
+  it('waits for the managed ios Metro bundle log before invoking maestro by default', async () => {
+    const { runMobileMaestro } = await import('./mobileMaestroRunner');
+
+    const events: string[] = [];
+    const metroStdoutPath = join(mkdtempSync(join(tmpdir(), 'happier-ios-metro-warm-')), 'metro.stdout.log');
+    writeFileSync(metroStdoutPath, 'Starting Metro Bundler\n', 'utf8');
+
+    const fetchSpy = vi.fn(async (url: string) => {
+      if (url === 'http://127.0.0.1:8085/?platform=ios') {
+        return {
+          ok: true,
+          json: async () => ({
+            launchAsset: {
+              url: 'http://127.0.0.1:8085/apps/ui/index.ts.bundle?platform=ios&dev=true',
+            },
+          }),
+        } as any;
+      }
+      if (url === 'http://127.0.0.1:8085/apps/ui/index.ts.bundle?platform=ios&dev=true') {
+        return {
+          ok: true,
+          body: {
+            cancel: vi.fn(async () => {
+              events.push('bundle-cancelled');
+            }),
+          },
+          arrayBuffer: vi.fn(async () => {
+            events.push('bundle-drained');
+            return new ArrayBuffer(1);
+          }),
+        } as any;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    (globalThis as any).fetch = fetchSpy;
+
+    const startServerLight = vi.fn(async () => ({
+      baseUrl: 'http://127.0.0.1:43210',
+      port: 43210,
+      stop: vi.fn(async () => {}),
+    }));
+
+    const startDevClientMetro = vi.fn(async () => ({
+      baseUrl: 'http://127.0.0.1:8085',
+      port: 8085,
+      stdoutPath: metroStdoutPath,
+      stop: vi.fn(async () => {}),
+    }));
+
+    const runMaestro = vi.fn(async () => {
+      events.push('maestro');
+      return { exitCode: 0 };
+    });
+
+    const runPromise = runMobileMaestro(
+      {
+        argv: [
+          'node',
+          'script',
+          '--platform',
+          'ios',
+          '--flows',
+          'suites/mobile-e2e/flows',
+          '--appId',
+          'dev.happier.app.internaldev',
+        ],
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          MAESTRO_CLI_NO_ANALYTICS: '1',
+          HAPPIER_E2E_MOBILE_MANAGE_METRO: '1',
+          HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE_TIMEOUT_MS: '2000',
+        },
+      },
+      {
+        startServerLight,
+        startDevClientMetro,
+        runMaestro,
+        adbReversePorts: vi.fn(() => ({ enabled: false, reversedPorts: [] })),
+        isAppInstalled: vi.fn(async () => true),
+        primeAppLaunch: vi.fn(async () => {}),
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(events).toEqual([]);
+
+    writeFileSync(metroStdoutPath, 'Starting Metro Bundler\niOS Bundled 2780ms apps/ui/index.ts\n', 'utf8');
+    await runPromise;
+
+    expect(events).toEqual(['bundle-cancelled', 'maestro']);
+  }, 15_000);
+
   it('uses the bundle-id Dev Client launcher scheme for iOS F10 flows', async () => {
     const { runMobileMaestro } = await import('./mobileMaestroRunner');
 
@@ -897,7 +1073,7 @@ describe('mobileMaestroRunner', () => {
       const flowsArgIndex = params.args.findIndex((arg) => arg === 'test') + 1;
       events.push(`maestro:${params.args[flowsArgIndex] ?? 'unknown'}`);
       expect(params.env.HAPPIER_E2E_TERMINAL_CONNECT_DEEP_LINK).toBe(
-        'happier://terminal?key=test-key&server=http%3A%2F%2F10.0.2.2%3A43210',
+        'happier-internaldev://terminal?key=test-key&server=http%3A%2F%2F10.0.2.2%3A43210',
       );
       expect(
         params.args.filter((arg) => arg.startsWith('HAPPIER_E2E_TERMINAL_CONNECT_DEEP_LINK=')),
@@ -962,6 +1138,65 @@ describe('mobileMaestroRunner', () => {
       'daemon-start',
       'maestro:suites/mobile-e2e/flows/F4.connectedMachineComposerSmoke.yaml',
     ]);
+  });
+
+  it('uses the app-id-derived scheme for iOS connected machine terminal connect deep links', async () => {
+    const { runMobileMaestro } = await import('./mobileMaestroRunner');
+
+    const startServerLight = vi.fn(async () => ({
+      baseUrl: 'http://127.0.0.1:43210',
+      port: 43210,
+      stop: vi.fn(async () => {}),
+    }));
+
+    const startCliTerminalConnect = vi.fn(async () => ({
+      connectUrl: 'https://example.test/terminal/connect#key=test-key&server=http%3A%2F%2F127.0.0.1%3A43210',
+      waitForSuccess: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    }));
+
+    const startTestDaemon = vi.fn(async () => ({
+      stop: vi.fn(async () => {}),
+    }));
+
+    const runMaestro = vi.fn(async (params: { env: NodeJS.ProcessEnv }) => {
+      expect(params.env.HAPPIER_E2E_TERMINAL_CONNECT_DEEP_LINK).toBe(
+        'happier-internaldev://terminal?key=test-key&server=http%3A%2F%2F127.0.0.1%3A43210',
+      );
+      return { exitCode: 0 };
+    });
+
+    await runMobileMaestro(
+      {
+        argv: [
+          'node',
+          'script',
+          '--platform',
+          'ios',
+          '--flows',
+          'suites/mobile-e2e/flows/F8.connectedMachineKeyboardAndNavigationSmoke.yaml',
+          '--appId',
+          'dev.happier.app.dev.internal',
+        ],
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          MAESTRO_CLI_NO_ANALYTICS: '1',
+          HAPPIER_E2E_MOBILE_MANAGE_METRO: '0',
+          HAPPIER_E2E_MOBILE_CONNECTED_MACHINE_MODE: 'cli-terminal-daemon',
+        },
+      },
+      {
+        startServerLight,
+        startCliTerminalConnect,
+        startTestDaemon,
+        runMaestro,
+        isAppInstalled: vi.fn(async () => true),
+        adbReversePorts: vi.fn(() => ({ enabled: false, reversedPorts: [] })),
+      },
+    );
+
+    expect(runMaestro).toHaveBeenCalledTimes(2);
   });
 
   it('does not include terminal connect secret material when deep-link creation fails', async () => {
@@ -1185,13 +1420,14 @@ describe('mobileMaestroRunner', () => {
     expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:8081/?platform=android', expect.any(Object));
     expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:8081/apps/ui/index.ts.bundle?platform=android&dev=true', expect.any(Object));
     expect(cancelBundleBody).toHaveBeenCalledTimes(1);
-    expect(arrayBufferSpy).not.toHaveBeenCalled();
+    expect(arrayBufferSpy).toHaveBeenCalledTimes(1);
   });
 
   it('infers the Android public dev-client route scheme from the app id', async () => {
     const { runMobileMaestro } = await import('./mobileMaestroRunner');
 
     const cancelBundleBody = vi.fn(async () => {});
+    const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(1));
     const fetchSpy = vi.fn(async (url: string) => {
       if (url === 'http://127.0.0.1:8081/?platform=android') {
         return {
@@ -1209,6 +1445,7 @@ describe('mobileMaestroRunner', () => {
           body: {
             cancel: cancelBundleBody,
           },
+          arrayBuffer: arrayBufferSpy,
         } as any;
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1268,6 +1505,7 @@ describe('mobileMaestroRunner', () => {
         primeAppLaunch: vi.fn(async () => {}),
       },
     );
+    expect(arrayBufferSpy).toHaveBeenCalledTimes(1);
   });
 
   it('does not fail the run when warming the dev client bundle fails', async () => {
@@ -1331,6 +1569,7 @@ describe('mobileMaestroRunner', () => {
   it('does not hang when warming the dev client bundle never resolves', async () => {
     const { runMobileMaestro } = await import('./mobileMaestroRunner');
 
+    vi.useFakeTimers();
     globalThis.fetch = (() => new Promise<Response>(() => {})) as typeof fetch;
 
     const startServerLight = vi.fn(async () => ({
@@ -1347,44 +1586,45 @@ describe('mobileMaestroRunner', () => {
 
     const runMaestro = vi.fn(async () => ({ exitCode: 0 }));
 
-    const runPromise = runMobileMaestro(
-      {
-        argv: [
-          'node',
-          'script',
-          '--platform',
-          'android',
-          '--flows',
-          'suites/mobile-e2e/flows',
-          '--appId',
-          'dev.happier.app.internaldev',
-        ],
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          MAESTRO_CLI_NO_ANALYTICS: '1',
-          HAPPIER_E2E_ANDROID_PIN_DEV_CLIENT_RUNTIME: '0',
-          HAPPIER_E2E_MOBILE_MANAGE_METRO: '1',
-          HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE: '1',
-          HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE_TIMEOUT_MS: '10',
+    try {
+      const runPromise = runMobileMaestro(
+        {
+          argv: [
+            'node',
+            'script',
+            '--platform',
+            'android',
+            '--flows',
+            'suites/mobile-e2e/flows',
+            '--appId',
+            'dev.happier.app.internaldev',
+          ],
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            MAESTRO_CLI_NO_ANALYTICS: '1',
+            HAPPIER_E2E_ANDROID_PIN_DEV_CLIENT_RUNTIME: '0',
+            HAPPIER_E2E_MOBILE_MANAGE_METRO: '1',
+            HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE: '1',
+            HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE_TIMEOUT_MS: '10',
+          },
         },
-      },
-      {
-        startServerLight,
-        startDevClientMetro,
-        runMaestro,
-        isAppInstalled: vi.fn(async () => true),
-        adbReversePorts: vi.fn(() => ({ enabled: false, reversedPorts: [] })),
-        primeAppLaunch: vi.fn(async () => {}),
-      },
-    );
+        {
+          startServerLight,
+          startDevClientMetro,
+          runMaestro,
+          isAppInstalled: vi.fn(async () => true),
+          adbReversePorts: vi.fn(() => ({ enabled: false, reversedPorts: [] })),
+          primeAppLaunch: vi.fn(async () => {}),
+        },
+      );
 
-    const delay = (ms: number): Promise<'timeout'> =>
-      new Promise((resolve) => {
-        setTimeout(() => resolve('timeout'), ms);
-      });
+      await vi.advanceTimersByTimeAsync(100);
 
-    await expect(Promise.race([runPromise, delay(4000)])).resolves.not.toBe('timeout');
-    expect(runMaestro).toHaveBeenCalledTimes(1);
+      await expect(runPromise).resolves.toMatchObject({ exitCode: 0 });
+      expect(runMaestro).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -2,6 +2,7 @@ const DEFAULT_APP_SCHEME = 'happier';
 
 const APP_SCHEME_BY_APP_ID = new Map<string, string>([
   ['dev.happier.app.internaldev', 'happier-internaldev'],
+  ['dev.happier.app.dev.internal', 'happier-internaldev'],
   ['dev.happier.app.internaldev.devclient', 'happier-internaldev-devclient'],
   ['dev.happier.app.dev.internal.devclient', 'happier-internaldev'],
   ['dev.happier.app.publicdev', 'happier-dev'],

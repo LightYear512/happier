@@ -25,10 +25,10 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     waitToSettleTimeoutMs: 1000
 
 - extendedWaitUntil:
-    visible: "Success"
+    visible: "(Success|成功)"
     timeout: 120000
 
-- tapOn: "OK"
+- tapOn: "(OK|确定)"
 
 - extendedWaitUntil:
     visible:

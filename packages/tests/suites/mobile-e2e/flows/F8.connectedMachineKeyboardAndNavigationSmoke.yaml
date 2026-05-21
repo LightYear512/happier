@@ -12,12 +12,21 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 - tapOn:
     id: new-session-composer-input
 - inputText: "MOBILE_E2E_KEYBOARD_SMOKE"
+- hideKeyboard
 - assertVisible:
     id: new-session-composer-send
 
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings
+- runFlow:
+    file: _shared/acceptIosOpenInPromptMaybe.yaml
+- runFlow:
+    file: _shared/acceptAndroidOpenWithPromptMaybe.yaml
 - assertVisible:
     id: settings-connect-terminal-scan
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///
+- runFlow:
+    file: _shared/acceptIosOpenInPromptMaybe.yaml
+- runFlow:
+    file: _shared/acceptAndroidOpenWithPromptMaybe.yaml
 - assertVisible:
     id: main-header-start-new-session

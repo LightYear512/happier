@@ -156,6 +156,9 @@ const MAX_REDACTABLE_MAESTRO_ARTIFACT_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MOBILE_APP_INSTALL_CHECK_ATTEMPTS = 3;
 const DEFAULT_MOBILE_APP_INSTALL_CHECK_RETRY_DELAY_MS = 500;
 const DEFAULT_MOBILE_APP_INSTALL_CHECK_TIMEOUT_MS = 15_000;
+const DEFAULT_ANDROID_DEV_CLIENT_BUNDLE_WARM_TIMEOUT_MS = 300_000;
+const DEFAULT_IOS_DEV_CLIENT_BUNDLE_WARM_TIMEOUT_MS = 480_000;
+const DEFAULT_IOS_MAESTRO_DRIVER_STARTUP_TIMEOUT_MS = 300_000;
 const ANDROID_LOGCAT_ARTIFACT = 'android-logcat.log';
 const DEFAULT_ANDROID_LOGCAT_STOP_TIMEOUT_MS = 2_000;
 const IOS_SIMULATOR_LOG_ARTIFACT = 'ios-simulator.log';
@@ -484,7 +487,7 @@ function shouldWarmExpoDevClientBundle(params: Readonly<{
   if (!params.platform || !params.hasWarmableMetro) return false;
   const configured = params.env.HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE;
   if (configured !== undefined) return isTruthyEnv(configured);
-  return params.platform === 'android';
+  return params.platform === 'android' || params.platform === 'ios';
 }
 
 function resolveWarmExpoDevClientBundleTimeoutMs(params: Readonly<{
@@ -493,7 +496,9 @@ function resolveWarmExpoDevClientBundleTimeoutMs(params: Readonly<{
 }>): number {
   const explicit = Number.parseInt(params.env.HAPPIER_E2E_MOBILE_WARM_DEV_CLIENT_BUNDLE_TIMEOUT_MS ?? '', 10);
   if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  return params.platform === 'android' ? 300_000 : 60_000;
+  return params.platform === 'android'
+    ? DEFAULT_ANDROID_DEV_CLIENT_BUNDLE_WARM_TIMEOUT_MS
+    : DEFAULT_IOS_DEV_CLIENT_BUNDLE_WARM_TIMEOUT_MS;
 }
 
 async function warmExpoDevClientBundle(params: Readonly<{
@@ -539,6 +544,8 @@ async function warmExpoDevClientBundle(params: Readonly<{
         timeoutMs: params.timeoutMs,
         signal,
       });
+    } else {
+      await bundleRes.arrayBuffer();
     }
   } finally {
     await bundleRes.body?.cancel().catch(() => {});
@@ -983,6 +990,13 @@ export async function runMobileMaestro(
     ...(server?.baseUrl ? { HAPPIER_E2E_SERVER_URL_HOST: server.baseUrl } : {}),
     ...(platform ? { HAPPIER_E2E_MOBILE_PLATFORM: platform } : {}),
     ...(devClientLaunchUrl ? { HAPPIER_E2E_DEV_CLIENT_LAUNCH_URL: devClientLaunchUrl } : {}),
+    ...(platform === 'ios'
+      ? {
+          MAESTRO_DRIVER_STARTUP_TIMEOUT:
+            String(params.env.MAESTRO_DRIVER_STARTUP_TIMEOUT ?? '').trim()
+            || String(DEFAULT_IOS_MAESTRO_DRIVER_STARTUP_TIMEOUT_MS),
+        }
+      : {}),
     HAPPIER_E2E_MOBILE_APP_SCHEME: mobileAppScheme,
     HAPPIER_E2E_MOBILE_APP_ID: appId,
   });
@@ -1058,6 +1072,7 @@ export async function runMobileMaestro(
       });
 
       const terminalConnectDeepLink = resolveTerminalConnectDeepLink(startedCliTerminalConnect.connectUrl, {
+        appId,
         env: params.env,
         serverUrl: deviceServerUrl,
       });
