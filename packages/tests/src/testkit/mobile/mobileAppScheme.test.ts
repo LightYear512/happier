@@ -22,6 +22,10 @@ describe('resolveMobileAppScheme', () => {
     expect(resolveMobileAppScheme({}, { appId: 'dev.happier.app.internaldev' })).toBe('happier-internaldev');
   });
 
+  it('infers the internal iOS installed-app scheme from the app id when no override is configured', () => {
+    expect(resolveMobileAppScheme({}, { appId: 'dev.happier.app.dev.internal' })).toBe('happier-internaldev');
+  });
+
   it('falls back to the production scheme for unknown app ids', () => {
     expect(resolveMobileAppScheme({}, { appId: 'example.unknown.app' })).toBe('happier');
   });

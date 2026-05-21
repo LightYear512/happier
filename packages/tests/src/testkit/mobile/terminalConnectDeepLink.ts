@@ -50,6 +50,7 @@ function parseTerminalConnectWebUrl(raw: string): ParsedTerminalConnectWebUrl | 
 export function resolveTerminalConnectDeepLink(
   raw: string,
   options?: Readonly<{
+    appId?: string | null;
     env?: NodeJS.ProcessEnv;
     serverUrl?: string | null;
   }>,
@@ -57,7 +58,7 @@ export function resolveTerminalConnectDeepLink(
   const parsed = parseTerminalConnectWebUrl(raw);
   if (!parsed) return '';
 
-  const scheme = resolveMobileAppScheme(options?.env ?? process.env);
+  const scheme = resolveMobileAppScheme(options?.env ?? process.env, { appId: options?.appId });
   const normalizedServerUrl = normalizeServerUrl(options?.serverUrl ?? '') ?? parsed.serverUrl;
   const prefix = `${scheme}://terminal?`;
 

@@ -8,7 +8,6 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 # Configure the server as early as possible so the Welcome screen doesn't get
 # stuck in a perpetual loading state while trying to reach the default server.
 #
-# Note: We do this even when we're already inside the authenticated app shell.
 # Mobile E2E uses an ephemeral server-light per run, so the previously selected
 # server (from a prior run) can be stale and unreachable.
 #
@@ -25,38 +24,49 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 # Wait until *any* known Happier surface is visible (the welcome hero can be
 # present even while the server is still "Loading...").
 - extendedWaitUntil:
+    visible: "(This is the developer menu\\..*|Continue|Happier|happier)"
+    timeout: 480000
+- runFlow:
+    file: dismissDeveloperMenuMaybe.yaml
+- runFlow:
+    file: dismissExpoDevMenuOverlayMaybe.yaml
+- extendedWaitUntil:
     visible:
       id: welcome-hero
-    timeout: 240000
+    timeout: 480000
 
+- openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///server?auto=1&url=${HAPPIER_E2E_SERVER_URL}
 - runFlow:
-    when:
-      notVisible:
-        id: welcome-create-account
-    commands:
-      - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///server?auto=1&url=${HAPPIER_E2E_SERVER_URL}
-      - runFlow:
-          file: acceptAndroidOpenWithPromptMaybe.yaml
+    file: acceptIosOpenInPromptMaybe.yaml
+- runFlow:
+    file: acceptAndroidOpenWithPromptMaybe.yaml
 
-      # Re-dismiss dev-only overlays in case the deep-link triggered them.
-      - runFlow:
-          file: dismissAndroidSystemNotRespondingDialogMaybe.yaml
-      - runFlow:
-          file: dismissDeveloperMenuMaybe.yaml
-      - runFlow:
-          file: dismissExpoDevMenuOverlayMaybe.yaml
+# Re-dismiss dev-only overlays in case the deep-link triggered them.
+- runFlow:
+    file: dismissAndroidSystemNotRespondingDialogMaybe.yaml
+- runFlow:
+    file: dismissDeveloperMenuMaybe.yaml
+- runFlow:
+    file: dismissExpoDevMenuOverlayMaybe.yaml
 
-      # In `auto=1` mode, server auto-add happens in a background effect and the
-      # screen redirects away on success. Wait for the Welcome hero to be
-      # visible again, indicating we're back on `/`.
-      - extendedWaitUntil:
-          visible:
-            id: welcome-hero
-          timeout: 240000
+# In `auto=1` mode, server auto-add happens in a background effect and the
+# screen redirects away on success. Wait for the Welcome hero to be
+# visible again, indicating we're back on `/`.
+- extendedWaitUntil:
+    visible: "(This is the developer menu\\..*|Continue|Happier|happier)"
+    timeout: 480000
+- runFlow:
+    file: dismissDeveloperMenuMaybe.yaml
+- runFlow:
+    file: dismissExpoDevMenuOverlayMaybe.yaml
+- extendedWaitUntil:
+    visible:
+      id: welcome-hero
+    timeout: 480000
 
 # Sanity-check that the configured server is reachable/compatible by waiting
 # for the Welcome auth actions to become available again.
 - extendedWaitUntil:
     visible:
       id: welcome-create-account
-    timeout: 240000
+    timeout: 480000

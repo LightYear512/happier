@@ -16,7 +16,27 @@ const expoDevMenuOverlayFlowUrl = new URL(
   '../../../suites/mobile-e2e/flows/_shared/dismissExpoDevMenuOverlayMaybe.yaml',
   import.meta.url,
 );
+const configureServerIfNeededFlowUrl = new URL(
+  '../../../suites/mobile-e2e/flows/_shared/configureServerIfNeeded.yaml',
+  import.meta.url,
+);
+const connectedMachineTerminalAuthFlowUrl = new URL(
+  '../../../suites/mobile-e2e/flows/_bootstrap/connectedMachineTerminalAuth.yaml',
+  import.meta.url,
+);
 const mobileFlowsRootUrl = new URL('../../../suites/mobile-e2e/flows', import.meta.url);
+const connectTerminalSmokeUrl = new URL(
+  '../../../suites/mobile-e2e/flows/F2.connectTerminalSmoke.yaml',
+  import.meta.url,
+);
+const keyboardAndNavigationSmokeUrl = new URL(
+  '../../../suites/mobile-e2e/flows/F8.keyboardAndNavigationSmoke.yaml',
+  import.meta.url,
+);
+const connectedMachineKeyboardAndNavigationSmokeUrl = new URL(
+  '../../../suites/mobile-e2e/flows/F8.connectedMachineKeyboardAndNavigationSmoke.yaml',
+  import.meta.url,
+);
 const populatedRelayPerformanceSmokeUrl = new URL(
   '../../../suites/mobile-e2e/flows/F12.populatedRelaySessionPerformanceSmoke.yaml',
   import.meta.url,
@@ -60,16 +80,63 @@ describe('mobile Dev Client flow contracts', () => {
 
   it('rewrites the manual-entry Metro field from the env-provided URL before submit', () => {
     const flow = readFileSync(manualEntryFlowUrl, 'utf8');
-    const inputTapIndex = flow.indexOf('tapOn: "(http://localhost:8081|exp://)"');
+    const inputTapIndex = flow.indexOf('tapOn: "(http://.*:[0-9]+|exp://.*)"');
     const clipboardIndex = flow.indexOf('setClipboard: ${HAPPIER_E2E_DEV_CLIENT_METRO_URL}');
     const pasteIndex = flow.indexOf('pasteText');
+    const androidKeyboardDismissIndex = flow.indexOf('platform: Android', pasteIndex);
 
     expect(inputTapIndex).toBeGreaterThanOrEqual(0);
     expect(flow).not.toContain('tapOn: "http://localhost:8081"');
     expect(clipboardIndex).toBeGreaterThan(inputTapIndex);
     expect(clipboardIndex).toBeGreaterThan(flow.indexOf('eraseText'));
     expect(pasteIndex).toBeGreaterThan(clipboardIndex);
-    expect(flow.indexOf('hideKeyboard')).toBeGreaterThan(pasteIndex);
+    expect(androidKeyboardDismissIndex).toBeGreaterThan(pasteIndex);
+    expect(flow.indexOf('hideKeyboard', androidKeyboardDismissIndex)).toBeGreaterThan(androidKeyboardDismissIndex);
+  });
+
+  it('treats manual-entry submit as complete when Dev Client starts loading', () => {
+    const flow = readFileSync(manualEntryFlowUrl, 'utf8');
+    const pasteIndex = flow.indexOf('pasteText');
+    const conditionalSubmitIndex = flow.indexOf('visible: "Connect"', pasteIndex);
+    const submitTapIndex = flow.indexOf('tapOn: "Connect"', conditionalSubmitIndex);
+    const loadingWaitIndex = flow.indexOf(
+      'visible: "(Loading from|Bundling.*|Downloading.*|Loading\\\\.\\\\.\\\\.|Error loading app|Could not connect to development server|There was a problem loading the project|This is the developer menu.*|Continue|Go home|Go To Home|Login with mobile app|Create account|What would you like to work on\\\\?|Hi! How can I help you today\\\\?|Sessions|Start a session from your computer)"',
+      submitTapIndex,
+    );
+
+    expect(conditionalSubmitIndex).toBeGreaterThan(pasteIndex);
+    expect(submitTapIndex).toBeGreaterThan(conditionalSubmitIndex);
+    expect(loadingWaitIndex).toBeGreaterThan(submitTapIndex);
+  });
+
+  it('does not assert the manual-entry form while Dev Client is already loading', () => {
+    const flow = readFileSync(manualEntryFlowUrl, 'utf8');
+    const loadingSurface = '(Loading from|Bundling.*|Downloading.*|Loading\\\\.\\\\.\\\\.)';
+    const firstFormAssertIndex = flow.indexOf('assertVisible: "Connect"');
+    const loadingGuardIndex = flow.indexOf(`visible: "${loadingSurface}"`);
+    const loadingWaitIndex = flow.indexOf(
+      'visible: "(Error loading app|Could not connect to development server|There was a problem loading the project|This is the developer menu.*|Continue|Go home|Go To Home|Login with mobile app|Create account|What would you like to work on\\\\?|Hi! How can I help you today\\\\?|Sessions|Start a session from your computer)"',
+      loadingGuardIndex,
+    );
+    const guardedFormIndex = flow.indexOf(`notVisible: "${loadingSurface}"`, loadingWaitIndex);
+
+    expect(loadingGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(firstFormAssertIndex === -1 || loadingGuardIndex < firstFormAssertIndex).toBe(true);
+    expect(loadingWaitIndex).toBeGreaterThan(loadingGuardIndex);
+    expect(guardedFormIndex).toBeGreaterThan(loadingWaitIndex);
+  });
+
+  it('recovers from native Dev Client connection redscreens during bootstrap', () => {
+    const flow = readFileSync(sharedFlowUrls[0], 'utf8');
+    const redscreenText = 'Could not connect to development server';
+    const recoveryStart = flow.indexOf('when:\n      visible: "(Error loading app');
+    const redscreenRecoveryIndex = flow.indexOf(redscreenText, recoveryStart);
+    const reloadTapIndex = flow.indexOf('tapOn: "Reload"', recoveryStart);
+
+    expect(recoveryStart).toBeGreaterThanOrEqual(0);
+    expect(redscreenRecoveryIndex).toBeGreaterThan(recoveryStart);
+    expect(redscreenRecoveryIndex).toBeLessThan(reloadTapIndex);
+    expect(flow.indexOf(redscreenText, reloadTapIndex)).toBeGreaterThan(reloadTapIndex);
   });
 
   it('retries the launch-url bootstrap path before the manual-entry fallback wait', () => {
@@ -81,6 +148,141 @@ describe('mobile Dev Client flow contracts', () => {
 
     expect(retryLaunchIndex).toBeGreaterThan(flow.indexOf('visible: "Reload"'));
     expect(manualFallbackWaitIndex).toBeGreaterThan(retryLaunchIndex);
+  });
+
+  it('waits for Dev Client loading surfaces before manual-entry fallback', () => {
+    const launchUrlFlow = readFileSync(sharedFlowUrls[1], 'utf8');
+    const loadingSurface = '(Loading from|Bundling.*|Downloading.*|Loading\\\\.\\\\.\\\\.)';
+    const loadingWaitIndex = launchUrlFlow.indexOf(`visible: "${loadingSurface}"`);
+    const loadingGateIndex = launchUrlFlow.indexOf(`notVisible: "${loadingSurface}"`);
+    const manualFallbackIndex = launchUrlFlow.indexOf('file: connectUsingManualEntry.yaml');
+
+    expect(loadingWaitIndex).toBeGreaterThanOrEqual(0);
+    expect(loadingWaitIndex).toBeLessThan(manualFallbackIndex);
+    expect(loadingGateIndex).toBeGreaterThan(loadingWaitIndex);
+    expect(loadingGateIndex).toBeLessThan(manualFallbackIndex);
+  });
+
+  it('treats Dev Client overlays as loading completion surfaces', () => {
+    const expectedLoadingCompletionSurface =
+      'visible: "(Error loading app|Could not connect to development server|There was a problem loading the project|This is the developer menu.*|Continue|Go home|Go To Home|Login with mobile app|Create account|What would you like to work on\\\\?|Hi! How can I help you today\\\\?|Sessions|Start a session from your computer)"';
+
+    for (const flowUrl of [sharedFlowUrls[1], manualEntryFlowUrl]) {
+      const flow = readFileSync(flowUrl, 'utf8');
+      const loadingGuardIndex = flow.indexOf('visible: "(Loading from|Bundling.*|Downloading.*|Loading\\\\.\\\\.\\\\.)"');
+      const completionWaitIndex = flow.indexOf(expectedLoadingCompletionSurface, loadingGuardIndex);
+
+      expect(loadingGuardIndex).toBeGreaterThanOrEqual(0);
+      expect(completionWaitIndex).toBeGreaterThan(loadingGuardIndex);
+    }
+  });
+
+  it('applies the configured server before mobile login even when default auth actions are visible', () => {
+    const flow = readFileSync(configureServerIfNeededFlowUrl, 'utf8');
+    const serverDeepLink = 'openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///server?auto=1&url=${HAPPIER_E2E_SERVER_URL}';
+    const serverDeepLinkIndex = flow.indexOf(serverDeepLink);
+    const createAccountGateIndex = flow.indexOf('notVisible:\n        id: welcome-create-account');
+    const finalCreateAccountWaitIndex = flow.lastIndexOf('id: welcome-create-account');
+
+    expect(serverDeepLinkIndex).toBeGreaterThanOrEqual(0);
+    expect(createAccountGateIndex).toBe(-1);
+    expect(serverDeepLinkIndex).toBeLessThan(finalCreateAccountWaitIndex);
+    expect(flow.indexOf('file: acceptIosOpenInPromptMaybe.yaml', serverDeepLinkIndex)).toBeLessThan(
+      finalCreateAccountWaitIndex,
+    );
+    expect(flow.indexOf('file: acceptAndroidOpenWithPromptMaybe.yaml', serverDeepLinkIndex)).toBeLessThan(
+      finalCreateAccountWaitIndex,
+    );
+  });
+
+  it('accepts localized terminal-connect success dialogs', () => {
+    const flow = readFileSync(connectedMachineTerminalAuthFlowUrl, 'utf8');
+    const approveTapIndex = flow.indexOf('id: terminal-connect-approve');
+    const successWaitIndex = flow.indexOf('visible: "(Success|成功)"', approveTapIndex);
+    const acknowledgeTapIndex = flow.indexOf('tapOn: "(OK|确定)"', successWaitIndex);
+    const homeWaitIndex = flow.indexOf('id: main-header-start-new-session', acknowledgeTapIndex);
+
+    expect(approveTapIndex).toBeGreaterThanOrEqual(0);
+    expect(successWaitIndex).toBeGreaterThan(approveTapIndex);
+    expect(acknowledgeTapIndex).toBeGreaterThan(successWaitIndex);
+    expect(homeWaitIndex).toBeGreaterThan(acknowledgeTapIndex);
+  });
+
+  it('dismisses the keyboard after F8 composer input before querying send controls', () => {
+    for (const flowUrl of [keyboardAndNavigationSmokeUrl, connectedMachineKeyboardAndNavigationSmokeUrl]) {
+      const flow = readFileSync(flowUrl, 'utf8');
+      const inputIndex = flow.indexOf('inputText: "MOBILE_E2E_KEYBOARD_SMOKE"');
+      const keyboardDismissIndex = flow.indexOf('hideKeyboard', inputIndex);
+      const sendAssertIndex = flow.indexOf('id: new-session-composer-send', inputIndex);
+
+      expect(inputIndex).toBeGreaterThanOrEqual(0);
+      expect(keyboardDismissIndex).toBeGreaterThan(inputIndex);
+      expect(keyboardDismissIndex).toBeLessThan(sendAssertIndex);
+    }
+  });
+
+  it('accepts app-open prompts after app-scheme navigation smoke deep links', () => {
+    const flows = [
+      {
+        flowUrl: connectTerminalSmokeUrl,
+        openLink: '${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings',
+        nextSurface: 'id: settings-connect-terminal-scan',
+      },
+      {
+        flowUrl: keyboardAndNavigationSmokeUrl,
+        openLink: '${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings',
+        nextSurface: 'id: settings-connect-terminal-scan',
+      },
+      {
+        flowUrl: keyboardAndNavigationSmokeUrl,
+        openLink: '${HAPPIER_E2E_MOBILE_APP_SCHEME}:///',
+        nextSurface: 'id: main-header-start-new-session',
+      },
+      {
+        flowUrl: connectedMachineKeyboardAndNavigationSmokeUrl,
+        openLink: '${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings',
+        nextSurface: 'id: settings-connect-terminal-scan',
+      },
+      {
+        flowUrl: connectedMachineKeyboardAndNavigationSmokeUrl,
+        openLink: '${HAPPIER_E2E_MOBILE_APP_SCHEME}:///',
+        nextSurface: 'id: main-header-start-new-session',
+      },
+    ];
+
+    for (const { flowUrl, openLink, nextSurface } of flows) {
+      const flow = readFileSync(flowUrl, 'utf8');
+      const openLinkIndex = flow.indexOf(`openLink: ${openLink}`);
+      const acceptIosPromptIndex = flow.indexOf('file: _shared/acceptIosOpenInPromptMaybe.yaml', openLinkIndex);
+      const acceptAndroidPromptIndex = flow.indexOf(
+        'file: _shared/acceptAndroidOpenWithPromptMaybe.yaml',
+        openLinkIndex,
+      );
+      const nextSurfaceIndex = flow.indexOf(nextSurface, openLinkIndex);
+
+      expect(openLinkIndex).toBeGreaterThanOrEqual(0);
+      expect(acceptIosPromptIndex).toBeGreaterThan(openLinkIndex);
+      expect(acceptIosPromptIndex).toBeLessThan(nextSurfaceIndex);
+      expect(acceptAndroidPromptIndex).toBeGreaterThan(openLinkIndex);
+      expect(acceptAndroidPromptIndex).toBeLessThan(nextSurfaceIndex);
+    }
+  });
+
+  it('does not retry manual entry from the shared bootstrap while Dev Client is loading', () => {
+    const flow = readFileSync(sharedFlowUrls[0], 'utf8');
+    const loadingSurface = '(Loading from|Bundling.*|Downloading.*|Loading\\\\.\\\\.\\\\.)';
+    const manualFallbackIndex = flow.lastIndexOf('file: connectUsingManualEntry.yaml');
+    const loadingGateIndex = flow.lastIndexOf(`notVisible: "${loadingSurface}"`, manualFallbackIndex);
+    const finalCompletionWaitIndex = flow.indexOf(
+      'visible: "(Error loading app|Could not connect to development server|There was a problem loading the project|Login with mobile app|使用移动应用登录|Create account|创建账户|What would you like to work on\\\\?|Hi! How can I help you today\\\\?|Sessions|会话|Start a session from your computer|从你的电脑启动会话|开始新会话|准备开始编程？)"',
+      manualFallbackIndex,
+    );
+    const finalAssertIndex = flow.indexOf('assertNotVisible: "There was a problem loading the project"');
+
+    expect(loadingGateIndex).toBeGreaterThanOrEqual(0);
+    expect(loadingGateIndex).toBeLessThan(manualFallbackIndex);
+    expect(finalCompletionWaitIndex).toBeGreaterThan(manualFallbackIndex);
+    expect(finalCompletionWaitIndex).toBeLessThan(finalAssertIndex);
   });
 
   it('keeps overlay dismissal resilient with both close-first and back fallback branches', () => {
