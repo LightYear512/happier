@@ -11,6 +11,7 @@ import {
   sweepProcessOwnershipLeases,
 } from './processOwnershipLease';
 import { spawnLoggedProcess } from './spawnProcess';
+import { readPositiveEnvInt } from './uiWebEnv';
 
 export type StartedUiDevClientMetro = Readonly<{
   baseUrl: string;
@@ -25,6 +26,22 @@ function looksLikeUiDevClientMetroCommand(command: string): boolean {
   return normalized.includes('start')
     && normalized.includes('--dev-client')
     && (normalized.includes('/expo/bin/cli') || normalized.includes('expo') || normalized.includes('node'));
+}
+
+const DEFAULT_UI_DEV_CLIENT_METRO_MAX_OLD_SPACE_SIZE_MB = 8192;
+
+export function resolveUiDevClientMetroNodeOptions(env: NodeJS.ProcessEnv): string {
+  const existingNodeOptions = String(env.NODE_OPTIONS ?? '').trim();
+  const hasHeapLimit = /(?:^|\s)--max[-_]old[-_]space[-_]size(?:=|\s|$)/.test(existingNodeOptions);
+  if (hasHeapLimit) return existingNodeOptions;
+
+  const heapLimitMb = readPositiveEnvInt(
+    env.HAPPIER_E2E_DEV_CLIENT_METRO_MAX_OLD_SPACE_SIZE_MB,
+    DEFAULT_UI_DEV_CLIENT_METRO_MAX_OLD_SPACE_SIZE_MB,
+  );
+  return [existingNodeOptions, `--max-old-space-size=${heapLimitMb}`]
+    .filter(Boolean)
+    .join(' ');
 }
 
 export function resolveUiDevClientMetroOwnershipLeasesDir(rootDir: string = repoRootDir()): string {
@@ -94,6 +111,7 @@ export async function startUiDevClientMetro(params: {
     cwd: uiWorkspaceDir,
     env: {
       ...params.env,
+      NODE_OPTIONS: resolveUiDevClientMetroNodeOptions(params.env),
       CI: '1',
       EXPO_NO_TELEMETRY: '1',
       BROWSER: 'none',

@@ -27,6 +27,7 @@ async function main() {
         return {
           baseUrl: started.baseUrl,
           port: started.port,
+          stdoutPath: started.stdoutPath,
           stop: started.stop,
         };
       },

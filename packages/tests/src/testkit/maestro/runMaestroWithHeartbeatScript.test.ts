@@ -263,6 +263,125 @@ describe('scripts/run-maestro-with-heartbeat.mjs', () => {
         expect(marker.execArgv?.join(' ')).not.toContain('dist/esm/index.mjs');
     }, TEST_TIMEOUT_MS);
 
+    it('preserves managed Metro stdout path for bundle warmup', async () => {
+        const repoRoot = resolve(__dirname, '../../../../..');
+        const scratch = await mkdtemp(join(tmpdir(), 'happier-maestro-cli-metro-stdout-'));
+        const fakeRepoRoot = join(scratch, 'repo');
+
+        const fakeScriptsDir = join(fakeRepoRoot, 'packages', 'tests', 'scripts');
+        const fakeCliDir = join(fakeRepoRoot, 'packages', 'tests', 'src', 'testkit', 'maestro');
+        const fakeDaemonDir = join(fakeRepoRoot, 'packages', 'tests', 'src', 'testkit', 'daemon');
+        const fakeProcessDir = join(fakeRepoRoot, 'packages', 'tests', 'src', 'testkit', 'process');
+        const fakeUiE2eDir = join(fakeRepoRoot, 'packages', 'tests', 'src', 'testkit', 'uiE2e');
+        await mkdir(fakeScriptsDir, { recursive: true });
+        await mkdir(fakeCliDir, { recursive: true });
+        await mkdir(fakeDaemonDir, { recursive: true });
+        await mkdir(fakeProcessDir, { recursive: true });
+        await mkdir(fakeUiE2eDir, { recursive: true });
+        await writeFile(join(fakeRepoRoot, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+
+        await cp(
+            join(repoRoot, 'packages', 'tests', 'src', 'testkit', 'maestro', 'mobileMaestroCli.ts'),
+            join(fakeCliDir, 'mobileMaestroCli.ts'),
+        );
+        await writeFile(
+            join(fakeScriptsDir, 'managedChildLifecycle.mjs'),
+            [
+                'export async function runManagedChildCommand() { return { ok: true, code: 0, signal: null }; }',
+                'export function resolveSignalExitCode() { return 1; }',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+        await writeFile(
+            join(fakeDaemonDir, 'daemon.ts'),
+            [
+                'export async function startTestDaemon() { throw new Error("unexpected startTestDaemon"); }',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+        await writeFile(
+            join(fakeProcessDir, 'serverLight.ts'),
+            [
+                'export async function startServerLight() { throw new Error("unexpected startServerLight"); }',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+        await writeFile(
+            join(fakeProcessDir, 'uiDevClientMetro.ts'),
+            [
+                'export async function startUiDevClientMetro() {',
+                '    return {',
+                '        baseUrl: "http://127.0.0.1:19000",',
+                '        port: 19000,',
+                '        stdoutPath: "/tmp/happier-fake-metro-stdout.log",',
+                '        stop: async () => {},',
+                '    };',
+                '}',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+        await writeFile(
+            join(fakeUiE2eDir, 'cliTerminalConnect.ts'),
+            [
+                'export async function startCliAuthLoginForTerminalConnect() {',
+                '    throw new Error("unexpected startCliAuthLoginForTerminalConnect");',
+                '}',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+
+        const cliMarkerPath = join(scratch, 'mobile-cli-marker.json');
+        await writeFile(
+            join(fakeCliDir, 'mobileMaestroRunner.ts'),
+            [
+                "import { writeFileSync } from 'node:fs';",
+                'export function redactSensitiveMaestroCommandArgsForLog(args: string[]) { return args; }',
+                'export async function runMobileMaestro(',
+                '    _params: unknown,',
+                '    deps: { startDevClientMetro: (params: { testDir: string; extraEnv?: NodeJS.ProcessEnv; port?: number; host?: string }) => Promise<unknown> },',
+                ') {',
+                '    const markerPath = process.env.MOBILE_CLI_MARKER_PATH;',
+                '    if (!markerPath) throw new Error("Missing MOBILE_CLI_MARKER_PATH");',
+                '    const metro = await deps.startDevClientMetro({',
+                '        testDir: "/tmp/happier-fake-metro",',
+                '        extraEnv: {},',
+                '        port: 19000,',
+                '        host: "localhost",',
+                '    });',
+                '    writeFileSync(markerPath, JSON.stringify({ metro }), "utf8");',
+                '    return { exitCode: 0 };',
+                '}',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+
+        const testRequire = createRequire(__filename);
+        await execFileAsync(
+            process.execPath,
+            [
+                '--import',
+                testRequire.resolve('tsx'),
+                join(fakeCliDir, 'mobileMaestroCli.ts'),
+            ],
+            {
+                cwd: scratch,
+                env: {
+                    ...process.env,
+                    MOBILE_CLI_MARKER_PATH: cliMarkerPath,
+                },
+            },
+        );
+
+        const marker = JSON.parse(await readFile(cliMarkerPath, 'utf8')) as { metro?: { stdoutPath?: string } };
+        expect(marker.metro?.stdoutPath).toBe('/tmp/happier-fake-metro-stdout.log');
+    }, TEST_TIMEOUT_MS);
+
     it('terminates a long-running maestro child on SIGTERM', async () => {
         const repoRoot = resolve(__dirname, '../../../../..');
         const scratch = await mkdtemp(join(tmpdir(), 'happier-maestro-script-cleanup-'));

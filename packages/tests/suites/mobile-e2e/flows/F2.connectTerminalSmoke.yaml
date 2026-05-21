@@ -15,6 +15,10 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 
 # Deep-link into Settings (more stable than relying on responsive sidebar UI on small screens).
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings
+- runFlow:
+    file: _shared/acceptIosOpenInPromptMaybe.yaml
+- runFlow:
+    file: _shared/acceptAndroidOpenWithPromptMaybe.yaml
 
 # Smoke: the terminal connect entrypoints should be visible on mobile.
 - assertVisible:

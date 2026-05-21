@@ -13,6 +13,14 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 - tapOn:
     id: main-header-start-new-session
 
+- runFlow:
+    when:
+      visible:
+        id: session-getting-started-start-new-session
+    commands:
+      - tapOn:
+          id: session-getting-started-start-new-session
+
 - extendedWaitUntil:
     visible:
       id: new-session-composer-input
