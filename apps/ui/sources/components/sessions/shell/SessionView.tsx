@@ -15,6 +15,7 @@ import { useSessionAgentInputExtraActionChips } from '@/components/sessions/agen
 import { getSuggestions } from '@/components/autocomplete/suggestions';
 import { ChatHeaderView } from '@/components/sessions/transcript/ChatHeaderView';
 import { SessionHeaderActionMenu } from '@/components/sessions/actions/SessionHeaderActionMenu';
+import { SessionHeaderDevPreviewButton } from '@/components/sessions/actions/SessionHeaderDevPreviewButton';
 import { SessionHeaderSubagentsButton } from '@/components/sessions/actions/SessionHeaderSubagentsButton';
 import { SessionHeaderTerminalButton } from '@/components/sessions/actions/SessionHeaderTerminalButton';
 import { ChatList } from '@/components/sessions/transcript/ChatList';
@@ -165,6 +166,7 @@ import { SessionResumeProvider } from '@/components/sessions/model/SessionResume
 import { useSessionResumeRequestListener } from '@/components/sessions/model/sessionResumeRequests';
 import { useDirectSessionTakeover } from '@/components/sessions/model/useDirectSessionTakeover';
 import { useDirectSessionRuntime } from '@/components/sessions/model/useDirectSessionRuntime';
+import { listLocalServicePreviewPayloads } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
 import { listOpenApprovalArtifactsForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
@@ -449,6 +451,11 @@ export const SessionView = React.memo((props: SessionViewProps) => {
     const paneRef = React.useRef(pane);
     paneRef.current = pane;
     const { messages: pendingMessages } = useSessionPendingMessages(sessionId);
+    const { messages: committedMessages } = useSessionMessages(sessionId);
+    const localServicePreviews = React.useMemo(
+        () => listLocalServicePreviewPayloads(committedMessages),
+        [committedMessages],
+    );
     const subagentSourceMessages = useSessionSubagentSourceMessages(sessionId);
     const directSessionRuntime = useDirectSessionRuntime({
         sessionId,
@@ -584,6 +591,10 @@ export const SessionView = React.memo((props: SessionViewProps) => {
                     extraItems={headerExtraItems.length > 0 ? headerExtraItems : undefined}
                     onSelectExtraItem={handleHeaderExtraItemSelect}
                 />
+                <SessionHeaderDevPreviewButton
+                    scopeId={paneScopeId}
+                    previews={localServicePreviews}
+                />
                 {!shouldFoldHeaderIconActions ? (
                     <SessionHeaderSubagentsButton
                         scopeId={paneScopeId}
@@ -678,6 +689,7 @@ export const SessionView = React.memo((props: SessionViewProps) => {
         mobileWorkspaceExperienceState.workspaceExperienceToggleLabelKey,
         mobileWorkspaceExperienceToggleActionId,
         paneScopeId,
+        localServicePreviews,
         stableSessionForHeader,
         sessionWorkspacePresentation,
         sessionAutomationsEnabledCount,
