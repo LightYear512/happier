@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
 import { createServerFeatureGatePreHandler } from '@/app/features/catalog/serverFeatureGate';
-import { buildPreviewRouteBasePath } from '@/app/devPreview/previewRoutePaths';
+import { buildPreviewRouteBasePath, type PreviewRouteContext } from '@/app/devPreview/previewRoutePaths';
 import {
   buildPreviewRuntimeLimitationDocument,
   PREVIEW_LIMITATION_DOCUMENT_CSP,
@@ -148,6 +148,45 @@ function buildPreviewTokenScrubRedirectLocation(rawUrl: string): string {
   const parsed = new URL(rawUrl, 'http://happier-preview.local');
   parsed.searchParams.delete('previewToken');
   return `${parsed.pathname}${parsed.search}`;
+}
+
+function hasEncryptedSocket(request: { raw?: { socket?: unknown } }): boolean {
+  const socket = request.raw?.socket;
+  return typeof socket === 'object'
+    && socket !== null
+    && 'encrypted' in socket
+    && socket.encrypted === true;
+}
+
+function resolveRequestOrigin(request: {
+  headers?: Record<string, unknown>;
+  protocol?: string;
+  raw?: { socket?: unknown };
+}): string {
+  const forwardedHost = typeof request.headers?.['x-forwarded-host'] === 'string'
+    ? request.headers['x-forwarded-host'].split(',')[0]?.trim()
+    : '';
+  const host = forwardedHost
+    || (typeof request.headers?.host === 'string' ? request.headers.host.trim() : '')
+    || '127.0.0.1';
+  const forwardedProto = typeof request.headers?.['x-forwarded-proto'] === 'string'
+    ? request.headers['x-forwarded-proto'].split(',')[0]?.trim().toLowerCase()
+    : '';
+  const protocol = forwardedProto
+    || (typeof request.protocol === 'string' && request.protocol.trim()
+      ? request.protocol.trim().toLowerCase()
+      : hasEncryptedSocket(request) ? 'https' : 'http');
+  return `${protocol}://${host}`;
+}
+
+function buildPathNamespacePreviewUrl(params: Readonly<{
+  request: { headers?: Record<string, unknown>; protocol?: string; raw?: { socket?: unknown } };
+  routeContext: PreviewRouteContext;
+  previewToken: string;
+}>): string {
+  const url = new URL(buildPreviewRouteBasePath(params.routeContext), resolveRequestOrigin(params.request));
+  url.searchParams.set('previewToken', params.previewToken);
+  return url.toString();
 }
 
 function shouldUsePreviewTokenScrubRedirect(request: { headers?: Record<string, unknown>; method?: string }): boolean {
@@ -305,6 +344,7 @@ async function relayPreviewRequest(
     contentType: contentTypeHeader,
     body: responseBodyBuffer.toString('utf8'),
     routeContext,
+    previewToken,
     runtimeScriptNonce,
   });
   const bodyToSend = rewrittenBody === responseBodyBuffer.toString('utf8')
@@ -376,8 +416,17 @@ export function registerSessionDevPreviewRoutes(app: Fastify): void {
         machineId,
         routeKey,
       });
+      const routeContext = { sessionId, machineId, routeKey };
       reply.header('cache-control', 'no-store');
-      return reply.send({ token });
+      return reply.send({
+        token,
+        namespaceStrategy: 'path',
+        previewUrl: buildPathNamespacePreviewUrl({
+          request,
+          routeContext,
+          previewToken: token,
+        }),
+      });
     },
   );
 

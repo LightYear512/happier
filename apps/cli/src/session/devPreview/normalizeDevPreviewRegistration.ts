@@ -34,10 +34,55 @@ function normalizeFramework(value: unknown): LocalServicePreviewFramework | unde
   }
 }
 
+const LOOPBACK_HTTP_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '0:0:0:0:0:0:0:1']);
+
+function normalizeHostname(hostname: string): string {
+  const lowered = hostname.trim().toLowerCase();
+  if (lowered.startsWith('[') && lowered.endsWith(']')) {
+    return lowered.slice(1, -1);
+  }
+  return lowered;
+}
+
+function resolveReachableLoopbackHostname(hostname: string): string {
+  const normalized = normalizeHostname(hostname);
+  return normalized === '0.0.0.0' ? '127.0.0.1' : normalized;
+}
+
+function normalizePreviewUrl(value: unknown): Readonly<{
+  url: string;
+  origin: string;
+  port: number;
+  initialPath: string;
+}> | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const parsed = new URL(value.trim());
+  if (parsed.protocol !== 'http:') {
+    throw new Error('preview url must use http loopback');
+  }
+  const normalizedHostname = normalizeHostname(parsed.hostname);
+  if (!LOOPBACK_HTTP_HOSTS.has(normalizedHostname)) {
+    throw new Error('preview url must use loopback host');
+  }
+  parsed.hostname = resolveReachableLoopbackHostname(parsed.hostname);
+  const port = Number(parsed.port || '80');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('preview url must include a valid port');
+  }
+  const initialPath = parsed.pathname && parsed.pathname.startsWith('/') ? parsed.pathname : '/';
+  return {
+    url: parsed.toString(),
+    origin: parsed.origin,
+    port,
+    initialPath,
+  };
+}
+
 export type SessionDevPreviewRegistrationInput = Readonly<{
   sessionId: string;
   machineId: string;
-  port: number;
+  port?: number;
+  url?: string;
   name?: string;
   framework?: string;
   healthPath?: string;
@@ -52,6 +97,9 @@ export type NormalizedSessionDevPreviewRegistration = Readonly<{
   sessionId: string;
   machineId: string;
   port: number;
+  origin?: string;
+  url?: string;
+  initialPath: string;
   name?: string;
   framework?: LocalServicePreviewFramework;
   rewriteUrls: boolean;
@@ -64,8 +112,15 @@ export function normalizeDevPreviewRegistration(
 ): NormalizedSessionDevPreviewRegistration {
   const sessionId = String(input.sessionId).trim();
   const machineId = String(input.machineId).trim();
-  const port = Math.max(1, Math.min(65535, Math.trunc(input.port)));
-  const compositeKey = `${sessionId}\u0000${machineId}\u0000${port}`;
+  const parsedUrl = normalizePreviewUrl(input.url);
+  const port = parsedUrl?.port ?? Math.max(1, Math.min(65535, Math.trunc(Number(input.port))));
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('preview registration requires a valid port or url');
+  }
+  const origin = parsedUrl?.origin ?? `http://127.0.0.1:${port}`;
+  const url = parsedUrl?.url;
+  const initialPath = parsedUrl?.initialPath ?? '/';
+  const compositeKey = `${sessionId}\u0000${machineId}\u0000${origin}\u0000${initialPath}`;
   const name = normalizeName(input.name);
   const framework = normalizeFramework(input.framework);
 
@@ -76,6 +131,9 @@ export function normalizeDevPreviewRegistration(
     sessionId,
     machineId,
     port,
+    origin,
+    ...(url ? { url } : {}),
+    initialPath,
     ...(name ? { name } : {}),
     ...(framework ? { framework } : {}),
     rewriteUrls: input.rewriteUrls !== false,

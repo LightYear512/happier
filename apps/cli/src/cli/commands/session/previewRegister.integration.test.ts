@@ -131,6 +131,8 @@ describe('happier session preview register', () => {
             sessionId,
             machineId: 'machine-local',
             port: body.port,
+            url: body.url,
+            origin: body.origin,
             name: body.name,
             framework: body.framework,
             source: 'manual',
@@ -140,6 +142,7 @@ describe('happier session preview register', () => {
               rewriteUrls: body.rewriteUrls,
               supportsWebSocket: true,
               routeKey: 'route_manual_1',
+              initialPath: '/ai-console/develop/',
             },
           },
         });
@@ -201,8 +204,8 @@ describe('happier session preview register', () => {
           'preview',
           'register',
           'sess_preview_register_123',
-          '--port',
-          '5173',
+          '--url',
+          'http://127.0.0.1:5173/ai-console/develop/',
           '--name',
           'Manual preview',
           '--framework',
@@ -241,6 +244,7 @@ describe('happier session preview register', () => {
           sessionId: 'sess_preview_register_123',
           expectedMachineId: 'machine-local',
           port: 5173,
+          url: 'http://127.0.0.1:5173/ai-console/develop/',
           name: 'Manual preview',
           framework: 'vite',
           rewriteUrls: false,
@@ -252,6 +256,7 @@ describe('happier session preview register', () => {
       expect(committedContent?.v?.role).toBe('user');
       expect(committedContent?.v?.meta?.happier?.kind).toBe('local_service_preview.v1');
       expect(committedContent?.v?.meta?.happier?.payload?.preview?.routeKey).toBe('route_manual_1');
+      expect(committedContent?.v?.meta?.happier?.payload?.preview?.initialPath).toBe('/ai-console/develop/');
     } finally {
       output.restore();
     }
