@@ -107,6 +107,7 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
                             machineId: 'machine-1',
                             port: 3000,
                             routeKey: 'route_1',
+                            initialPath: '/dashboard',
                             rewriteUrls: true,
                             supportsWebSocket: true,
                             healthStatus: 'ready',
@@ -123,11 +124,16 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     beforeEach(() => {
         delete (globalThis as { window?: unknown }).window;
         relayFeatureState.enabled = false;
+        activeServerSnapshotState.serverUrl = 'https://app.happier.dev';
         serverFetchSpy.mockReset();
         serverFetchSpy.mockResolvedValue({
             ok: true,
             status: 200,
-            json: async () => ({ token: 'preview_token_1' }),
+            json: async () => ({
+                token: 'preview_token_1',
+                previewUrl: 'https://preview-route.example.test/?previewToken=preview_token_1',
+                namespaceStrategy: 'host',
+            }),
         });
     });
 
@@ -138,9 +144,12 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
 
         expect(screen.getTextContent()).toContain('Preview app');
+        expect(screen.findByTestId('session-details-tab-unpin-localServicePreview_preview_1')).toBeNull();
+        expect(screen.findByTestId('session-details-tab-pin-localServicePreview_preview_1')).toBeNull();
+        expect(screen.findByTestId('session-details-tab-close-localServicePreview_preview_1')).toBeTruthy();
         expect(screen.getTextContent()).toContain('3000');
         const iframe = screen.findByType('iframe');
-        expect(iframe.props.src).toBe('http://127.0.0.1:3000/');
+        expect(iframe.props.src).toBe('http://127.0.0.1:3000/dashboard');
         expect(iframe.props['data-testid']).toBe('session.localServicePreview.iframe');
         expect(screen.getTextContent()).not.toContain('common.unavailable');
         expect(String(iframe.props.src)).not.toContain('route_1');
@@ -159,13 +168,30 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(screen.getTextContent()).toContain('Preview app');
         expect(screen.getTextContent()).toContain('3000');
         const iframe = screen.findByType('iframe');
-        expect(String(iframe.props.src)).toContain('/preview/s1/machine-1/route_1/');
+        expect(String(iframe.props.src)).toBe('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
         expect(String(iframe.props.src)).toContain('previewToken=preview_token_1');
         expect(String(iframe.props.src)).not.toContain('3000');
         expect(iframe.props['data-testid']).toBe('session.localServicePreview.iframe');
         expect(iframe.props.sandbox).toContain('allow-scripts');
         expect(iframe.props.sandbox).not.toContain('allow-same-origin');
         expect(screen.getTextContent()).not.toContain('common.unavailable');
+        expect(serverFetchSpy).toHaveBeenCalledWith(
+            '/v1/sessions/s1/dev-preview/machine-1/route_1/token',
+            { method: 'POST' },
+        );
+    });
+
+    it('uses the server-provided preview URL without requiring an app-derived relay base URL', async () => {
+        installWindow('https://app.happier.dev/session/s1');
+        relayFeatureState.enabled = true;
+        activeServerSnapshotState.serverUrl = 'not a url';
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+
+        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        const iframe = screen.findByType('iframe');
+        expect(String(iframe.props.src)).toBe('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
         expect(serverFetchSpy).toHaveBeenCalledWith(
             '/v1/sessions/s1/dev-preview/machine-1/route_1/token',
             { method: 'POST' },

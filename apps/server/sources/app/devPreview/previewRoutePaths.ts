@@ -23,9 +23,18 @@ function hasBlockedScheme(value: string): boolean {
   return /^(?:data|blob|file|javascript|mailto|tel|about):/i.test(value);
 }
 
-function buildPreviewPathFromUrl(url: URL, basePath: string): string {
+function appendPreviewTokenToSearch(search: string, previewToken?: string | null): string {
+  if (typeof previewToken === 'string' && previewToken.trim().length > 0) {
+    const separator = search.length > 0 ? '&' : '?';
+    return `${search}${separator}previewToken=${encodeURIComponent(previewToken.trim())}`;
+  }
+  return search;
+}
+
+function buildPreviewPathFromUrl(url: URL, basePath: string, previewToken?: string | null): string {
   const path = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
-  return `${basePath}${path}${url.search}${url.hash}`;
+  const search = appendPreviewTokenToSearch(url.search, previewToken);
+  return `${basePath}${path}${search}${url.hash}`;
 }
 
 export function buildPreviewRouteBasePath(context: PreviewRouteContext): string {
@@ -35,6 +44,7 @@ export function buildPreviewRouteBasePath(context: PreviewRouteContext): string 
 export function rewritePreviewUrlValue(
   value: string,
   context: PreviewRouteContext,
+  previewToken?: string | null,
 ): string | null {
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith('#') || hasBlockedScheme(trimmed)) {
@@ -56,12 +66,12 @@ export function rewritePreviewUrlValue(
     if (!isLoopbackHost(parsed.hostname)) {
       return null;
     }
-    return buildPreviewPathFromUrl(parsed, basePath);
+    return buildPreviewPathFromUrl(parsed, basePath, previewToken);
   }
 
   if (trimmed.startsWith('/')) {
     const parsed = new URL(trimmed, 'https://preview.invalid');
-    return buildPreviewPathFromUrl(parsed, basePath);
+    return buildPreviewPathFromUrl(parsed, basePath, previewToken);
   }
 
   let parsed: URL;
@@ -81,12 +91,13 @@ export function rewritePreviewUrlValue(
     return null;
   }
 
-  return buildPreviewPathFromUrl(parsed, basePath);
+  return buildPreviewPathFromUrl(parsed, basePath, previewToken);
 }
 
 export function rewritePreviewSrcSetValue(
   value: string,
   context: PreviewRouteContext,
+  previewToken?: string | null,
 ): string {
   return value
     .split(',')
@@ -98,7 +109,7 @@ export function rewritePreviewSrcSetValue(
       const firstWhitespace = trimmed.search(/\s/);
       const rawUrl = firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
       const descriptor = firstWhitespace === -1 ? '' : trimmed.slice(firstWhitespace);
-      const rewritten = rewritePreviewUrlValue(rawUrl, context);
+      const rewritten = rewritePreviewUrlValue(rawUrl, context, previewToken);
       return rewritten ? `${rewritten}${descriptor}` : trimmed;
     })
     .join(', ');

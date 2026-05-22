@@ -131,7 +131,7 @@ export function createHappierMcpServer(
 
         return { ok: true as const, sessionId: normalizedSessionId, title: normalizedTitle };
       },
-      sessionDevPreviewRegister: async ({ sessionId, port, name, framework, rewriteUrls, healthPath }) => {
+      sessionDevPreviewRegister: async ({ sessionId, port, url, name, framework, rewriteUrls, healthPath }) => {
         if (sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
@@ -148,7 +148,8 @@ export function createHappierMcpServer(
         const preview = await devPreviewRegistry.register({
           sessionId,
           machineId,
-          port,
+          ...(typeof port === 'number' ? { port } : {}),
+          ...(typeof url === 'string' && url.trim() ? { url: url.trim() } : {}),
           name,
           framework,
           rewriteUrls,

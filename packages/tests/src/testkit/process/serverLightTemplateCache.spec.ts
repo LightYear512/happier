@@ -97,6 +97,28 @@ describe('serverLightTemplateCache', () => {
     expect(readFileSync(resolve(targetDir, 'seed.txt'), 'utf8')).toBe('fresh\n');
   });
 
+  it('does not publish pglite postmaster runtime files into reusable cache entries', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'happier-server-light-template-cache-'));
+    const cacheRootDir = resolve(rootDir, 'cache');
+    const targetDir = resolve(rootDir, 'target');
+
+    const result = await prepareCachedDataDir({
+      cacheRootDir,
+      templateKey: 'pglite-seed',
+      targetDir,
+      buildTemplateInto: async (templateDataDir: string) => {
+        const pgliteDir = resolve(templateDataDir, 'pglite');
+        mkdirSync(pgliteDir, { recursive: true });
+        writeFileSync(resolve(pgliteDir, 'PG_VERSION'), '17\n', 'utf8');
+        writeFileSync(resolve(pgliteDir, 'postmaster.pid'), 'stale-postmaster\n', 'utf8');
+      },
+    });
+
+    expect(readFileSync(resolve(result.cacheEntryDir, 'data', 'pglite', 'PG_VERSION'), 'utf8')).toBe('17\n');
+    expect(() => readFileSync(resolve(result.cacheEntryDir, 'data', 'pglite', 'postmaster.pid'), 'utf8')).toThrow();
+    expect(() => readFileSync(resolve(targetDir, 'pglite', 'postmaster.pid'), 'utf8')).toThrow();
+  });
+
   it('changes the cache key when migration contents change', async () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'happier-server-light-template-key-'));
     mkdirSync(resolve(rootDir, 'apps', 'server', 'prisma', 'sqlite'), { recursive: true });

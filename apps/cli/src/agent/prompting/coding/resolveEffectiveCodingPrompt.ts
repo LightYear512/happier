@@ -24,9 +24,10 @@ export type { PromptArtifactRecord };
 
 const DEV_PREVIEW_PROMPT_GUIDANCE = trimIdent(`
   Local dev preview:
-  - After starting a local web dev server, register it with \`happier_dev_preview_register\` once you know the port.
+  - After starting a local web dev server, register it with \`happier_dev_preview_register\` once you know the local URL so the user can view it in Happier.
   - Do this after commands such as \`npm run dev\`, \`yarn dev\`, \`pnpm dev\`, \`bun dev\`, \`vite\`, \`next dev\`, \`astro dev\`, and \`sveltekit dev\`.
-  - Include the detected port and, when obvious, the app name or framework.
+  - Prefer the full loopback URL (including any base path) and, when obvious, the app name or framework.
+  - Continue using browser or Playwright tools for your own verification; this preview registration is for the user-visible Happier panel.
 `);
 
 type ResolveEffectiveCodingPromptArgs = Readonly<{

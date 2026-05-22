@@ -49,6 +49,23 @@ function resolveSameMachinePreviewUrl(port: number): string | null {
     }
 }
 
+function applyInitialPreviewPath(baseUrl: string, initialPath?: string): string {
+    const normalizedPath = typeof initialPath === 'string' && initialPath.startsWith('/') && !initialPath.startsWith('//')
+        ? initialPath
+        : '/';
+    if (normalizedPath === '/') {
+        return baseUrl;
+    }
+    try {
+        const url = new URL(baseUrl);
+        const basePath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+        url.pathname = `${basePath}${normalizedPath.slice(1)}`;
+        return url.toString();
+    } catch {
+        return baseUrl;
+    }
+}
+
 function resolveRelayPreviewBaseUrl(params: Readonly<{
     sessionId: string;
     machineId: string;
@@ -101,6 +118,7 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
     sessionId: string;
     machineId: string;
     port: number;
+    initialPath?: string;
     routeKey: string;
     rewriteUrls: boolean;
     supportsWebSocket: boolean;
@@ -111,8 +129,14 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
         ? props.name.trim()
         : `127.0.0.1:${props.port}`;
     const relayEnabled = useFeatureEnabled('sessions.devPreview.relay');
-    const sameMachinePreviewUrl = React.useMemo(() => resolveSameMachinePreviewUrl(props.port), [props.port]);
-    const relayPreviewBaseUrl = React.useMemo(
+    const sameMachinePreviewUrl = React.useMemo(
+        () => {
+            const url = resolveSameMachinePreviewUrl(props.port);
+            return url ? applyInitialPreviewPath(url, props.initialPath) : null;
+        },
+        [props.initialPath, props.port],
+    );
+    const relayPreviewFallbackBaseUrl = React.useMemo(
         () => resolveRelayPreviewBaseUrl({
             sessionId: props.sessionId,
             machineId: props.machineId,
@@ -120,19 +144,19 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
         }),
         [props.machineId, props.routeKey, props.sessionId],
     );
-    const [relayToken, setRelayToken] = React.useState<string | null>(null);
+    const [relayPreviewUrl, setRelayPreviewUrl] = React.useState<string | null>(null);
     const [relayState, setRelayState] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
 
     React.useEffect(() => {
-        if (sameMachinePreviewUrl || Platform.OS !== 'web' || !relayEnabled || !relayPreviewBaseUrl) {
-            setRelayToken(null);
+        if (sameMachinePreviewUrl || Platform.OS !== 'web' || !relayEnabled) {
+            setRelayPreviewUrl(null);
             setRelayState('idle');
             return;
         }
 
         let cancelled = false;
         setRelayState('loading');
-        setRelayToken(null);
+        setRelayPreviewUrl(null);
 
         void serverFetch(
             `/v1/sessions/${encodeURIComponent(props.sessionId)}/dev-preview/${encodeURIComponent(props.machineId)}/${encodeURIComponent(props.routeKey)}/token`,
@@ -150,30 +174,32 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
                 if (cancelled) {
                     return;
                 }
-                setRelayToken(parsed.data.token);
+                const previewUrl = typeof parsed.data.previewUrl === 'string' && parsed.data.previewUrl.trim().length > 0
+                    ? parsed.data.previewUrl.trim()
+                    : (() => {
+                        if (!relayPreviewFallbackBaseUrl) {
+                            throw new Error('missing relay preview URL');
+                        }
+                        const url = new URL(relayPreviewFallbackBaseUrl);
+                        url.searchParams.set('previewToken', parsed.data.token);
+                        return url.toString();
+                    })();
+                setRelayPreviewUrl(applyInitialPreviewPath(previewUrl, props.initialPath));
                 setRelayState('ready');
             })
             .catch(() => {
                 if (cancelled) {
                     return;
                 }
-                setRelayToken(null);
+                setRelayPreviewUrl(null);
                 setRelayState('error');
             });
 
         return () => {
             cancelled = true;
         };
-    }, [props.machineId, props.routeKey, props.sessionId, relayEnabled, relayPreviewBaseUrl, sameMachinePreviewUrl]);
+    }, [props.initialPath, props.machineId, props.routeKey, props.sessionId, relayEnabled, relayPreviewFallbackBaseUrl, sameMachinePreviewUrl]);
 
-    const relayPreviewUrl = React.useMemo(() => {
-        if (!relayPreviewBaseUrl || !relayToken) {
-            return null;
-        }
-        const url = new URL(relayPreviewBaseUrl);
-        url.searchParams.set('previewToken', relayToken);
-        return url.toString();
-    }, [relayPreviewBaseUrl, relayToken]);
     const previewUrl = sameMachinePreviewUrl ?? relayPreviewUrl;
     const iframeSandbox = sameMachinePreviewUrl
         ? undefined
