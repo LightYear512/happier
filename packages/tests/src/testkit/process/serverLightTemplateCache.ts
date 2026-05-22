@@ -22,6 +22,7 @@ const READY_MARKER_FILE = 'ready.json';
 const TEMPLATE_DATA_DIR = 'data';
 const CACHE_PUBLISH_MAX_ATTEMPTS = 6;
 const CACHE_PUBLISH_RETRY_DELAY_MS = 50;
+const PGLITE_RUNTIME_FILES = ['postmaster.pid', 'postmaster.opts'] as const;
 
 const activeTemplateBuilds = new Map<string, Promise<void>>();
 
@@ -87,6 +88,7 @@ async function ensureCacheEntryReady(params: {
 
     try {
       await params.buildTemplateInto(tempDataDir);
+      await removePgliteRuntimeFiles(tempDataDir);
       await writeFile(resolve(tempEntryDir, READY_MARKER_FILE), JSON.stringify({ createdAt: new Date().toISOString() }) + '\n', 'utf8');
       try {
         let published = false;
@@ -142,6 +144,14 @@ async function ensureCacheEntryReady(params: {
   } finally {
     activeTemplateBuilds.delete(params.cacheEntryDir);
   }
+}
+
+async function removePgliteRuntimeFiles(templateDataDir: string): Promise<void> {
+  await Promise.all(
+    PGLITE_RUNTIME_FILES.map((fileName) =>
+      rm(resolve(templateDataDir, 'pglite', fileName), { force: true }),
+    ),
+  );
 }
 
 export async function prepareCachedDataDir(params: PrepareCachedDataDirParams): Promise<PrepareCachedDataDirResult> {
