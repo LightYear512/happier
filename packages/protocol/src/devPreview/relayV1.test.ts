@@ -46,9 +46,13 @@ describe('dev preview relay schemas', () => {
   it('accepts a preview token response', () => {
     const parsed = SessionDevPreviewTokenResponseSchema.parse({
       token: 'preview_token_1',
+      previewUrl: 'https://stack.example.test/preview/session_1/machine_1/route_1/?previewToken=preview_token_1',
+      namespaceStrategy: 'path',
     });
 
     expect(parsed.token).toBe('preview_token_1');
+    expect(parsed.previewUrl).toContain('/preview/session_1/machine_1/route_1/');
+    expect(parsed.namespaceStrategy).toBe('path');
   });
 
   it('accepts a server-to-machine websocket open envelope scoped by routeKey', () => {

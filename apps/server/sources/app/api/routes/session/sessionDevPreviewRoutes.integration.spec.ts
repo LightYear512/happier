@@ -97,19 +97,25 @@ describe('session dev preview routes (integration)', () => {
   type DevPreviewRouteTestApp = ReturnType<typeof createTestApp>;
 
   async function mintPreviewToken(app: DevPreviewRouteTestApp, fixture: DevPreviewRouteFixture): Promise<string> {
-    const mint = await app.inject({
-      method: 'POST',
-      url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
-      headers: {
-        authorization: `Bearer ${fixture.token}`,
-      },
-    });
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: 'stack.example.test',
+          'x-forwarded-proto': 'https',
+        },
+      });
 
-    expect(mint.statusCode).toBe(200);
-    const tokenPayload = mint.json() as { token: string };
-    expect(typeof tokenPayload.token).toBe('string');
-    expect(tokenPayload.token.length).toBeGreaterThan(0);
-    return tokenPayload.token;
+      expect(mint.statusCode).toBe(200);
+      const tokenPayload = mint.json() as { token: string; previewUrl?: string; namespaceStrategy?: string };
+      expect(typeof tokenPayload.token).toBe('string');
+      expect(tokenPayload.token.length).toBeGreaterThan(0);
+      expect(tokenPayload.namespaceStrategy).toBe('path');
+      expect(tokenPayload.previewUrl).toBe(
+        `https://stack.example.test/preview/${fixture.sessionId}/${fixture.machineId}/route_1/?previewToken=${encodeURIComponent(tokenPayload.token)}`,
+      );
+      return tokenPayload.token;
   }
 
   async function movePreviewTokenIntoCookie(app: DevPreviewRouteTestApp, fixture: DevPreviewRouteFixture, token: string, params?: Readonly<{

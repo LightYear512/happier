@@ -36,6 +36,8 @@ export function createSessionDevPreviewRegistry(params?: Readonly<{ healthCheckT
         sessionId: normalized.sessionId,
         machineId: normalized.machineId,
         port: normalized.port,
+        origin: normalized.origin,
+        ...(normalized.url ? { url: normalized.url } : {}),
         ...(normalized.name ? { name: normalized.name } : {}),
         ...(normalized.framework ? { framework: normalized.framework } : {}),
         source: normalized.source,
@@ -45,6 +47,7 @@ export function createSessionDevPreviewRegistry(params?: Readonly<{ healthCheckT
           rewriteUrls: normalized.rewriteUrls,
           supportsWebSocket: true,
           routeKey: previous?.preview.routeKey ?? normalized.routeKey,
+          initialPath: normalized.initialPath,
         },
       };
 

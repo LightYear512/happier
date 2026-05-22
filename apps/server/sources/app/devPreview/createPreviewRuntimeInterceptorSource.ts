@@ -82,6 +82,18 @@ export function createPreviewRuntimeInterceptorSource(context: PreviewRouteConte
         return raw;
       }
       const protocol = String(parsed.protocol || '').toLowerCase();
+      if (
+        ['http:', 'https:', 'ws:', 'wss:'].includes(protocol)
+        && parsed.host === window.location.host
+        && parsed.pathname.startsWith(previewBasePath)
+      ) {
+        const relayPath = appendPreviewToken(\`\${parsed.pathname}\${parsed.search}\${parsed.hash}\`);
+        if (kind === 'ws') {
+          const relayProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          return \`\${relayProtocol}//\${window.location.host}\${relayPath}\`;
+        }
+        return relayPath;
+      }
       const isLoopback =
         ['http:', 'https:', 'ws:', 'wss:'].includes(protocol)
         && loopbackHosts.has(normalizeHostname(parsed.hostname));

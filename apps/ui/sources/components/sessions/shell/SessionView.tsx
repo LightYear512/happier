@@ -34,6 +34,7 @@ import {
 import { getSuggestions } from '@/components/autocomplete/suggestions';
 import { ChatHeaderView } from '@/components/sessions/transcript/ChatHeaderView';
 import { SessionHeaderActionMenu } from '@/components/sessions/actions/SessionHeaderActionMenu';
+import { SessionHeaderDevPreviewButton } from '@/components/sessions/actions/SessionHeaderDevPreviewButton';
 import { SessionHeaderSubagentsButton } from '@/components/sessions/actions/SessionHeaderSubagentsButton';
 import { SessionHeaderTerminalButton } from '@/components/sessions/actions/SessionHeaderTerminalButton';
 import { ChatList, type TranscriptViewportChangeState } from '@/components/sessions/transcript/ChatList';
@@ -75,7 +76,7 @@ import {
     evaluateAgentSessionCapabilitySupport,
     resolveAgentIdFromSessionMetadata,
 } from '@happier-dev/agents';
-import { SPAWN_SESSION_ERROR_CODES, isConnectedServiceResumeUnreachableSpawnErrorDetail } from '@happier-dev/protocol';
+import { SPAWN_SESSION_ERROR_CODES, isConnectedServiceResumeUnreachableSpawnErrorDetail, type LocalServicePreviewV1 } from '@happier-dev/protocol';
 import { useResumeCapabilityOptions } from '@/agents/hooks/useResumeCapabilityOptions';
 import { useSession } from '@/sync/domains/state/storage';
 import { writeSessionInitialPromptV1 } from '@/sync/domains/sessionInitialPrompt/sessionInitialPromptV1';
@@ -233,6 +234,7 @@ import { useSessionResumeRequestListener } from '@/components/sessions/model/ses
 import { useDirectSessionTakeover } from '@/components/sessions/model/useDirectSessionTakeover';
 import { useDirectSessionRuntime } from '@/components/sessions/model/useDirectSessionRuntime';
 import { SessionWarningActionBanner } from './SessionWarningActionBanner';
+import { listLocalServicePreviewPayloads } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
 import { listOpenApprovalArtifactsForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
@@ -539,6 +541,7 @@ const SessionViewLoadedWithPendingMessages = React.memo(function SessionViewLoad
 type SessionHeaderRightElementProps = Readonly<{
     sessionId: string;
     session: Session;
+    localServicePreviews: readonly LocalServicePreviewV1[];
     paneScopeId: string;
     currentSessionRouteServerId: string;
     mobileWorkspaceExperienceToggleActionId: string;
@@ -653,6 +656,10 @@ const SessionHeaderRightElement = React.memo(function SessionHeaderRightElement(
                 session={props.session}
                 extraItems={headerExtraItems.length > 0 ? headerExtraItems : undefined}
                 onSelectExtraItem={handleHeaderExtraItemSelect}
+            />
+            <SessionHeaderDevPreviewButton
+                scopeId={props.paneScopeId}
+                previews={props.localServicePreviews}
             />
             {!props.shouldFoldHeaderIconActions ? (
                 <SessionHeaderSubagentsButton
@@ -1209,6 +1216,11 @@ export const SessionView = React.memo((props: SessionViewProps) => {
             forgetSessionViewContentWidthSurface(contentWidthSurfaceId);
         };
     }, [contentWidthSurfaceId]);
+    const { messages: committedMessages } = useSessionMessages(sessionId);
+    const localServicePreviews = React.useMemo(
+        () => listLocalServicePreviewPayloads(committedMessages),
+        [committedMessages],
+    );
     const sessionAutomationsEnabledCount = React.useMemo(() => {
         if (!showAutomations) return 0;
         return countEnabledAutomationsLinkedToSession(automations, sessionId);
@@ -1298,6 +1310,7 @@ export const SessionView = React.memo((props: SessionViewProps) => {
             <SessionHeaderRightElement
                 sessionId={sessionId}
                 session={headerSession}
+                localServicePreviews={localServicePreviews}
                 paneScopeId={paneScopeId}
                 currentSessionRouteServerId={currentSessionRouteServerId}
                 mobileWorkspaceExperienceToggleActionId={mobileWorkspaceExperienceToggleActionId}
@@ -1331,6 +1344,7 @@ export const SessionView = React.memo((props: SessionViewProps) => {
         mobileWorkspaceExperienceState.workspaceExperienceToggleLabelKey,
         mobileWorkspaceExperienceToggleActionId,
         paneScopeId,
+        localServicePreviews,
         routeHydrationPending,
         routeHydrationState,
         routeHydrationTerminalMissing,

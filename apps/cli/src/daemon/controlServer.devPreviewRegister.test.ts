@@ -54,7 +54,7 @@ describe('daemon control server: /dev-preview/register', () => {
         payload: {
           sessionId: 'sess-preview-1',
           expectedMachineId: 'machine-local',
-          port: previewPort,
+          url: `http://127.0.0.1:${previewPort}/dashboard`,
           name: 'Manual preview',
           framework: 'vite',
           rewriteUrls: false,
@@ -68,6 +68,8 @@ describe('daemon control server: /dev-preview/register', () => {
         sessionId: 'sess-preview-1',
         machineId: 'machine-local',
         port: previewPort,
+        url: `http://127.0.0.1:${previewPort}/dashboard`,
+        origin: `http://127.0.0.1:${previewPort}`,
         name: 'Manual preview',
         framework: 'vite',
         source: 'manual',
@@ -75,6 +77,7 @@ describe('daemon control server: /dev-preview/register', () => {
         preview: {
           rewriteUrls: false,
           supportsWebSocket: true,
+          initialPath: '/dashboard',
         },
       });
       expect(registry.getByRouteKey(body.preview.preview.routeKey)?.resourceId).toBe(body.preview.resourceId);

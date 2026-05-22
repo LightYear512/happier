@@ -40,6 +40,7 @@ describe('LocalServicePreviewMessageCard', () => {
                         rewriteUrls: true,
                         supportsWebSocket: true,
                         routeKey: 'route_1',
+                        initialPath: '/dashboard',
                     },
                 }}
                 sessionId="s1"
@@ -57,6 +58,7 @@ describe('LocalServicePreviewMessageCard', () => {
                     resourceId: 'preview_1',
                     port: 3000,
                     routeKey: 'route_1',
+                    initialPath: '/dashboard',
                 }),
             }),
             { intent: 'preview' },

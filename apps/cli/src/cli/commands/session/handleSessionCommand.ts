@@ -107,7 +107,7 @@ function printSessionSubcommandHelp(subcommand: string): boolean {
       console.log('happier session set-model <session-id-or-prefix> <model-id> [--json]');
       return true;
     case 'preview':
-      console.log('happier session preview register <session-id-or-prefix> --port <port> [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
+      console.log('happier session preview register <session-id-or-prefix> (--url <url> | --port <port>) [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
       return true;
     default:
       return false;
@@ -146,7 +146,7 @@ export async function handleSessionCommand(
       console.log('happier session actions list [--json]');
       console.log('happier session actions describe <action-id> [--json]');
       console.log('happier session actions execute <session-id> <action-id> [--input-json <json>] [--json]');
-      console.log('happier session preview register <session-id-or-prefix> --port <port> [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
+      console.log('happier session preview register <session-id-or-prefix> (--url <url> | --port <port>) [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
       console.log('happier session run start <session-id> --intent <intent> --backend <backend-target> [--json]');
       console.log('happier session run list <session-id> [--json]');
       console.log('happier session run get <session-id> <run-id> [--include-structured] [--json]');

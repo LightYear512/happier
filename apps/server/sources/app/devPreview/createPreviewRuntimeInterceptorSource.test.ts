@@ -120,6 +120,54 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     ]);
   });
 
+  it('does not double-prefix relative URLs resolved from nested preview paths', async () => {
+    const fetchCalls: unknown[] = [];
+    const webSocketCalls: Array<{ url: string; protocols: unknown }> = [];
+
+    class FakeWebSocket {
+      constructor(url: string, protocols?: unknown) {
+        webSocketCalls.push({ url, protocols });
+      }
+    }
+
+    const windowTarget = {
+      location: new URL('https://app.happier.dev/preview/session_1/machine_1/route_1/ai-console/develop/?previewToken=token_1'),
+      fetch: vi.fn(async (input: unknown) => {
+        fetchCalls.push(input);
+        return { ok: true };
+      }),
+      history: {
+        state: null,
+        replaceState: vi.fn(),
+      },
+      WebSocket: FakeWebSocket,
+    };
+
+    vm.runInNewContext(createPreviewRuntimeInterceptorSource(routeContext), {
+      window: windowTarget,
+      Request: FakeRequest,
+      URL,
+      Object,
+      Set,
+      String,
+      Array,
+      Buffer,
+    });
+
+    await windowTarget.fetch('api/state');
+    new windowTarget.WebSocket('wss://app.happier.dev/preview/session_1/machine_1/route_1/ai-console/develop/hmr', ['vite-hmr']);
+
+    expect(fetchCalls).toEqual([
+      '/preview/session_1/machine_1/route_1/ai-console/develop/api/state?previewToken=token_1',
+    ]);
+    expect(webSocketCalls).toEqual([
+      {
+        url: 'wss://app.happier.dev/preview/session_1/machine_1/route_1/ai-console/develop/hmr?previewToken=token_1',
+        protocols: ['vite-hmr'],
+      },
+    ]);
+  });
+
   it('carries the current preview token onto runtime-rewritten relay requests', async () => {
     const fetchCalls: unknown[] = [];
     const webSocketCalls: Array<{ url: string; protocols: unknown }> = [];

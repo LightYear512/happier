@@ -114,25 +114,31 @@ async function listen(server: Server): Promise<number> {
   return address.port;
 }
 
-async function startPreviewFixtureServer(): Promise<Readonly<{ port: number; stop: () => Promise<void> }>> {
+async function startPreviewFixtureServer(params: Readonly<{
+  initialPath: string;
+  rootText: string;
+  fetchText: string;
+  wsText: string;
+}>): Promise<Readonly<{ port: number; previewUrl: string; stop: () => Promise<void> }>> {
+  const normalizedInitialPath = params.initialPath.endsWith('/') ? params.initialPath : `${params.initialPath}/`;
   const wss = new WebSocketServer({ noServer: true });
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
-    if (req.method === 'GET' && url.pathname === '/') {
+    if (req.method === 'GET' && url.pathname === normalizedInitialPath) {
       sendHtml(res, `<!doctype html>
 <html>
   <head><meta charset="utf-8"><title>Preview fixture</title></head>
   <body>
-    <main id="preview-root">Preview fixture loaded</main>
+    <main id="preview-root">${params.rootText}</main>
     <div id="fetch-state">fetch-pending</div>
     <div id="ws-state">ws-pending</div>
     <script>
-      fetch('/api/state')
+      fetch('api/state')
         .then((response) => response.text())
         .then((text) => { document.getElementById('fetch-state').textContent = text; })
         .catch((error) => { document.getElementById('fetch-state').textContent = 'fetch-error:' + error.message; });
       const socketProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(socketProtocol + '//' + location.host + '/hmr');
+      const socket = new WebSocket(socketProtocol + '//' + location.host + location.pathname + 'hmr');
       socket.onmessage = (event) => { document.getElementById('ws-state').textContent = String(event.data); };
       socket.onerror = () => { document.getElementById('ws-state').textContent = 'ws-error'; };
     </script>
@@ -140,8 +146,8 @@ async function startPreviewFixtureServer(): Promise<Readonly<{ port: number; sto
 </html>`);
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/api/state') {
-      sendText(res, 'fetch-ok');
+    if (req.method === 'GET' && url.pathname === `${normalizedInitialPath}api/state`) {
+      sendText(res, params.fetchText);
       return;
     }
     res.statusCode = 404;
@@ -150,12 +156,12 @@ async function startPreviewFixtureServer(): Promise<Readonly<{ port: number; sto
 
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
-    if (url.pathname !== '/hmr') {
+    if (url.pathname !== `${normalizedInitialPath}hmr`) {
       socket.destroy();
       return;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
-      ws.send('ws-ok');
+      ws.send(params.wsText);
       ws.on('message', (message) => ws.send(String(message)));
     });
   });
@@ -163,6 +169,7 @@ async function startPreviewFixtureServer(): Promise<Readonly<{ port: number; sto
   const port = await listen(server);
   return {
     port,
+    previewUrl: `http://127.0.0.1:${port}${normalizedInitialPath}`,
     stop: async () => {
       await new Promise<void>((resolveClose) => wss.close(() => resolveClose()));
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
@@ -249,7 +256,7 @@ test.describe('ui e2e: dev preview relay', () => {
   let ui: StartedUiWeb | null = null;
   let uiBaseUrl: string | null = null;
   let daemon: StartedDaemon | null = null;
-  let previewServer: Awaited<ReturnType<typeof startPreviewFixtureServer>> | null = null;
+  let previewServers: Array<Awaited<ReturnType<typeof startPreviewFixtureServer>>> = [];
 
   test.beforeAll(async () => {
     const uiWebEnv = {
@@ -289,13 +296,13 @@ test.describe('ui e2e: dev preview relay', () => {
 
   test.afterAll(async () => {
     test.setTimeout(120_000);
-    await previewServer?.stop().catch(() => {});
+    await Promise.all(previewServers.map((previewServer) => previewServer.stop().catch(() => {})));
     await daemon?.stop().catch(() => {});
     await ui?.stop().catch(() => {});
     await server?.stop().catch(() => {});
   });
 
-  test('loads a registered local service through the HTTP and WebSocket relay', async ({ page }) => {
+  test('loads a registered local service path through the HTTP and WebSocket relay', async ({ page }, testInfo) => {
     test.setTimeout(540_000);
     if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
 
@@ -336,7 +343,19 @@ test.describe('ui e2e: dev preview relay', () => {
     });
     await expect(page.getByTestId('transcript-chat-list')).toHaveCount(1, { timeout: 120_000 });
 
-    previewServer = await startPreviewFixtureServer();
+    const primaryPreviewServer = await startPreviewFixtureServer({
+      initialPath: '/ai-console/develop/',
+      rootText: 'Primary preview fixture loaded at /ai-console/develop/',
+      fetchText: 'primary-fetch-ok',
+      wsText: 'primary-ws-ok',
+    });
+    const secondaryPreviewServer = await startPreviewFixtureServer({
+      initialPath: '/docs/',
+      rootText: 'Secondary preview fixture loaded at /docs/',
+      fetchText: 'secondary-fetch-ok',
+      wsText: 'secondary-ws-ok',
+    });
+    previewServers = [primaryPreviewServer, secondaryPreviewServer];
     const registerEnvelope = await runCliJson({
       testDir,
       cliHomeDir,
@@ -353,10 +372,10 @@ test.describe('ui e2e: dev preview relay', () => {
         'preview',
         'register',
         sessionId,
-        '--port',
-        String(previewServer.port),
+        '--url',
+        primaryPreviewServer.previewUrl,
         '--name',
-        'Relay preview fixture',
+        'Primary relay preview fixture',
         '--framework',
         'vite',
         '--json',
@@ -369,13 +388,67 @@ test.describe('ui e2e: dev preview relay', () => {
     });
     expect(registerEnvelope.ok).toBe(true);
     expect(registerEnvelope.kind).toBe('session_preview_register');
+    expect(registerEnvelope.data).toEqual(expect.objectContaining({
+      url: primaryPreviewServer.previewUrl,
+    }));
+    const registeredPreviewResourceId = typeof registerEnvelope.data === 'object'
+      && registerEnvelope.data !== null
+      && typeof (registerEnvelope.data as { resourceId?: unknown }).resourceId === 'string'
+      ? (registerEnvelope.data as { resourceId: string }).resourceId
+      : '';
+    expect(registeredPreviewResourceId).toMatch(/^preview_/);
+    const secondaryRegisterEnvelope = await runCliJson({
+      testDir,
+      cliHomeDir,
+      serverUrl: server.baseUrl,
+      webappUrl: uiBaseUrl,
+      env: {
+        ...process.env,
+        HOME: cliHomeDir,
+        HAPPIER_E2E_PROVIDER_USE_CLI_SOURCE_ENTRYPOINT: '1',
+      },
+      label: 'session-preview-register-secondary',
+      args: [
+        'session',
+        'preview',
+        'register',
+        sessionId,
+        '--url',
+        secondaryPreviewServer.previewUrl,
+        '--name',
+        'Secondary relay preview fixture',
+        '--framework',
+        'vite',
+        '--json',
+      ],
+      timeoutMs: 180_000,
+      launchOptions: {
+        preferSourceEntrypoint: true,
+        skipSourceFreshnessCheck: true,
+      },
+    });
+    expect(secondaryRegisterEnvelope.ok).toBe(true);
+    expect(secondaryRegisterEnvelope.kind).toBe('session_preview_register');
+    const secondaryPreviewResourceId = typeof secondaryRegisterEnvelope.data === 'object'
+      && secondaryRegisterEnvelope.data !== null
+      && typeof (secondaryRegisterEnvelope.data as { resourceId?: unknown }).resourceId === 'string'
+      ? (secondaryRegisterEnvelope.data as { resourceId: string }).resourceId
+      : '';
+    expect(secondaryPreviewResourceId).toMatch(/^preview_/);
+    expect(secondaryPreviewResourceId).not.toBe(registeredPreviewResourceId);
 
     await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/session/${sessionId}?happier_hmr=0`, 180_000);
-    await expect(page.getByTestId('local-service-preview-card')).toHaveCount(1, { timeout: 120_000 });
-    await page.getByTestId('local-service-preview-card').click();
+    await expect(page.getByTestId('local-service-preview-card')).toHaveCount(2, { timeout: 120_000 });
+    await expect(page.getByTestId('session-header-dev-preview-button')).toHaveCount(1, { timeout: 120_000 });
+    await page.getByTestId('session-header-dev-preview-button').click();
+    await page.getByTestId(`session-header-dev-preview-menu-item-${registeredPreviewResourceId}`).click();
 
     const iframe = page.locator('iframe[data-testid="session.localServicePreview.iframe"]').first();
     await expect(iframe).toHaveCount(1, { timeout: 120_000 });
+    const previewTabKey = `localServicePreview_${registeredPreviewResourceId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    await expect(page.getByTestId(`session-details-tab-pin-${previewTabKey}`)).toHaveCount(0);
+    await expect(page.getByTestId(`session-details-tab-unpin-${previewTabKey}`)).toHaveCount(0);
+    await expect(page.getByTestId(`session-details-tab-close-${previewTabKey}`)).toHaveCount(1);
     await expect
       .poll(async () => iframe.getAttribute('src'), { timeout: 60_000 })
       .toContain('/preview/');
@@ -386,11 +459,21 @@ test.describe('ui e2e: dev preview relay', () => {
       throw new Error('Failed to resolve preview iframe frame');
     }
 
-    await expect(frame.locator('#preview-root')).toContainText('Preview fixture loaded', { timeout: 120_000 });
-    await expect(frame.locator('#fetch-state')).toContainText('fetch-ok', { timeout: 120_000 });
-    await expect(frame.locator('#ws-state')).toContainText('ws-ok', { timeout: 120_000 });
+    await expect(frame.locator('#preview-root')).toContainText('Primary preview fixture loaded at /ai-console/develop/', { timeout: 120_000 });
+    await expect(frame.locator('#fetch-state')).toContainText('primary-fetch-ok', { timeout: 120_000 });
+    await expect(frame.locator('#ws-state')).toContainText('primary-ws-ok', { timeout: 120_000 });
     await expect
       .poll(() => frame.url(), { timeout: 60_000 })
       .not.toContain('previewToken=');
+    await expect
+      .poll(() => frame.url(), { timeout: 60_000 })
+      .toContain('/ai-console/develop/');
+
+    const screenshotPath = resolve(join(testDir, 'dev-preview-panel-url-path.png'));
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await testInfo.attach('dev-preview-panel-url-path.png', {
+      path: screenshotPath,
+      contentType: 'image/png',
+    });
   });
 });
