@@ -377,12 +377,20 @@ const SessionCatalogListInputSchema = z.object({
 
 const SessionDevPreviewRegisterInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
-  port: z.number().int().min(1).max(65535),
+  port: z.number().int().min(1).max(65535).optional(),
+  url: z.string().trim().min(1).max(2000).optional(),
   name: z.string().trim().min(1).max(200).optional(),
   framework: z.string().trim().min(1).max(50).optional(),
   rewriteUrls: z.boolean().optional(),
   healthPath: z.string().trim().min(1).optional(),
 }).passthrough().superRefine((value, ctx) => {
+  if (typeof value.port !== 'number' && typeof value.url !== 'string') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Either port or url is required',
+      path: ['port'],
+    });
+  }
   if (typeof value.healthPath !== 'string') return;
   if (!value.healthPath.startsWith('/') || value.healthPath.startsWith('//') || value.healthPath.includes('://')) {
     ctx.addIssue({
@@ -1443,7 +1451,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     placements: [],
     bindings: { mcpToolName: 'happier_dev_preview_register' },
     examples: {
-      mcp: { argsExample: '{"port":3000,"name":"Preview app","framework":"vite","rewriteUrls":true}' },
+      mcp: { argsExample: '{"url":"http://127.0.0.1:3000/dashboard","name":"Preview app","framework":"vite","rewriteUrls":true}' },
     },
     surfaces: {
       ui_button: false,
@@ -1459,7 +1467,8 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       description: 'Use after starting a dev server on the current session machine.',
       fields: [
         { path: 'sessionId', title: 'Session id', widget: 'text' },
-        { path: 'port', title: 'Port', widget: 'text', required: true },
+        { path: 'url', title: 'URL', widget: 'text' },
+        { path: 'port', title: 'Port', widget: 'text' },
         { path: 'name', title: 'Name', widget: 'text' },
         { path: 'framework', title: 'Framework', widget: 'select', options: [
           { value: 'vite', label: 'Vite' },

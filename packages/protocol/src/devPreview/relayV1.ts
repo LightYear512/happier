@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const SessionDevPreviewTokenResponseSchema = z.object({
   token: z.string().min(1),
+  previewUrl: z.string().min(1).optional(),
+  namespaceStrategy: z.enum(['path', 'host']).optional(),
 }).passthrough();
 export type SessionDevPreviewTokenResponse = z.infer<typeof SessionDevPreviewTokenResponseSchema>;
 

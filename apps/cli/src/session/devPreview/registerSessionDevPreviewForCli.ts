@@ -62,11 +62,24 @@ function normalizeDaemonErrorCode(errorCode: unknown): RegisterSessionDevPreview
   return 'daemon_unavailable';
 }
 
+function resolvePreviewPort(params: Readonly<{ port?: number; url?: string }>): number | undefined {
+  if (typeof params.port === 'number') return params.port;
+  if (typeof params.url !== 'string' || params.url.trim().length === 0) return undefined;
+  try {
+    const parsed = new URL(params.url.trim());
+    const port = Number(parsed.port || (parsed.protocol === 'http:' ? '80' : '443'));
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function registerSessionDevPreviewForCli(params: Readonly<{
   credentials: Credentials;
   accountSettings: AccountSettings | null;
   idOrPrefix: string;
-  port: number;
+  port?: number;
+  url?: string;
   name?: string;
   framework?: string;
   healthPath?: string;
@@ -106,10 +119,12 @@ export async function registerSessionDevPreviewForCli(params: Readonly<{
     return { ok: false, code: 'missing_machine_id' };
   }
 
+  const port = resolvePreviewPort(params);
   const registered = await registerDaemonSessionDevPreview({
     sessionId: sessionTarget.sessionId,
     expectedMachineId: machineId,
-    port: params.port,
+    ...(typeof port === 'number' ? { port } : {}),
+    ...(params.url ? { url: params.url } : {}),
     ...(params.name ? { name: params.name } : {}),
     ...(params.framework ? { framework: params.framework } : {}),
     ...(params.healthPath ? { healthPath: params.healthPath } : {}),

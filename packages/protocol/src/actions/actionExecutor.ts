@@ -105,6 +105,7 @@ export type ActionExecutorDeps = Readonly<{
   sessionDevPreviewRegister?: (args: Readonly<{
     sessionId: string;
     port: number;
+    url?: string;
     name?: string;
     framework?: string;
     rewriteUrls?: boolean;
@@ -1331,7 +1332,17 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           if (!deps.sessionDevPreviewRegister) {
             return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.devPreview.register' };
           }
-          const port = Number((parsed.data as any).port ?? 0);
+          const url = normalizeId((parsed.data as any).url);
+          let urlPort: number | null = null;
+          if (url) {
+            try {
+              const parsedUrl = new URL(url);
+              urlPort = Number(parsedUrl.port || (parsedUrl.protocol === 'http:' ? '80' : '443'));
+            } catch {
+              return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+            }
+          }
+          const port = Number((parsed.data as any).port ?? urlPort ?? 0);
           if (!Number.isInteger(port) || port < 1 || port > 65535) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
@@ -1341,6 +1352,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const res = await deps.sessionDevPreviewRegister({
             sessionId,
             port,
+            ...(url ? { url } : {}),
             ...(name ? { name } : {}),
             ...(framework ? { framework } : {}),
             ...(typeof (parsed.data as any).rewriteUrls === 'boolean' ? { rewriteUrls: (parsed.data as any).rewriteUrls } : {}),

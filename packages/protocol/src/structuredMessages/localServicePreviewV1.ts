@@ -29,6 +29,8 @@ export const LocalServicePreviewV1Schema = z.object({
   sessionId: z.string().min(1),
   machineId: z.string().min(1),
   port: z.number().int().min(1).max(65535),
+  origin: z.string().min(1).max(1000).optional(),
+  url: z.string().min(1).max(2000).optional(),
   name: z.string().min(1).max(200).optional(),
   framework: LocalServicePreviewFrameworkSchema.optional(),
   source: LocalServicePreviewSourceSchema,
@@ -38,6 +40,7 @@ export const LocalServicePreviewV1Schema = z.object({
     rewriteUrls: z.boolean(),
     supportsWebSocket: z.boolean(),
     routeKey: z.string().min(1),
+    initialPath: z.string().min(1).max(2000).optional(),
   }).passthrough(),
 }).passthrough();
 export type LocalServicePreviewV1 = z.infer<typeof LocalServicePreviewV1Schema>;

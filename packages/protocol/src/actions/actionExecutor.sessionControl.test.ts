@@ -97,7 +97,7 @@ describe('createActionExecutor (session control)', () => {
 
     const res = await executor.execute(
       'session.devPreview.register' as any,
-      { port: 3000, framework: 'vite', rewriteUrls: true, healthPath: '/readyz' },
+      { url: 'http://127.0.0.1:3000/dashboard', framework: 'vite', rewriteUrls: true, healthPath: '/readyz' },
       { surface: 'session_agent', defaultSessionId: 's1' },
     );
 
@@ -105,6 +105,7 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionDevPreviewRegister).toHaveBeenCalledWith({
       sessionId: 's1',
       port: 3000,
+      url: 'http://127.0.0.1:3000/dashboard',
       framework: 'vite',
       rewriteUrls: true,
       healthPath: '/readyz',

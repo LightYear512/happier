@@ -229,7 +229,10 @@ function isLocalServicePreviewResource(value: unknown): value is Readonly<{
     sessionId: string;
     machineId: string;
     port: number;
+    origin?: string;
+    url?: string;
     routeKey: string;
+    initialPath?: string;
     rewriteUrls: boolean;
     supportsWebSocket: boolean;
     healthStatus?: string;
@@ -243,6 +246,7 @@ function isLocalServicePreviewResource(value: unknown): value is Readonly<{
         && typeof maybe.machineId === 'string'
         && typeof maybe.port === 'number'
         && typeof maybe.routeKey === 'string'
+        && (maybe.initialPath === undefined || typeof maybe.initialPath === 'string')
         && typeof maybe.rewriteUrls === 'boolean'
         && typeof maybe.supportsWebSocket === 'boolean';
 }
@@ -436,6 +440,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                         sessionId={tab.resource.sessionId}
                         machineId={tab.resource.machineId}
                         port={tab.resource.port}
+                        initialPath={typeof tab.resource.initialPath === 'string' ? tab.resource.initialPath : undefined}
                         routeKey={tab.resource.routeKey}
                         rewriteUrls={tab.resource.rewriteUrls}
                         supportsWebSocket={tab.resource.supportsWebSocket}
@@ -488,6 +493,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                     {tabs.map((tab) => {
                         const isActive = effectiveActiveKey ? tab.key === effectiveActiveKey : false;
                         const safeTabKey = toTestIdSafeValue(tab.key);
+                        const showPinAction = tab.kind !== 'localServicePreview' && (tab.isPreview || tab.isPinned);
                         const iconName =
                             tab.kind === 'commit'
                                 ? 'git-commit'
@@ -520,7 +526,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                         styles.tab,
                                         isActive ? styles.tabActive : null,
                                         // Reserve room for the action buttons so the label doesn't overlap.
-                                        { paddingRight: tab.isPreview || tab.isPinned ? 52 : 34 },
+                                        { paddingRight: showPinAction ? 52 : 34 },
                                     ]}
                                     accessibilityRole="button"
                                     accessibilityLabel={t('session.detailsPanel.openTabA11y', { title: tab.title })}
@@ -561,7 +567,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                         { position: 'absolute', right: 10, top: 0, bottom: 0, zIndex: 1 },
                                     ]}
                                 >
-                                    {tab.isPreview ? (
+                                    {showPinAction && tab.isPreview ? (
                                         <Pressable
                                             onPress={(event: any) => {
                                                 event?.stopPropagation?.();
@@ -574,7 +580,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                         >
                                             <PinIcon size={14} color={theme.colors.text.secondary} />
                                         </Pressable>
-                                    ) : tab.isPinned ? (
+                                    ) : showPinAction && tab.isPinned ? (
                                         <Pressable
                                             onPress={(event: any) => {
                                                 event?.stopPropagation?.();

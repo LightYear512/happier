@@ -157,7 +157,8 @@ async function inspectDaemonLockStartupProgress(): Promise<DaemonRunningInspecti
 export type DaemonDevPreviewRegisterRequest = Readonly<{
   sessionId: string;
   expectedMachineId?: string;
-  port: number;
+  port?: number;
+  url?: string;
   name?: string;
   framework?: string;
   healthPath?: string;

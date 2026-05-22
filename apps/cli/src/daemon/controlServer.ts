@@ -426,11 +426,20 @@ export function createDaemonControlApp({
   const devPreviewRegisterRequestSchema = z.object({
     sessionId: z.string().min(1),
     expectedMachineId: z.string().min(1).optional(),
-    port: z.number().int().min(1).max(65535),
+    port: z.number().int().min(1).max(65535).optional(),
+    url: z.string().min(1).max(2000).optional(),
     name: z.string().min(1).max(200).optional(),
     framework: z.string().min(1).max(80).optional(),
     healthPath: z.string().min(1).max(200).optional(),
     rewriteUrls: z.boolean().optional(),
+  }).superRefine((value, ctx) => {
+    if (typeof value.port !== 'number' && typeof value.url !== 'string') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Either port or url is required',
+        path: ['port'],
+      });
+    }
   });
 
   const requireAuth = async (request: { headers: Record<string, unknown> }, reply: any): Promise<void> => {
@@ -1068,7 +1077,8 @@ export function createDaemonControlApp({
       const preview = await resolvedDevPreviewRegistry.register({
         sessionId: request.body.sessionId,
         machineId: normalizedMachineId,
-        port: request.body.port,
+        ...(typeof request.body.port === 'number' ? { port: request.body.port } : {}),
+        ...(request.body.url ? { url: request.body.url } : {}),
         ...(request.body.name ? { name: request.body.name } : {}),
         ...(request.body.framework ? { framework: request.body.framework } : {}),
         ...(request.body.healthPath ? { healthPath: request.body.healthPath } : {}),
