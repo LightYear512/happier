@@ -176,6 +176,16 @@ describe('ensureAccountReadyForConnect', () => {
     await expect(ensureAccountReadyForConnect({ page, timeoutMs: 50 })).resolves.toBeUndefined();
   });
 
+  it('passes when the signed-in setup-computer guidance is visible', async () => {
+    const page = createFakePage({
+      roleCounts: {
+        'Enter URL manually': [1],
+      },
+    });
+
+    await expect(ensureAccountReadyForConnect({ page, timeoutMs: 50 })).resolves.toBeUndefined();
+  });
+
   it('does not treat hidden ready controls as an authenticated state', async () => {
     const page = createFakePage({
       roleCounts: {

@@ -53,6 +53,26 @@ function parseCookies(rawCookieHeader: string | undefined): Record<string, strin
   return cookies;
 }
 
+function decodeQueryKey(rawKey: string): string {
+  try {
+    return decodeURIComponent(rawKey.replace(/\+/g, ' '));
+  } catch {
+    return rawKey;
+  }
+}
+
+function stripPreviewTokenFromRawSearch(rawSearch: string): string {
+  if (!rawSearch.startsWith('?')) {
+    return '';
+  }
+  const entries = rawSearch.slice(1).split('&').filter((entry) => {
+    const separatorIndex = entry.indexOf('=');
+    const rawKey = separatorIndex === -1 ? entry : entry.slice(0, separatorIndex);
+    return decodeQueryKey(rawKey) !== 'previewToken';
+  });
+  return entries.length > 0 ? `?${entries.join('&')}` : '';
+}
+
 export function parsePreviewTokenFromRequest(request: {
   raw?: { url?: string | undefined } | undefined;
   url?: string | undefined;
@@ -61,8 +81,6 @@ export function parsePreviewTokenFromRequest(request: {
   const rawUrl = request.raw?.url ?? request.url ?? '/';
   const parsed = new URL(rawUrl, 'http://127.0.0.1');
   const previewToken = parsed.searchParams.get('previewToken');
-  parsed.searchParams.delete('previewToken');
-  const search = parsed.searchParams.toString();
   const cookies = parseCookies(typeof request.headers?.cookie === 'string' ? request.headers.cookie : undefined);
   const fallbackPreviewToken = cookies[PREVIEW_TOKEN_COOKIE_NAME] ?? null;
   const normalizedPreviewToken =
@@ -74,7 +92,7 @@ export function parsePreviewTokenFromRequest(request: {
   return {
     previewToken: normalizedPreviewToken,
     previewTokenSource: typeof previewToken === 'string' && previewToken.trim().length > 0 ? 'query' : normalizedPreviewToken ? 'cookie' : 'missing',
-    forwardedSearch: search ? `?${search}` : '',
+    forwardedSearch: stripPreviewTokenFromRawSearch(parsed.search),
   } as const;
 }
 
