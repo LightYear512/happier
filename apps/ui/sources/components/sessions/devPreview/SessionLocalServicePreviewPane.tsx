@@ -87,28 +87,31 @@ function resolveRelayPreviewBaseUrl(params: Readonly<{
 const styles = StyleSheet.create((theme) => ({
     container: {
         flex: 1,
-        padding: 16,
-        gap: 10,
         backgroundColor: theme.colors.surface.base,
+        minHeight: 0,
+        minWidth: 0,
     },
     previewFrameContainer: {
         flex: 1,
-        minHeight: 320,
+        minHeight: 0,
+        minWidth: 0,
         overflow: 'hidden',
-    },
-    title: {
-        color: theme.colors.text.primary,
-        fontSize: 16,
-        fontWeight: '600',
     },
     secondary: {
         color: theme.colors.text.secondary,
         fontSize: 12,
     },
     loading: {
+        flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: 320,
+        padding: 24,
+    },
+    unavailable: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
     },
 }));
 
@@ -125,7 +128,7 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
     name?: string;
     healthStatus?: string;
 }>) {
-    const title = typeof props.name === 'string' && props.name.trim().length > 0
+    const iframeTitle = typeof props.name === 'string' && props.name.trim().length > 0
         ? props.name.trim()
         : `127.0.0.1:${props.port}`;
     const relayEnabled = useFeatureEnabled('sessions.devPreview.relay');
@@ -145,11 +148,13 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
         [props.machineId, props.routeKey, props.sessionId],
     );
     const [relayPreviewUrl, setRelayPreviewUrl] = React.useState<string | null>(null);
+    const [relayNamespaceStrategy, setRelayNamespaceStrategy] = React.useState<'host' | 'path' | null>(null);
     const [relayState, setRelayState] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
 
     React.useEffect(() => {
         if (sameMachinePreviewUrl || Platform.OS !== 'web' || !relayEnabled) {
             setRelayPreviewUrl(null);
+            setRelayNamespaceStrategy(null);
             setRelayState('idle');
             return;
         }
@@ -157,6 +162,7 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
         let cancelled = false;
         setRelayState('loading');
         setRelayPreviewUrl(null);
+        setRelayNamespaceStrategy(null);
 
         void serverFetch(
             `/v1/sessions/${encodeURIComponent(props.sessionId)}/dev-preview/${encodeURIComponent(props.machineId)}/${encodeURIComponent(props.routeKey)}/token`,
@@ -185,6 +191,7 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
                         return url.toString();
                     })();
                 setRelayPreviewUrl(applyInitialPreviewPath(previewUrl, props.initialPath));
+                setRelayNamespaceStrategy(parsed.data.namespaceStrategy === 'host' ? 'host' : 'path');
                 setRelayState('ready');
             })
             .catch(() => {
@@ -192,6 +199,7 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
                     return;
                 }
                 setRelayPreviewUrl(null);
+                setRelayNamespaceStrategy(null);
                 setRelayState('error');
             });
 
@@ -203,28 +211,23 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
     const previewUrl = sameMachinePreviewUrl ?? relayPreviewUrl;
     const iframeSandbox = sameMachinePreviewUrl
         ? undefined
-        : 'allow-downloads allow-forms allow-modals allow-popups allow-scripts';
+        : relayNamespaceStrategy === 'host'
+            ? 'allow-downloads allow-forms allow-modals allow-popups allow-scripts allow-same-origin'
+            : 'allow-downloads allow-forms allow-modals allow-popups allow-scripts';
 
     return (
         <View style={styles.container}>
-            <Text selectable style={styles.title}>{title}</Text>
-            <Text selectable style={styles.secondary}>{`127.0.0.1:${props.port}`}</Text>
-            <Text selectable style={styles.secondary}>{props.machineId}</Text>
-            {typeof props.healthStatus === 'string' ? (
-                <Text selectable style={styles.secondary}>{props.healthStatus}</Text>
-            ) : null}
             {previewUrl ? (
                 <View style={styles.previewFrameContainer}>
                     {React.createElement('iframe', {
                         src: previewUrl,
-                        title,
+                        title: iframeTitle,
                         testID: 'session.localServicePreview.iframe',
                         'data-testid': 'session.localServicePreview.iframe',
                         ...(iframeSandbox ? { sandbox: iframeSandbox } : {}),
                         style: {
                             width: '100%',
                             height: '100%',
-                            minHeight: '320px',
                             border: '0',
                             display: 'block',
                         },
@@ -235,7 +238,9 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
                     <ActivityIndicator />
                 </View>
             ) : (
-                <Text selectable style={styles.secondary}>{t('common.unavailable')}</Text>
+                <View style={styles.unavailable}>
+                    <Text selectable style={styles.secondary}>{t('common.unavailable')}</Text>
+                </View>
             )}
         </View>
     );

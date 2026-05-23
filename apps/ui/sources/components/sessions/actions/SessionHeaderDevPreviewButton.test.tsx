@@ -97,15 +97,18 @@ describe('SessionHeaderDevPreviewButton', () => {
         expect(screen.findByTestId('session-header-dev-preview-button')).toBeTruthy();
         await screen.pressByTestIdAsync('session-header-dev-preview-button');
 
-        expect(openDetailsTab).toHaveBeenCalledWith(expect.objectContaining({
-            key: 'localServicePreview:preview_1',
-            kind: 'localServicePreview',
-            resource: expect.objectContaining({
+        expect(openDetailsTab).toHaveBeenCalledWith(
+            expect.objectContaining({
+                key: 'localServicePreview:preview_1',
                 kind: 'localServicePreview',
-                resourceId: 'preview_1',
-                initialPath: '/dashboard',
+                resource: expect.objectContaining({
+                    kind: 'localServicePreview',
+                    resourceId: 'preview_1',
+                    initialPath: '/dashboard',
+                }),
             }),
-        }));
+            { intent: 'preview' },
+        );
     });
 
     it('hides the header preview button when no preview has been registered', async () => {
@@ -148,12 +151,15 @@ describe('SessionHeaderDevPreviewButton', () => {
             dropdown.props.onSelect('preview_1');
         });
 
-        expect(openDetailsTab).toHaveBeenCalledWith(expect.objectContaining({
-            key: 'localServicePreview:preview_1',
-            kind: 'localServicePreview',
-            resource: expect.objectContaining({
-                resourceId: 'preview_1',
+        expect(openDetailsTab).toHaveBeenCalledWith(
+            expect.objectContaining({
+                key: 'localServicePreview:preview_1',
+                kind: 'localServicePreview',
+                resource: expect.objectContaining({
+                    resourceId: 'preview_1',
+                }),
             }),
-        }));
+            { intent: 'preview' },
+        );
     });
 });

@@ -53,6 +53,8 @@ const ViewWithWheel = View as unknown as React.ComponentType<
 
 const DETAILS_TAB_MIN_WIDTH = 128;
 const DETAILS_TAB_MAX_WIDTH = 220;
+const LOCAL_SERVICE_PREVIEW_TAB_MIN_WIDTH = 220;
+const LOCAL_SERVICE_PREVIEW_TAB_MAX_WIDTH = 420;
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -91,8 +93,20 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: DETAILS_TAB_MIN_WIDTH,
         maxWidth: DETAILS_TAB_MAX_WIDTH,
     },
+    localServicePreviewTab: {
+        borderWidth: 0,
+        backgroundColor: 'transparent',
+        borderRadius: 0,
+        paddingLeft: 0,
+        paddingVertical: 2,
+        minWidth: LOCAL_SERVICE_PREVIEW_TAB_MIN_WIDTH,
+        maxWidth: LOCAL_SERVICE_PREVIEW_TAB_MAX_WIDTH,
+    },
     tabActive: {
         backgroundColor: theme.colors.surface.inset,
+    },
+    localServicePreviewTabActive: {
+        backgroundColor: 'transparent',
     },
     tabLabel: {
         flexShrink: 1,
@@ -477,6 +491,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                     {tabs.map((tab) => {
                         const isActive = effectiveActiveKey ? tab.key === effectiveActiveKey : false;
                         const safeTabKey = toTestIdSafeValue(tab.key);
+                        const isLocalServicePreviewTab = tab.kind === 'localServicePreview';
                         const showPinAction = tab.kind !== 'localServicePreview' && (tab.isPreview || tab.isPinned);
                         const iconName =
                             tab.kind === 'commit'
@@ -498,8 +513,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                 style={{
                                     position: 'relative',
                                     marginRight: 8,
-                                    minWidth: DETAILS_TAB_MIN_WIDTH,
-                                    maxWidth: DETAILS_TAB_MAX_WIDTH,
+                                    minWidth: isLocalServicePreviewTab ? LOCAL_SERVICE_PREVIEW_TAB_MIN_WIDTH : DETAILS_TAB_MIN_WIDTH,
+                                    maxWidth: isLocalServicePreviewTab ? LOCAL_SERVICE_PREVIEW_TAB_MAX_WIDTH : DETAILS_TAB_MAX_WIDTH,
                                     flexShrink: 0,
                                 }}
                             >
@@ -508,7 +523,9 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                     testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, `session-details-tab-${safeTabKey}`)}
                                     style={[
                                         styles.tab,
+                                        isLocalServicePreviewTab ? styles.localServicePreviewTab : null,
                                         isActive ? styles.tabActive : null,
+                                        isLocalServicePreviewTab && isActive ? styles.localServicePreviewTabActive : null,
                                         // Reserve room for the action buttons so the label doesn't overlap.
                                         { paddingRight: showPinAction ? 52 : 34 },
                                     ]}

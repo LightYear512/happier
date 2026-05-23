@@ -28,6 +28,7 @@ const READY_ROLE_BUTTON_NAMES = [
   'Start New Session',
   'Sessions',
   'Home',
+  'Enter URL manually',
 ] as const;
 
 const STORY_DECK_PRIMARY_TEST_IDS = [
