@@ -7,6 +7,16 @@ import { t } from '@/text';
 export const SESSION_DETAILS_SCM_REVIEW_TAB_KEY = 'scmReview:working';
 export const SESSION_DETAILS_SCM_STASH_TAB_KEY = 'scmStash';
 
+function formatLocalServicePreviewSubtitle(payload: LocalServicePreviewV1): string {
+    if (typeof payload.url === 'string' && payload.url.trim().length > 0) {
+        return payload.url.trim();
+    }
+    if (typeof payload.origin === 'string' && payload.origin.trim().length > 0) {
+        return payload.origin.trim();
+    }
+    return `http://127.0.0.1:${payload.port}`;
+}
+
 export function createSessionFileDetailsTab(fullPath: string) {
     const fileName = fullPath.split('/').pop() ?? fullPath;
     return {
@@ -56,7 +66,7 @@ export function createSessionLocalServicePreviewDetailsTab(payload: LocalService
         key: `localServicePreview:${payload.resourceId}`,
         kind: 'localServicePreview',
         title,
-        subtitle: payload.machineId,
+        subtitle: formatLocalServicePreviewSubtitle(payload),
         resource: {
             kind: 'localServicePreview',
             resourceId: payload.resourceId,

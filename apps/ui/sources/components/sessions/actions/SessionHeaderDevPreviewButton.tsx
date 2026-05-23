@@ -38,7 +38,7 @@ export const SessionHeaderDevPreviewButton = React.memo((props: Readonly<{
     const [menuOpen, setMenuOpen] = React.useState(false);
 
     const openPreview = React.useCallback((preview: LocalServicePreviewV1) => {
-        pane.openDetailsTab(createSessionLocalServicePreviewDetailsTab(preview));
+        pane.openDetailsTab(createSessionLocalServicePreviewDetailsTab(preview), { intent: 'preview' });
     }, [pane]);
 
     const onPress = React.useCallback(() => {
