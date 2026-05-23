@@ -98,6 +98,7 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
                         key: 'localServicePreview:preview_1',
                         kind: 'localServicePreview',
                         title: 'Preview app',
+                        subtitle: 'http://127.0.0.1:3000',
                         isPinned: true,
                         isPreview: false,
                         resource: {
@@ -147,7 +148,9 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(screen.findByTestId('session-details-tab-unpin-localServicePreview_preview_1')).toBeNull();
         expect(screen.findByTestId('session-details-tab-pin-localServicePreview_preview_1')).toBeNull();
         expect(screen.findByTestId('session-details-tab-close-localServicePreview_preview_1')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('3000');
+        expect(screen.getTextContent()).toContain('http://127.0.0.1:3000');
+        expect(screen.getTextContent()).not.toContain('machine-1');
+        expect(screen.getTextContent()).not.toContain('ready');
         const iframe = screen.findByType('iframe');
         expect(iframe.props.src).toBe('http://127.0.0.1:3000/dashboard');
         expect(iframe.props['data-testid']).toBe('session.localServicePreview.iframe');
@@ -157,7 +160,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(serverFetchSpy).not.toHaveBeenCalled();
     });
 
-    it('renders a server-routed iframe preview for remote web origins when relay is enabled', async () => {
+    it('renders a server-routed iframe preview for host-namespaced remote web origins when relay is enabled', async () => {
         installWindow('https://app.happier.dev/session/s1');
         relayFeatureState.enabled = true;
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
@@ -166,19 +169,44 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         await flushHookEffects({ cycles: 1, turns: 2 });
 
         expect(screen.getTextContent()).toContain('Preview app');
-        expect(screen.getTextContent()).toContain('3000');
+        expect(screen.getTextContent()).toContain('http://127.0.0.1:3000');
+        expect(screen.getTextContent()).not.toContain('machine-1');
+        expect(screen.getTextContent()).not.toContain('ready');
         const iframe = screen.findByType('iframe');
         expect(String(iframe.props.src)).toBe('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
         expect(String(iframe.props.src)).toContain('previewToken=preview_token_1');
         expect(String(iframe.props.src)).not.toContain('3000');
         expect(iframe.props['data-testid']).toBe('session.localServicePreview.iframe');
         expect(iframe.props.sandbox).toContain('allow-scripts');
-        expect(iframe.props.sandbox).not.toContain('allow-same-origin');
+        expect(iframe.props.sandbox).toContain('allow-same-origin');
         expect(screen.getTextContent()).not.toContain('common.unavailable');
         expect(serverFetchSpy).toHaveBeenCalledWith(
             '/v1/sessions/s1/dev-preview/machine-1/route_1/token',
             { method: 'POST' },
         );
+    });
+
+    it('keeps path-namespaced remote previews in an opaque iframe sandbox', async () => {
+        installWindow('https://app.happier.dev/session/s1');
+        relayFeatureState.enabled = true;
+        serverFetchSpy.mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                token: 'preview_token_1',
+                previewUrl: 'https://app.happier.dev/preview/s1/machine-1/route_1/?previewToken=preview_token_1',
+                namespaceStrategy: 'path',
+            }),
+        });
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+
+        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        const iframe = screen.findByType('iframe');
+        expect(String(iframe.props.src)).toBe('https://app.happier.dev/preview/s1/machine-1/route_1/dashboard?previewToken=preview_token_1');
+        expect(iframe.props.sandbox).toContain('allow-scripts');
+        expect(iframe.props.sandbox).not.toContain('allow-same-origin');
     });
 
     it('uses the server-provided preview URL without requiring an app-derived relay base URL', async () => {
@@ -205,7 +233,9 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
 
         expect(screen.getTextContent()).toContain('Preview app');
-        expect(screen.getTextContent()).toContain('3000');
+        expect(screen.getTextContent()).toContain('http://127.0.0.1:3000');
+        expect(screen.getTextContent()).not.toContain('machine-1');
+        expect(screen.getTextContent()).not.toContain('ready');
         expect(screen.getTextContent()).toContain('common.unavailable');
         expect(screen.findAllByType('iframe')).toHaveLength(0);
         expect(serverFetchSpy).not.toHaveBeenCalled();

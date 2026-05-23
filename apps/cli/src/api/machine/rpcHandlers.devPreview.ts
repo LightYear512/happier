@@ -13,6 +13,7 @@ import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedS
 import type { RpcHandlerManager } from '../rpc/RpcHandlerManager';
 
 const REQUEST_HEADER_DENYLIST = new Set([
+  'accept',
   'authorization',
   'connection',
   'content-length',

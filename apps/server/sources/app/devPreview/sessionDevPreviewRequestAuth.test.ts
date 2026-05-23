@@ -17,4 +17,17 @@ describe('parsePreviewTokenFromRequest', () => {
       forwardedSearch: '',
     });
   });
+
+  it('strips previewToken without changing bare Vite query flags', () => {
+    const parsed = parsePreviewTokenFromRequest({
+      url: '/src/components/TopBar.vue?vue&type=style&index=0&scoped=abc&lang.css&previewToken=token_1',
+      headers: {},
+    });
+
+    expect(parsed).toEqual({
+      previewToken: 'token_1',
+      previewTokenSource: 'query',
+      forwardedSearch: '?vue&type=style&index=0&scoped=abc&lang.css',
+    });
+  });
 });
