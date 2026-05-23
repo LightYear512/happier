@@ -22,7 +22,7 @@ export function resolveProvisionedProfileDir(params: Readonly<{
   if (!profileId) {
     throw new Error(`Invalid provisioned profile id: ${params.profileId}`);
   }
-  return join(params.activeServerDir, 'profiles', params.backendId, profileId);
+  return join(params.activeServerDir, 'profiles', 'native-cli', params.backendId, profileId);
 }
 
 export function resolveProvisionedProfileCredentialPaths(params: Readonly<{

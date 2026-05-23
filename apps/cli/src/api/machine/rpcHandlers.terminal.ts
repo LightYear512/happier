@@ -23,6 +23,7 @@ import { resolveMachineRpcWorkingDirectory } from './resolveMachineRpcWorkingDir
 import { readDaemonTerminalPtyConfig } from '@/daemon/terminalPty/terminalPtyConfig';
 import { createTerminalPtySessionManager, type TerminalPtySessionManager } from '@/daemon/terminalPty/terminalPtySessionManager';
 import { createNodePtyProvider } from '@/daemon/terminalPty/ptyProvider';
+import { profileAuthSessions, type ProfileAuthSessionStore } from '@/auth/provision/profileAuthSessionStore';
 
 function err(errorCode: DaemonTerminalErrorCode): { ok: false; errorCode: DaemonTerminalErrorCode; error: DaemonTerminalErrorCode } {
   return { ok: false, errorCode, error: errorCode };
@@ -36,11 +37,13 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     workingDirectory?: string;
     accessPolicy?: FilesystemAccessPolicy;
     sessionManager?: TerminalPtySessionManager;
+    profileAuthSessions?: Pick<ProfileAuthSessionStore, 'get'>;
   }>;
 }>): void {
   const { rpcHandlerManager } = params;
   const env = params.deps?.env ?? process.env;
   const platform = params.deps?.platform ?? process.platform;
+  const profileAuthSessionStore = params.deps?.profileAuthSessions ?? profileAuthSessions;
 
   const config = readDaemonTerminalPtyConfig(env);
   const accessPolicy = params.deps?.accessPolicy ?? resolveFilesystemAccessPolicy({ env, platform });
@@ -79,12 +82,44 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     return { ok: true, cwd: validation.resolvedPath };
   };
 
+  const resolveProfileAuthLaunch = (
+    profileAuthSessionId: string | undefined,
+    terminalKey: string,
+  ): {
+    ok: true;
+    launch: NonNullable<Parameters<TerminalPtySessionManager['ensure']>[0]['launch']>;
+    cwd: string;
+  } | ReturnType<typeof err> | null => {
+    if (!profileAuthSessionId) return null;
+    const session = profileAuthSessionStore.get(profileAuthSessionId);
+    if (!session) return err('terminal_invalid_request');
+    if (session.terminalKey !== terminalKey) {
+      return err('terminal_invalid_request');
+    }
+    return {
+      ok: true,
+      cwd: session.cwd ?? session.profileDir,
+      launch: {
+        file: session.command,
+        args: session.args,
+        cwd: session.cwd ?? session.profileDir,
+        env: session.env,
+        ...(session.initialInput != null ? { initialInput: session.initialInput } : {}),
+      },
+    };
+  };
+
   rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_TERMINAL_ENSURE, async (raw: unknown) => {
     if (!config.enabled) return err('terminal_disabled');
     const parsed = DaemonTerminalEnsureRequestSchema.safeParse(raw);
     if (!parsed.success) return err('terminal_invalid_request');
 
-    const cwd = resolveCwd(parsed.data.cwd);
+    const profileAuthLaunch = resolveProfileAuthLaunch(parsed.data.profileAuthSessionId, parsed.data.terminalKey);
+    if (profileAuthLaunch && !profileAuthLaunch.ok) return profileAuthLaunch;
+
+    const cwd = profileAuthLaunch
+      ? { ok: true as const, cwd: profileAuthLaunch.cwd }
+      : resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
 
     return getSessionManager().ensure({
@@ -92,7 +127,8 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
       cwd: cwd.cwd,
       cols: parsed.data.cols,
       rows: parsed.data.rows,
-      initialCommand: parsed.data.initialCommand,
+      ...(profileAuthLaunch ? {} : { initialCommand: parsed.data.initialCommand }),
+      ...(profileAuthLaunch ? { launch: profileAuthLaunch.launch } : {}),
     });
   });
 
@@ -135,7 +171,12 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     const parsed = DaemonTerminalRestartRequestSchema.safeParse(raw);
     if (!parsed.success) return err('terminal_invalid_request');
 
-    const cwd = resolveCwd(parsed.data.cwd);
+    const profileAuthLaunch = resolveProfileAuthLaunch(parsed.data.profileAuthSessionId, parsed.data.terminalKey);
+    if (profileAuthLaunch && !profileAuthLaunch.ok) return profileAuthLaunch;
+
+    const cwd = profileAuthLaunch
+      ? { ok: true as const, cwd: profileAuthLaunch.cwd }
+      : resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
 
     return getSessionManager().restart({
@@ -143,7 +184,8 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
       cwd: cwd.cwd,
       cols: parsed.data.cols,
       rows: parsed.data.rows,
-      initialCommand: parsed.data.initialCommand,
+      ...(profileAuthLaunch ? {} : { initialCommand: parsed.data.initialCommand }),
+      ...(profileAuthLaunch ? { launch: profileAuthLaunch.launch } : {}),
     });
   });
 }

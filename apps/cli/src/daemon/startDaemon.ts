@@ -3998,8 +3998,9 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                 stopSession,
                 isSessionActive: isSessionAlreadyRunning,
                 loadLocalSessionMetadata: loadLocalSessionMetadataForHandoff,
-                tryRecoverSuspendedSessions: (profileId, backendId) => {
-                  void suspendedProfileSessions.recover({ profileId, backendId }).then((result) => {
+	                tryRecoverSuspendedSessions: (profileId, backendId) => {
+	                  if (backendId !== 'claude' && backendId !== 'codex') return;
+	                  void suspendedProfileSessions.recover({ profileId, backendId }).then((result) => {
                     if (result.recoveredSessionIds.length > 0 || result.failedSessionIds.length > 0) {
                       logger.debug('[DAEMON RUN] Suspended profile session recovery finished', result);
                     }

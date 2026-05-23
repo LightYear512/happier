@@ -41,6 +41,7 @@ export const agent = {
       processEnv: input.targetMaterializedEnv as NodeJS.ProcessEnv,
     }),
   getDirectSessionProviderOps: async () => (await import('@/backends/claude/directSessions/providerOps')).claudeDirectSessionProviderOps,
+  getProfileAuthProvider: async () => (await import('@/backends/claude/profileAuth')).claudeProfileAuthProvider,
   vendorResumeSupport: AGENTS_CORE.claude.resume.vendorResume,
   getPreflightSessionControlsProbeAdapter: async () => (await import('@/backends/claude/preflight/claudePreflightModelsProbeAdapter')).claudePreflightModelsProbeAdapter,
   getHeadlessTmuxArgvTransform: async () => (await import('@/terminal/tmux/headlessTmuxArgs')).ensureRemoteStartingModeArgs,

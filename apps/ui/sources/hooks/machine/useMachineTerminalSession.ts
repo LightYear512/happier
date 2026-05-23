@@ -36,6 +36,7 @@ export function useMachineTerminalSession(params: Readonly<{
     terminalKey: string;
     terminalRef: React.MutableRefObject<EmbeddedTerminalRendererHandle | null>;
     initialCommand?: string | null;
+    profileAuthSessionId?: string | null;
     closeOnUnmount?: boolean;
 }>) {
     const initialSurfaceState = React.useMemo(
@@ -217,6 +218,7 @@ export function useMachineTerminalSession(params: Readonly<{
                     cols: terminalSize.cols,
                     rows: terminalSize.rows,
                     initialCommand: params.initialCommand ?? undefined,
+                    profileAuthSessionId: params.profileAuthSessionId ?? undefined,
                 })
                 : await machineTerminalEnsure(params.machineId, {
                     terminalKey: params.terminalKey,
@@ -224,6 +226,7 @@ export function useMachineTerminalSession(params: Readonly<{
                     cols: terminalSize.cols,
                     rows: terminalSize.rows,
                     initialCommand: params.initialCommand ?? undefined,
+                    profileAuthSessionId: params.profileAuthSessionId ?? undefined,
                 });
             restartRequestedRef.current = false;
 
@@ -351,6 +354,7 @@ export function useMachineTerminalSession(params: Readonly<{
         params.machineId,
         params.machineReachable,
         params.machineRpcTargetAvailable,
+        params.profileAuthSessionId,
         params.terminalKey,
         params.terminalRef,
         replaceSurfaceState,

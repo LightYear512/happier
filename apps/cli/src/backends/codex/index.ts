@@ -44,6 +44,7 @@ export const agent = {
   verifyResumeReachable: async (input) =>
     await (await import('@/backends/codex/connectedServices/verifyResumeReachableCodex')).verifyResumeReachableCodex(input),
   getDirectSessionProviderOps: async () => (await import('@/backends/codex/directSessions/providerOps')).codexDirectSessionProviderOps,
+  getProfileAuthProvider: async () => (await import('@/backends/codex/profileAuth')).codexProfileAuthProvider,
   getSessionGoalControlAdapter: async () => codexAppServerGoalControlAdapter,
   getSessionCatalogControlAdapter: async () => codexAppServerCatalogControlAdapter,
   getSessionUsageLimitRecoveryControlAdapter: async () => codexAppServerUsageLimitRecoveryControlAdapter,

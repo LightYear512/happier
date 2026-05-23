@@ -22,7 +22,7 @@ afterEach(() => {
 describe('resolveClaudeConfigDirForSession', () => {
   it('returns profile_not_provisioned for directory-only profiles', () => {
     const activeServerDir = makeRoot();
-    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work');
     mkdirSync(profileDir, { recursive: true });
 
     expect(resolveClaudeConfigDirForSession({
@@ -38,7 +38,7 @@ describe('resolveClaudeConfigDirForSession', () => {
 
   it('returns the isolated Claude config dir for provisioned profiles', () => {
     const activeServerDir = makeRoot();
-    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work');
     mkdirSync(profileDir, { recursive: true });
     writeFileSync(join(profileDir, '.credentials.json'), '{"accessToken":"token"}', 'utf8');
 

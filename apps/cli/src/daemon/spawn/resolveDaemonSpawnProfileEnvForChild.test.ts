@@ -31,7 +31,7 @@ describe('resolveDaemonSpawnProfileEnvForChild', () => {
           ok: false,
           reason: 'profile_not_provisioned',
           profileId: 'work',
-          expectedDir: '/tmp/happier/profiles/codex/work',
+          expectedDir: '/tmp/happier/profiles/native-cli/codex/work',
         }),
       },
       profileId: 'work',
@@ -42,7 +42,7 @@ describe('resolveDaemonSpawnProfileEnvForChild', () => {
       errorCode: SPAWN_SESSION_ERROR_CODES.PROFILE_NOT_PROVISIONED,
       errorMessage: 'Profile work is not provisioned for this provider on this machine.',
       profileId: 'work',
-      expectedDir: '/tmp/happier/profiles/codex/work',
+      expectedDir: '/tmp/happier/profiles/native-cli/codex/work',
     });
   });
 });

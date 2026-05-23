@@ -75,4 +75,26 @@ describe('machine terminal ops (server-scoped routing)', () => {
             }),
         }));
     });
+
+    it('routes profile auth session ids through daemon terminal ensure', async () => {
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({ ok: true, terminalId: 't3', reused: false });
+        const { machineTerminalEnsure } = await import('./machineTerminal');
+
+        const res = await machineTerminalEnsure(
+            'machine-1',
+            { terminalKey: 'profile-login:machine-1:claude:work', cwd: '/', cols: 100, rows: 30, profileAuthSessionId: 'auth-1' },
+            { serverId: 'server-a' },
+        );
+
+        expect(res).toEqual({ ok: true, terminalId: 't3', reused: false });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            method: RPC_METHODS.DAEMON_TERMINAL_ENSURE,
+            payload: expect.objectContaining({
+                terminalKey: 'profile-login:machine-1:claude:work',
+                profileAuthSessionId: 'auth-1',
+            }),
+        }));
+    });
 });

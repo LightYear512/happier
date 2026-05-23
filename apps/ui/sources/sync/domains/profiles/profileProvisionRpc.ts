@@ -13,6 +13,8 @@ export type ProfileProvisionResult =
         profileDir: string;
         alreadyProvisioned: boolean;
         ptyOutput: string;
+        profileAuthSessionId: string | null;
+        terminalKey: string;
     }>
     | Readonly<{
         type: 'error';
@@ -42,18 +44,41 @@ type ProfileProvisionRpcParams = Readonly<{
     profileId: string;
     backendId: ProfileProvisionBackendId;
     machineId: string;
+    profileAuthSessionId?: string | null;
 }>;
 
 export async function callProfileProvision(params: ProfileProvisionRpcParams): Promise<ProfileProvisionResult> {
     return await machineRpcWithServerScope<ProfileProvisionResult, Readonly<{
         profileId: string;
         backendId: ProfileProvisionBackendId;
+        machineId: string;
     }>>({
         method: RPC_METHODS.PROFILE_PROVISION,
         machineId: params.machineId,
         payload: {
             profileId: params.profileId,
             backendId: params.backendId,
+            machineId: params.machineId,
+        },
+    });
+}
+
+export async function callProfileProvisionVerify(params: ProfileProvisionRpcParams): Promise<ProfileProvisionResult> {
+    return await machineRpcWithServerScope<ProfileProvisionResult, Readonly<{
+        profileId: string;
+        backendId: ProfileProvisionBackendId;
+        machineId: string;
+        profileAuthSessionId?: string | null;
+        verifyOnly: true;
+    }>>({
+        method: RPC_METHODS.PROFILE_PROVISION,
+        machineId: params.machineId,
+        payload: {
+            profileId: params.profileId,
+            backendId: params.backendId,
+            machineId: params.machineId,
+            ...(params.profileAuthSessionId ? { profileAuthSessionId: params.profileAuthSessionId } : {}),
+            verifyOnly: true,
         },
     });
 }
@@ -64,12 +89,14 @@ export async function callProfileProvisionProgress(
     return await machineRpcWithServerScope<ProfileProvisionProgressSnapshot, Readonly<{
         profileId: string;
         backendId: ProfileProvisionBackendId;
+        machineId: string;
     }>>({
         method: RPC_METHODS.PROFILE_PROVISION_POLL_PROGRESS,
         machineId: params.machineId,
         payload: {
             profileId: params.profileId,
             backendId: params.backendId,
+            machineId: params.machineId,
         },
     });
 }

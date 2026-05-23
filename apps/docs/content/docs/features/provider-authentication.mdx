@@ -54,6 +54,24 @@ What happens:
 
 When the login flow exits, Happier refreshes the provider auth state automatically.
 
+### Provision profile login
+
+Normal provider login uses the provider CLI's default machine-local account state.
+
+Profile provisioning is narrower: it logs into the provider CLI through the app, but the daemon directs credentials into one profile-specific native CLI directory on the selected machine.
+
+The directory is computed on the target machine:
+
+```text
+<happyHomeDir>/servers/<activeServerId>/profiles/native-cli/<providerId>/<profileId>/
+```
+
+This lets two profiles use different native CLI accounts on the same machine without overwriting the provider's default login state.
+
+Happier uses the same embedded terminal foundation for this flow, but it does not allow the app to send arbitrary environment overrides. The daemon prepares an opaque profile auth session and injects only the provider-approved isolated-home environment for that session, such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
+
+See [Profiles](./profiles) for the user flow and [Native CLI profile authentication](/docs/architecture/native-cli-profile-auth) for the architecture.
+
 ### Check now
 
 **Check now** forces an immediate auth refresh for the selected provider on the selected machine.
@@ -141,6 +159,7 @@ Happier can detect env-backed auth for providers that expose it and shows the au
 ## Important limitations
 
 - Provider authentication is **machine-local**. Logging into a provider on one machine does not log it in on another machine.
+- Profile provisioning is also machine-local. It isolates credentials by profile on that machine; it does not copy those credentials to other machines.
 - Not every provider supports reliable non-interactive auth detection.
 - Connected services and machine-local auth can both exist for the same provider. They solve different problems.
 - If a provider login flow changes upstream, Happier follows the provider CLI’s real current behavior rather than inventing a custom auth flow.

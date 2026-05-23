@@ -23,6 +23,7 @@ import type {
   ConnectedServiceSwitchContinuityResult,
   DirectSessionProviderOps,
   ProviderAttachOps,
+  CliProfileAuthProvider,
   ProviderNativeForkHandler,
   SessionCatalogControlAdapter,
   SessionGoalControlAdapter,
@@ -74,6 +75,7 @@ const cachedConnectedServiceRuntimeAuthAdapterPromises = new Map<CatalogAgentId,
 const cachedConnectedServiceCredentialLifecycleDescriptorPromises = new Map<CatalogAgentId, Promise<ConnectedServiceCredentialLifecycleDescriptor>>();
 const cachedConnectedServiceStateSharingDescriptorPromises = new Map<CatalogAgentId, Promise<ConnectedServiceStateSharingDescriptor | null>>();
 const cachedSessionCatalogControlAdapterPromises = new Map<CatalogAgentId, Promise<SessionCatalogControlAdapter | null>>();
+const cachedProfileAuthProviderPromises = new Map<CatalogAgentId, Promise<CliProfileAuthProvider | null>>();
 const cachedSessionGoalControlAdapterPromises = new Map<CatalogAgentId, Promise<SessionGoalControlAdapter | null>>();
 const cachedSessionUsageLimitRecoveryControlAdapterPromises = new Map<CatalogAgentId, Promise<SessionUsageLimitRecoveryControlAdapter | null>>();
 const cachedAcpForkContinuationHandlerPromises = new Map<CatalogAgentId, Promise<AcpForkContinuationHandler | null>>();
@@ -231,6 +233,17 @@ export function resolveConnectedServiceCandidatePersistedSessionFile(
   const catalogId = resolveCatalogAgentId(agentId);
   const entry = AGENTS[catalogId];
   return entry?.resolveConnectedServiceCandidatePersistedSessionFile?.({ metadata }) ?? null;
+}
+
+export async function getProfileAuthProvider(agentId?: AgentId | null): Promise<CliProfileAuthProvider | null> {
+  const catalogId = resolveCatalogAgentId(agentId);
+  const existing = cachedProfileAuthProviderPromises.get(catalogId);
+  if (existing) return existing;
+
+  const entry = AGENTS[catalogId];
+  const promise = entry?.getProfileAuthProvider ? entry.getProfileAuthProvider() : Promise.resolve(null);
+  cachedProfileAuthProviderPromises.set(catalogId, promise);
+  return promise;
 }
 
 export async function getSessionGoalControlAdapter(agentId?: AgentId | null): Promise<SessionGoalControlAdapter | null> {

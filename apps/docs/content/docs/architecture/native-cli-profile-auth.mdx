@@ -1,0 +1,178 @@
+---
+title: Native CLI profile authentication
+description: Architecture for app-side PTY login into isolated native CLI profile directories on a selected machine.
+---
+
+Native CLI profile authentication lets a user log into a provider CLI from the app while keeping that login isolated to one Happier profile on one machine.
+
+The goal is:
+
+- the user starts the login from the app,
+- Happier opens a real PTY on the selected machine,
+- the provider CLI writes credentials into a profile-specific directory,
+- sessions and profile switching can later run that provider with the same isolated directory.
+
+This is different from normal provider authentication, which checks or logs into the provider's default machine-local CLI state.
+
+## Directory model
+
+Profile-owned native CLI credentials live under the selected machine's Happier home, inside the active server directory:
+
+```text
+<happyHomeDir>/servers/<activeServerId>/profiles/native-cli/<providerId>/<profileId>/
+```
+
+For the default CLI configuration, that means:
+
+```text
+~/.happier/servers/<activeServerId>/profiles/native-cli/<providerId>/<profileId>/
+```
+
+If `HAPPIER_HOME_DIR` is set, the same relative layout is used below that directory.
+
+The app does not send this path. The daemon on the target machine computes it from its own `configuration.activeServerDir`, the provider id, and the validated profile id.
+
+Do not place provider credentials in a workspace `.happier/` directory. Native CLI credentials are machine-local account state, not project artifacts, and must not be accidentally committed, copied with a workspace, or included in handoff payloads.
+
+## Provider abstraction
+
+The architecture is provider-extensible. Claude and Codex are initial implementations, but the shared flow must not branch directly on those provider names.
+
+Each supported provider exposes a provider-owned profile-auth definition through the CLI provider catalog:
+
+```ts
+type CliProfileAuthProvider = {
+  providerId: AgentId;
+
+  buildProfileDir(params): string;
+
+  prepareProfileDir(params): {
+    profileDir: string;
+    createdByThisRun: boolean;
+  };
+
+  buildIsolatedLoginContext(params): {
+    command: string;
+    args: readonly string[];
+    initialInput?: string | null;
+    env: Record<string, string>;
+    allowlistedEnvKeys: readonly string[];
+    cwd?: string;
+  };
+
+  isProfileProvisioned(params): boolean;
+
+  cleanupFailedPrepare?(params): void;
+};
+```
+
+Provider-specific executable behavior belongs in the provider folder, for example:
+
+- `apps/cli/src/backends/claude/profileAuth.ts`
+- `apps/cli/src/backends/codex/profileAuth.ts`
+- future provider files such as `apps/cli/src/backends/gemini/profileAuth.ts`
+
+Shared handlers resolve the definition through `apps/cli/src/backends/catalog.ts`. They should not contain provider-specific `if providerId === ...` branches for login commands, credential probes, or isolated home-directory rules.
+
+## Prepare flow
+
+The app asks the selected machine to prepare a profile auth session:
+
+```ts
+PROFILE_AUTH_PREPARE({
+  providerId,
+  profileId,
+  machineId,
+})
+```
+
+The daemon:
+
+1. validates `profileId` as a path segment,
+2. resolves the profile directory below `configuration.activeServerDir`,
+3. calls the provider definition to create directories and shared links,
+4. checks whether the profile is already provisioned,
+5. creates an opaque `profileAuthSessionId`,
+6. stores the isolated login context in daemon memory.
+
+The response may include user-facing status and the login launch metadata, but it must not let the app choose arbitrary environment variables or filesystem destinations.
+
+## Terminal flow
+
+Profile auth uses the same embedded terminal transport as session terminals and provider settings login:
+
+- real `node-pty`-backed PTY on the selected machine,
+- bidirectional input,
+- resize,
+- URL detection,
+- restart and close behavior.
+
+Terminal ensure/restart may accept a `profileAuthSessionId`. When present, the daemon looks up the prepared session and injects only the provider-approved environment keys for that session.
+
+The terminal protocol must not expose a general-purpose `envOverrides` bag to the app. Environment injection is derived from the daemon-held profile auth session.
+
+Examples:
+
+- Claude can run with `CLAUDE_CONFIG_DIR=<profileDir>` and send `/login\r` as initial input.
+- Codex can run `codex login` with `CODEX_HOME=<profileDir>`.
+- A future provider can define a different isolated home env, command, args, or initial input in its provider-owned definition.
+
+## Lifecycle state
+
+A profile auth session has an explicit lifecycle:
+
+```text
+prepared -> terminal_running -> exited -> verifying -> provisioned
+                                               \-> failed
+                                               \-> cancelled
+```
+
+Terminal exit alone is not success. Success is only confirmed when the provider's `isProfileProvisioned` probe finds the expected credential state inside the profile directory.
+
+If the user cancels or the terminal exits unsuccessfully, cleanup is conservative:
+
+- clean only files/directories known to have been created for this prepare attempt,
+- do not delete existing user content,
+- do not delete a directory that now contains provider credentials,
+- allow the user to run prepare again and recover from partial state.
+
+If the daemon restarts and loses in-memory profile auth sessions, the app should prepare again. Existing credentials are recovered by the provider provisioned-state probe.
+
+## UI responsibilities
+
+The UI starts with `providerId`, `profileId`, and `machineId`.
+
+It does not compute the profile directory and does not build provider-specific login commands. It should:
+
+1. call the prepare RPC,
+2. open an embedded terminal with a key such as `profile-login:<machineId>:<providerId>:<profileId>`,
+3. pass the `profileAuthSessionId` to terminal ensure/restart,
+4. send provider initial input only if the daemon/provider launch metadata requests it,
+5. wait for verification before marking the profile as provisioned,
+6. refresh session/profile-switch readiness after success.
+
+The previous spawn-and-progress-output provisioning path should not be the primary product path for interactive native CLI login. It can exist only as a temporary migration fallback and must not duplicate provider auth rules.
+
+## Tests
+
+Behavior-changing implementation must follow the repo TDD rules.
+
+Required coverage:
+
+- provider definition tests for command, args, initial input, env allowlist, shared links, and provisioned-state probes,
+- daemon prepare tests for invalid profile ids, existing provisioned directories, session creation, and cleanup behavior,
+- terminal tests proving arbitrary app-provided env is rejected and only daemon-held allowlisted profile env is injected,
+- UI tests proving terminal exit is not treated as success until verification passes,
+- UI e2e with a fake provider CLI that requires PTY input, prints a URL, writes credentials into the isolated profile directory, and then allows session profile switching.
+
+The e2e fixture should assert paths under:
+
+```text
+<happyHomeDir>/servers/<activeServerId>/profiles/native-cli/<providerId>/<profileId>/
+```
+
+## Non-goals
+
+This architecture does not move provider credentials between machines. Native CLI profile auth remains machine-local.
+
+For cross-machine credential reuse, use Connected services where the provider supports them.
