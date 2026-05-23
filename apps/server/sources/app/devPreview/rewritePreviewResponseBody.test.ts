@@ -55,6 +55,28 @@ describe('rewritePreviewResponseBody', () => {
     expect(rewritten).toContain('/preview/session_1/machine_1/route_1/src/main.css?previewToken=token_1');
   });
 
+  it('rewrites initial HTML asset URLs to the preview host root for host namespaces', () => {
+    const rewritten = rewritePreviewResponseBody({
+      contentType: 'text/html; charset=utf-8',
+      body: [
+        '<html><head>',
+        '<script type="module" src="/@vite/client"></script>',
+        '<link rel="stylesheet" href="http://127.0.0.1:3000/src/main.css">',
+        '<meta http-equiv="refresh" content="0; url=/login">',
+        '</head></html>',
+      ].join(''),
+      routeContext,
+      namespaceStrategy: 'host',
+      previewToken: 'token_1',
+      injectRuntimeInterceptor: false,
+    });
+
+    expect(rewritten).toContain('/@vite/client?previewToken=token_1');
+    expect(rewritten).toContain('/src/main.css?previewToken=token_1');
+    expect(rewritten).toContain('url=/login?previewToken=token_1');
+    expect(rewritten).not.toContain('/preview/session_1/machine_1/route_1/');
+  });
+
   it('leaves protocol-relative external HTML asset URLs unchanged', () => {
     const rewritten = rewritePreviewResponseBody({
       contentType: 'text/html; charset=utf-8',
