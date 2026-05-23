@@ -30,8 +30,9 @@ A profile can include:
 - **compatibility** with one or more backend choices, including configured ACP backends
 - **default per-backend startup preferences**, such as permission and transcript-storage defaults where supported
 
-Profiles are applied **only when starting a new session**.
-They are **fixed per session** after launch. If you want a different profile, start a new session.
+Profiles are applied when starting a new session. For providers that support profile switching, Happier can also switch an existing session to another compatible profile after launch.
+
+Machine-login profiles may require a separate native CLI login on each target machine. Happier can provision supported provider CLIs into a profile-specific directory on the selected machine.
 
 ## Built-in vs custom profiles
 
@@ -96,6 +97,48 @@ If a required config variable is missing on the target machine, the app blocks t
 After the session starts, the chosen profile is shown in **Session Info → AI Profile**.
 
 Configured ACP backends participate in this flow the same way built-in backends do. If a profile is intended for one specific backend, Happier preserves that relationship directly.
+
+### Provision a machine-login profile
+
+Some built-in profiles depend on the native provider CLI login on a machine instead of a saved API key or Connected service.
+
+For supported providers, Happier can provision that login from the app:
+
+1. Open **Settings → Profiles**
+2. Choose or create a profile compatible with the provider
+3. Choose the target machine
+4. Use **Provision on machine**
+5. Complete the provider's native CLI login in the embedded terminal
+
+Happier runs the provider CLI on the selected machine inside a real PTY. The provider credentials are written to a profile-specific directory under that machine's Happier home:
+
+```text
+<happyHomeDir>/servers/<activeServerId>/profiles/native-cli/<providerId>/<profileId>/
+```
+
+For a default installation, that is below `~/.happier/servers/<activeServerId>/...`.
+
+The app does not choose this directory and does not send arbitrary environment variables to the terminal. The daemon on the selected machine computes the directory and injects only the provider-specific environment needed for that isolated login.
+
+Examples:
+
+- Claude can use an isolated `CLAUDE_CONFIG_DIR`
+- Codex can use an isolated `CODEX_HOME`
+
+Other providers can support the same flow when they expose a provider-owned profile-auth definition.
+
+### Switch a running session to another profile
+
+When the current provider supports profile switching, the session action menu can offer **Switch profile**.
+
+Switching checks that:
+
+- Profiles are enabled
+- the target profile is compatible with the running provider
+- the profile's requirements are satisfied
+- any required machine-local CLI login is provisioned on the session's machine
+
+If the profile is not ready on that machine, provision it first and then retry the switch.
 
 ## Use profiles in the CLI
 
@@ -244,7 +287,7 @@ That usually means one of these is missing on the selected machine:
 - a required config env var
 - a required CLI login for a machine-login-based profile
 
-Open the profile in **Settings → Profiles** to review its requirements.
+Open the profile in **Settings → Profiles** to review its requirements. For supported native CLI providers, use **Provision on machine** to log in through Happier's embedded terminal and store credentials in that profile's isolated machine-local directory.
 
 ## Related guides
 

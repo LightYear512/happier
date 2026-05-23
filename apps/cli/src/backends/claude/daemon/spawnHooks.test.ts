@@ -123,7 +123,7 @@ describe('claudeDaemonSpawnHooks.resolveProfileEnvForChild', () => {
   it('returns CLAUDE_CONFIG_DIR for provisioned profiles', async () => {
     const activeServerDir = await createTempDir('happier-claude-profile-env-');
     tempDirs.add(activeServerDir);
-    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work');
     await mkdir(profileDir, { recursive: true });
     await writeFile(join(profileDir, '.credentials.json'), '{"accessToken":"token"}', 'utf8');
 
@@ -141,7 +141,7 @@ describe('claudeDaemonSpawnHooks.resolveProfileEnvForChild', () => {
   it('rejects directory-only profiles as not provisioned', async () => {
     const activeServerDir = await createTempDir('happier-claude-profile-env-empty-');
     tempDirs.add(activeServerDir);
-    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work');
     await mkdir(profileDir, { recursive: true });
 
     const { claudeDaemonSpawnHooks } = await import('./spawnHooks');

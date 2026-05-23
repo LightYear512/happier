@@ -51,6 +51,7 @@ export const agent = {
       targetStrict: input.targetStrict === true,
     }),
   getDirectSessionProviderOps: async () => (await import('@/backends/claude/directSessions/providerOps')).claudeDirectSessionProviderOps,
+  getProfileAuthProvider: async () => (await import('@/backends/claude/profileAuth')).claudeProfileAuthProvider,
   vendorResumeSupport: AGENTS_CORE.claude.resume.vendorResume,
   getPreflightSessionControlsProbeAdapter: async () => (await import('@/backends/claude/preflight/claudePreflightModelsProbeAdapter')).claudePreflightModelsProbeAdapter,
   getHeadlessTmuxArgvTransform: async () => (await import('@/backends/claude/startup/headlessTmuxArgs')).ensureClaudeHeadlessTmuxStartingModeArgs,

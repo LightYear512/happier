@@ -7,6 +7,7 @@ const READY_TEST_IDS = [
   'session-getting-started-kind-start_daemon',
   'session-getting-started-kind-create_session',
   'session-getting-started-kind-select_session',
+  'session-getting-started-cli-follow-up',
   'sidebar-expand-button',
   'session-composer-input',
   'new-session-composer-input',

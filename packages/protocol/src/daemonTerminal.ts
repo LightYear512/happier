@@ -23,6 +23,7 @@ export const DaemonTerminalEnsureRequestSchema = z.object({
   cols: z.number().int().min(2).max(500).optional(),
   rows: z.number().int().min(2).max(500).optional(),
   initialCommand: z.string().max(100_000).optional(),
+  profileAuthSessionId: z.string().min(1).max(2000).optional(),
 }).passthrough();
 export type DaemonTerminalEnsureRequest = z.infer<typeof DaemonTerminalEnsureRequestSchema>;
 
@@ -133,6 +134,7 @@ export const DaemonTerminalRestartRequestSchema = z.object({
   cols: z.number().int().min(2).max(500).optional(),
   rows: z.number().int().min(2).max(500).optional(),
   initialCommand: z.string().max(100_000).optional(),
+  profileAuthSessionId: z.string().min(1).max(2000).optional(),
 }).passthrough();
 export type DaemonTerminalRestartRequest = z.infer<typeof DaemonTerminalRestartRequestSchema>;
 

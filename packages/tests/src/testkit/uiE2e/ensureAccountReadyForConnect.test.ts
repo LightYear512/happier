@@ -166,6 +166,16 @@ describe('ensureAccountReadyForConnect', () => {
     await expect(ensureAccountReadyForConnect({ page, timeoutMs: 50 })).resolves.toBeUndefined();
   });
 
+  it('passes when the signed-in setup guidance is visible before any machine is connected', async () => {
+    const page = createFakePage({
+      testIdCounts: {
+        'session-getting-started-cli-follow-up': [1],
+      },
+    });
+
+    await expect(ensureAccountReadyForConnect({ page, timeoutMs: 50 })).resolves.toBeUndefined();
+  });
+
   it('does not treat hidden ready controls as an authenticated state', async () => {
     const page = createFakePage({
       roleCounts: {

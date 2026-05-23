@@ -59,6 +59,7 @@ export const agent = {
   resolveConnectedServiceCandidatePersistedSessionFile: ({ metadata }) =>
     resolveCodexConnectedServiceCandidatePersistedSessionFile({ metadata }),
   getDirectSessionProviderOps: async () => (await import('@/backends/codex/directSessions/providerOps')).codexDirectSessionProviderOps,
+  getProfileAuthProvider: async () => (await import('@/backends/codex/profileAuth')).codexProfileAuthProvider,
   getSessionGoalControlAdapter: async () => codexAppServerGoalControlAdapter,
   getSessionCatalogControlAdapter: async () => codexAppServerCatalogControlAdapter,
   getSessionUsageLimitRecoveryControlAdapter: async () => codexAppServerUsageLimitRecoveryControlAdapter,
