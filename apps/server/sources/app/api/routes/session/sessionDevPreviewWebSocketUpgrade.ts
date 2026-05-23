@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
+import { parseHostNamespacePreviewContext, resolvePreviewHostHeader } from '@/app/devPreview/previewHostNamespace';
+
 const require = createRequire(import.meta.url);
 
 export type PreviewRelayUpgradeRequest = IncomingMessage & {
@@ -100,6 +102,28 @@ export function matchPreviewRouteRequest(rawUrl: string): null | Readonly<{
     machineId,
     routeKey,
     path: rest.length > 0 ? `/${rest.join('/')}` : '/',
+    search: parsed.search,
+  };
+}
+
+export function matchHostNamespacePreviewRequest(
+  request: IncomingMessage,
+  env: NodeJS.ProcessEnv = process.env,
+): null | Readonly<{
+  sessionId: string;
+  machineId: string;
+  routeKey: string;
+  path: string;
+  search: string;
+}> {
+  const context = parseHostNamespacePreviewContext(resolvePreviewHostHeader(request.headers), env);
+  if (!context) {
+    return null;
+  }
+  const parsed = new URL(request.url ?? '/', 'http://127.0.0.1');
+  return {
+    ...context,
+    path: parsed.pathname || '/',
     search: parsed.search,
   };
 }

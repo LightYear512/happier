@@ -27,6 +27,9 @@ const { WebSocketServer } = require('ws') as {
     close(callback?: (error?: Error) => void): void;
   };
 };
+const { WebSocket: WebSocketClient } = require('ws') as {
+  WebSocket: new (url: string, protocols?: string[], options?: { headers?: Record<string, string> }) => WebSocket;
+};
 
 describe('session dev preview websocket relay (integration)', () => {
   let harness: LightSqliteHarness;
@@ -281,6 +284,164 @@ describe('session dev preview websocket relay (integration)', () => {
       ]);
 
       await expect.poll(() => upstreamMessages).toEqual(['from-browser']);
+      expect(openedSearches).toEqual(['?client=vite']);
+
+      await closePromise;
+    } finally {
+      machineSocket.close();
+      await app.close();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error?: Error) => (error ? reject(error) : resolve()));
+      });
+    }
+  }, 30_000);
+
+  it('relays websocket preview frames through a host-based preview origin', async () => {
+    harness.resetEnv({
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+    });
+    const fixture = await createFixture();
+    const upstream = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: () => 'vite-hmr' });
+    await new Promise<void>((resolve) => {
+      upstream.on('listening', () => resolve());
+    });
+    upstream.on('connection', (socket) => {
+      socket.send('hello-from-host-upstream');
+      socket.on('message', (data) => {
+        socket.send(`host-echo:${data.toString('utf8')}`);
+        socket.close(1000, 'done');
+      });
+    });
+
+    const upstreamAddress = upstream.address();
+    if (!upstreamAddress) {
+      throw new Error('Upstream websocket server did not bind');
+    }
+    const upstreamPort = upstreamAddress.port;
+    const app = createApp();
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address();
+    const appPort = typeof address === 'object' && address ? address.port : null;
+    if (!appPort) {
+      throw new Error('Failed to bind preview websocket app');
+    }
+
+    const machineSocket = ioClient(`http://127.0.0.1:${appPort}`, {
+      path: '/v1/updates',
+      transports: ['websocket'],
+      reconnection: false,
+      auth: {
+        token: fixture.token,
+        clientType: 'machine-scoped',
+        machineId: fixture.machineId,
+      },
+    });
+
+    const openedPaths: string[] = [];
+    const openedSearches: string[] = [];
+    machineSocket.on(SOCKET_RPC_EVENTS.DEV_PREVIEW_TO_MACHINE_ENVELOPE, (payload: any) => {
+      if (payload?.envelope?.kind !== 'open') {
+        return;
+      }
+      openedPaths.push(String(payload.envelope.path ?? ''));
+      openedSearches.push(String(payload.envelope.search ?? ''));
+      const ws = new WebSocket(`ws://127.0.0.1:${upstreamPort}${payload.envelope.path}${payload.envelope.search ?? ''}`, payload.envelope.requestedSubprotocols);
+      ws.addEventListener('open', () => {
+        machineSocket.emit(SOCKET_RPC_EVENTS.DEV_PREVIEW_FROM_MACHINE_ENVELOPE, {
+          envelope: {
+            tunnelId: payload.envelope.tunnelId,
+            kind: 'open',
+            acceptedSubprotocol: ws.protocol || undefined,
+          },
+        });
+      });
+      ws.addEventListener('message', (event) => {
+        machineSocket.emit(SOCKET_RPC_EVENTS.DEV_PREVIEW_FROM_MACHINE_ENVELOPE, {
+          envelope: {
+            tunnelId: payload.envelope.tunnelId,
+            kind: 'text',
+            text: String(event.data),
+          },
+        });
+      });
+      ws.addEventListener('close', (event) => {
+        machineSocket.emit(SOCKET_RPC_EVENTS.DEV_PREVIEW_FROM_MACHINE_ENVELOPE, {
+          envelope: {
+            tunnelId: payload.envelope.tunnelId,
+            kind: 'close',
+            code: event.code,
+            reason: event.reason,
+          },
+        });
+      });
+      ws.addEventListener('error', () => {
+        machineSocket.emit(SOCKET_RPC_EVENTS.DEV_PREVIEW_FROM_MACHINE_ENVELOPE, {
+          envelope: {
+            tunnelId: payload.envelope.tunnelId,
+            kind: 'error',
+            reason: 'upstream_connect_failed',
+          },
+        });
+      });
+      machineSocket.on(SOCKET_RPC_EVENTS.DEV_PREVIEW_TO_MACHINE_ENVELOPE, (nextPayload: any) => {
+        if (nextPayload?.envelope?.tunnelId !== payload.envelope.tunnelId || nextPayload.envelope.kind !== 'text') {
+          return;
+        }
+        ws.send(nextPayload.envelope.text);
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      machineSocket.on('connect', () => resolve());
+      machineSocket.on('connect_error', reject);
+    });
+
+    try {
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: `127.0.0.1:${appPort}`,
+        },
+      });
+      const tokenPayload = mint.json() as { token: string; previewUrl: string; namespaceStrategy: string };
+      expect(tokenPayload.namespaceStrategy).toBe('host');
+      const previewUrl = new URL(tokenPayload.previewUrl);
+
+      const previewSocket = new WebSocketClient(
+        `ws://127.0.0.1:${appPort}/@vite/client?previewToken=${encodeURIComponent(tokenPayload.token)}&client=vite`,
+        ['vite-hmr'],
+        {
+          headers: {
+            host: `127.0.0.1:${appPort}`,
+            'x-forwarded-host': previewUrl.host,
+          },
+        },
+      );
+      const closePromise = new Promise<void>((resolve) => {
+        previewSocket.addEventListener('close', () => resolve(), { once: true });
+      });
+
+      const received: string[] = [];
+      previewSocket.addEventListener('message', (event) => {
+        received.push(String(event.data));
+        if (event.data === 'hello-from-host-upstream') {
+          previewSocket.send('from-host-browser');
+        }
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        previewSocket.addEventListener('open', () => resolve());
+        previewSocket.addEventListener('error', (event) => reject(event));
+      });
+
+      expect(previewSocket.protocol).toBe('vite-hmr');
+      await expect.poll(() => received).toEqual([
+        'hello-from-host-upstream',
+        'host-echo:from-host-browser',
+      ]);
+      expect(openedPaths).toEqual(['/@vite/client']);
       expect(openedSearches).toEqual(['?client=vite']);
 
       await closePromise;

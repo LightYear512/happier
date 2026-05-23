@@ -211,6 +211,165 @@ describe('session dev preview routes (integration)', () => {
     }
   });
 
+  it('uses a host-based preview origin when the server has a preview host base domain configured', async () => {
+    harness.resetEnv({
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+    });
+    const fixture = await createFixture();
+    const forwardRpcForUser = vi.fn(async ({ method, params }: { method: string; params: any }) => {
+      if (method !== `${fixture.machineId}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}`) {
+        throw new Error(`unexpected method ${method}`);
+      }
+
+      if (params.path === '/dashboard/index.html') {
+        return {
+          ok: true as const,
+          result: {
+            ok: true,
+            status: 200,
+            headers: {
+              'content-type': 'text/html; charset=utf-8',
+            },
+            bodyBase64: Buffer.from(
+              '<html><head><script type="module" src="/@vite/client"></script></head><body>host preview</body></html>',
+              'utf8',
+            ).toString('base64'),
+          },
+        };
+      }
+
+      if (params.path === '/@vite/client') {
+        return {
+          ok: true as const,
+          result: {
+            ok: true,
+            status: 200,
+            headers: {
+              'content-type': 'application/javascript; charset=utf-8',
+            },
+            bodyBase64: Buffer.from('console.log("host vite client");', 'utf8').toString('base64'),
+          },
+        };
+      }
+
+      throw new Error(`unexpected preview path ${params.path}`);
+    });
+
+    const app = createTestApp(forwardRpcForUser);
+    sessionRoutes(app as any);
+    await app.ready();
+
+    try {
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': 'stack.example.test:43210',
+          'x-forwarded-proto': 'https',
+        },
+      });
+
+      expect(mint.statusCode).toBe(200);
+      const tokenPayload = mint.json() as { token: string; previewUrl: string; namespaceStrategy: string };
+      expect(tokenPayload.namespaceStrategy).toBe('host');
+      const previewUrl = new URL(tokenPayload.previewUrl);
+      expect(previewUrl.protocol).toBe('https:');
+      expect(previewUrl.hostname.endsWith('.preview.example.test')).toBe(true);
+      expect(previewUrl.port).toBe('43210');
+      expect(previewUrl.pathname).toBe('/');
+      expect(previewUrl.searchParams.get('previewToken')).toBe(tokenPayload.token);
+
+      const preview = await app.inject({
+        method: 'GET',
+        url: `/dashboard/index.html?previewToken=${encodeURIComponent(tokenPayload.token)}&v=1`,
+        headers: {
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': previewUrl.host,
+          'sec-fetch-dest': 'iframe',
+        },
+      });
+
+      expect(preview.statusCode).toBe(200);
+      expect(preview.body).toContain('host preview');
+      expect(preview.body).toContain('/@vite/client?previewToken=');
+      expect(preview.body).not.toContain(`/preview/${fixture.sessionId}/${fixture.machineId}/route_1/`);
+      expect(forwardRpcForUser).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          params: expect.objectContaining({
+            sessionId: fixture.sessionId,
+            machineId: fixture.machineId,
+            routeKey: 'route_1',
+            path: '/dashboard/index.html',
+            search: '?v=1',
+          }),
+        }),
+      );
+
+      const asset = await app.inject({
+        method: 'GET',
+        url: `/@vite/client`,
+        headers: {
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': previewUrl.host,
+          cookie: String(preview.headers['set-cookie']).split(';')[0] ?? '',
+        },
+      });
+
+      expect(asset.statusCode).toBe(200);
+      expect(asset.body).toBe('console.log("host vite client");');
+      expect(forwardRpcForUser).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          params: expect.objectContaining({
+            path: '/@vite/client',
+            search: '',
+          }),
+        }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('falls back to the path namespace when the configured preview host base domain is invalid', async () => {
+    harness.resetEnv({
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'https://preview.example.test',
+    });
+    const fixture = await createFixture();
+    const forwardRpcForUser = vi.fn(async () => {
+      throw new Error('forwardRpcForUser should not be called when minting a token');
+    });
+
+    const app = createTestApp(forwardRpcForUser);
+    sessionRoutes(app as any);
+    await app.ready();
+
+    try {
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: 'stack.example.test',
+          'x-forwarded-proto': 'https',
+        },
+      });
+
+      expect(mint.statusCode).toBe(200);
+      const tokenPayload = mint.json() as { token: string; previewUrl: string; namespaceStrategy: string };
+      expect(tokenPayload.namespaceStrategy).toBe('path');
+      expect(tokenPayload.previewUrl).toBe(
+        `https://stack.example.test/preview/${fixture.sessionId}/${fixture.machineId}/route_1/?previewToken=${encodeURIComponent(tokenPayload.token)}`,
+      );
+      expect(forwardRpcForUser).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('scrubs preview tokens from GET URLs before opening the daemon relay', async () => {
     const fixture = await createFixture();
     const forwardRpcForUser = vi.fn(async () => {
