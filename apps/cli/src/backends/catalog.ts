@@ -18,6 +18,7 @@ import type {
   CatalogAgentId,
   DirectSessionProviderOps,
   ProviderAttachOps,
+  CliProfileAuthProvider,
   ProviderNativeForkHandler,
   SessionGoalControlAdapter,
   VendorResumeSupportFn,
@@ -48,6 +49,7 @@ export function requireCatalogEntry(agentId: CatalogAgentId): AgentCatalogEntry 
 const cachedVendorResumeSupportPromises = new Map<CatalogAgentId, Promise<VendorResumeSupportFn>>();
 const cachedDirectSessionProviderOpsPromises = new Map<DirectSessionsProviderId, Promise<DirectSessionProviderOps>>();
 const cachedProviderAttachOpsPromises = new Map<CatalogAgentId, Promise<ProviderAttachOps | null>>();
+const cachedProfileAuthProviderPromises = new Map<CatalogAgentId, Promise<CliProfileAuthProvider | null>>();
 const cachedSessionGoalControlAdapterPromises = new Map<CatalogAgentId, Promise<SessionGoalControlAdapter | null>>();
 const cachedAcpForkContinuationHandlerPromises = new Map<CatalogAgentId, Promise<AcpForkContinuationHandler | null>>();
 const cachedProviderNativeForkHandlerPromises = new Map<CatalogAgentId, Promise<ProviderNativeForkHandler | null>>();
@@ -98,6 +100,17 @@ export async function getProviderAttachOps(agentId?: AgentId | null): Promise<Pr
   const promise = entry?.getProviderAttachOps ? entry.getProviderAttachOps() : Promise.resolve(null);
   cachedProviderAttachOpsPromises.set(catalogId, promise);
   return await promise;
+}
+
+export async function getProfileAuthProvider(agentId?: AgentId | null): Promise<CliProfileAuthProvider | null> {
+  const catalogId = resolveCatalogAgentId(agentId);
+  const existing = cachedProfileAuthProviderPromises.get(catalogId);
+  if (existing) return existing;
+
+  const entry = AGENTS[catalogId];
+  const promise = entry?.getProfileAuthProvider ? entry.getProfileAuthProvider() : Promise.resolve(null);
+  cachedProfileAuthProviderPromises.set(catalogId, promise);
+  return promise;
 }
 
 export async function getSessionGoalControlAdapter(agentId?: AgentId | null): Promise<SessionGoalControlAdapter | null> {

@@ -22,7 +22,7 @@ afterEach(() => {
 describe('resolveCodexHomeForSession', () => {
   it('returns profile_not_provisioned for directory-only profiles', () => {
     const activeServerDir = makeRoot();
-    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work');
     mkdirSync(profileDir, { recursive: true });
 
     expect(resolveCodexHomeForSession({
@@ -38,7 +38,7 @@ describe('resolveCodexHomeForSession', () => {
 
   it('returns the isolated Codex home for provisioned profiles', () => {
     const activeServerDir = makeRoot();
-    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work');
     mkdirSync(profileDir, { recursive: true });
     writeFileSync(join(profileDir, 'auth.json'), '{"tokens":{"access_token":"token"}}', 'utf8');
 

@@ -7,7 +7,7 @@ Happier can show a live terminal for the current session directly inside the app
 
 This is useful when you want to run quick shell commands, inspect project state, follow logs, or open detected local URLs without leaving the session.
 
-The same terminal foundation is also reused for **provider login flows** from provider settings.
+The same terminal foundation is also reused for **provider login flows** from provider settings and for supported profile-specific native CLI login flows.
 
 ## What it does
 
@@ -117,6 +117,7 @@ If the daemon is offline or the machine target is unavailable, Happier shows a t
 - Follow logs while keeping the main transcript visible.
 - Keep one session’s shell history open while moving between panel layouts.
 - Open a provider login flow from settings without leaving Happier.
+- Provision a supported profile's native CLI login on a selected machine without leaving Happier.
 
 ## Provider login terminal
 
@@ -131,6 +132,8 @@ What stays consistent:
 - focused presentation on smaller layouts
 
 Provider login flows are documented in [Provider authentication](/docs/features/provider-authentication).
+
+Profile-specific native CLI login uses the same PTY transport, but the daemon prepares an isolated profile auth session first so credentials land under the selected machine's Happier home instead of the provider's default CLI account directory. The detailed architecture is documented in [Native CLI profile authentication](/docs/architecture/native-cli-profile-auth).
 
 ## Troubleshooting
 

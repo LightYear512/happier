@@ -7,6 +7,7 @@ import {
   AGENTS,
   getAcpForkContinuationHandler,
   getDirectSessionProviderOps,
+  getProfileAuthProvider,
   getProviderAttachOps,
   getSessionGoalControlAdapter,
   getProviderNativeForkHandler,
@@ -129,6 +130,24 @@ describe('AGENTS', () => {
     await expect(getProviderNativeForkHandler('codex')).resolves.toBeTypeOf('function');
     await expect(getProviderNativeForkHandler('opencode')).resolves.toBeTypeOf('function');
     await expect(getProviderNativeForkHandler('claude')).resolves.toBeNull();
+  });
+
+  it('loads native CLI profile auth providers through backend catalog hooks only for supporting providers', async () => {
+    await expect(getProfileAuthProvider('claude')).resolves.toMatchObject({
+      providerId: 'claude',
+      buildProfileDir: expect.any(Function),
+      prepareProfileDir: expect.any(Function),
+      buildIsolatedLoginContext: expect.any(Function),
+      isProfileProvisioned: expect.any(Function),
+    });
+    await expect(getProfileAuthProvider('codex')).resolves.toMatchObject({
+      providerId: 'codex',
+      buildProfileDir: expect.any(Function),
+      prepareProfileDir: expect.any(Function),
+      buildIsolatedLoginContext: expect.any(Function),
+      isProfileProvisioned: expect.any(Function),
+    });
+    await expect(getProfileAuthProvider('opencode')).resolves.toBeNull();
   });
 
   it('loads ACP fork continuation handlers through backend catalog hooks only for supporting providers', async () => {

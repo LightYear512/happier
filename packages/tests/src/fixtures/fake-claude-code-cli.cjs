@@ -28,6 +28,7 @@ const {
 } = require('./fake-claude-code-cli.helpers.cjs');
 
 const argv = process.argv.slice(2);
+const isVersionProbe = argv.length === 1 && (argv[0] === '--version' || argv[0] === 'version');
 const invocationId =
   process.env.HAPPIER_E2E_FAKE_CLAUDE_INVOCATION_ID ||
   process.env.HAPPY_E2E_FAKE_CLAUDE_INVOCATION_ID ||
@@ -59,6 +60,11 @@ const localActiveTurnCompleteSignalPath = String(
   process.env.HAPPIER_E2E_FAKE_CLAUDE_LOCAL_COMPLETE_SIGNAL || '',
 ).trim();
 
+if (isVersionProbe) {
+  process.stdout.write('0.0.0-fake\n');
+  process.exit(0);
+}
+
 function resolveClaudeConfigDir() {
   const explicit = String(process.env.CLAUDE_CONFIG_DIR || '').trim();
   if (explicit) return explicit;
@@ -69,6 +75,16 @@ function resolveClaudeConfigDir() {
 
 function resolveClaudeProjectDirForCwd(cwd) {
   return path.join(resolveClaudeConfigDir(), 'projects', resolveClaudeProjectId(cwd));
+}
+
+function writeFakeClaudeCredentials() {
+  const configDir = resolveClaudeConfigDir();
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, '.credentials.json'),
+    `${JSON.stringify({ accessToken: 'fake-claude-profile-auth-token' })}\n`,
+    'utf8',
+  );
 }
 
 const transcriptPath = path.join(resolveClaudeProjectDirForCwd(process.cwd()), `${sessionId}.jsonl`);
@@ -900,6 +916,7 @@ if (isSdkStreamJson) {
   // Avoid printing anything on stdout, as local mode uses `inherit`.
   let localTurnStarted = false;
   let localTurnCompleted = false;
+  let loginCompleted = false;
 
   const maybeStartLocalTurn = () => {
     if (!localActiveTurnEnabled || localTurnStarted) return;
@@ -923,6 +940,24 @@ if (isSdkStreamJson) {
       }, 100)
     : null;
   const interval = setInterval(() => {}, 1000);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    if (loginCompleted) return;
+    if (!String(chunk).includes('/login')) return;
+    loginCompleted = true;
+    safeAppendJsonl(logPath, { type: 'local_login_started', invocationId, ts: Date.now() });
+    process.stdout.write('Open this URL to authenticate:\n');
+    process.stdout.write('https://example.test/fake-claude-profile-auth\n');
+    writeFakeClaudeCredentials();
+    process.stdout.write('Authentication complete\n');
+    safeAppendJsonl(logPath, {
+      type: 'local_login_completed',
+      invocationId,
+      ts: Date.now(),
+      claudeConfigDir: resolveClaudeConfigDir(),
+    });
+    stop();
+  });
   const stop = () => {
     if (localTurnInterval) clearInterval(localTurnInterval);
     clearInterval(interval);

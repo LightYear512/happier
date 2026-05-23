@@ -7,6 +7,7 @@ import {
   registerProfileProvisionHandlers,
   type ProfileProvisionDeps,
 } from './profileProvision';
+import type { CliProfileAuthProvider } from '@/backends/types';
 
 type Handler = RpcHandler;
 
@@ -28,6 +29,27 @@ function createDeferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+function createProfileAuthProvider(overrides: Partial<CliProfileAuthProvider> = {}): CliProfileAuthProvider {
+  return {
+    providerId: 'claude',
+    buildProfileDir: ({ activeServerDir, profileId }) => `${activeServerDir}/profiles/native-cli/claude/${profileId}`,
+    prepareProfileDir: ({ activeServerDir, profileId }) => ({
+      profileDir: `${activeServerDir}/profiles/native-cli/claude/${profileId}`,
+      createdByThisRun: true,
+    }),
+    buildIsolatedLoginContext: ({ profileDir }) => ({
+      command: '/bin/claude',
+      args: ['--flag'],
+      initialInput: '/login\r',
+      env: { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: profileDir },
+      allowlistedEnvKeys: ['CLAUDE_CONFIG_DIR'],
+    }),
+    isProfileProvisioned: () => false,
+    cleanupFailedPrepare: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe('registerProfileProvisionHandlers', () => {
   it('registers provision and progress polling RPC methods', () => {
     const registrar = createRegistrar();
@@ -38,21 +60,90 @@ describe('registerProfileProvisionHandlers', () => {
     expect(registrar.handlers.has(RPC_METHODS.PROFILE_PROVISION_POLL_PROGRESS)).toBe(true);
   });
 
-  it('provisions Claude profiles and calls suspended-session recovery', async () => {
+  it('prepares a provider-owned profile auth session without spawning the provider CLI', async () => {
     const registrar = createRegistrar();
-    const tryRecoverSuspendedSessions = vi.fn();
-    const deps: ProfileProvisionDeps = {
-      provisionClaude: async ({ onPtyOutput }) => {
-        onPtyOutput('login-url');
-        return { profileDir: '/profiles/claude/work', alreadyProvisioned: false };
-      },
-      provisionCodex: async () => {
-        throw new Error('unexpected codex provision');
-      },
-    };
+    const provider = createProfileAuthProvider();
+    const getProfileAuthProvider = vi.fn(async () => provider);
+    const create = vi.fn((params: Parameters<ProfileProvisionDeps['profileAuthSessions']['create']>[0]) => ({
+      profileAuthSessionId: 'auth-work',
+      providerId: params.providerId,
+      profileId: params.profileId,
+      profileDir: params.profileDir,
+      terminalKey: params.terminalKey,
+      command: params.loginContext.command,
+      args: params.loginContext.args,
+      env: params.loginContext.env,
+      initialInput: params.loginContext.initialInput,
+      cwd: params.loginContext.cwd,
+      expiresAtMs: Number.MAX_SAFE_INTEGER,
+    }));
 
     registerProfileProvisionHandlers(registrar, {
-      deps,
+      deps: {
+        getProfileAuthProvider,
+        profileAuthSessions: {
+          create,
+          get: () => null,
+          delete: () => {},
+          reset: () => {},
+        },
+      },
+      activeServerDir: '/active',
+      processEnv: { PATH: '/usr/bin' },
+    });
+
+    await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
+      profileId: 'work',
+      backendId: 'claude',
+      machineId: 'machine-a',
+    })).resolves.toMatchObject({
+      type: 'success',
+      profileDir: '/active/profiles/native-cli/claude/work',
+      alreadyProvisioned: false,
+      ptyOutput: '',
+      terminalKey: 'profile-login:machine-a:claude:work',
+    });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      terminalKey: 'profile-login:machine-a:claude:work',
+    }));
+    const response = await registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
+      profileId: 'other',
+      backendId: 'claude',
+      machineId: 'machine-a',
+    }) as any;
+    expect(response.profileAuthSessionId).toEqual(expect.any(String));
+    expect(getProfileAuthProvider).toHaveBeenCalledWith('claude');
+  });
+
+  it('deduplicates concurrent prepare calls by machine, backend, and profile', async () => {
+    const registrar = createRegistrar();
+    const provider = createProfileAuthProvider();
+    const getProfileAuthProvider = vi.fn(async () => provider);
+
+    registerProfileProvisionHandlers(registrar, {
+      deps: { getProfileAuthProvider },
+      activeServerDir: '/active',
+      processEnv: {},
+    });
+
+    const handler = registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION);
+    const first = handler?.({ profileId: 'work', backendId: 'claude', machineId: 'machine-a' });
+    const second = handler?.({ profileId: 'work', backendId: 'claude', machineId: 'machine-b' });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ type: 'success', terminalKey: 'profile-login:machine-a:claude:work' }),
+      expect.objectContaining({ type: 'success', terminalKey: 'profile-login:machine-b:claude:work' }),
+    ]);
+    expect(getProfileAuthProvider).toHaveBeenCalledTimes(2);
+  });
+
+  it('prepares Claude profiles without recovering suspended sessions before credentials exist', async () => {
+    const registrar = createRegistrar();
+    const tryRecoverSuspendedSessions = vi.fn();
+    const provider = createProfileAuthProvider();
+
+    registerProfileProvisionHandlers(registrar, {
+      deps: { getProfileAuthProvider: async () => provider },
       tryRecoverSuspendedSessions,
       activeServerDir: '/active',
       processEnv: {},
@@ -64,72 +155,85 @@ describe('registerProfileProvisionHandlers', () => {
       machineId: 'm1',
     })).resolves.toEqual({
       type: 'success',
-      profileDir: '/profiles/claude/work',
+      profileDir: '/active/profiles/native-cli/claude/work',
       alreadyProvisioned: false,
-      ptyOutput: 'login-url',
+      ptyOutput: '',
+      profileAuthSessionId: expect.any(String),
+      terminalKey: 'profile-login:m1:claude:work',
     });
-    expect(tryRecoverSuspendedSessions).toHaveBeenCalledWith('work', 'claude');
+    expect(tryRecoverSuspendedSessions).not.toHaveBeenCalled();
   });
 
-  it('exposes live PTY output while provision is still running', async () => {
+  it('recovers suspended sessions when prepare finds an already provisioned profile', async () => {
     const registrar = createRegistrar();
-    const deferred = createDeferred();
-    const deps: ProfileProvisionDeps = {
-      provisionClaude: async ({ onPtyOutput }) => {
-        onPtyOutput('oauth-url');
-        await deferred.promise;
-        return { profileDir: '/profiles/claude/work', alreadyProvisioned: false };
-      },
-      provisionCodex: async () => {
-        throw new Error('unexpected codex provision');
-      },
-    };
+    const tryRecoverSuspendedSessions = vi.fn();
+    const provider = createProfileAuthProvider({
+      isProfileProvisioned: () => true,
+    });
 
     registerProfileProvisionHandlers(registrar, {
-      deps,
+      deps: { getProfileAuthProvider: async () => provider },
+      tryRecoverSuspendedSessions,
       activeServerDir: '/active',
       processEnv: {},
     });
 
-    const provisionPromise = registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
+    await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
       profileId: 'work',
       backendId: 'claude',
       machineId: 'm1',
+    })).resolves.toMatchObject({
+      type: 'success',
+      alreadyProvisioned: true,
+      profileAuthSessionId: null,
     });
+    expect(tryRecoverSuspendedSessions).toHaveBeenCalledWith('work', 'claude');
+  });
+
+  it('reports prepare completion through progress polling', async () => {
+    const registrar = createRegistrar();
+    const provider = createProfileAuthProvider();
+
+    registerProfileProvisionHandlers(registrar, {
+      deps: { getProfileAuthProvider: async () => provider },
+      activeServerDir: '/active',
+      processEnv: {},
+    });
+
+    await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
+      profileId: 'work',
+      backendId: 'claude',
+      machineId: 'm1',
+    })).resolves.toMatchObject({ type: 'success' });
 
     await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION_POLL_PROGRESS)?.({
       profileId: 'work',
       backendId: 'claude',
+      machineId: 'm1',
     })).resolves.toEqual({
-      output: 'oauth-url',
-      completed: false,
-    });
-
-    deferred.resolve();
-    await expect(provisionPromise).resolves.toMatchObject({ type: 'success' });
-    await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION_POLL_PROGRESS)?.({
-      profileId: 'work',
-      backendId: 'claude',
-    })).resolves.toEqual({
-      output: 'oauth-url',
+      output: '',
       completed: true,
     });
   });
 
-  it('deduplicates concurrent provisions for the same backend and profile', async () => {
+  it('deduplicates concurrent prepare calls for the same machine, backend, and profile', async () => {
     const registrar = createRegistrar();
-    const provisionClaude = vi.fn(async ({ onPtyOutput }: Parameters<ProfileProvisionDeps['provisionClaude']>[0]) => {
-      onPtyOutput('done');
-      return { profileDir: '/profiles/claude/work', alreadyProvisioned: false };
+    const deferred = createDeferred();
+    const provider = createProfileAuthProvider({
+      buildIsolatedLoginContext: async (params) => {
+        await deferred.promise;
+        return {
+          command: '/bin/claude',
+          args: [],
+          env: { CLAUDE_CONFIG_DIR: params.profileDir },
+          allowlistedEnvKeys: ['CLAUDE_CONFIG_DIR'],
+        };
+      },
     });
+    const getProfileAuthProvider = vi.fn(async () => provider);
 
     registerProfileProvisionHandlers(registrar, {
-      deps: {
-        provisionClaude,
-        provisionCodex: async () => {
-          throw new Error('unexpected codex provision');
-        },
-      },
+      deps: { getProfileAuthProvider },
       activeServerDir: '/active',
       processEnv: {},
     });
@@ -137,23 +241,95 @@ describe('registerProfileProvisionHandlers', () => {
     const handler = registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION);
     const first = handler?.({ profileId: 'work', backendId: 'claude', machineId: 'm1' });
     const second = handler?.({ profileId: 'work', backendId: 'claude', machineId: 'm1' });
+    deferred.resolve();
 
     await expect(Promise.all([first, second])).resolves.toEqual([
-      { type: 'success', profileDir: '/profiles/claude/work', alreadyProvisioned: false, ptyOutput: 'done' },
-      { type: 'success', profileDir: '/profiles/claude/work', alreadyProvisioned: false, ptyOutput: 'done' },
+      expect.objectContaining({ type: 'success', profileDir: '/active/profiles/native-cli/claude/work' }),
+      expect.objectContaining({ type: 'success', profileDir: '/active/profiles/native-cli/claude/work' }),
     ]);
-    expect(provisionClaude).toHaveBeenCalledTimes(1);
+    expect(getProfileAuthProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('verify-only requests do not create a new auth session when credentials are still missing', async () => {
+    const registrar = createRegistrar();
+    const create = vi.fn();
+    const provider = createProfileAuthProvider({
+      isProfileProvisioned: () => false,
+    });
+
+    registerProfileProvisionHandlers(registrar, {
+      deps: {
+        getProfileAuthProvider: async () => provider,
+        profileAuthSessions: {
+          create,
+          get: () => null,
+          delete: () => {},
+          reset: () => {},
+        },
+      },
+      activeServerDir: '/active',
+      processEnv: {},
+    });
+
+    await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
+      profileId: 'work',
+      backendId: 'claude',
+      machineId: 'm1',
+      profileAuthSessionId: 'auth-1',
+      verifyOnly: true,
+    })).resolves.toMatchObject({
+      type: 'error',
+      errorCode: 'PROVISION_FAILED',
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('verify-only requests report success when credentials are present', async () => {
+    const registrar = createRegistrar();
+    const create = vi.fn();
+    const deleteSession = vi.fn();
+    const provider = createProfileAuthProvider({
+      isProfileProvisioned: () => true,
+    });
+
+    registerProfileProvisionHandlers(registrar, {
+      deps: {
+        getProfileAuthProvider: async () => provider,
+        profileAuthSessions: {
+          create,
+          get: () => null,
+          delete: deleteSession,
+          reset: () => {},
+        },
+      },
+      activeServerDir: '/active',
+      processEnv: {},
+    });
+
+    await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
+      profileId: 'work',
+      backendId: 'claude',
+      machineId: 'm1',
+      profileAuthSessionId: 'auth-1',
+      verifyOnly: true,
+    })).resolves.toEqual({
+      type: 'success',
+      profileDir: '/active/profiles/native-cli/claude/work',
+      alreadyProvisioned: true,
+      ptyOutput: '',
+      profileAuthSessionId: null,
+      terminalKey: 'profile-login:m1:claude:work',
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(deleteSession).toHaveBeenCalledWith('auth-1');
   });
 
   it('rejects malformed profile provision requests', async () => {
     const registrar = createRegistrar();
-    const provisionClaude = vi.fn<ProfileProvisionDeps['provisionClaude']>();
+    const getProfileAuthProvider = vi.fn<ProfileProvisionDeps['getProfileAuthProvider']>();
 
     registerProfileProvisionHandlers(registrar, {
-      deps: {
-        provisionClaude,
-        provisionCodex: vi.fn<ProfileProvisionDeps['provisionCodex']>(),
-      },
+      deps: { getProfileAuthProvider },
     });
 
     await expect(registrar.handlers.get(RPC_METHODS.PROFILE_PROVISION)?.({
@@ -173,7 +349,7 @@ describe('registerProfileProvisionHandlers', () => {
       type: 'error',
       errorCode: 'INVALID_REQUEST',
     });
-    expect(provisionClaude).not.toHaveBeenCalled();
+    expect(getProfileAuthProvider).not.toHaveBeenCalled();
   });
 });
 

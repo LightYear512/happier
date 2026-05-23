@@ -12,7 +12,8 @@ import { createTerminalPtySessionManager } from '@/daemon/terminalPty/terminalPt
 import type { PtyProcess, PtyProvider, PtySpawnParams } from '@/daemon/terminalPty/ptyProvider';
 
 class FakePty implements PtyProcess {
-  write(): void { }
+  public readonly writes: string[] = [];
+  write(data: string): void { this.writes.push(data); }
   resize(): void { }
   kill(): void { }
   onData(_listener: (data: string) => void): { dispose: () => void } { return { dispose: () => { } }; }
@@ -23,10 +24,13 @@ class FakePty implements PtyProcess {
 
 class FakePtyProvider implements PtyProvider {
   public readonly spawned: PtySpawnParams[] = [];
+  public readonly ptys: FakePty[] = [];
 
   spawn(params: PtySpawnParams): PtyProcess {
     this.spawned.push(params);
-    return new FakePty();
+    const pty = new FakePty();
+    this.ptys.push(pty);
+    return pty;
   }
 }
 
@@ -102,6 +106,195 @@ describe('registerMachineTerminalRpcHandlers', () => {
     expect(result).toEqual(expect.objectContaining({ ok: true, reused: false }));
     expect(provider.spawned).toHaveLength(1);
     expect(await realpath(provider.spawned[0]?.options.cwd ?? '')).toBe(realSubDir);
+  });
+
+  it('spawns a prepared profile auth session command with daemon-held env and initial input', async () => {
+    const suiteDir = await mkdtemp(join(tmpdir(), 'happier-terminal-profile-auth-'));
+    const profileDir = join(suiteDir, 'profile');
+    await mkdir(profileDir, { recursive: true });
+
+    const provider = new FakePtyProvider();
+    const sessionManager = createTerminalPtySessionManager({
+      ptyProvider: provider,
+      env: { SHELL: '/bin/bash', CLAUDE_CONFIG_DIR: '/global' } as any,
+      platform: 'linux',
+      now: () => 0,
+      config: {
+        maxSessions: 10,
+        idleTimeoutMs: 60_000,
+        bufferMaxBytes: 1_000_000,
+        bufferMaxEvents: 1000,
+        urlParseBufferLimit: 32_768,
+        maxWriteChunkBytes: 16_384,
+        defaultCols: 80,
+        defaultRows: 24,
+      },
+    });
+
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => registered.set(method, handler),
+    } as unknown as RpcHandlerManager;
+
+    registerMachineTerminalRpcHandlers({
+      rpcHandlerManager,
+      deps: {
+        env: { HAPPIER_DAEMON_TERMINAL_ENABLED: '1', SHELL: '/bin/bash', CLAUDE_CONFIG_DIR: '/global' },
+        workingDirectory: suiteDir,
+        sessionManager,
+        profileAuthSessions: {
+          get: (id: string) => id === 'auth-1'
+            ? {
+              profileAuthSessionId: 'auth-1',
+	              providerId: 'claude',
+	              profileId: 'work',
+	              profileDir,
+	              terminalKey: 'profile-login:machine-a:claude:work',
+	              command: '/bin/claude',
+              args: ['--dangerously-skip-permissions'],
+              env: { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: profileDir },
+	              initialInput: '/login\r',
+	              cwd: profileDir,
+	              expiresAtMs: Number.MAX_SAFE_INTEGER,
+	            }
+            : null,
+        },
+      },
+    });
+
+    const ensure = registered.get(RPC_METHODS.DAEMON_TERMINAL_ENSURE);
+    expect(ensure).toBeDefined();
+
+    const result = await ensure!({
+      terminalKey: 'profile-login:machine-a:claude:work',
+      profileAuthSessionId: 'auth-1',
+      cwd: '/should/not/be/used',
+      initialCommand: 'echo unsafe',
+      cols: 100,
+      rows: 40,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, reused: false }));
+    expect(provider.spawned).toHaveLength(1);
+    expect(provider.spawned[0]).toEqual(expect.objectContaining({
+      file: '/bin/claude',
+      args: ['--dangerously-skip-permissions'],
+    }));
+    expect(provider.spawned[0]?.options.cwd).toBe(profileDir);
+    expect(provider.spawned[0]?.options.env).toEqual(expect.objectContaining({
+      CLAUDE_CONFIG_DIR: profileDir,
+      PATH: '/usr/bin',
+    }));
+    expect(provider.spawned[0]?.options.env).not.toMatchObject({ CLAUDE_CONFIG_DIR: '/global' });
+    expect(provider.ptys[0]?.writes).toEqual(['/login\r']);
+  });
+
+  it('rejects unknown profile auth session ids before spawning a terminal', async () => {
+    const provider = new FakePtyProvider();
+    const sessionManager = createTerminalPtySessionManager({
+      ptyProvider: provider,
+      env: { SHELL: '/bin/bash' } as any,
+      platform: 'linux',
+      now: () => 0,
+      config: {
+        maxSessions: 10,
+        idleTimeoutMs: 60_000,
+        bufferMaxBytes: 1_000_000,
+        bufferMaxEvents: 1000,
+        urlParseBufferLimit: 32_768,
+        maxWriteChunkBytes: 16_384,
+        defaultCols: 80,
+        defaultRows: 24,
+      },
+    });
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => registered.set(method, handler),
+    } as unknown as RpcHandlerManager;
+
+    registerMachineTerminalRpcHandlers({
+      rpcHandlerManager,
+      deps: {
+        env: { HAPPIER_DAEMON_TERMINAL_ENABLED: '1' },
+        workingDirectory: process.cwd(),
+        sessionManager,
+        profileAuthSessions: { get: () => null },
+      },
+    });
+
+    await expect(registered.get(RPC_METHODS.DAEMON_TERMINAL_ENSURE)?.({
+      terminalKey: 'profile-login:machine-a:claude:work',
+      profileAuthSessionId: 'missing',
+      cols: 80,
+      rows: 24,
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'terminal_invalid_request',
+      error: 'terminal_invalid_request',
+    });
+    expect(provider.spawned).toHaveLength(0);
+  });
+
+  it('rejects profile auth sessions bound to a different terminal key', async () => {
+    const suiteDir = await mkdtemp(join(tmpdir(), 'happier-terminal-profile-auth-key-'));
+    const profileDir = join(suiteDir, 'profile');
+    await mkdir(profileDir, { recursive: true });
+
+    const provider = new FakePtyProvider();
+    const sessionManager = createTerminalPtySessionManager({
+      ptyProvider: provider,
+      env: { SHELL: '/bin/bash' } as any,
+      platform: 'linux',
+      now: () => 0,
+      config: {
+        maxSessions: 10,
+        idleTimeoutMs: 60_000,
+        bufferMaxBytes: 1_000_000,
+        bufferMaxEvents: 1000,
+        urlParseBufferLimit: 32_768,
+        maxWriteChunkBytes: 16_384,
+        defaultCols: 80,
+        defaultRows: 24,
+      },
+    });
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => registered.set(method, handler),
+    } as unknown as RpcHandlerManager;
+
+    registerMachineTerminalRpcHandlers({
+      rpcHandlerManager,
+      deps: {
+        env: { HAPPIER_DAEMON_TERMINAL_ENABLED: '1' },
+        workingDirectory: suiteDir,
+        sessionManager,
+        profileAuthSessions: {
+          get: () => ({
+            profileAuthSessionId: 'auth-1',
+            providerId: 'claude',
+            profileId: 'work',
+            profileDir,
+            terminalKey: 'profile-login:machine-a:claude:work',
+            command: '/bin/claude',
+            args: [],
+            env: { CLAUDE_CONFIG_DIR: profileDir },
+            expiresAtMs: Number.MAX_SAFE_INTEGER,
+          }),
+        },
+      },
+    });
+
+    await expect(registered.get(RPC_METHODS.DAEMON_TERMINAL_ENSURE)?.({
+      terminalKey: 'profile-login:machine-b:claude:work',
+      profileAuthSessionId: 'auth-1',
+      cols: 80,
+      rows: 24,
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'terminal_invalid_request',
+      error: 'terminal_invalid_request',
+    });
+    expect(provider.spawned).toHaveLength(0);
   });
 
   it('allows an absolute cwd outside the default directory when no restricted policy is configured', async () => {

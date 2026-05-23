@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ActivityIndicator, Linking, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -11,10 +11,15 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import {
     callProfileProvision,
-    callProfileProvisionProgress,
+    callProfileProvisionVerify,
     type ProfileProvisionBackendId,
     type ProfileProvisionResult,
 } from '@/sync/domains/profiles/profileProvisionRpc';
+import { EmbeddedTerminalPane } from '@/components/terminal/embedded/EmbeddedTerminalPane';
+import type { EmbeddedTerminalRendererHandle } from '@/components/sessions/terminal/embeddedTerminalRendererHandle';
+import { useMachineTerminalSession } from '@/hooks/machine/useMachineTerminalSession';
+import { useMachine } from '@/sync/domains/state/storage';
+import { isMachineOnline } from '@/utils/sessions/machineUtils';
 
 type ProvisionPtyModalProps = CustomModalInjectedProps & Readonly<{
     profileId: string;
@@ -81,6 +86,38 @@ export async function runProvision(
     }
 }
 
+export async function verifyProvision(
+    params: Readonly<{
+        profileId: string;
+        backendId: ProfileProvisionBackendId;
+        machineId: string;
+        profileAuthSessionId?: string | null;
+    }>,
+    deps: Readonly<{
+        call: typeof callProfileProvisionVerify;
+        errorFallback: () => string;
+    }>,
+): Promise<Exclude<ProvisionPhase, { kind: 'running' }>> {
+    try {
+        const result = await deps.call(params);
+        if (result.type === 'success' && result.alreadyProvisioned) {
+            return { kind: 'success', result };
+        }
+        return {
+            kind: 'error',
+            message: result.type === 'error'
+                ? result.errorMessage ?? deps.errorFallback()
+                : deps.errorFallback(),
+            ptyOutput: result.type === 'error' ? result.ptyOutput : result.ptyOutput,
+        };
+    } catch (error) {
+        return {
+            kind: 'error',
+            message: error instanceof Error ? error.message : deps.errorFallback(),
+        };
+    }
+}
+
 const stylesheet = StyleSheet.create((theme) => ({
     body: {
         flex: 1,
@@ -99,29 +136,9 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         ...Typography.default(),
     },
-    outputContainer: {
+    terminalContainer: {
         flex: 1,
         minHeight: 120,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-    },
-    outputScroll: {
-        flex: 1,
-    },
-    outputContent: {
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    outputText: {
-        fontSize: 12,
-        color: theme.colors.text.primary,
-        ...Typography.mono(),
-    },
-    outputLink: {
-        color: theme.colors.accent.blue,
-        textDecorationLine: 'underline',
     },
 }));
 
@@ -129,8 +146,10 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const [phase, setPhase] = React.useState<ProvisionPhase>({ kind: 'running' });
-    const [liveOutput, setLiveOutput] = React.useState('');
     const startedRef = React.useRef(false);
+    const terminalRendererRef = React.useRef<EmbeddedTerminalRendererHandle | null>(null);
+    const machine = useMachine(props.machineId);
+    const machineReachable = Boolean(machine && isMachineOnline(machine));
 
     React.useEffect(() => {
         if (startedRef.current) return;
@@ -148,7 +167,7 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
             });
             if (cancelled) return;
             setPhase(next);
-            if (next.kind === 'success') {
+            if (next.kind === 'success' && next.result.alreadyProvisioned) {
                 props.onProvisioned?.();
             }
         })();
@@ -158,41 +177,48 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
         };
     }, [props.backendId, props.machineId, props.onProvisioned, props.profileId]);
 
+    const preparedSession = phase.kind === 'success' && !phase.result.alreadyProvisioned
+        ? phase.result
+        : null;
+    const terminalController = useMachineTerminalSession({
+        machineId: props.machineId,
+        cwd: preparedSession?.profileDir ?? null,
+        machineReachable,
+        machineRpcTargetAvailable: Boolean(props.machineId && preparedSession),
+        terminalKey: preparedSession?.terminalKey ?? `profile-login:${props.machineId}:${props.backendId}:${props.profileId}`,
+        terminalRef: terminalRendererRef,
+        profileAuthSessionId: preparedSession?.profileAuthSessionId,
+        closeOnUnmount: true,
+    });
+
+    const verifyingRef = React.useRef(false);
     React.useEffect(() => {
-        if (phase.kind !== 'running') return;
+        if (!preparedSession || terminalController.status !== 'exited' || verifyingRef.current) return;
+        verifyingRef.current = true;
         let cancelled = false;
-        const intervalId = setInterval(() => {
-            void (async () => {
-                try {
-                    const snapshot = await callProfileProvisionProgress({
-                        profileId: props.profileId,
-                        backendId: props.backendId,
-                        machineId: props.machineId,
-                    });
-                    if (cancelled) return;
-                    setLiveOutput(snapshot.output);
-                    if (snapshot.completed) {
-                        clearInterval(intervalId);
-                    }
-                } catch {
-                    // Progress polling is best-effort; the final RPC result still carries PTY output.
-                }
-            })();
-        }, 500);
+        void (async () => {
+            const next = await verifyProvision({
+                profileId: props.profileId,
+                backendId: props.backendId,
+                machineId: props.machineId,
+                profileAuthSessionId: preparedSession.profileAuthSessionId,
+            }, {
+                call: callProfileProvisionVerify,
+                errorFallback: () => t('profiles.provision.errorBody'),
+            });
+            if (cancelled) return;
+            setPhase(next);
+            if (next.kind === 'success') {
+                props.onProvisioned?.();
+            }
+        })();
         return () => {
             cancelled = true;
-            clearInterval(intervalId);
         };
-    }, [phase.kind, props.backendId, props.machineId, props.profileId]);
+    }, [preparedSession, props.backendId, props.machineId, props.onProvisioned, props.profileId, terminalController.status]);
 
     const backendName = props.backendId === 'codex' ? 'Codex' : 'Claude';
-    const ptyOutput = phase.kind === 'success'
-        ? phase.result.ptyOutput || liveOutput
-        : phase.kind === 'error'
-            ? phase.ptyOutput || liveOutput
-            : liveOutput;
-    const outputSegments = React.useMemo(() => splitTextWithUrls(ptyOutput), [ptyOutput]);
-    const closeLabel = phase.kind === 'running'
+    const closeLabel = phase.kind === 'running' || preparedSession
         ? t('profiles.provision.runInBackground')
         : phase.kind === 'success'
             ? t('common.done')
@@ -238,28 +264,16 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
                 </Text>
             </View>
 
-            {outputSegments.length > 0 ? (
-                <View style={styles.outputContainer}>
-                    <ScrollView style={styles.outputScroll} contentContainerStyle={styles.outputContent}>
-                        <Text style={styles.outputText} selectable>
-                            {outputSegments.map((segment, index) => (
-                                segment.kind === 'url' ? (
-                                    <Text
-                                        key={`${segment.value}-${index}`}
-                                        style={styles.outputLink}
-                                        accessibilityRole="link"
-                                        onPress={() => {
-                                            Linking.openURL(segment.value).catch(() => {});
-                                        }}
-                                    >
-                                        {segment.value}
-                                    </Text>
-                                ) : (
-                                    <Text key={`${segment.value}-${index}`}>{segment.value}</Text>
-                                )
-                            ))}
-                        </Text>
-                    </ScrollView>
+            {preparedSession ? (
+                <View style={styles.terminalContainer}>
+                    <EmbeddedTerminalPane
+                        title={t('profiles.provision.modalTitle', { backend: backendName })}
+                        controller={terminalController}
+                        terminalRef={terminalRendererRef}
+                        onRequestClose={props.onClose}
+                        testIdPrefix="profile-provision-terminal"
+                        showQuickKeys={Platform.OS !== 'web'}
+                    />
                 </View>
             ) : null}
         </View>

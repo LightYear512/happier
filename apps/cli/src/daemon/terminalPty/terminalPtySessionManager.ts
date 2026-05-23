@@ -17,6 +17,23 @@ type EnsureOk = Readonly<{ ok: true; terminalId: string; reused: boolean }>;
 type ReadOk = Readonly<{ ok: true; terminalId: string; events: readonly DaemonTerminalStreamEvent[]; nextCursor: number; done: boolean }>;
 type SimpleOk = Readonly<{ ok: true }>;
 
+export type TerminalPtyLaunchOverride = Readonly<{
+  file: string;
+  args: readonly string[];
+  cwd?: string;
+  env: NodeJS.ProcessEnv;
+  initialInput?: string | null;
+}>;
+
+type TerminalEnsureInput = Readonly<{
+  terminalKey: string;
+  cwd: string;
+  cols?: number;
+  rows?: number;
+  initialCommand?: string;
+  launch?: TerminalPtyLaunchOverride;
+}>;
+
 export type TerminalPtySessionManagerConfig = Readonly<{
   maxSessions: number;
   idleTimeoutMs: number;
@@ -29,12 +46,12 @@ export type TerminalPtySessionManagerConfig = Readonly<{
 }>;
 
 export type TerminalPtySessionManager = Readonly<{
-  ensure: (input: Readonly<{ terminalKey: string; cwd: string; cols?: number; rows?: number; initialCommand?: string }>) => EnsureOk | ErrorResult;
+  ensure: (input: TerminalEnsureInput) => EnsureOk | ErrorResult;
   read: (input: Readonly<{ terminalId: string; cursor: number; maxBytes: number; maxEvents: number }>) => ReadOk | ErrorResult;
   input: (input: Readonly<{ terminalId: string; data: string }>) => SimpleOk | ErrorResult;
   resize: (input: Readonly<{ terminalId: string; cols: number; rows: number }>) => SimpleOk | ErrorResult;
   close: (input: Readonly<{ terminalId: string }>) => SimpleOk | ErrorResult;
-  restart: (input: Readonly<{ terminalKey: string; cwd: string; cols?: number; rows?: number; initialCommand?: string }>) => EnsureOk | ErrorResult;
+  restart: (input: TerminalEnsureInput) => EnsureOk | ErrorResult;
 }>;
 
 function okDisabled(errorCode: DaemonTerminalErrorCode): ErrorResult {
@@ -224,7 +241,7 @@ export function createTerminalPtySessionManager(params: Readonly<{
     return { ok: true };
   };
 
-  const ensure = (input: Readonly<{ terminalKey: string; cwd: string; cols?: number; rows?: number; initialCommand?: string }>): EnsureOk | ErrorResult => {
+  const ensure = (input: TerminalEnsureInput): EnsureOk | ErrorResult => {
     reapIdle();
     const existingId = terminalIdByKey.get(input.terminalKey) ?? null;
     if (existingId) {
@@ -264,19 +281,24 @@ export function createTerminalPtySessionManager(params: Readonly<{
     const cols = typeof input.cols === 'number' && Number.isFinite(input.cols) ? Math.max(2, Math.trunc(input.cols)) : config.defaultCols;
     const rows = typeof input.rows === 'number' && Number.isFinite(input.rows) ? Math.max(2, Math.trunc(input.rows)) : config.defaultRows;
 
-    const shell = resolveTerminalShell(env, platform);
+    const shell = input.launch ? null : resolveTerminalShell(env, platform);
+    const spawnFile = input.launch?.file ?? shell?.file;
+    const spawnArgs = input.launch ? [...input.launch.args] : (shell?.args.slice() ?? []);
+    const spawnCwd = input.launch?.cwd ?? input.cwd;
+    const spawnEnv = input.launch?.env ?? resolveTerminalSpawnEnv(env);
+    if (!spawnFile) return okDisabled('terminal_spawn_failed');
 
     let pty: PtyProcess;
     try {
       pty = params.ptyProvider.spawn({
-        file: shell.file,
-        args: shell.args.slice(),
+        file: spawnFile,
+        args: spawnArgs,
         options: {
           name: 'xterm-256color',
           cols,
           rows,
-          cwd: input.cwd,
-          env: resolveTerminalSpawnEnv(env),
+          cwd: spawnCwd,
+          env: resolveTerminalSpawnEnv(spawnEnv),
           encoding: 'utf8',
         },
       });
@@ -289,7 +311,7 @@ export function createTerminalPtySessionManager(params: Readonly<{
     const session: PtySession = {
       terminalId,
       terminalKey: input.terminalKey,
-      cwd: input.cwd,
+      cwd: spawnCwd,
       cols,
       rows,
       pty,
@@ -328,7 +350,13 @@ export function createTerminalPtySessionManager(params: Readonly<{
     sessionsById.set(terminalId, session);
     terminalIdByKey.set(input.terminalKey, terminalId);
 
-    if (input.initialCommand && input.initialCommand.trim()) {
+    if (input.launch?.initialInput) {
+      try {
+        pty.write(input.launch.initialInput);
+      } catch {
+        // ignore
+      }
+    } else if (input.initialCommand && input.initialCommand.trim()) {
       const cmd = input.initialCommand.endsWith('\n') ? input.initialCommand : `${input.initialCommand}\n`;
       try {
         pty.write(cmd);
@@ -340,7 +368,7 @@ export function createTerminalPtySessionManager(params: Readonly<{
     return { ok: true, terminalId, reused: false };
   };
 
-  const restart = (input: Readonly<{ terminalKey: string; cwd: string; cols?: number; rows?: number; initialCommand?: string }>): EnsureOk | ErrorResult => {
+  const restart = (input: TerminalEnsureInput): EnsureOk | ErrorResult => {
     reapIdle();
     const existing = terminalIdByKey.get(input.terminalKey) ?? null;
     if (existing) {
@@ -352,6 +380,7 @@ export function createTerminalPtySessionManager(params: Readonly<{
       cols: input.cols,
       rows: input.rows,
       initialCommand: input.initialCommand,
+      launch: input.launch,
     });
   };
 
