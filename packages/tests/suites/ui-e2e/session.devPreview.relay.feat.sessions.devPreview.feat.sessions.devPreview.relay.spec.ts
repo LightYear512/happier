@@ -47,6 +47,8 @@ type CliAccountSettingsCredentials = Readonly<{
 }>;
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
+const previewHostBaseDomain = `happier-preview-origin-${run.runId}.localhost`;
+const normalizedPreviewHostBaseDomain = previewHostBaseDomain.toLowerCase();
 
 function resolveServerLightSqliteDbPath(params: { suiteDir: string }): string {
   return resolve(join(params.suiteDir, 'server-light-data', 'happier-server-light.sqlite'));
@@ -278,6 +280,7 @@ test.describe('ui e2e: dev preview relay', () => {
       dbProvider: 'sqlite',
       extraEnv: {
         HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
+        HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: previewHostBaseDomain,
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
         HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
         HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
@@ -451,7 +454,10 @@ test.describe('ui e2e: dev preview relay', () => {
     await expect(page.getByTestId(`session-details-tab-close-${previewTabKey}`)).toHaveCount(1);
     await expect
       .poll(async () => iframe.getAttribute('src'), { timeout: 60_000 })
-      .toContain('/preview/');
+      .toContain(normalizedPreviewHostBaseDomain);
+    await expect
+      .poll(async () => iframe.getAttribute('src'), { timeout: 60_000 })
+      .not.toContain('/preview/');
 
     const frameHandle = await iframe.elementHandle();
     const frame = await frameHandle?.contentFrame();
@@ -468,10 +474,13 @@ test.describe('ui e2e: dev preview relay', () => {
     await expect
       .poll(() => frame.url(), { timeout: 60_000 })
       .toContain('/ai-console/develop/');
+    await expect
+      .poll(() => new URL(frame.url()).hostname, { timeout: 60_000 })
+      .toContain(normalizedPreviewHostBaseDomain);
 
-    const screenshotPath = resolve(join(testDir, 'dev-preview-panel-url-path.png'));
+    const screenshotPath = resolve(join(testDir, 'dev-preview-panel-host-origin.png'));
     await page.screenshot({ path: screenshotPath, fullPage: true });
-    await testInfo.attach('dev-preview-panel-url-path.png', {
+    await testInfo.attach('dev-preview-panel-host-origin.png', {
       path: screenshotPath,
       contentType: 'image/png',
     });
