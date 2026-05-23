@@ -4,6 +4,8 @@ export type PreviewRouteContext = Readonly<{
   routeKey: string;
 }>;
 
+export type PreviewNamespaceStrategy = 'path' | 'host';
+
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0:0:0:0:0:0:0:1']);
 
 function normalizeHostname(hostname: string): string {
@@ -37,6 +39,11 @@ function buildPreviewPathFromUrl(url: URL, basePath: string, previewToken?: stri
   return `${basePath}${path}${search}${url.hash}`;
 }
 
+function buildHostPreviewPathFromUrl(url: URL, previewToken?: string | null): string {
+  const search = appendPreviewTokenToSearch(url.search, previewToken);
+  return `${url.pathname}${search}${url.hash}`;
+}
+
 export function buildPreviewRouteBasePath(context: PreviewRouteContext): string {
   return `/preview/${encodeURIComponent(context.sessionId)}/${encodeURIComponent(context.machineId)}/${encodeURIComponent(context.routeKey)}/`;
 }
@@ -45,6 +52,7 @@ export function rewritePreviewUrlValue(
   value: string,
   context: PreviewRouteContext,
   previewToken?: string | null,
+  namespaceStrategy: PreviewNamespaceStrategy = 'path',
 ): string | null {
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith('#') || hasBlockedScheme(trimmed)) {
@@ -52,7 +60,7 @@ export function rewritePreviewUrlValue(
   }
 
   const basePath = buildPreviewRouteBasePath(context);
-  if (trimmed.startsWith(basePath)) {
+  if (namespaceStrategy === 'path' && trimmed.startsWith(basePath)) {
     return null;
   }
 
@@ -66,12 +74,16 @@ export function rewritePreviewUrlValue(
     if (!isLoopbackHost(parsed.hostname)) {
       return null;
     }
-    return buildPreviewPathFromUrl(parsed, basePath, previewToken);
+    return namespaceStrategy === 'host'
+      ? buildHostPreviewPathFromUrl(parsed, previewToken)
+      : buildPreviewPathFromUrl(parsed, basePath, previewToken);
   }
 
   if (trimmed.startsWith('/')) {
     const parsed = new URL(trimmed, 'https://preview.invalid');
-    return buildPreviewPathFromUrl(parsed, basePath, previewToken);
+    return namespaceStrategy === 'host'
+      ? buildHostPreviewPathFromUrl(parsed, previewToken)
+      : buildPreviewPathFromUrl(parsed, basePath, previewToken);
   }
 
   let parsed: URL;
@@ -87,17 +99,20 @@ export function rewritePreviewUrlValue(
   if (!isLoopbackHost(parsed.hostname)) {
     return null;
   }
-  if (parsed.pathname.startsWith(basePath)) {
+  if (namespaceStrategy === 'path' && parsed.pathname.startsWith(basePath)) {
     return null;
   }
 
-  return buildPreviewPathFromUrl(parsed, basePath, previewToken);
+  return namespaceStrategy === 'host'
+    ? buildHostPreviewPathFromUrl(parsed, previewToken)
+    : buildPreviewPathFromUrl(parsed, basePath, previewToken);
 }
 
 export function rewritePreviewSrcSetValue(
   value: string,
   context: PreviewRouteContext,
   previewToken?: string | null,
+  namespaceStrategy: PreviewNamespaceStrategy = 'path',
 ): string {
   return value
     .split(',')
@@ -109,7 +124,7 @@ export function rewritePreviewSrcSetValue(
       const firstWhitespace = trimmed.search(/\s/);
       const rawUrl = firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
       const descriptor = firstWhitespace === -1 ? '' : trimmed.slice(firstWhitespace);
-      const rewritten = rewritePreviewUrlValue(rawUrl, context, previewToken);
+      const rewritten = rewritePreviewUrlValue(rawUrl, context, previewToken, namespaceStrategy);
       return rewritten ? `${rewritten}${descriptor}` : trimmed;
     })
     .join(', ');

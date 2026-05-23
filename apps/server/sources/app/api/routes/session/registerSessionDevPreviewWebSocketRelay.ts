@@ -10,6 +10,7 @@ import { SessionDevPreviewSocketServerToMachineMessageSchema } from '@happier-de
 import { verifySessionDevPreviewToken } from './sessionDevPreviewToken';
 import {
   createPreviewRelayWebSocketServer,
+  matchHostNamespacePreviewRequest,
   matchPreviewRouteRequest,
   readRequestedSubprotocols,
   resolvePreviewWsOpenTimeoutMs,
@@ -178,7 +179,7 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
   }
 
   server.on('upgrade', async (request, socket, head) => {
-    const matched = matchPreviewRouteRequest(request.url ?? '/');
+    const matched = matchPreviewRouteRequest(request.url ?? '/') ?? matchHostNamespacePreviewRequest(request, process.env);
     if (!matched) {
       return;
     }

@@ -1,6 +1,7 @@
 import { createPreviewRuntimeInterceptorSource } from './createPreviewRuntimeInterceptorSource';
 import {
   type PreviewRouteContext,
+  type PreviewNamespaceStrategy,
   rewritePreviewSrcSetValue,
   rewritePreviewUrlValue,
 } from './previewRoutePaths';
@@ -10,6 +11,7 @@ type RewritePreviewResponseBodyParams = Readonly<{
   body: string;
   routeContext: PreviewRouteContext;
   previewToken?: string | null;
+  namespaceStrategy?: PreviewNamespaceStrategy;
   runtimeScriptNonce?: string | null;
   injectRuntimeInterceptor?: boolean;
 }>;
@@ -47,9 +49,14 @@ function shouldRewriteAsJavaScript(contentType: string): boolean {
   return REWRITABLE_CONTENT_TYPES.javascript.some((candidate) => normalized.includes(candidate));
 }
 
-function rewriteCssText(body: string, routeContext: PreviewRouteContext, previewToken?: string | null): string {
+function rewriteCssText(
+  body: string,
+  routeContext: PreviewRouteContext,
+  previewToken?: string | null,
+  namespaceStrategy: PreviewNamespaceStrategy = 'path',
+): string {
   let rewritten = body.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, quote: string, rawUrl: string) => {
-    const nextUrl = rewritePreviewUrlValue(rawUrl, routeContext, previewToken);
+    const nextUrl = rewritePreviewUrlValue(rawUrl, routeContext, previewToken, namespaceStrategy);
     if (!nextUrl) {
       return full;
     }
@@ -57,7 +64,7 @@ function rewriteCssText(body: string, routeContext: PreviewRouteContext, preview
   });
 
   rewritten = rewritten.replace(/@import\s+(url\(\s*)?(['"])([^'"]+)\2(\s*\))?/gi, (full, urlPrefix: string | undefined, quote: string, rawUrl: string, urlSuffix: string | undefined) => {
-    const nextUrl = rewritePreviewUrlValue(rawUrl, routeContext, previewToken);
+    const nextUrl = rewritePreviewUrlValue(rawUrl, routeContext, previewToken, namespaceStrategy);
     if (!nextUrl) {
       return full;
     }
@@ -70,7 +77,12 @@ function rewriteCssText(body: string, routeContext: PreviewRouteContext, preview
   return rewritten;
 }
 
-function rewriteJavaScriptText(body: string, routeContext: PreviewRouteContext, previewToken?: string | null): string {
+function rewriteJavaScriptText(
+  body: string,
+  routeContext: PreviewRouteContext,
+  previewToken?: string | null,
+  namespaceStrategy: PreviewNamespaceStrategy = 'path',
+): string {
   const edits: Array<{ start: number; end: number; value: string }> = [];
   const length = body.length;
 
@@ -129,7 +141,7 @@ function rewriteJavaScriptText(body: string, routeContext: PreviewRouteContext, 
   const addSpecifierEdit = (quoteIndex: number): number => {
     const literal = readStringLiteral(quoteIndex);
     if (!literal) return quoteIndex + 1;
-    const nextUrl = rewritePreviewUrlValue(literal.raw, routeContext, previewToken);
+    const nextUrl = rewritePreviewUrlValue(literal.raw, routeContext, previewToken, namespaceStrategy);
     if (nextUrl) {
       edits.push({ start: quoteIndex + 1, end: literal.end - 1, value: nextUrl });
     }
@@ -212,24 +224,29 @@ function rewriteJavaScriptText(body: string, routeContext: PreviewRouteContext, 
   return rewritten + body.slice(lastIndex);
 }
 
-function rewriteHtmlAttributes(body: string, routeContext: PreviewRouteContext, previewToken?: string | null): string {
+function rewriteHtmlAttributes(
+  body: string,
+  routeContext: PreviewRouteContext,
+  previewToken?: string | null,
+  namespaceStrategy: PreviewNamespaceStrategy = 'path',
+): string {
   let rewritten = body;
 
   for (const attributeName of REWRITABLE_ATTRIBUTE_NAMES) {
     const pattern = new RegExp(`\\b${attributeName}\\s*=\\s*(['"])(.*?)\\1`, 'gi');
     rewritten = rewritten.replace(pattern, (full, quote: string, rawValue: string) => {
-      const nextValue = rewritePreviewUrlValue(rawValue, routeContext, previewToken);
+      const nextValue = rewritePreviewUrlValue(rawValue, routeContext, previewToken, namespaceStrategy);
       return nextValue ? `${attributeName}=${quote}${nextValue}${quote}` : full;
     });
   }
 
   rewritten = rewritten.replace(/\bsrcset\s*=\s*(['"])(.*?)\1/gi, (_full, quote: string, rawValue: string) => {
-    const nextValue = rewritePreviewSrcSetValue(rawValue, routeContext, previewToken);
+    const nextValue = rewritePreviewSrcSetValue(rawValue, routeContext, previewToken, namespaceStrategy);
     return `srcset=${quote}${nextValue}${quote}`;
   });
 
   rewritten = rewritten.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (full, cssBody: string) => {
-    const nextCssBody = rewriteCssText(cssBody, routeContext, previewToken);
+    const nextCssBody = rewriteCssText(cssBody, routeContext, previewToken, namespaceStrategy);
     return nextCssBody === cssBody ? full : full.replace(cssBody, nextCssBody);
   });
 
@@ -242,7 +259,7 @@ function rewriteHtmlAttributes(body: string, routeContext: PreviewRouteContext, 
       if (!match) {
         return full;
       }
-      const nextUrl = rewritePreviewUrlValue(match[2].trim(), routeContext, previewToken);
+      const nextUrl = rewritePreviewUrlValue(match[2].trim(), routeContext, previewToken, namespaceStrategy);
       if (!nextUrl) {
         return full;
       }
@@ -256,6 +273,7 @@ function rewriteHtmlAttributes(body: string, routeContext: PreviewRouteContext, 
 function injectRuntimeInterceptor(
   body: string,
   routeContext: PreviewRouteContext,
+  namespaceStrategy: PreviewNamespaceStrategy,
   runtimeScriptNonce?: string | null,
 ): string {
   if (body.includes('__happierDevPreviewPatched__')) {
@@ -263,7 +281,7 @@ function injectRuntimeInterceptor(
   }
 
   const nonceAttribute = runtimeScriptNonce ? ` nonce="${runtimeScriptNonce}"` : '';
-  const scriptTag = `<script${nonceAttribute}>${createPreviewRuntimeInterceptorSource(routeContext)}</script>`;
+  const scriptTag = `<script${nonceAttribute}>${createPreviewRuntimeInterceptorSource(routeContext, namespaceStrategy)}</script>`;
 
   if (/<head\b[^>]*>/i.test(body)) {
     return body.replace(/<head\b[^>]*>/i, (match) => `${match}${scriptTag}`);
@@ -276,19 +294,20 @@ function injectRuntimeInterceptor(
 
 export function rewritePreviewResponseBody(params: RewritePreviewResponseBodyParams): string {
   if (shouldRewriteAsCss(params.contentType)) {
-    return rewriteCssText(params.body, params.routeContext, params.previewToken);
+    return rewriteCssText(params.body, params.routeContext, params.previewToken, params.namespaceStrategy);
   }
 
   if (shouldRewriteAsJavaScript(params.contentType)) {
-    return rewriteJavaScriptText(params.body, params.routeContext, params.previewToken);
+    return rewriteJavaScriptText(params.body, params.routeContext, params.previewToken, params.namespaceStrategy);
   }
 
   if (!shouldRewriteAsHtml(params.contentType)) {
     return params.body;
   }
 
-  const rewrittenHtml = rewriteHtmlAttributes(params.body, params.routeContext, params.previewToken);
+  const namespaceStrategy = params.namespaceStrategy ?? 'path';
+  const rewrittenHtml = rewriteHtmlAttributes(params.body, params.routeContext, params.previewToken, namespaceStrategy);
   return params.injectRuntimeInterceptor === false
     ? rewrittenHtml
-    : injectRuntimeInterceptor(rewrittenHtml, params.routeContext, params.runtimeScriptNonce);
+    : injectRuntimeInterceptor(rewrittenHtml, params.routeContext, namespaceStrategy, params.runtimeScriptNonce);
 }

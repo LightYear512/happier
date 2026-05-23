@@ -4,7 +4,16 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
 import { createServerFeatureGatePreHandler } from '@/app/features/catalog/serverFeatureGate';
-import { buildPreviewRouteBasePath, type PreviewRouteContext } from '@/app/devPreview/previewRoutePaths';
+import {
+  buildPreviewRouteBasePath,
+  type PreviewNamespaceStrategy,
+  type PreviewRouteContext,
+} from '@/app/devPreview/previewRoutePaths';
+import {
+  buildHostNamespacePreviewHost,
+  parseHostNamespacePreviewContext,
+  resolvePreviewHostHeader,
+} from '@/app/devPreview/previewHostNamespace';
 import {
   buildPreviewRuntimeLimitationDocument,
   PREVIEW_LIMITATION_DOCUMENT_CSP,
@@ -78,6 +87,7 @@ const RESPONSE_HEADER_DENYLIST = new Set([
 const HTML_CONTENT_TYPES = ['text/html', 'application/xhtml+xml'];
 type PreviewRelayHttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
 const PREVIEW_RELAY_HTTP_METHODS: PreviewRelayHttpMethod[] = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+const PREVIEW_RELAY_CATCH_ALL_HTTP_METHODS: PreviewRelayHttpMethod[] = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const PREVIEW_RELAY_FALLBACK_REGISTRARS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'] as const;
 type PreviewRelayFallbackRegistrar = (typeof PREVIEW_RELAY_FALLBACK_REGISTRARS)[number];
 type PreviewRelayRouteHandler = (request: any, reply: any) => Promise<unknown>;
@@ -189,6 +199,27 @@ function buildPathNamespacePreviewUrl(params: Readonly<{
   return url.toString();
 }
 
+function buildHostNamespacePreviewUrl(params: Readonly<{
+  request: { headers?: Record<string, unknown>; protocol?: string; raw?: { socket?: unknown } };
+  routeContext: PreviewRouteContext;
+  previewToken: string;
+}>): string | null {
+  const previewHost = buildHostNamespacePreviewHost(params.routeContext, process.env);
+  if (!previewHost) {
+    return null;
+  }
+  const origin = new URL(resolveRequestOrigin(params.request));
+  origin.hostname = previewHost;
+  if (origin.hostname !== previewHost) {
+    return null;
+  }
+  origin.pathname = '/';
+  origin.search = '';
+  origin.hash = '';
+  origin.searchParams.set('previewToken', params.previewToken);
+  return origin.toString();
+}
+
 function shouldUsePreviewTokenScrubRedirect(request: { headers?: Record<string, unknown>; method?: string }): boolean {
   if (!['GET', 'HEAD'].includes(String(request.method).toUpperCase())) {
     return false;
@@ -200,10 +231,31 @@ async function relayPreviewRequest(
   app: Fastify,
   request: any,
   reply: any,
+  namespaceStrategy: PreviewNamespaceStrategy,
 ): Promise<unknown> {
-  const parsedParams = previewParamsSchema.safeParse(request.params);
-  if (!parsedParams.success) {
-    return reply.code(404).send({ error: 'not_found' });
+  let routeContext: PreviewRouteContext;
+  let pathTail: string;
+  if (namespaceStrategy === 'host') {
+    const parsedContext = parseHostNamespacePreviewContext(resolvePreviewHostHeader(request.headers), process.env);
+    if (!parsedContext) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+    routeContext = parsedContext;
+    const parsedUrl = new URL(request.url, 'http://happier-preview.local');
+    pathTail = parsedUrl.pathname || '/';
+  } else {
+    const parsedParams = previewParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+    routeContext = {
+      sessionId: parsedParams.data.sessionId,
+      machineId: parsedParams.data.machineId,
+      routeKey: parsedParams.data.routeKey,
+    };
+    pathTail = typeof parsedParams.data['*'] === 'string' && parsedParams.data['*'].trim().length > 0
+      ? `/${parsedParams.data['*']}`
+      : '/';
   }
 
   const { previewToken, previewTokenSource, forwardedSearch } = parsePreviewTokenFromRequest(request);
@@ -216,7 +268,7 @@ async function relayPreviewRequest(
     return reply.code(401).send({ error: 'invalid-preview-token' });
   }
 
-  const { sessionId, machineId, routeKey } = parsedParams.data;
+  const { sessionId, machineId, routeKey } = routeContext;
   if (
     verifiedToken.sessionId !== sessionId
     || verifiedToken.machineId !== machineId
@@ -234,8 +286,7 @@ async function relayPreviewRequest(
     return reply.code(404).send({ error: 'not_found' });
   }
 
-  const routeContext = { sessionId, machineId, routeKey };
-  const cookiePath = buildPreviewRouteBasePath(routeContext);
+  const cookiePath = namespaceStrategy === 'host' ? '/' : buildPreviewRouteBasePath(routeContext);
   if (previewTokenSource === 'query' && shouldUsePreviewTokenScrubRedirect(request)) {
     reply.header('set-cookie', buildPreviewTokenCookieHeader({
       previewToken,
@@ -247,9 +298,6 @@ async function relayPreviewRequest(
     return reply.code(302).header('location', buildPreviewTokenScrubRedirectLocation(request.url)).send();
   }
 
-  const pathTail = typeof parsedParams.data['*'] === 'string' && parsedParams.data['*'].trim().length > 0
-    ? `/${parsedParams.data['*']}`
-    : '/';
   const forwardResult = await app.forwardRpcForUser({
     userId: verifiedToken.userId,
     method: `${machineId}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}`,
@@ -345,6 +393,7 @@ async function relayPreviewRequest(
     body: responseBodyBuffer.toString('utf8'),
     routeContext,
     previewToken,
+    namespaceStrategy,
     runtimeScriptNonce,
   });
   const bodyToSend = rewrittenBody === responseBodyBuffer.toString('utf8')
@@ -358,14 +407,16 @@ function registerPreviewRelayRoute(
   app: Fastify,
   url: string,
   preHandler: ReturnType<typeof createServerFeatureGatePreHandler>,
+  namespaceStrategy: PreviewNamespaceStrategy,
+  methods: PreviewRelayHttpMethod[] = PREVIEW_RELAY_HTTP_METHODS,
 ): void {
-  const handler = async (request: any, reply: any) => await relayPreviewRequest(app, request, reply);
+  const handler = async (request: any, reply: any) => await relayPreviewRequest(app, request, reply, namespaceStrategy);
   const routeCapableApp = app as unknown as PreviewRelayRouteCapableApp;
   const routeRegistrar = routeCapableApp.route;
   if (typeof routeRegistrar === 'function') {
     const registerRoute = routeRegistrar as PreviewRelayRouteRegistrar;
     registerRoute.call(app, {
-      method: PREVIEW_RELAY_HTTP_METHODS,
+      method: methods,
       url,
       preHandler,
       handler,
@@ -417,11 +468,16 @@ export function registerSessionDevPreviewRoutes(app: Fastify): void {
         routeKey,
       });
       const routeContext = { sessionId, machineId, routeKey };
+      const hostPreviewUrl = buildHostNamespacePreviewUrl({
+        request,
+        routeContext,
+        previewToken: token,
+      });
       reply.header('cache-control', 'no-store');
       return reply.send({
         token,
-        namespaceStrategy: 'path',
-        previewUrl: buildPathNamespacePreviewUrl({
+        namespaceStrategy: hostPreviewUrl ? 'host' : 'path',
+        previewUrl: hostPreviewUrl ?? buildPathNamespacePreviewUrl({
           request,
           routeContext,
           previewToken: token,
@@ -430,6 +486,7 @@ export function registerSessionDevPreviewRoutes(app: Fastify): void {
     },
   );
 
-  registerPreviewRelayRoute(app, '/preview/:sessionId/:machineId/:routeKey', featureGate);
-  registerPreviewRelayRoute(app, '/preview/:sessionId/:machineId/:routeKey/*', featureGate);
+  registerPreviewRelayRoute(app, '/preview/:sessionId/:machineId/:routeKey', featureGate, 'path');
+  registerPreviewRelayRoute(app, '/preview/:sessionId/:machineId/:routeKey/*', featureGate, 'path');
+  registerPreviewRelayRoute(app, '/*', featureGate, 'host', PREVIEW_RELAY_CATCH_ALL_HTTP_METHODS);
 }

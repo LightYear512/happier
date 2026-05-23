@@ -1,8 +1,12 @@
-import type { PreviewRouteContext } from './previewRoutePaths';
+import type { PreviewNamespaceStrategy, PreviewRouteContext } from './previewRoutePaths';
 import { buildPreviewRouteBasePath } from './previewRoutePaths';
 
-export function createPreviewRuntimeInterceptorSource(context: PreviewRouteContext): string {
-  const basePath = JSON.stringify(buildPreviewRouteBasePath(context));
+export function createPreviewRuntimeInterceptorSource(
+  context: PreviewRouteContext,
+  namespaceStrategy: PreviewNamespaceStrategy = 'path',
+): string {
+  const basePath = JSON.stringify(namespaceStrategy === 'host' ? '' : buildPreviewRouteBasePath(context));
+  const strategy = JSON.stringify(namespaceStrategy);
 
   return `(() => {
   if (typeof window === 'undefined' || window.__happierDevPreviewPatched__) {
@@ -10,6 +14,7 @@ export function createPreviewRuntimeInterceptorSource(context: PreviewRouteConte
   }
   window.__happierDevPreviewPatched__ = true;
   const previewBasePath = ${basePath};
+  const namespaceStrategy = ${strategy};
   const currentPreviewToken = (() => {
     try {
       const token = new URL(window.location.href).searchParams.get('previewToken');
@@ -41,7 +46,10 @@ export function createPreviewRuntimeInterceptorSource(context: PreviewRouteConte
     }
     try {
       const parsed = new URL(value, window.location.origin);
-      if (!parsed.pathname.startsWith(previewBasePath) || parsed.searchParams.has('previewToken')) {
+      if (
+        parsed.searchParams.has('previewToken')
+        || (namespaceStrategy === 'path' && !parsed.pathname.startsWith(previewBasePath))
+      ) {
         return value;
       }
       parsed.searchParams.set('previewToken', currentPreviewToken);
@@ -51,6 +59,9 @@ export function createPreviewRuntimeInterceptorSource(context: PreviewRouteConte
     }
   };
   const buildRelayPath = (input) => {
+    if (namespaceStrategy === 'host') {
+      return appendPreviewToken(\`\${input.pathname}\${input.search}\${input.hash}\`);
+    }
     const path = input.pathname.startsWith('/') ? input.pathname.slice(1) : input.pathname;
     return appendPreviewToken(\`\${previewBasePath}\${path}\${input.search}\${input.hash}\`);
   };
@@ -59,7 +70,7 @@ export function createPreviewRuntimeInterceptorSource(context: PreviewRouteConte
     if (shouldIgnore(raw)) {
       return raw;
     }
-    if (raw.startsWith(previewBasePath)) {
+    if (namespaceStrategy === 'path' && raw.startsWith(previewBasePath)) {
       return appendPreviewToken(raw);
     }
 
@@ -85,7 +96,7 @@ export function createPreviewRuntimeInterceptorSource(context: PreviewRouteConte
       if (
         ['http:', 'https:', 'ws:', 'wss:'].includes(protocol)
         && parsed.host === window.location.host
-        && parsed.pathname.startsWith(previewBasePath)
+        && (namespaceStrategy === 'host' || parsed.pathname.startsWith(previewBasePath))
       ) {
         const relayPath = appendPreviewToken(\`\${parsed.pathname}\${parsed.search}\${parsed.hash}\`);
         if (kind === 'ws') {
