@@ -147,7 +147,7 @@ describe('codexDaemonSpawnHooks.resolveProfileEnvForChild', () => {
   it('returns CODEX_HOME for provisioned profiles', async () => {
     const activeServerDir = await createTempDir('happier-codex-profile-env-');
     tempDirs.add(activeServerDir);
-    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work');
     await mkdir(profileDir, { recursive: true });
     await writeFile(join(profileDir, 'auth.json'), '{"tokens":{"access_token":"token"}}', 'utf8');
 
@@ -165,7 +165,7 @@ describe('codexDaemonSpawnHooks.resolveProfileEnvForChild', () => {
   it('rejects directory-only profiles as not provisioned', async () => {
     const activeServerDir = await createTempDir('happier-codex-profile-env-empty-');
     tempDirs.add(activeServerDir);
-    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work');
     await mkdir(profileDir, { recursive: true });
 
     const { codexDaemonSpawnHooks } = await import('./spawnHooks');

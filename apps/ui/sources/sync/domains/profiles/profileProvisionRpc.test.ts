@@ -18,6 +18,8 @@ describe('profileProvisionRpc', () => {
             profileDir: '/tmp/profile',
             alreadyProvisioned: false,
             ptyOutput: 'ok',
+            profileAuthSessionId: 'auth-1',
+            terminalKey: 'profile-login:machine-1:claude:work',
         });
         const { callProfileProvision } = await import('./profileProvisionRpc');
 
@@ -33,6 +35,7 @@ describe('profileProvisionRpc', () => {
             payload: {
                 profileId: 'work',
                 backendId: 'claude',
+                machineId: 'machine-1',
             },
         });
         expect(result).toEqual(expect.objectContaining({ type: 'success', profileDir: '/tmp/profile' }));
@@ -54,10 +57,42 @@ describe('profileProvisionRpc', () => {
             payload: {
                 profileId: 'work',
                 backendId: 'codex',
+                machineId: 'machine-1',
             },
         });
         expect(result).toEqual({ output: 'login url', completed: false });
     });
+
+    it('verifies profile provision without preparing another terminal session', async () => {
+        machineRpcWithServerScopeMock.mockResolvedValue({
+            type: 'success',
+            profileDir: '/tmp/profile',
+            alreadyProvisioned: true,
+            ptyOutput: '',
+            profileAuthSessionId: null,
+            terminalKey: 'profile-login:machine-1:claude:work',
+        });
+        const { callProfileProvisionVerify } = await import('./profileProvisionRpc');
+
+        const result = await callProfileProvisionVerify({
+            profileId: 'work',
+            backendId: 'claude',
+            machineId: 'machine-1',
+        });
+
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
+            method: RPC_METHODS.PROFILE_PROVISION,
+            machineId: 'machine-1',
+            payload: {
+                profileId: 'work',
+                backendId: 'claude',
+                machineId: 'machine-1',
+                verifyOnly: true,
+            },
+        });
+        expect(result).toEqual(expect.objectContaining({ type: 'success', alreadyProvisioned: true }));
+    });
+
 
     it('calls session switch through scoped machine RPC', async () => {
         machineRpcWithServerScopeMock.mockResolvedValue({

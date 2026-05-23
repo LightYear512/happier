@@ -27,6 +27,7 @@ export const agent = {
   getCloudConnectTarget: async () => (await import('@/backends/codex/cloud/connect')).codexCloudConnect,
   getDaemonSpawnHooks: async () => codexDaemonSpawnHooks,
   getDirectSessionProviderOps: async () => (await import('@/backends/codex/directSessions/providerOps')).codexDirectSessionProviderOps,
+  getProfileAuthProvider: async () => (await import('@/backends/codex/profileAuth')).codexProfileAuthProvider,
   getSessionGoalControlAdapter: async () => {
     const mod = await import(CODEX_APP_SERVER_GOAL_CONTROL_ADAPTER_MODULE) as CodexGoalControlAdapterModule;
     return mod.codexAppServerGoalControlAdapter ?? null;

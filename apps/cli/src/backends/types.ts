@@ -81,6 +81,45 @@ export type ProviderAttachOps = Readonly<{
   }>) => Promise<number | false>;
 }>;
 
+export type CliProfileAuthLoginContext = Readonly<{
+  command: string;
+  args: readonly string[];
+  initialInput?: string | null;
+  env: NodeJS.ProcessEnv;
+  allowlistedEnvKeys: readonly string[];
+  cwd?: string;
+}>;
+
+export type CliProfileAuthPrepareResult = Readonly<{
+  profileDir: string;
+  createdByThisRun: boolean;
+}>;
+
+export type CliProfileAuthProvider = Readonly<{
+  providerId: CatalogAgentId;
+  buildProfileDir: (params: Readonly<{
+    activeServerDir: string;
+    profileId: string;
+  }>) => string;
+  prepareProfileDir: (params: Readonly<{
+    activeServerDir: string;
+    profileId: string;
+    processEnv?: NodeJS.ProcessEnv;
+  }>) => CliProfileAuthPrepareResult;
+  buildIsolatedLoginContext: (params: Readonly<{
+    profileDir: string;
+    processEnv?: NodeJS.ProcessEnv;
+  }>) => CliProfileAuthLoginContext | Promise<CliProfileAuthLoginContext>;
+  isProfileProvisioned: (params: Readonly<{
+    activeServerDir: string;
+    profileId: string;
+  }>) => boolean;
+  cleanupFailedPrepare?: (params: Readonly<{
+    profileDir: string;
+    createdByThisRun: boolean;
+  }>) => void;
+}>;
+
 export type AgentChecklistContributions = Partial<
   Record<ChecklistId, ReadonlyArray<Readonly<{ id: string; params?: Record<string, unknown> }>>>
 >;
@@ -141,6 +180,13 @@ export type AgentCatalogEntry = Readonly<{
    * and expose it through this catalog hook instead of branching in shared CLI code.
    */
   getProviderAttachOps?: () => Promise<ProviderAttachOps>;
+  /**
+   * Optional provider-owned native CLI profile authentication definition.
+   *
+   * Used by profile provisioning/login flows to prepare isolated provider homes and build the
+   * login terminal launch context without branching on provider ids in shared handlers.
+   */
+  getProfileAuthProvider?: () => Promise<CliProfileAuthProvider>;
   /**
    * Optional provider-owned goal control adapter for inactive/offline local sessions.
    *

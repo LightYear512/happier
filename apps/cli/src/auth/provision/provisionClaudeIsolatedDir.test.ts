@@ -74,7 +74,7 @@ describe('provisionClaudeIsolatedDir', () => {
     });
 
     expect(result.alreadyProvisioned).toBe(false);
-    expect(result.profileDir).toBe(join(activeServerDir, 'profiles', 'claude', 'work'));
+    expect(result.profileDir).toBe(join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work'));
     expect(existsSync(join(result.profileDir, '.credentials.json'))).toBe(true);
     expect(output.join('')).toContain('claude-login-url');
     expect(statSync(join(globalClaudeConfigDir, 'settings.json')).isFile()).toBe(true);
@@ -86,7 +86,7 @@ describe('provisionClaudeIsolatedDir', () => {
     const homeDir = await createTempDir('happier-provision-claude-existing-home-');
     tempDirs.add(activeServerDir);
     tempDirs.add(homeDir);
-    const profileDir = join(activeServerDir, 'profiles', 'claude', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work');
     mkdirSync(profileDir, { recursive: true });
     writeFileSync(join(profileDir, '.credentials.json'), '{"accessToken":"token"}', 'utf8');
     envScope.patch({
@@ -133,6 +133,6 @@ describe('provisionClaudeIsolatedDir', () => {
       onPtyOutput: () => {},
     })).rejects.toThrow(/Claude login failed/);
 
-    expect(existsSync(join(activeServerDir, 'profiles', 'claude', 'work'))).toBe(false);
+    expect(existsSync(join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work'))).toBe(false);
   });
 });

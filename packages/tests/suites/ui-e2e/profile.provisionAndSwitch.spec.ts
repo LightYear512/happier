@@ -7,7 +7,7 @@ import { createRunDirs } from '../../src/testkit/runDir';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
 import { type StartedDaemon } from '../../src/testkit/daemon/daemon';
-import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
+import { fakeClaudeFixturePath, waitForFakeClaudeInvocation } from '../../src/testkit/fakeClaude';
 import { readCliAccessKey } from '../../src/testkit/cliAccessKey';
 import { fetchJson } from '../../src/testkit/http';
 import { authenticateAndStartDaemon } from '../../src/testkit/uiE2e/authenticateAndStartDaemon';
@@ -16,6 +16,7 @@ import {
   gotoDomContentLoadedWithPathFallback,
   normalizeLoopbackBaseUrl,
 } from '../../src/testkit/uiE2e/pageNavigation';
+import { repoRootDir } from '../../src/testkit/paths';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const CLAUDE_TARGET_KEY = buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'claude' });
@@ -140,7 +141,7 @@ async function seedProvisionedClaudeProfileDir(params: Readonly<{
   activeServerDir: string;
   profileId: string;
 }>): Promise<void> {
-  const profileDir = resolve(join(params.activeServerDir, 'profiles', 'claude', params.profileId));
+  const profileDir = resolve(join(params.activeServerDir, 'profiles', 'native-cli', 'claude', params.profileId));
   await mkdir(resolve(join(profileDir, 'projects')), { recursive: true });
   await mkdir(resolve(join(profileDir, 'skills')), { recursive: true });
   await mkdir(resolve(join(profileDir, 'agents')), { recursive: true });
@@ -196,6 +197,16 @@ function sessionProfileChip(page: Page) {
   return page.getByTestId('agent-input-profile-chip').first();
 }
 
+async function waitForTerminalTranscriptOrProvisionCompletion(page: Page, testId: string, needle: string): Promise<void> {
+  const terminal = page.getByTestId(testId);
+  await expect.poll(async () => {
+    if (await page.getByTestId('profile-provision-close').count() > 0) return 'completed';
+    if (await terminal.count() === 0) return 'pending';
+    const text = await terminal.first().getAttribute('data-happier-terminal-text', { timeout: 1_000 }).catch(() => null);
+    return text?.includes(needle) ? 'terminal-output' : 'pending';
+  }, { timeout: 180_000 }).not.toBe('pending');
+}
+
 function visibleDropdownOptions(page: Page) {
   return page.locator('[data-testid^="dropdown-option-"]:visible');
 }
@@ -230,8 +241,8 @@ test.describe('ui e2e: profile provision + switch', () => {
       HAPPIER_E2E_EXPO_CLEAR: '1',
       HAPPIER_UI_METRO_FORCE_WATCHMAN: '1',
       HAPPIER_UI_METRO_EXTRA_WATCH_FOLDERS: [
-        '/Users/ab/workspace/happier/node_modules',
-        '/Users/ab/workspace/happier/apps/ui/node_modules',
+        join(repoRootDir(), 'node_modules'),
+        join(repoRootDir(), 'apps/ui/node_modules'),
       ].join(delimiter),
       HAPPIER_E2E_UI_WEB_MODE: 'export',
       HAPPIER_E2E_UI_WEB_EXPORT_FALLBACK_TO_METRO: '0',
@@ -295,7 +306,6 @@ test.describe('ui e2e: profile provision + switch', () => {
     });
     const activeServerDir = await resolveActiveServerDir(cliHomeDir);
     await seedProvisionedClaudeProfileDir({ activeServerDir, profileId: 'anthropic' });
-    await seedProvisionedClaudeProfileDir({ activeServerDir, profileId: 'work' });
 
     await updateSingleAccountSettings({
       page,
@@ -320,9 +330,26 @@ test.describe('ui e2e: profile provision + switch', () => {
     await expect(provisionAction).toHaveCount(1, { timeout: 60_000 });
     await provisionAction.scrollIntoViewIfNeeded();
     await provisionAction.click();
-    await expect(page.getByText('This profile is already provisioned on this machine.')).toHaveCount(1, {
-      timeout: 60_000,
-    });
+    await waitForTerminalTranscriptOrProvisionCompletion(
+      page,
+      'profile-provision-terminal-xterm',
+      'https://example.test/fake-claude-profile-auth',
+    );
+    const workProfileDir = resolve(join(activeServerDir, 'profiles', 'native-cli', 'claude', 'work'));
+    await expect.poll(async () => {
+      try {
+        const raw = await readFile(resolve(join(workProfileDir, '.credentials.json')), 'utf8');
+        return raw.includes('fake-claude-profile-auth-token');
+      } catch {
+        return false;
+      }
+    }, { timeout: 60_000 }).toBe(true);
+    await waitForFakeClaudeInvocation(fakeClaudeLogPath, (invocation) => (
+      invocation.mode === 'local'
+      && Array.isArray(invocation.argv)
+      && invocation.argv.length === 0
+      && invocation.cwd === workProfileDir
+    ), { timeoutMs: 60_000 });
     await expect(page.getByTestId('profile-provision-close')).toContainText('Done', { timeout: 60_000 });
     await page.getByTestId('profile-provision-close').click();
     await expect(page.getByTestId('profile-provision-close')).toHaveCount(0, { timeout: 60_000 });

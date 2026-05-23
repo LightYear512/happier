@@ -1,13 +1,8 @@
-import { mkdirSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
 
-import { resolveConfiguredClaudeConfigDir } from '@/backends/claude/utils/resolveConfiguredClaudeConfigDir';
-import { requireProviderCliLaunchSpec } from '@/runtime/managedTools/requireProviderCliLaunchSpec';
+import { claudeProfileAuthProvider } from '@/backends/claude/profileAuth';
 
-import { ensureProfileSymlink } from './ensureProfileSymlink';
 import { isProfileProvisioned } from './isProfileProvisioned';
-import { resolveProvisionedProfileDir } from './profileProvisionPaths';
 
 export type ProvisionClaudeParams = Readonly<{
   profileId: string;
@@ -23,47 +18,11 @@ export type ProvisionClaudeResult = Readonly<{
   alreadyProvisioned: boolean;
 }>;
 
-function ensureClaudeSharedConfigLinks(params: Readonly<{
-  globalConfigDir: string;
-  profileDir: string;
-}>): void {
-  for (const entry of [
-    { name: 'projects', targetKind: 'directory' as const },
-    { name: 'skills', targetKind: 'directory' as const },
-    { name: 'agents', targetKind: 'directory' as const },
-    { name: 'commands', targetKind: 'directory' as const },
-  ]) {
-    ensureProfileSymlink({
-      target: join(params.globalConfigDir, entry.name),
-      linkPath: join(params.profileDir, entry.name),
-      targetKind: entry.targetKind,
-    });
-  }
-
-  ensureProfileSymlink({
-    target: join(params.globalConfigDir, 'settings.json'),
-    linkPath: join(params.profileDir, 'settings.json'),
-    targetKind: 'file',
-    createMissingFileContent: '{}',
-  });
-}
-
-function buildClaudeProvisionEnv(params: Readonly<{
-  processEnv: NodeJS.ProcessEnv;
-  profileDir: string;
-}>): NodeJS.ProcessEnv {
-  const childEnv: NodeJS.ProcessEnv = {
-    ...params.processEnv,
-    CLAUDE_CONFIG_DIR: params.profileDir,
-  };
-  delete childEnv.HAPPIER_CLAUDE_CONFIG_DIR;
-  return childEnv;
-}
-
 function waitForProvisionChild(params: Readonly<{
   command: string;
   args: readonly string[];
   env: NodeJS.ProcessEnv;
+  initialInput?: string | null;
   onPtyOutput: (chunk: string) => void;
   signal?: AbortSignal;
 }>): Promise<number | null> {
@@ -82,6 +41,10 @@ function waitForProvisionChild(params: Readonly<{
     child.stderr.on('data', (chunk: Buffer) => params.onPtyOutput(chunk.toString()));
     child.once('error', reject);
     child.once('close', resolve);
+    if (params.initialInput) {
+      child.stdin.write(params.initialInput);
+    }
+    child.stdin.end();
     params.signal?.addEventListener('abort', abortHandler, { once: true });
     child.once('close', () => {
       params.signal?.removeEventListener('abort', abortHandler);
@@ -96,27 +59,26 @@ export async function provisionClaudeIsolatedDir(
   params: ProvisionClaudeParams,
 ): Promise<ProvisionClaudeResult> {
   const processEnv = params.processEnv ?? process.env;
-  const profileDir = resolveProvisionedProfileDir({
+  const prepared = claudeProfileAuthProvider.prepareProfileDir({
     activeServerDir: params.activeServerDir,
-    backendId: 'claude',
     profileId: params.profileId,
+    processEnv,
   });
-
-  mkdirSync(profileDir, { recursive: true });
-  ensureClaudeSharedConfigLinks({
-    globalConfigDir: resolveConfiguredClaudeConfigDir({ env: processEnv }),
-    profileDir,
-  });
+  const profileDir = prepared.profileDir;
 
   if (isProfileProvisioned(params.profileId, 'claude', params.activeServerDir)) {
     return { profileDir, alreadyProvisioned: true };
   }
 
-  const launchSpec = requireProviderCliLaunchSpec('claude', { processEnv });
+  const loginContext = await claudeProfileAuthProvider.buildIsolatedLoginContext({
+    profileDir,
+    processEnv,
+  });
   const exitCode = await waitForProvisionChild({
-    command: launchSpec.command,
-    args: [...launchSpec.args, '/login'],
-    env: buildClaudeProvisionEnv({ processEnv, profileDir }),
+    command: loginContext.command,
+    args: loginContext.args,
+    env: loginContext.env,
+    initialInput: loginContext.initialInput,
     onPtyOutput: params.onPtyOutput,
     signal: params.signal,
   });
@@ -125,7 +87,7 @@ export async function provisionClaudeIsolatedDir(
     return { profileDir, alreadyProvisioned: false };
   }
 
-  rmSync(profileDir, { recursive: true, force: true });
+  claudeProfileAuthProvider.cleanupFailedPrepare?.(prepared);
   throw new Error(
     exitCode === null
       ? `Claude login was cancelled (profile: ${params.profileId})`

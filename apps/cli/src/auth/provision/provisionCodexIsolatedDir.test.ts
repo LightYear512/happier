@@ -73,7 +73,7 @@ describe('provisionCodexIsolatedDir', () => {
     });
 
     expect(result.alreadyProvisioned).toBe(false);
-    expect(result.profileDir).toBe(join(activeServerDir, 'profiles', 'codex', 'work'));
+    expect(result.profileDir).toBe(join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work'));
     expect(existsSync(join(result.profileDir, 'auth.json'))).toBe(true);
     expect(output.join('')).toContain('codex-login-url');
     expect(existsSync(join(globalCodexHome, 'config.toml'))).toBe(false);
@@ -85,7 +85,7 @@ describe('provisionCodexIsolatedDir', () => {
     const homeDir = await createTempDir('happier-provision-codex-existing-home-');
     tempDirs.add(activeServerDir);
     tempDirs.add(homeDir);
-    const profileDir = join(activeServerDir, 'profiles', 'codex', 'work');
+    const profileDir = join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work');
     mkdirSync(profileDir, { recursive: true });
     writeFileSync(join(profileDir, 'auth.json'), '{"tokens":{"access_token":"token"}}', 'utf8');
     envScope.patch({
@@ -130,6 +130,6 @@ describe('provisionCodexIsolatedDir', () => {
       onPtyOutput: () => {},
     })).rejects.toThrow(/Codex login failed/);
 
-    expect(existsSync(join(activeServerDir, 'profiles', 'codex', 'work'))).toBe(false);
+    expect(existsSync(join(activeServerDir, 'profiles', 'native-cli', 'codex', 'work'))).toBe(false);
   });
 });

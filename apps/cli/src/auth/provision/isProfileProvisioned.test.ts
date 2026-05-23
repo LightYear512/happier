@@ -14,7 +14,7 @@ function makeRoot(): string {
 }
 
 function createProfileDir(activeServerDir: string, backendId: 'claude' | 'codex', profileId: string): string {
-  const profileDir = join(activeServerDir, 'profiles', backendId, profileId);
+  const profileDir = join(activeServerDir, 'profiles', 'native-cli', backendId, profileId);
   mkdirSync(profileDir, { recursive: true });
   return profileDir;
 }

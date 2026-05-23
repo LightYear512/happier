@@ -1,19 +1,10 @@
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import { configuration } from '@/configuration';
-import {
-  provisionClaudeIsolatedDir,
-  type ProvisionClaudeParams,
-  type ProvisionClaudeResult,
-} from '@/auth/provision/provisionClaudeIsolatedDir';
-import {
-  provisionCodexIsolatedDir,
-  type ProvisionCodexParams,
-  type ProvisionCodexResult,
-} from '@/auth/provision/provisionCodexIsolatedDir';
-import {
-  parseProvisionedProfileId,
-  type ProvisionableProfileBackendId,
-} from '@/auth/provision/profileProvisionPaths';
+import { parseProvisionedProfileId } from '@/auth/provision/profileProvisionPaths';
+import { getProfileAuthProvider as getCatalogProfileAuthProvider } from '@/backends/catalog';
+import type { CatalogAgentId, CliProfileAuthProvider } from '@/backends/types';
+import { CATALOG_AGENT_IDS } from '@/backends/types';
+import { profileAuthSessions, type ProfileAuthSessionStore } from '@/auth/provision/profileAuthSessionStore';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 type ProfileProvisionEntry = {
@@ -27,6 +18,8 @@ type ProfileProvisionSuccess = Readonly<{
   profileDir: string;
   alreadyProvisioned: boolean;
   ptyOutput: string;
+  profileAuthSessionId: string | null;
+  terminalKey: string;
 }>;
 
 type ProfileProvisionError = Readonly<{
@@ -38,22 +31,30 @@ type ProfileProvisionError = Readonly<{
 
 type ProfileProvisionResponse = ProfileProvisionSuccess | ProfileProvisionError;
 
+function buildProfileAuthTerminalKey(params: Readonly<{
+  machineId: string;
+  backendId: string;
+  profileId: string;
+}>): string {
+  return `profile-login:${params.machineId}:${params.backendId}:${params.profileId}`;
+}
+
 export type ProfileProvisionDeps = Readonly<{
-  provisionClaude: (params: ProvisionClaudeParams) => Promise<ProvisionClaudeResult>;
-  provisionCodex: (params: ProvisionCodexParams) => Promise<ProvisionCodexResult>;
+  getProfileAuthProvider: (backendId: CatalogAgentId) => Promise<CliProfileAuthProvider | null>;
+  profileAuthSessions: ProfileAuthSessionStore;
 }>;
 
 export type TryRecoverSuspendedSessionsFn = (
   profileId: string,
-  backendId: ProvisionableProfileBackendId,
+  backendId: CatalogAgentId,
 ) => void | Promise<void>;
 
 const PROFILE_PROVISION_PROGRESS_TTL_MS = 60_000;
 const progressByKey = new Map<string, ProfileProvisionEntry>();
 const inFlightByKey = new Map<string, Promise<ProfileProvisionResponse>>();
 
-function progressKey(backendId: ProvisionableProfileBackendId, profileId: string): string {
-  return `${backendId}:${profileId}`;
+function progressKey(backendId: string, profileId: string, machineId = ''): string {
+  return `${machineId}:${backendId}:${profileId}`;
 }
 
 function ensureProgressEntry(key: string): ProfileProvisionEntry {
@@ -104,8 +105,9 @@ export const __test_profileProvisionProgress = {
   ttlMs: PROFILE_PROVISION_PROGRESS_TTL_MS,
 };
 
-function parseProvisionBackendId(value: unknown): ProvisionableProfileBackendId | null {
-  return value === 'claude' || value === 'codex' ? value : null;
+function parseProvisionBackendId(value: unknown): CatalogAgentId | null {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return (CATALOG_AGENT_IDS as readonly string[]).includes(trimmed) ? trimmed as CatalogAgentId : null;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -115,55 +117,105 @@ function toErrorMessage(error: unknown): string {
 async function runProfileProvision(params: Readonly<{
   deps: ProfileProvisionDeps;
   profileId: string;
-  backendId: ProvisionableProfileBackendId;
+  backendId: CatalogAgentId;
   machineId: string;
   activeServerDir: string;
   processEnv: NodeJS.ProcessEnv;
+  verifyOnly: boolean;
+  profileAuthSessionId?: string | null;
   tryRecoverSuspendedSessions?: TryRecoverSuspendedSessionsFn | null;
 }>): Promise<ProfileProvisionResponse> {
-  const key = progressKey(params.backendId, params.profileId);
+  const key = progressKey(params.backendId, params.profileId, params.machineId);
   const progress = ensureProgressEntry(key);
   progress.output = '';
   progress.completed = false;
   progress.completedAt = null;
 
-  const outputChunks: string[] = [];
-  const onPtyOutput = (chunk: string) => {
-    outputChunks.push(chunk);
-    progress.output += chunk;
-  };
-
   try {
-    const result = params.backendId === 'claude'
-      ? await params.deps.provisionClaude({
-        profileId: params.profileId,
-        machineId: params.machineId,
-        activeServerDir: params.activeServerDir,
-        processEnv: params.processEnv,
-        onPtyOutput,
-      })
-      : await params.deps.provisionCodex({
-        profileId: params.profileId,
-        machineId: params.machineId,
-        activeServerDir: params.activeServerDir,
-        processEnv: params.processEnv,
-        onPtyOutput,
-      });
+    const provider = await params.deps.getProfileAuthProvider(params.backendId);
+    if (!provider) {
+      return {
+        type: 'error',
+        errorCode: 'INVALID_REQUEST',
+        errorMessage: 'Profile provision requires a backend that supports native CLI profile authentication.',
+        ptyOutput: '',
+      };
+    }
 
-    await params.tryRecoverSuspendedSessions?.(params.profileId, params.backendId);
+    const profileDir = provider.buildProfileDir({
+      activeServerDir: params.activeServerDir,
+      profileId: params.profileId,
+    });
+    const alreadyProvisioned = provider.isProfileProvisioned({
+      activeServerDir: params.activeServerDir,
+      profileId: params.profileId,
+    });
+    if (params.verifyOnly) {
+      if (!alreadyProvisioned) {
+        if (params.profileAuthSessionId) {
+          params.deps.profileAuthSessions.delete(params.profileAuthSessionId);
+        }
+        return {
+          type: 'error',
+          errorCode: 'PROVISION_FAILED',
+          errorMessage: 'Profile credentials were not found after native CLI login.',
+          ptyOutput: progress.output,
+        };
+      }
+      if (params.profileAuthSessionId) {
+        params.deps.profileAuthSessions.delete(params.profileAuthSessionId);
+      }
+      await params.tryRecoverSuspendedSessions?.(params.profileId, params.backendId);
+      return {
+        type: 'success',
+        profileDir,
+        alreadyProvisioned: true,
+        ptyOutput: progress.output,
+        profileAuthSessionId: null,
+        terminalKey: buildProfileAuthTerminalKey(params),
+      };
+    }
+
+    const terminalKey = buildProfileAuthTerminalKey(params);
+    const prepared = provider.prepareProfileDir({
+      activeServerDir: params.activeServerDir,
+      profileId: params.profileId,
+      processEnv: params.processEnv,
+    });
+    const loginContext = alreadyProvisioned
+      ? null
+      : await provider.buildIsolatedLoginContext({
+        profileDir: prepared.profileDir,
+        processEnv: params.processEnv,
+      });
+    const profileAuthSession = loginContext
+      ? params.deps.profileAuthSessions.create({
+        providerId: provider.providerId,
+        profileId: params.profileId,
+        profileDir: prepared.profileDir,
+        terminalKey,
+        loginContext,
+      })
+      : null;
+
+    if (alreadyProvisioned) {
+      await params.tryRecoverSuspendedSessions?.(params.profileId, params.backendId);
+    }
 
     return {
       type: 'success',
-      profileDir: result.profileDir,
-      alreadyProvisioned: result.alreadyProvisioned,
-      ptyOutput: outputChunks.join(''),
+      profileDir: prepared.profileDir,
+      alreadyProvisioned,
+      ptyOutput: progress.output,
+      profileAuthSessionId: profileAuthSession?.profileAuthSessionId ?? null,
+      terminalKey,
     };
   } catch (error) {
     return {
       type: 'error',
       errorCode: 'PROVISION_FAILED',
       errorMessage: toErrorMessage(error),
-      ptyOutput: outputChunks.join(''),
+      ptyOutput: progress.output,
     };
   } finally {
     markProgressCompleted(key);
@@ -180,8 +232,8 @@ export function registerProfileProvisionHandlers(
   }> = {},
 ): void {
   const deps: ProfileProvisionDeps = {
-    provisionClaude: opts.deps?.provisionClaude ?? provisionClaudeIsolatedDir,
-    provisionCodex: opts.deps?.provisionCodex ?? provisionCodexIsolatedDir,
+    getProfileAuthProvider: opts.deps?.getProfileAuthProvider ?? getCatalogProfileAuthProvider,
+    profileAuthSessions: opts.deps?.profileAuthSessions ?? profileAuthSessions,
   };
   const activeServerDir = opts.activeServerDir ?? configuration.activeServerDir;
   const processEnv = opts.processEnv ?? process.env;
@@ -191,6 +243,10 @@ export function registerProfileProvisionHandlers(
     const profileId = parseProvisionedProfileId(rawRecord.profileId);
     const backendId = parseProvisionBackendId(rawRecord.backendId);
     const machineId = typeof rawRecord.machineId === 'string' ? rawRecord.machineId.trim() : '';
+    const verifyOnly = rawRecord.verifyOnly === true;
+    const profileAuthSessionId = typeof rawRecord.profileAuthSessionId === 'string'
+      ? rawRecord.profileAuthSessionId.trim()
+      : null;
 
     if (!profileId || !backendId) {
       return {
@@ -200,7 +256,7 @@ export function registerProfileProvisionHandlers(
       };
     }
 
-    const key = progressKey(backendId, profileId);
+    const key = progressKey(backendId, profileId, machineId);
     const existing = inFlightByKey.get(key);
     if (existing) return existing;
 
@@ -211,6 +267,8 @@ export function registerProfileProvisionHandlers(
       machineId,
       activeServerDir,
       processEnv,
+      verifyOnly,
+      profileAuthSessionId,
       tryRecoverSuspendedSessions: opts.tryRecoverSuspendedSessions ?? null,
     }).finally(() => {
       inFlightByKey.delete(key);
@@ -225,11 +283,12 @@ export function registerProfileProvisionHandlers(
       const rawRecord = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {};
       const profileId = parseProvisionedProfileId(rawRecord.profileId);
       const backendId = parseProvisionBackendId(rawRecord.backendId);
+      const machineId = typeof rawRecord.machineId === 'string' ? rawRecord.machineId.trim() : '';
       if (!profileId || !backendId) {
         return { output: '', completed: false };
       }
 
-      const entry = progressByKey.get(progressKey(backendId, profileId));
+      const entry = progressByKey.get(progressKey(backendId, profileId, machineId));
       return {
         output: entry?.output ?? '',
         completed: entry?.completed ?? false,
