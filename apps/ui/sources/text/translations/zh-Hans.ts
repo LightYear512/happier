@@ -9156,11 +9156,11 @@ settingsSession: {
       tempDirPlaceholder: "留空以自动生成",
     },
     previewMachine: {
-      title: "预览设备",
-      itemTitle: "用于环境变量预览的设备",
+      title: "操作设备",
+      itemTitle: "配置此 Profile 时使用的设备",
       selectMachine: "选择设备",
-      resolveSubtitle: "仅用于预览下面解析后的值（不会改变已保存的内容）。",
-      selectSubtitle: "选择设备以预览下面解析后的值。",
+      resolveSubtitle: "用于环境变量检查，并作为账号登录配置的目标设备（不会改变已保存的内容）。",
+      selectSubtitle: "选择用于环境变量检查和账号登录配置的目标设备。",
     },
     environmentVariables: {
       title: "环境变量",
@@ -9252,7 +9252,6 @@ settingsSession: {
       alreadyProvisioned: "此配置文件已在这台设备上配置。",
       successHint: "配置文件配置完成。",
       errorBody: "配置文件配置失败。",
-      runInBackground: "在后台运行",
     },
     switch: {
       title: "切换配置文件",
