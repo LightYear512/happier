@@ -24,6 +24,7 @@ export function useTerminalSurfaceState(params: Readonly<{
         [params.terminalKey],
     );
     const [detectedUrl, setDetectedUrl] = React.useState<DaemonTerminalStreamEventUrl | null>(initialSurfaceState.detectedUrl);
+    const [output, setOutput] = React.useState(initialSurfaceState.output);
     const renderedOutputRef = React.useRef('');
 
     const updateSurfaceState = React.useCallback((updater: (current: ReturnType<typeof createEmptyTerminalSurfaceState>) => ReturnType<typeof createEmptyTerminalSurfaceState>) => {
@@ -31,7 +32,9 @@ export function useTerminalSurfaceState(params: Readonly<{
     }, [params.terminalKey]);
 
     const replaceSurfaceState = React.useCallback((nextState: ReturnType<typeof createEmptyTerminalSurfaceState>) => {
-        return replaceTerminalSurfaceState(params.terminalKey, nextState);
+        const replaced = replaceTerminalSurfaceState(params.terminalKey, nextState);
+        setOutput(replaced.output);
+        return replaced;
     }, [params.terminalKey]);
 
     const syncDetectedUrl = React.useCallback((nextUrl: DaemonTerminalStreamEventUrl | null) => {
@@ -83,6 +86,7 @@ export function useTerminalSurfaceState(params: Readonly<{
         params.terminalIdRef.current = state.terminalId;
         params.cursorRef.current = state.cursor;
         setDetectedUrl(state.detectedUrl);
+        setOutput(state.output);
 
         if (!renderer) {
             renderedOutputRef.current = state.output;
@@ -148,12 +152,14 @@ export function useTerminalSurfaceState(params: Readonly<{
         params.terminalRendererHandleRef.current = null;
         renderedOutputRef.current = '';
         setDetectedUrl(cached.detectedUrl);
+        setOutput(cached.output);
         params.terminalRef.current?.clear();
     }, [params.cursorRef, params.terminalIdRef, params.terminalKey, params.terminalRef, params.terminalRendererHandleRef]);
 
     return {
         initialSurfaceState,
         detectedUrl,
+        output,
         updateSurfaceState,
         replaceSurfaceState,
         syncDetectedUrl,

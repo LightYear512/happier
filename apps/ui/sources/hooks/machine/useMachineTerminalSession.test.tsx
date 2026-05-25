@@ -19,12 +19,11 @@ const writeTerminalOutputMock = vi.hoisted(() => vi.fn());
 const onInputMock = vi.hoisted(() => vi.fn());
 const onResizeMock = vi.hoisted(() => vi.fn());
 const onReadyMock = vi.hoisted(() => vi.fn());
-const initialTerminalSize = vi.hoisted(() => ({
-    cols: 80,
-    rows: 24,
-}));
 const latestTerminalSizeRef = vi.hoisted(() => ({
-    current: initialTerminalSize,
+    current: { cols: 80, rows: 24 } as { cols: number; rows: number } | null,
+}));
+const terminalSizeState = vi.hoisted(() => ({
+    initial: { cols: 80, rows: 24 } as { cols: number; rows: number } | null,
 }));
 const terminalReaderLeaseState = vi.hoisted(() => ({
     ownerByKey: new Map<string, symbol>(),
@@ -42,7 +41,7 @@ vi.mock('@/components/sessions/terminal/terminalSurfaceStateCache', () => ({
 
 vi.mock('@/components/sessions/terminal/useEmbeddedTerminalTransportHandlers', () => ({
     useEmbeddedTerminalTransportHandlers: () => ({
-        initialTerminalSize,
+        initialTerminalSize: terminalSizeState.initial,
         latestTerminalSizeRef,
         onInput: onInputMock,
         onResize: onResizeMock,
@@ -53,6 +52,7 @@ vi.mock('@/components/sessions/terminal/useEmbeddedTerminalTransportHandlers', (
 vi.mock('@/components/sessions/terminal/useTerminalSurfaceState', () => ({
     useTerminalSurfaceState: () => ({
         detectedUrl: null,
+        output: '',
         clearTerminalOutput: clearTerminalOutputMock,
         hydrateTerminalRendererIfNeeded: hydrateTerminalRendererIfNeededMock,
         replaceSurfaceState: replaceSurfaceStateMock,
@@ -110,6 +110,8 @@ describe('useMachineTerminalSession', () => {
         onInputMock.mockReset();
         onResizeMock.mockReset();
         onReadyMock.mockReset();
+        terminalSizeState.initial = { cols: 80, rows: 24 };
+        latestTerminalSizeRef.current = terminalSizeState.initial;
 
         machineTerminalEnsureMock.mockResolvedValue({
             ok: true,
@@ -260,5 +262,32 @@ describe('useMachineTerminalSession', () => {
 
         await finished.unmount();
         await next.unmount();
+    });
+
+    it('uses an explicit fallback size before the hidden profile-auth terminal reports layout', async () => {
+        terminalSizeState.initial = null;
+        latestTerminalSizeRef.current = null;
+        const terminalRef = { current: null };
+        const fallbackTerminalSize = { cols: 120, rows: 30 } as const;
+
+        const hook = await renderHook(() => useMachineTerminalSession({
+            machineId: 'machine-1',
+            cwd: '/repo',
+            machineReachable: true,
+            machineRpcTargetAvailable: true,
+            terminalKey: 'terminal-key-profile-auth-hidden',
+            terminalRef,
+            profileAuthSessionId: 'auth-1',
+            fallbackTerminalSize,
+        }));
+        await flushHookEffects();
+
+        expect(machineTerminalEnsureMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            cols: 120,
+            rows: 30,
+            profileAuthSessionId: 'auth-1',
+        }));
+
+        await hook.unmount();
     });
 });
