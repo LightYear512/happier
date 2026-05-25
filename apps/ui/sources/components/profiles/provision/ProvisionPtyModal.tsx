@@ -5,7 +5,6 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
-import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
@@ -20,6 +19,10 @@ import type { EmbeddedTerminalRendererHandle } from '@/components/sessions/termi
 import { useMachineTerminalSession } from '@/hooks/machine/useMachineTerminalSession';
 import { useMachine } from '@/sync/domains/state/storage';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { openExternalUrl } from '@/utils/url/openExternalUrl';
+import { resolveProfileAuthDisplayState } from './profileAuthDisplayState';
+import { ProfileAuthPrompt } from './ProfileAuthPrompt';
 
 type ProvisionPtyModalProps = CustomModalInjectedProps & Readonly<{
     profileId: string;
@@ -28,6 +31,8 @@ type ProvisionPtyModalProps = CustomModalInjectedProps & Readonly<{
     onProvisioned?: () => void;
 }>;
 
+const PROFILE_AUTH_FALLBACK_TERMINAL_SIZE = { cols: 120, rows: 30 } as const;
+
 export type ProvisionPhase =
     | Readonly<{ kind: 'running' }>
     | Readonly<{ kind: 'success'; result: Extract<ProfileProvisionResult, { type: 'success' }> }>
@@ -35,6 +40,13 @@ export type ProvisionPhase =
 
 const URL_RE = /(https?:\/\/[^\s]+)/g;
 const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+
+export function shouldRenderProvisionFooter(_params: Readonly<{
+    phaseKind: ProvisionPhase['kind'];
+    hasPreparedSession: boolean;
+}>): false {
+    return false;
+}
 
 export function stripAnsi(text: string): string {
     return text.replace(ANSI_RE, '');
@@ -140,12 +152,22 @@ const stylesheet = StyleSheet.create((theme) => ({
         flex: 1,
         minHeight: 120,
     },
+    hiddenTerminalContainer: {
+        position: 'absolute',
+        left: -10000,
+        top: 0,
+        width: 560,
+        height: 220,
+        pointerEvents: 'none',
+        overflow: 'hidden',
+    },
 }));
 
 export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const [phase, setPhase] = React.useState<ProvisionPhase>({ kind: 'running' });
+    const [showDetails, setShowDetails] = React.useState(false);
     const startedRef = React.useRef(false);
     const terminalRendererRef = React.useRef<EmbeddedTerminalRendererHandle | null>(null);
     const machine = useMachine(props.machineId);
@@ -189,7 +211,13 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
         terminalRef: terminalRendererRef,
         profileAuthSessionId: preparedSession?.profileAuthSessionId,
         closeOnUnmount: true,
+        fallbackTerminalSize: PROFILE_AUTH_FALLBACK_TERMINAL_SIZE,
     });
+    const displayState = React.useMemo(() => resolveProfileAuthDisplayState({
+        backendId: props.backendId,
+        terminalOutput: terminalController.output,
+        terminalStatus: terminalController.status,
+    }), [props.backendId, terminalController.output, terminalController.status]);
 
     const verifyingRef = React.useRef(false);
     React.useEffect(() => {
@@ -218,28 +246,38 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
     }, [preparedSession, props.backendId, props.machineId, props.onProvisioned, props.profileId, terminalController.status]);
 
     const backendName = props.backendId === 'codex' ? 'Codex' : 'Claude';
-    const closeLabel = phase.kind === 'running' || preparedSession
-        ? t('profiles.provision.runInBackground')
-        : phase.kind === 'success'
-            ? t('common.done')
-            : t('common.close');
-
-    const footer = React.useMemo(() => (
-        <RoundButton
-            testID="profile-provision-close"
-            title={closeLabel}
-            size="normal"
-            onPress={props.onClose}
-        />
-    ), [closeLabel, props.onClose]);
+    const footer = shouldRenderProvisionFooter({
+        phaseKind: phase.kind,
+        hasPreparedSession: Boolean(preparedSession),
+    }) ? null : undefined;
 
     useModalCardChrome(props.setChrome, React.useMemo(() => ({
         kind: 'card' as const,
         title: t('profiles.provision.modalTitle', { backend: backendName }),
         footer,
+        closeButtonTestID: 'profile-provision-header-close',
         layout: 'fill' as const,
         dimensions: { width: 560, maxHeightRatio: 0.8 },
     }), [backendName, footer]));
+
+    const copyValue = React.useCallback((value: string) => {
+        void setClipboardStringSafe(value);
+    }, []);
+
+    const openUrl = React.useCallback((url: string) => {
+        void openExternalUrl(url, Platform.OS === 'web' ? { platformOS: 'web' } : undefined);
+    }, []);
+
+    const terminalPane = preparedSession ? (
+        <EmbeddedTerminalPane
+            title={t('profiles.provision.modalTitle', { backend: backendName })}
+            controller={terminalController}
+            terminalRef={terminalRendererRef}
+            onRequestClose={props.onClose}
+            testIdPrefix="profile-provision-terminal"
+            showQuickKeys={Platform.OS !== 'web'}
+        />
+    ) : null;
 
     return (
         <View style={styles.body}>
@@ -253,7 +291,7 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
                         color={theme.colors.text.secondary}
                     />
                 )}
-                <Text style={styles.statusText}>
+                <Text testID="profile-provision-status-text" style={styles.statusText}>
                     {phase.kind === 'running'
                         ? t('profiles.provision.inProgressHint')
                         : phase.kind === 'success'
@@ -265,15 +303,19 @@ export function ProvisionPtyModal(props: ProvisionPtyModalProps) {
             </View>
 
             {preparedSession ? (
-                <View style={styles.terminalContainer}>
-                    <EmbeddedTerminalPane
-                        title={t('profiles.provision.modalTitle', { backend: backendName })}
-                        controller={terminalController}
-                        terminalRef={terminalRendererRef}
-                        onRequestClose={props.onClose}
-                        testIdPrefix="profile-provision-terminal"
-                        showQuickKeys={Platform.OS !== 'web'}
-                    />
+                <ProfileAuthPrompt
+                    backendId={props.backendId}
+                    displayState={displayState}
+                    showDetails={showDetails}
+                    onCopy={copyValue}
+                    onOpen={openUrl}
+                    onToggleDetails={() => setShowDetails((value) => !value)}
+                />
+            ) : null}
+
+            {preparedSession ? (
+                <View style={showDetails ? styles.terminalContainer : styles.hiddenTerminalContainer}>
+                    {terminalPane}
                 </View>
             ) : null}
         </View>
