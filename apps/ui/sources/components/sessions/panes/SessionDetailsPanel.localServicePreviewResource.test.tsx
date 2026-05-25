@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
@@ -10,6 +11,10 @@ const relayFeatureState = vi.hoisted(() => ({
     enabled: false,
 }));
 const serverFetchSpy = vi.hoisted(() => vi.fn());
+const setDetailsTabStateSpy = vi.hoisted(() => vi.fn());
+const detailsTabState = vi.hoisted(() => ({
+    value: {} as Record<string, unknown>,
+}));
 const activeServerSnapshotState = vi.hoisted(() => ({
     serverUrl: 'https://app.happier.dev',
     serverId: 'server_1',
@@ -88,11 +93,13 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
         closeDetails: vi.fn(),
         closeDetailsTab: vi.fn(),
         pinDetailsTab: vi.fn(),
+        setDetailsTabState: setDetailsTabStateSpy,
         setActiveDetailsTab: vi.fn(),
         scopeState: {
             details: {
                 isOpen: true,
                 activeTabKey: 'localServicePreview:preview_1',
+                tabState: detailsTabState.value,
                 tabs: [
                     {
                         key: 'localServicePreview:preview_1',
@@ -125,7 +132,9 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     beforeEach(() => {
         delete (globalThis as { window?: unknown }).window;
         relayFeatureState.enabled = false;
+        detailsTabState.value = {};
         activeServerSnapshotState.serverUrl = 'https://app.happier.dev';
+        setDetailsTabStateSpy.mockReset();
         serverFetchSpy.mockReset();
         serverFetchSpy.mockResolvedValue({
             ok: true,
@@ -176,6 +185,10 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(String(iframe.props.src)).toBe('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
         expect(String(iframe.props.src)).toContain('previewToken=preview_token_1');
         expect(String(iframe.props.src)).not.toContain('3000');
+        expect(setDetailsTabStateSpy).toHaveBeenCalledWith(
+            'localServicePreview:preview_1',
+            { previewDisplayUrl: 'https://preview-route.example.test/dashboard?previewToken=preview_token_1' },
+        );
         expect(iframe.props['data-testid']).toBe('session.localServicePreview.iframe');
         expect(iframe.props.sandbox).toContain('allow-scripts');
         expect(iframe.props.sandbox).toContain('allow-same-origin');
@@ -184,6 +197,44 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
             '/v1/sessions/s1/dev-preview/machine-1/route_1/token',
             { method: 'POST' },
         );
+    });
+
+    it('shows the resolved relay preview URL in the preview tab subtitle when available', async () => {
+        installWindow('https://app.happier.dev/session/s1');
+        relayFeatureState.enabled = true;
+        detailsTabState.value = {
+            'localServicePreview:preview_1': {
+                previewDisplayUrl: 'https://preview-route.example.test/dashboard?previewToken=preview_token_1',
+            },
+        };
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+
+        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+
+        expect(screen.getTextContent()).toContain('Preview app');
+        expect(screen.getTextContent()).toContain('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
+        expect(screen.getTextContent()).not.toContain('http://127.0.0.1:3000');
+    });
+
+    it('does not repeatedly write preview tab state when the parent rerenders after resolving the relay URL', async () => {
+        installWindow('https://app.happier.dev/session/s1');
+        relayFeatureState.enabled = true;
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+
+        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+        await flushHookEffects({ cycles: 1, turns: 2 });
+        expect(setDetailsTabStateSpy).toHaveBeenCalledWith(
+            'localServicePreview:preview_1',
+            { previewDisplayUrl: 'https://preview-route.example.test/dashboard?previewToken=preview_token_1' },
+        );
+
+        setDetailsTabStateSpy.mockClear();
+        await act(async () => {
+            screen.tree.update(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" showHeaderActions={false} />);
+        });
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        expect(setDetailsTabStateSpy).not.toHaveBeenCalled();
     });
 
     it('keeps path-namespaced remote previews in an opaque iframe sandbox', async () => {

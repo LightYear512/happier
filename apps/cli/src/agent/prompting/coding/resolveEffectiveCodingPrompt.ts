@@ -26,6 +26,8 @@ const DEV_PREVIEW_PROMPT_GUIDANCE = trimIdent(`
   Local dev preview:
   - After starting a local web dev server, register it with \`happier_dev_preview_register\` once you know the local URL so the user can view it in Happier.
   - Do this after commands such as \`npm run dev\`, \`yarn dev\`, \`pnpm dev\`, \`bun dev\`, \`vite\`, \`next dev\`, \`astro dev\`, and \`sveltekit dev\`.
+  - If the user explicitly asks you not to expose, preview, relay, register, or open the dev server in Happier, do not call \`happier_dev_preview_register\` unless they later ask you to.
+  - If you already started a dev server without registering it and the user asks to view it in Happier, call \`happier_dev_preview_register\` for the running server.
   - Prefer the full loopback URL (including any base path) and, when obvious, the app name or framework.
   - Continue using browser or Playwright tools for your own verification; this preview registration is for the user-visible Happier panel.
 `);
