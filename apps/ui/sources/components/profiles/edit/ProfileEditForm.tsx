@@ -1043,8 +1043,7 @@ export function ProfileEditForm({
                     {provisionableBackendEntries.map(({ entry, core, provisioning }, index) => (
                         <Item
                             key={`provision-${entry.targetKey}`}
-                            title={t('profiles.provision.provisionOnMachine')}
-                            subtitle={t(core.displayNameKey)}
+                            title={`${t('profiles.provision.provisionOnMachine')} ${t(core.displayNameKey)}`}
                             icon={<Ionicons name="cloud-download-outline" size={29} color={theme.colors.button.secondary.tint} />}
                             showDivider={index < provisionableBackendEntries.length - 1}
                             onPress={() => openProvisionModal({

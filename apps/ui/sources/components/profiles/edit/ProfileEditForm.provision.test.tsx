@@ -14,8 +14,12 @@ import {
 
 const capture = vi.hoisted(() => ({
     provisionPress: null as null | (() => void),
+    provisionTitle: null as null | string,
+    provisionSubtitle: undefined as undefined | string,
     reset() {
         this.provisionPress = null;
+        this.provisionTitle = null;
+        this.provisionSubtitle = undefined;
     },
 }));
 
@@ -75,8 +79,10 @@ vi.mock('@/agents/catalog/catalog', () => ({
 
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: ({ title, onPress, subtitle }: { title?: string; onPress?: () => void; subtitle?: string }) => {
-        if (title === 'profiles.provision.provisionOnMachine' && subtitle === 'agentInput.agent.claude') {
+        if (title === 'profiles.provision.provisionOnMachine agentInput.agent.claude') {
             capture.provisionPress = onPress ?? null;
+            capture.provisionTitle = title;
+            capture.provisionSubtitle = subtitle;
         }
         return React.createElement('Item', { title, onPress, subtitle });
     },
@@ -119,6 +125,8 @@ describe('ProfileEditForm profile provisioning entrypoint', () => {
         />);
 
         expect(capture.provisionPress).toBeTruthy();
+        expect(capture.provisionTitle).toBe('profiles.provision.provisionOnMachine agentInput.agent.claude');
+        expect(capture.provisionSubtitle).toBeUndefined();
 
         await act(async () => {
             capture.provisionPress?.();
