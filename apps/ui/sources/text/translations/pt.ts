@@ -10242,7 +10242,6 @@ settingsSession: {
         "Este perfil já está provisionado nesta máquina.",
       successHint: "Provisionamento do perfil concluído.",
       errorBody: "Falha ao provisionar o perfil.",
-      runInBackground: "Executar em segundo plano",
     },
     switch: {
       title: "Trocar perfil",

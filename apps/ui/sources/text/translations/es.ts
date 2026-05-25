@@ -10198,7 +10198,6 @@ settingsSession: {
         "Este perfil ya está aprovisionado en esta máquina.",
       successHint: "El aprovisionamiento del perfil se completó.",
       errorBody: "No se pudo aprovisionar el perfil.",
-      runInBackground: "Ejecutar en segundo plano",
     },
     switch: {
       title: "Cambiar perfil",

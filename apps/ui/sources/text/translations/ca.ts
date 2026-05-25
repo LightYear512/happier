@@ -9271,7 +9271,6 @@ settingsSession: {
             alreadyProvisioned: 'Aquest perfil ja està aprovisionat en aquesta màquina.',
             successHint: 'L’aprovisionament del perfil ha finalitzat.',
             errorBody: 'No s’ha pogut aprovisionar el perfil.',
-            runInBackground: 'Executa en segon pla',
         },
         switch: {
             title: 'Canvia de perfil',

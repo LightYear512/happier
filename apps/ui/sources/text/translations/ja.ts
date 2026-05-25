@@ -1585,7 +1585,6 @@ export const ja: TranslationStructure = {
         "このプロファイルはこのマシンで既にプロビジョニング済みです。",
       successHint: "プロファイルのプロビジョニングが完了しました。",
       errorBody: "プロファイルのプロビジョニングに失敗しました。",
-      runInBackground: "バックグラウンドで実行",
     },
     switch: {
       title: "プロファイルを切り替え",

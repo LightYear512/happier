@@ -7830,7 +7830,6 @@ settingsSession: {
             alreadyProvisioned: '此設定檔已在這台裝置上配置。',
             successHint: '設定檔配置完成。',
             errorBody: '設定檔配置失敗。',
-            runInBackground: '在背景執行',
         },
         switch: {
             title: '切換設定檔',

@@ -10194,7 +10194,6 @@ settingsSession: {
         "Ten profil jest już przygotowany na tej maszynie.",
       successHint: "Przygotowanie profilu zakończone.",
       errorBody: "Nie udało się przygotować profilu.",
-      runInBackground: "Uruchom w tle",
     },
     switch: {
       title: "Zmień profil",
