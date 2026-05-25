@@ -200,7 +200,8 @@ function sessionProfileChip(page: Page) {
 async function waitForTerminalTranscriptOrProvisionCompletion(page: Page, testId: string, needle: string): Promise<void> {
   const terminal = page.getByTestId(testId);
   await expect.poll(async () => {
-    if (await page.getByTestId('profile-provision-close').count() > 0) return 'completed';
+    const statusText = await page.getByTestId('profile-provision-status-text').innerText({ timeout: 1_000 }).catch(() => '');
+    if (statusText.includes('Profile provisioning completed.')) return 'completed';
     if (await terminal.count() === 0) return 'pending';
     const text = await terminal.first().getAttribute('data-happier-terminal-text', { timeout: 1_000 }).catch(() => null);
     return text?.includes(needle) ? 'terminal-output' : 'pending';
@@ -350,9 +351,10 @@ test.describe('ui e2e: profile provision + switch', () => {
       && invocation.argv.length === 0
       && invocation.cwd === workProfileDir
     ), { timeoutMs: 60_000 });
-    await expect(page.getByTestId('profile-provision-close')).toContainText('Done', { timeout: 60_000 });
-    await page.getByTestId('profile-provision-close').click();
-    await expect(page.getByTestId('profile-provision-close')).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByTestId('profile-provision-status-text')).toContainText('Profile provisioning completed.', { timeout: 60_000 });
+    await expect(page.getByTestId('profile-provision-close')).toHaveCount(0);
+    await page.getByTestId('profile-provision-header-close').click();
+    await expect(page.getByTestId('profile-provision-header-close')).toHaveCount(0, { timeout: 60_000 });
 
     const sessionId = await createSessionFromNewSessionComposer({
       page,

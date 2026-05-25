@@ -19,12 +19,13 @@ export async function authenticateAndStartDaemon(params: Readonly<{
   initialUiReadyTimeoutMs?: number;
   terminalConnectUrlTimeoutMs?: number;
   daemonStartupTimeoutMs?: number;
+  initialUiTimeoutMs?: number;
   extraEnv?: NodeJS.ProcessEnv;
 }>): Promise<StartedDaemon> {
-  await gotoCommittedWithRetries(params.page, params.uiBaseUrl, params.initialUiGotoTimeoutMs);
+  await gotoCommittedWithRetries(params.page, params.uiBaseUrl, params.initialUiGotoTimeoutMs ?? params.initialUiTimeoutMs);
   await waitForInitialAppUi({
     page: params.page,
-    timeoutMs: params.initialUiReadyTimeoutMs,
+    timeoutMs: params.initialUiReadyTimeoutMs ?? params.initialUiTimeoutMs,
     reloadOnFailure: false,
   });
   await ensureAccountReadyForConnect({
