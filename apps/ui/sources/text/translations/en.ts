@@ -8239,7 +8239,6 @@ settingsSession: {
             alreadyProvisioned: 'This profile is already provisioned on this machine.',
             successHint: 'Profile provisioning completed.',
             errorBody: 'Profile provisioning failed.',
-            runInBackground: 'Run in background',
         },
         switch: {
             title: 'Switch profile',

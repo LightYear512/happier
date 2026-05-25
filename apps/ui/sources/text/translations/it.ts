@@ -1520,7 +1520,6 @@ export const it: TranslationStructure = {
         "Questo profilo è già predisposto su questa macchina.",
       successHint: "Provisioning del profilo completato.",
       errorBody: "Provisioning del profilo non riuscito.",
-      runInBackground: "Esegui in background",
     },
     switch: {
       title: "Cambia profilo",
