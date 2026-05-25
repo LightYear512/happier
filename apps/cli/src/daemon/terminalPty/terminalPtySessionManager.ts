@@ -23,6 +23,7 @@ export type TerminalPtyLaunchOverride = Readonly<{
   cwd?: string;
   env: NodeJS.ProcessEnv;
   initialInput?: string | null;
+  outputResponder?: (input: Readonly<{ data: string; outputBuffer: string }>) => string | null | undefined;
 }>;
 
 type TerminalEnsureInput = Readonly<{
@@ -144,6 +145,8 @@ type PtySession = {
   ended: boolean;
   lastActivityAtMs: number;
   urlDetector: ReturnType<typeof createTerminalUrlDetector>;
+  automationOutputBuffer: string;
+  outputResponder?: TerminalPtyLaunchOverride['outputResponder'];
 };
 
 function splitByApproxBytesUtf8(input: string, maxBytes: number): string[] {
@@ -175,6 +178,18 @@ function resolveTerminalSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       ? configuredPromptEolMark
       : (env.PROMPT_EOL_MARK ?? ''),
   };
+}
+
+function appendAutomationOutputBuffer(current: string, next: string, maxBytes: number): string {
+  const combined = current + next;
+  const safeMaxBytes = Math.max(1, Math.trunc(maxBytes));
+  if (Buffer.byteLength(combined, 'utf8') <= safeMaxBytes) return combined;
+
+  let start = Math.max(0, combined.length - safeMaxBytes);
+  while (start < combined.length && Buffer.byteLength(combined.slice(start), 'utf8') > safeMaxBytes) {
+    start += 1;
+  }
+  return combined.slice(start);
 }
 
 export function createTerminalPtySessionManager(params: Readonly<{
@@ -320,6 +335,8 @@ export function createTerminalPtySessionManager(params: Readonly<{
       ended: false,
       lastActivityAtMs: now(),
       urlDetector,
+      automationOutputBuffer: '',
+      ...(input.launch?.outputResponder ? { outputResponder: input.launch.outputResponder } : {}),
     };
 
     session.disposables.push(
@@ -334,6 +351,24 @@ export function createTerminalPtySessionManager(params: Readonly<{
           const urls = urlDetector.ingest(text);
           for (const url of urls) {
             pushEvent(session.buffer, { t: 'url', ...url }, config);
+          }
+          if (session.outputResponder) {
+            session.automationOutputBuffer = appendAutomationOutputBuffer(
+              session.automationOutputBuffer,
+              text,
+              config.urlParseBufferLimit,
+            );
+            try {
+              const response = session.outputResponder({
+                data: text,
+                outputBuffer: session.automationOutputBuffer,
+              });
+              if (response) {
+                pty.write(response);
+              }
+            } catch {
+              // best-effort automation; terminal streaming must continue
+            }
           }
         }
       }),

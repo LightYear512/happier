@@ -209,10 +209,16 @@ export type CliProfileAuthLoginContext = Readonly<{
   command: string;
   args: readonly string[];
   initialInput?: string | null;
+  terminalOutputResponder?: CliProfileAuthTerminalOutputResponder;
   env: NodeJS.ProcessEnv;
   allowlistedEnvKeys: readonly string[];
   cwd?: string;
 }>;
+
+export type CliProfileAuthTerminalOutputResponder = (input: Readonly<{
+  data: string;
+  outputBuffer: string;
+}>) => string | null | undefined;
 
 export type CliProfileAuthPrepareResult = Readonly<{
   profileDir: string;

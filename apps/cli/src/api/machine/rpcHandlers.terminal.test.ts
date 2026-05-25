@@ -13,12 +13,23 @@ import type { PtyProcess, PtyProvider, PtySpawnParams } from '@/integrations/pty
 
 class FakePty implements PtyProcess {
   public readonly writes: string[] = [];
+  private readonly onDataListeners = new Set<(data: string) => void>();
+
   write(data: string): void { this.writes.push(data); }
   resize(): void { }
   kill(): void { }
-  onData(_listener: (data: string) => void): { dispose: () => void } { return { dispose: () => { } }; }
+  onData(listener: (data: string) => void): { dispose: () => void } {
+    this.onDataListeners.add(listener);
+    return { dispose: () => { this.onDataListeners.delete(listener); } };
+  }
   onExit(_listener: (e: { exitCode: number; signal?: number | undefined }) => void): { dispose: () => void } {
     return { dispose: () => { } };
+  }
+
+  emitData(data: string): void {
+    for (const listener of this.onDataListeners) {
+      listener(data);
+    }
   }
 }
 
@@ -108,7 +119,7 @@ describe('registerMachineTerminalRpcHandlers', () => {
     expect(await realpath(provider.spawned[0]?.options.cwd ?? '')).toBe(realSubDir);
   });
 
-  it('spawns a prepared profile auth session command with daemon-held env and initial input', async () => {
+  it('spawns a prepared profile auth session command with daemon-held env and output automation', async () => {
     const suiteDir = await mkdtemp(join(tmpdir(), 'happier-terminal-profile-auth-'));
     const profileDir = join(suiteDir, 'profile');
     await mkdir(profileDir, { recursive: true });
@@ -146,17 +157,19 @@ describe('registerMachineTerminalRpcHandlers', () => {
           get: (id: string) => id === 'auth-1'
             ? {
               profileAuthSessionId: 'auth-1',
-	              providerId: 'claude',
-	              profileId: 'work',
-	              profileDir,
-	              terminalKey: 'profile-login:machine-a:claude:work',
-	              command: '/bin/claude',
+              providerId: 'claude',
+              profileId: 'work',
+              profileDir,
+              terminalKey: 'profile-login:machine-a:claude:work',
+              command: '/bin/claude',
               args: ['--dangerously-skip-permissions'],
               env: { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: profileDir },
-	              initialInput: '/login\r',
-	              cwd: profileDir,
-	              expiresAtMs: Number.MAX_SAFE_INTEGER,
-	            }
+              terminalOutputResponder: ({ outputBuffer }) => (
+                outputBuffer.includes('Not logged in') ? '/login\r' : null
+              ),
+              cwd: profileDir,
+              expiresAtMs: Number.MAX_SAFE_INTEGER,
+            }
             : null,
         },
       },
@@ -186,6 +199,8 @@ describe('registerMachineTerminalRpcHandlers', () => {
       PATH: '/usr/bin',
     }));
     expect(provider.spawned[0]?.options.env).not.toMatchObject({ CLAUDE_CONFIG_DIR: '/global' });
+    expect(provider.ptys[0]?.writes).toEqual([]);
+    provider.ptys[0]?.emitData('Not logged in. Run /login to authenticate.');
     expect(provider.ptys[0]?.writes).toEqual(['/login\r']);
   });
 

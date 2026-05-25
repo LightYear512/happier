@@ -105,6 +105,7 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
         cwd: session.cwd ?? session.profileDir,
         env: session.env,
         ...(session.initialInput != null ? { initialInput: session.initialInput } : {}),
+        ...(session.terminalOutputResponder ? { outputResponder: session.terminalOutputResponder } : {}),
       },
     };
   };
