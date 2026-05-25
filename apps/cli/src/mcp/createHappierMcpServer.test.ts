@@ -491,4 +491,78 @@ describe('createHappierMcpServer', () => {
       { surface: 'session_agent', defaultSessionId: 'sess_execution_run_start_1' },
     );
   });
+
+  it('registers session dev previews with the daemon registry for relay lookups', async () => {
+    const captured: { deps?: any } = {};
+    const daemonDevPreviewRegister = vi.fn(async () => ({
+      success: true,
+      preview: {
+        resourceId: 'preview_daemon_1',
+        sessionId: 'sess_dev_preview_daemon_1',
+        machineId: 'machine-1',
+        port: 52112,
+        origin: 'http://127.0.0.1:52112',
+        name: 'Preview app',
+        source: 'manual',
+        registeredAtMs: 1,
+        health: { status: 'ready' },
+        preview: {
+          rewriteUrls: true,
+          supportsWebSocket: true,
+          routeKey: 'route_daemon_1',
+          initialPath: '/',
+        },
+      },
+    } as const));
+
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@/session/actions/createCliActionExecutorHarness')>();
+      return {
+        ...actual,
+        createCliActionExecutorHarness: (_ctx: any, deps: any) => {
+          captured.deps = deps;
+          return { executor: { execute: vi.fn() } };
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    createHappierMcpServer(
+      {
+        sessionId: 'sess_dev_preview_daemon_1',
+        rpcHandlerManager: { invokeLocal: async () => ({}) },
+        sendClaudeSessionMessage: () => {},
+        updateMetadata: () => {},
+        getMetadataSnapshot: () => ({ machineId: 'machine-1' }),
+      } as any,
+      {
+        credentials: null,
+        daemonDevPreviewRegister,
+      },
+    );
+
+    expect(captured.deps).toBeDefined();
+    const result = await captured.deps.sessionDevPreviewRegister({
+      sessionId: 'sess_dev_preview_daemon_1',
+      port: 52112,
+      name: 'Preview app',
+      framework: 'vite',
+      rewriteUrls: true,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      resourceId: 'preview_daemon_1',
+      preview: expect.objectContaining({
+        routeKey: 'route_daemon_1',
+      }),
+    }));
+    expect(daemonDevPreviewRegister).toHaveBeenCalledWith({
+      sessionId: 'sess_dev_preview_daemon_1',
+      expectedMachineId: 'machine-1',
+      port: 52112,
+      name: 'Preview app',
+      framework: 'vite',
+      rewriteUrls: true,
+    });
+  });
 });

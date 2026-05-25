@@ -169,6 +169,8 @@ describe('resolveEffectiveCodingPromptText', () => {
     expect(out).toContain('happier_dev_preview_register');
     expect(out).toContain('npm run dev');
     expect(out).toContain('next dev');
+    expect(out).toContain('explicitly asks you not to expose');
+    expect(out).toContain('If you already started a dev server without registering it');
   });
 
   it('omits local dev preview registration guidance when Happier tool delivery is unavailable', async () => {

@@ -24,6 +24,11 @@ import {
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { MemorySearchResultV1Schema, MemoryWindowV1Schema, type MemorySearchResultV1, type MemoryWindowV1 } from '@happier-dev/protocol';
 import { createMcpActionApprovalRequirement, createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
+import {
+  registerDaemonSessionDevPreview,
+  type DaemonDevPreviewRegisterRequest,
+  type DaemonDevPreviewRegisterResult,
+} from '@/daemon/controlClient';
 
 export function createHappierMcpServer(
   client: HappyMcpSessionClient,
@@ -31,6 +36,7 @@ export function createHappierMcpServer(
     credentials?: Credentials | null;
     accountSettings?: AccountSettings | null;
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
+    daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
   }>,
 ): { mcp: McpServer; toolNames: string[] } {
   // This server is the per-session MCP bridge that a running session agent uses.
@@ -39,6 +45,7 @@ export function createHappierMcpServer(
   const toolSurface = 'session_agent' as const;
   const credentials = opts?.credentials ?? null;
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
+  const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -145,7 +152,7 @@ export function createHappierMcpServer(
           };
         }
 
-        const preview = await devPreviewRegistry.register({
+        const localPreview = await devPreviewRegistry.register({
           sessionId,
           machineId,
           ...(typeof port === 'number' ? { port } : {}),
@@ -156,6 +163,36 @@ export function createHappierMcpServer(
           healthPath,
           source: 'mcp_tool',
         });
+        let preview = localPreview;
+        if (daemonDevPreviewRegister) {
+          try {
+            const daemonResult = await daemonDevPreviewRegister({
+              sessionId,
+              expectedMachineId: machineId,
+              ...(typeof port === 'number' ? { port } : {}),
+              ...(typeof url === 'string' && url.trim() ? { url: url.trim() } : {}),
+              ...(name ? { name } : {}),
+              ...(framework ? { framework } : {}),
+              ...(healthPath ? { healthPath } : {}),
+              ...(typeof rewriteUrls === 'boolean' ? { rewriteUrls } : {}),
+            });
+            if ('success' in daemonResult && daemonResult.success === true) {
+              preview = daemonResult.preview;
+            } else {
+              logger.debug('[mcp] Failed to register dev preview with daemon registry', {
+                sessionId,
+                machineId,
+                result: daemonResult,
+              });
+            }
+          } catch (error) {
+            logger.debug('[mcp] Failed to register dev preview with daemon registry', {
+              sessionId,
+              machineId,
+              error,
+            });
+          }
+        }
         emitLocalServicePreviewMessage({
           preview,
           sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
