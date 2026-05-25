@@ -48,7 +48,7 @@ export const codexProfileAuthProvider: CliProfileAuthProvider = {
   },
   buildIsolatedLoginContext: async ({ profileDir, processEnv = process.env }) => {
     const invocation = await resolveCodexCliInvocation({
-      args: ['login'],
+      args: ['login', '--device-auth'],
       processEnv,
       overrideEnvVarKeys: ['HAPPIER_CODEX_PATH'],
       targetLabel: 'Codex CLI',

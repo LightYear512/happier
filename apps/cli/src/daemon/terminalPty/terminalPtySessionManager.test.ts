@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createTerminalPtySessionManager, type TerminalPtySessionManagerConfig } from './terminalPtySessionManager';
 import type { Disposable, PtyExitEvent, PtyProcess, PtyProvider, PtySpawnParams } from './ptyProvider';
@@ -72,6 +72,10 @@ function defaultConfig(overrides?: Partial<TerminalPtySessionManagerConfig>): Te
 }
 
 describe('TerminalPtySessionManager', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('reuses sessions by terminalKey', () => {
     const provider = new FakePtyProvider();
     const manager = createTerminalPtySessionManager({
@@ -119,6 +123,39 @@ describe('TerminalPtySessionManager', () => {
     if (!read2.ok) throw new Error('expected ok');
     expect(read2.events).toEqual([]);
     expect(read2.nextCursor).toBe(1);
+  });
+
+  it('lets launch overrides respond to PTY output after the process is ready', () => {
+    const provider = new FakePtyProvider();
+    const manager = createTerminalPtySessionManager({
+      ptyProvider: provider,
+      config: defaultConfig(),
+      now: () => 0,
+      env: { SHELL: '/bin/bash' } as any,
+      platform: 'linux',
+    });
+
+    const ensured = manager.ensure({
+      terminalKey: 'profile-auth',
+      cwd: '/tmp',
+      launch: {
+        file: '/usr/bin/fake-claude',
+        args: [],
+        cwd: '/home/test',
+        env: {},
+        outputResponder: ({ outputBuffer }) => (
+          outputBuffer.includes('Not logged in') ? '/login\r' : null
+        ),
+      },
+    });
+    expect(ensured.ok).toBe(true);
+    const pty = provider.spawned[0]?.pty;
+    if (!pty) throw new Error('missing fake pty');
+    expect(pty.writes).toEqual([]);
+
+    pty.emitData('Welcome\nNot logged in. Run /login to authenticate.');
+
+    expect(pty.writes).toEqual(['/login\r']);
   });
 
   it('suppresses zsh prompt EOL markers in embedded terminal sessions by default', () => {
