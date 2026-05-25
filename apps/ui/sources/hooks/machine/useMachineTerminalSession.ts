@@ -38,6 +38,7 @@ export function useMachineTerminalSession(params: Readonly<{
     initialCommand?: string | null;
     profileAuthSessionId?: string | null;
     closeOnUnmount?: boolean;
+    fallbackTerminalSize?: Readonly<{ cols: number; rows: number }> | null;
 }>) {
     const initialSurfaceState = React.useMemo(
         () => readTerminalSurfaceState(params.terminalKey) ?? createEmptyTerminalSurfaceState(),
@@ -60,6 +61,7 @@ export function useMachineTerminalSession(params: Readonly<{
     const terminalRendererHandleRef = React.useRef<EmbeddedTerminalRendererHandle | null>(null);
     const {
         detectedUrl,
+        output,
         clearTerminalOutput,
         hydrateTerminalRendererIfNeeded,
         replaceSurfaceState,
@@ -204,12 +206,11 @@ export function useMachineTerminalSession(params: Readonly<{
                 failTerminalSession('terminal_machine_unreachable');
                 return;
             }
-            if (!initialTerminalSize) {
+            const terminalSize = latestTerminalSizeRef.current ?? initialTerminalSize ?? params.fallbackTerminalSize ?? null;
+            if (!terminalSize) {
                 setStatus('connecting');
                 return;
             }
-
-            const terminalSize = latestTerminalSizeRef.current ?? initialTerminalSize;
 
             const ensured = restartRequestedRef.current
                 ? await machineTerminalRestart(params.machineId, {
@@ -350,6 +351,7 @@ export function useMachineTerminalSession(params: Readonly<{
         initialTerminalSize,
         latestTerminalSizeRef,
         params.cwd,
+        params.fallbackTerminalSize,
         params.initialCommand,
         params.machineId,
         params.machineReachable,
@@ -381,6 +383,7 @@ export function useMachineTerminalSession(params: Readonly<{
         status,
         error,
         detectedUrl,
+        output,
         onInput,
         onResize,
         onReady,
