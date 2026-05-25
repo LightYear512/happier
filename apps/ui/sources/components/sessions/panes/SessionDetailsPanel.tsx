@@ -237,6 +237,22 @@ type FileEditStartCallbackEntry = Readonly<{
     callback: () => void;
 }>;
 
+function resolveLocalServicePreviewTabSubtitle(
+    tab: Readonly<{ subtitle?: string | null }>,
+    tabState: unknown,
+): string | null {
+    if (tabState && typeof tabState === 'object') {
+        const previewDisplayUrl = (tabState as { previewDisplayUrl?: unknown }).previewDisplayUrl;
+        if (typeof previewDisplayUrl === 'string' && previewDisplayUrl.trim().length > 0) {
+            return previewDisplayUrl.trim();
+        }
+    }
+
+    return typeof tab.subtitle === 'string' && tab.subtitle.trim().length > 0
+        ? tab.subtitle.trim()
+        : null;
+}
+
 function isLocalServicePreviewResource(value: unknown): value is Readonly<{
     kind: 'localServicePreview';
     resourceId: string;
@@ -460,6 +476,14 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                         supportsWebSocket={tab.resource.supportsWebSocket}
                         name={typeof tab.resource.name === 'string' ? tab.resource.name : undefined}
                         healthStatus={typeof tab.resource.healthStatus === 'string' ? tab.resource.healthStatus : undefined}
+                        onPreviewUrlChange={(previewUrl) => {
+                            pane.setDetailsTabState(
+                                tab.key,
+                                previewUrl && previewUrl.trim().length > 0
+                                    ? { previewDisplayUrl: previewUrl.trim() }
+                                    : null,
+                            );
+                        }}
                     />
                 );
             }
@@ -509,6 +533,11 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                         const safeTabKey = toTestIdSafeValue(tab.key);
                         const isLocalServicePreviewTab = tab.kind === 'localServicePreview';
                         const showPinAction = tab.kind !== 'localServicePreview' && (tab.isPreview || tab.isPinned);
+                        const tabSubtitle = isLocalServicePreviewTab
+                            ? resolveLocalServicePreviewTabSubtitle(tab, details?.tabState?.[tab.key])
+                            : typeof tab.subtitle === 'string' && tab.subtitle.trim().length > 0
+                                ? tab.subtitle.trim()
+                                : null;
                         const iconName =
                             tab.kind === 'commit'
                                 ? 'git-commit'
@@ -571,9 +600,9 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                         >
                                             {tab.title}
                                         </Text>
-                                        {typeof tab.subtitle === 'string' && tab.subtitle.trim().length > 0 ? (
+                                        {tabSubtitle ? (
                                             <Text style={styles.tabSubtitle} numberOfLines={1}>
-                                                {tab.subtitle}
+                                                {tabSubtitle}
                                             </Text>
                                         ) : null}
                                     </View>

@@ -84,6 +84,11 @@ export function isCodexAppServerInvalidRequestMapExpectedStringError(error: unkn
         && /invalid\s+type:\s*map,\s*expected\s+a\s*string/i.test(message);
 }
 
+export function isCodexAppServerInvalidRequestTypeMismatchError(error: unknown): boolean {
+    if (readCode(error) !== -32600) return false;
+    return /invalid\s+type:\s+map,\s+expected\s+a\s+string/i.test(readMessage(error));
+}
+
 export function isCodexAppServerExperimentalApiUnavailableError(error: unknown): boolean {
     const message = readMessage(error);
     if (!/experimental/i.test(message)) return false;

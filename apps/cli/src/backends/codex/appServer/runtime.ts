@@ -66,6 +66,7 @@ import {
     isCodexAppServerInvalidRequestForMethodError,
     isCodexAppServerInvalidRequestMapExpectedStringError,
     isCodexAppServerInvalidParamsForFieldError,
+    isCodexAppServerInvalidRequestTypeMismatchError,
     isCodexAppServerInvalidParamsError,
     isCodexAppServerMethodNotFoundError,
     isCodexAppServerNoActiveTurnToSteerError,
@@ -1083,7 +1084,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
         return Object.prototype.hasOwnProperty.call(requestParams, 'permissions')
             && (isCodexAppServerMethodNotFoundError(error)
                 || isCodexAppServerInvalidParamsForFieldError(error, 'permissions')
-                || isCodexAppServerInvalidRequestMapExpectedStringError(error));
+                || isCodexAppServerInvalidRequestMapExpectedStringError(error)
+                || isCodexAppServerInvalidRequestTypeMismatchError(error));
     };
 
     const setThinking = (nextThinking: boolean): void => {

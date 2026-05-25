@@ -504,6 +504,9 @@ describe('Action Spec Registry', () => {
     expect(spec.surfaces.mcp).toBe(false);
     expect(spec.surfaces.cli).toBe(false);
     expect(spec.bindings?.mcpToolName).toBe('happier_dev_preview_register');
+    expect(spec.description).toContain('already-running local loopback web dev server');
+    expect(spec.description).toContain('unless the user asked not to');
+    expect(spec.inputHints?.description).toContain('Do not use when the user asked not to');
     expect(spec.inputSchema.parse({ port: 3000 })).toEqual({ port: 3000 });
     expect(spec.inputSchema.parse({ port: 3000, healthPath: '/readyz', rewriteUrls: false })).toEqual({
       port: 3000,
