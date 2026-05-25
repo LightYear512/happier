@@ -127,6 +127,7 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
     supportsWebSocket: boolean;
     name?: string;
     healthStatus?: string;
+    onPreviewUrlChange?: (previewUrl: string | null) => void;
 }>) {
     const iframeTitle = typeof props.name === 'string' && props.name.trim().length > 0
         ? props.name.trim()
@@ -150,6 +151,11 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
     const [relayPreviewUrl, setRelayPreviewUrl] = React.useState<string | null>(null);
     const [relayNamespaceStrategy, setRelayNamespaceStrategy] = React.useState<'host' | 'path' | null>(null);
     const [relayState, setRelayState] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+    const onPreviewUrlChangeRef = React.useRef(props.onPreviewUrlChange);
+
+    React.useEffect(() => {
+        onPreviewUrlChangeRef.current = props.onPreviewUrlChange;
+    }, [props.onPreviewUrlChange]);
 
     React.useEffect(() => {
         if (sameMachinePreviewUrl || Platform.OS !== 'web' || !relayEnabled) {
@@ -209,6 +215,10 @@ export function SessionLocalServicePreviewPane(props: Readonly<{
     }, [props.initialPath, props.machineId, props.routeKey, props.sessionId, relayEnabled, relayPreviewFallbackBaseUrl, sameMachinePreviewUrl]);
 
     const previewUrl = sameMachinePreviewUrl ?? relayPreviewUrl;
+    React.useEffect(() => {
+        onPreviewUrlChangeRef.current?.(previewUrl);
+    }, [previewUrl]);
+
     const iframeSandbox = sameMachinePreviewUrl
         ? undefined
         : relayNamespaceStrategy === 'host'

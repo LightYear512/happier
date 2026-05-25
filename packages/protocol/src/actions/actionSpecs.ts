@@ -1423,7 +1423,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
   {
     id: 'session.devPreview.register',
     title: 'Register local dev preview',
-    description: 'Register a local loopback dev server for in-app preview surfaces.',
+    description: 'Register an already-running local loopback web dev server so the user can view it in Happier. Use after starting a dev server, unless the user asked not to expose, preview, relay, register, or open it.',
     safety: 'safe',
     approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
     requiredFeatureId: 'sessions.devPreview',
@@ -1443,7 +1443,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     },
     inputHints: {
       title: 'Register a local loopback preview',
-      description: 'Use after starting a dev server on the current session machine.',
+      description: 'Use after starting a web dev server on the current session machine. Do not use when the user asked not to expose/register/open a preview.',
       fields: [
         { path: 'sessionId', title: 'Session id', widget: 'text' },
         { path: 'url', title: 'URL', widget: 'text' },

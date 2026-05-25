@@ -56,6 +56,7 @@ import {
 } from './rollbackMetadata';
 import {
     isCodexAppServerInvalidRequestForMethodError,
+    isCodexAppServerInvalidRequestTypeMismatchError,
     isCodexAppServerInvalidParamsError,
     isCodexAppServerMethodNotFoundError,
 } from './appServerCompatibility';
@@ -619,7 +620,11 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     const shouldRetryWithoutPermissionProfile = (error: unknown, requestParams: Record<string, unknown>): boolean => {
         return Object.prototype.hasOwnProperty.call(requestParams, 'permissions')
-            && (isCodexAppServerInvalidParamsError(error) || isCodexAppServerMethodNotFoundError(error));
+            && (
+                isCodexAppServerInvalidParamsError(error)
+                || isCodexAppServerMethodNotFoundError(error)
+                || isCodexAppServerInvalidRequestTypeMismatchError(error)
+            );
     };
 
     const setThinking = (nextThinking: boolean): void => {

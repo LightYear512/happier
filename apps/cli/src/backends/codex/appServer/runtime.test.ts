@@ -34,6 +34,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     }>;
     rejectInterruptAsNoActiveTurn?: boolean;
     rejectPermissionsProfile?: boolean;
+    rejectPermissionsProfileAsInvalidRequestTypeMismatch?: boolean;
     rejectGoalMethods?: boolean;
     rejectGoalMethodsAsInvalidRequest?: boolean;
     emitGoalContinuationTurn?: boolean;
@@ -56,6 +57,10 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '    }',
         '    if (msg.method === "initialized") continue;',
         '    if (msg.method === "thread/start") {',
+        `        if (${JSON.stringify(params.rejectPermissionsProfileAsInvalidRequestTypeMismatch === true)} && msg.params?.permissions) {`,
+        '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32600, message: "Invalid request: invalid type: map, expected a string" } }) + "\\n");',
+        '            continue;',
+        '        }',
         `        if (${JSON.stringify(params.rejectPermissionsProfile === true)} && msg.params?.permissions) {`,
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32602, message: "invalid params: permissions unsupported" } }) + "\\n");',
         '            continue;',
@@ -68,6 +73,10 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        continue;',
         '    }',
         '    if (msg.method === "thread/resume") {',
+        `        if (${JSON.stringify(params.rejectPermissionsProfileAsInvalidRequestTypeMismatch === true)} && msg.params?.permissions) {`,
+        '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32600, message: "Invalid request: invalid type: map, expected a string" } }) + "\\n");',
+        '            continue;',
+        '        }',
         `        if (${JSON.stringify(params.rejectPermissionsProfile === true)} && msg.params?.permissions) {`,
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32602, message: "invalid params: permissions unsupported" } }) + "\\n");',
         '            continue;',
@@ -709,6 +718,7 @@ describe('createCodexAppServerRuntime', () => {
             }>;
             rejectInterruptAsNoActiveTurn?: boolean;
             rejectPermissionsProfile?: boolean;
+            rejectPermissionsProfileAsInvalidRequestTypeMismatch?: boolean;
             rejectGoalMethods?: boolean;
             rejectGoalMethodsAsInvalidRequest?: boolean;
             emitGoalContinuationTurn?: boolean;
@@ -728,6 +738,7 @@ describe('createCodexAppServerRuntime', () => {
             rollbackError: options.rollbackError,
             rejectInterruptAsNoActiveTurn: options.rejectInterruptAsNoActiveTurn,
             rejectPermissionsProfile: options.rejectPermissionsProfile,
+            rejectPermissionsProfileAsInvalidRequestTypeMismatch: options.rejectPermissionsProfileAsInvalidRequestTypeMismatch,
             rejectGoalMethods: options.rejectGoalMethods,
             rejectGoalMethodsAsInvalidRequest: options.rejectGoalMethodsAsInvalidRequest,
             emitGoalContinuationTurn: options.emitGoalContinuationTurn,
@@ -912,6 +923,36 @@ describe('createCodexAppServerRuntime', () => {
             },
         });
         expect(turnStart?.params).not.toHaveProperty('permissions');
+    });
+
+    it('falls back to legacy app-server permission fields when Codex expects a string instead of a permission profile map', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-permission-type-fallback-', {
+            rejectPermissionsProfileAsInvalidRequestTypeMismatch: true,
+        });
+
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            permissionMode: 'yolo',
+        });
+
+        await runtime.startOrLoad({});
+
+        const requestLog = await readRequestLog(requestLogPath);
+        const startRequests = requestLog.filter((entry) => entry.method === 'thread/start') as Array<{ params?: Record<string, unknown> }>;
+        expect(startRequests).toHaveLength(2);
+        expect(startRequests[0]?.params).toMatchObject({
+            permissions: {
+                type: 'profile',
+                id: ':danger-no-sandbox',
+            },
+        });
+        expect(startRequests[1]?.params).toMatchObject({
+            approvalPolicy: 'never',
+            sandbox: 'danger-full-access',
+        });
+        expect(startRequests[1]?.params).not.toHaveProperty('permissions');
     });
 
     it('publishes connected-service direct-session metadata when activeServerDir owns CODEX_HOME', async () => {
