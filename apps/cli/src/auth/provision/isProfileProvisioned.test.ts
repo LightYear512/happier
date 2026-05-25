@@ -44,6 +44,14 @@ describe('isProfileProvisioned', () => {
     expect(isProfileProvisioned('current', 'claude', activeServerDir)).toBe(true);
   });
 
+  it('does not treat Claude onboarding metadata as provisioned credentials', () => {
+    const activeServerDir = makeRoot();
+    const profileDir = createProfileDir(activeServerDir, 'claude', 'metadata-only');
+    writeFileSync(join(profileDir, '.claude.json'), '{"userID":"generated-during-onboarding"}', 'utf8');
+
+    expect(isProfileProvisioned('metadata-only', 'claude', activeServerDir)).toBe(false);
+  });
+
   it('requires Codex auth.json for Codex profiles', () => {
     const activeServerDir = makeRoot();
     createProfileDir(activeServerDir, 'codex', 'empty');
