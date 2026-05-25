@@ -13,6 +13,7 @@ export type ProfileAuthSession = Readonly<{
   args: readonly string[];
   env: NodeJS.ProcessEnv;
   initialInput?: string | null;
+  terminalOutputResponder?: CliProfileAuthLoginContext['terminalOutputResponder'];
   cwd?: string;
   expiresAtMs: number;
 }>;
@@ -63,6 +64,7 @@ export function createProfileAuthSessionStore(params?: Readonly<{
         args: loginContext.args,
         env: loginContext.env,
         ...(loginContext.initialInput != null ? { initialInput: loginContext.initialInput } : {}),
+        ...(loginContext.terminalOutputResponder ? { terminalOutputResponder: loginContext.terminalOutputResponder } : {}),
         ...(loginContext.cwd ? { cwd: loginContext.cwd } : {}),
         expiresAtMs: now() + ttlMs,
       };

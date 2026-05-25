@@ -10,6 +10,7 @@ describe('profileAuthSessionStore', () => {
       now: () => nowMs,
       ttlMs: 1_000,
     });
+    const terminalOutputResponder = () => '/login\r';
 
     const session = store.create({
       providerId: 'claude',
@@ -21,10 +22,12 @@ describe('profileAuthSessionStore', () => {
         args: [],
         env: { CLAUDE_CONFIG_DIR: '/profiles/native-cli/claude/work' },
         allowlistedEnvKeys: ['CLAUDE_CONFIG_DIR'],
+        terminalOutputResponder,
       },
     });
 
     expect(store.get(session.profileAuthSessionId)).toEqual(session);
+    expect(session.terminalOutputResponder).toBe(terminalOutputResponder);
     nowMs += 1_001;
     expect(store.get(session.profileAuthSessionId)).toBeNull();
   });
