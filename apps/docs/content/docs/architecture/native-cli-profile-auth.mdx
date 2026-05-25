@@ -55,6 +55,10 @@ type CliProfileAuthProvider = {
     command: string;
     args: readonly string[];
     initialInput?: string | null;
+    terminalOutputResponder?: (input: {
+      data: string;
+      outputBuffer: string;
+    }) => string | null | undefined;
     env: Record<string, string>;
     allowlistedEnvKeys: readonly string[];
     cwd?: string;
@@ -113,9 +117,25 @@ The terminal protocol must not expose a general-purpose `envOverrides` bag to th
 
 Examples:
 
-- Claude can run with `CLAUDE_CONFIG_DIR=<profileDir>` and send `/login\r` as initial input.
-- Codex can run `codex login` with `CODEX_HOME=<profileDir>`.
+- Claude can run with `CLAUDE_CONFIG_DIR=<profileDir>` and a Claude-owned output responder that sends `/login\r` only after the Claude CLI asks for login. The responder may also confirm Claude onboarding prompts such as login method, workspace trust, or text style selection.
+- Codex must run `codex login --device-auth` with `CODEX_HOME=<profileDir>` and no output responder. Device auth prints `https://auth.openai.com/codex/device` and a one-time code; shared terminal automation must not write into this PTY.
 - A future provider can define a different isolated home env, command, args, or initial input in its provider-owned definition.
+
+The terminal manager may provide a provider-owned output responder hook, but it must stay simple: each provider decides whether it needs one, and no shared retry or prompt policy should apply to all providers. If Claude prompt handling needs retries for `Choose the text style`, that retry belongs to the Claude profile-auth controller and must have bounded state so it cannot affect Codex or other providers.
+
+Profile-auth PTYs should start in a daemon-computed provider work directory below Happier home, not in the user's current project. The credential directory remains:
+
+```text
+<happyHomeDir>/servers/<activeServerId>/profiles/native-cli/<providerId>/<profileId>/
+```
+
+The PTY working directory may be a separate provider-owned directory under the same Happier home/server scope, for example:
+
+```text
+<happyHomeDir>/servers/<activeServerId>/profile-auth-workdirs/<providerId>/<profileId>/
+```
+
+Using a Happier-owned work directory keeps the login isolated and avoids provider project-trust prompts caused by launching inside an arbitrary repository.
 
 ## Lifecycle state
 
@@ -147,9 +167,27 @@ It does not compute the profile directory and does not build provider-specific l
 1. call the prepare RPC,
 2. open an embedded terminal with a key such as `profile-login:<machineId>:<providerId>:<profileId>`,
 3. pass the `profileAuthSessionId` to terminal ensure/restart,
-4. send provider initial input only if the daemon/provider launch metadata requests it,
+4. never send provider-specific login commands itself,
 5. wait for verification before marking the profile as provisioned,
 6. refresh session/profile-switch readiness after success.
+
+The product surface should be a purpose-built login prompt, not a raw terminal-first modal. The embedded terminal remains the execution mechanism and a debug fallback, but it should not be the primary information hierarchy.
+
+Provider-specific display contracts:
+
+- Claude: show only the extracted Claude OAuth login URL, with actions to open and copy it. Hide Claude's TUI welcome text, onboarding menus, ANSI output, and `/login` automation details by default.
+- Codex: show the device URL and one-time device code. For the current Codex device flow this is `https://auth.openai.com/codex/device` plus the printed code. If Codex falls back to a browser URL without a code, show only that link.
+
+The modal should use compact states:
+
+- waiting for the CLI to print login details,
+- login details ready,
+- waiting for the user to finish in the browser,
+- verifying,
+- signed in,
+- failed.
+
+Raw PTY output belongs behind a `Show details` affordance for troubleshooting. Screenshots and UI e2e assertions should target the structured user contract: Claude link only; Codex code plus link.
 
 The previous spawn-and-progress-output provisioning path should not be the primary product path for interactive native CLI login. It can exist only as a temporary migration fallback and must not duplicate provider auth rules.
 
@@ -162,7 +200,10 @@ Required coverage:
 - provider definition tests for command, args, initial input, env allowlist, shared links, and provisioned-state probes,
 - daemon prepare tests for invalid profile ids, existing provisioned directories, session creation, and cleanup behavior,
 - terminal tests proving arbitrary app-provided env is rejected and only daemon-held allowlisted profile env is injected,
+- Codex regression tests proving the profile-auth login context has no terminal output responder or initial input,
+- provider output parsing tests proving Claude OAuth URLs and Codex device URL/code are extracted from real PTY-style output,
 - UI tests proving terminal exit is not treated as success until verification passes,
+- UI tests proving Claude renders only the login-link prompt and Codex renders the device-code prompt while raw terminal output is hidden by default,
 - UI e2e with a fake provider CLI that requires PTY input, prints a URL, writes credentials into the isolated profile directory, and then allows session profile switching.
 
 The e2e fixture should assert paths under:
