@@ -53,6 +53,13 @@ vi.mock('expo-clipboard', () => ({
     setStringAsync: vi.fn(async () => {}),
 }));
 
+vi.mock('@/constants/Typography', () => ({
+    Typography: {
+        default: () => ({}),
+        eyebrow: () => ({}),
+    },
+}));
+
 describe('HiddenInactiveSessionsEmptyState', () => {
     it('renders the list-style empty state and navigates to archived sessions', async () => {
         const { HiddenInactiveSessionsEmptyState } = await import('./HiddenInactiveSessionsEmptyState');
