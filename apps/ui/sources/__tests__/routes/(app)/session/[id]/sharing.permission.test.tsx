@@ -1,5 +1,5 @@
 import * as React from 'react';
-import renderer, { act } from 'react-test-renderer';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionRouteCommonModuleMocks } from './sessionRouteTestHelpers';
@@ -106,7 +106,7 @@ describe('Session Sharing Screen permissions', () => {
 
         const screen = await renderScreen(<Screen />);
 
-        expect(screen.findByType('ActivityIndicator' as any)).toBeDefined();
+        expect(screen.findByProps({ accessibilityRole: 'progressbar' })).toBeDefined();
         expect(getSessionSharesSpy).not.toHaveBeenCalled();
         expect(getPublicShareSpy).not.toHaveBeenCalled();
         expect(getFriendsListSpy).not.toHaveBeenCalled();
