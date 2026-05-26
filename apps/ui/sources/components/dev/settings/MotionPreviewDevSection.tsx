@@ -18,6 +18,7 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
+import { t } from '@/text';
 import {
     SlideTransitionSwitch,
     StoryDeckSlideTransition,
@@ -78,7 +79,7 @@ function VariantControls(props: Readonly<{
                 onChange={(preset) => props.onChange({ ...props.state, preset })}
             />
             <ToggleRow
-                label="reduced motion"
+                label={t('settings.devMotionReducedMotionLabel')}
                 value={props.state.reducedMotion}
                 onChange={(reducedMotion) => props.onChange({ ...props.state, reducedMotion })}
             />
@@ -105,7 +106,7 @@ function DiscreteSwitchVariant(): React.ReactElement {
 
     return (
         <View style={styles.variantBlock}>
-            <Text style={styles.variantTitle}>Discrete switch (SelectionList-style)</Text>
+            <Text style={styles.variantTitle}>{t('settings.devMotionDiscreteTitle')}</Text>
             <VariantControls state={variant} onChange={setVariant} />
             <View style={styles.frame}>
                 <SlideTransitionSwitch
@@ -116,9 +117,9 @@ function DiscreteSwitchVariant(): React.ReactElement {
                     reducedMotion={variant.reducedMotion}
                 >
                     <View style={styles.panel}>
-                        <Text style={styles.panelTitle}>{`Step ${index + 1}`}</Text>
+                        <Text style={styles.panelTitle}>{t('settings.devMotionStepTitle', { step: index + 1 })}</Text>
                         <Text style={styles.panelBody}>
-                            Discrete adapter for SelectionList. Forward/backward direction is caller-owned; blur defaults off.
+                            {t('settings.devMotionDiscreteBody')}
                         </Text>
                     </View>
                 </SlideTransitionSwitch>
@@ -128,13 +129,13 @@ function DiscreteSwitchVariant(): React.ReactElement {
                     onPress={() => setIndex((current) => Math.max(0, current - 1))}
                     style={styles.button}
                 >
-                    <Text style={styles.buttonText}>Back</Text>
+                    <Text style={styles.buttonText}>{t('settings.devMotionBack')}</Text>
                 </Pressable>
                 <Pressable
                     onPress={() => setIndex((current) => Math.min(4, current + 1))}
                     style={styles.button}
                 >
-                    <Text style={styles.buttonText}>Forward</Text>
+                    <Text style={styles.buttonText}>{t('settings.devMotionForward')}</Text>
                 </Pressable>
             </View>
         </View>
@@ -157,7 +158,7 @@ function CarouselVariant(): React.ReactElement {
 
     return (
         <View style={styles.variantBlock}>
-            <Text style={styles.variantTitle}>Carousel drag + tap (StoryDeck-style)</Text>
+            <Text style={styles.variantTitle}>{t('settings.devMotionCarouselTitle')}</Text>
             <VariantControls state={variant} onChange={setVariant} />
             <View style={styles.frame}>
                 <StoryDeckSlideTransition
@@ -169,9 +170,9 @@ function CarouselVariant(): React.ReactElement {
                     reducedMotion={variant.reducedMotion}
                     renderItem={(index: number) => (
                         <View style={styles.panel} key={`carousel-${index}`}>
-                            <Text style={styles.panelTitle}>{`Card ${index + 1}`}</Text>
+                            <Text style={styles.panelTitle}>{t('settings.devMotionCardTitle', { card: index + 1 })}</Text>
                             <Text style={styles.panelBody}>
-                                Drag horizontally past 40% of the width to commit. The Continue/Back buttons fire the same spring.
+                                {t('settings.devMotionCarouselBody')}
                             </Text>
                         </View>
                     )}
@@ -186,14 +187,14 @@ function CarouselVariant(): React.ReactElement {
                     onPress={() => handleRef.current?.commitPrevious()}
                     style={styles.button}
                 >
-                    <Text style={styles.buttonText}>Back</Text>
+                    <Text style={styles.buttonText}>{t('settings.devMotionBack')}</Text>
                 </Pressable>
                 <Pressable
                     testID="dev-motion-preview-carousel-continue"
                     onPress={() => handleRef.current?.commitNext()}
                     style={styles.button}
                 >
-                    <Text style={styles.buttonText}>Continue</Text>
+                    <Text style={styles.buttonText}>{t('settings.devMotionContinue')}</Text>
                 </Pressable>
             </View>
         </View>
@@ -205,7 +206,7 @@ function MotionVariantsPreviewModal(props: Readonly<{ onClose: () => void }>): R
     return (
         <View style={styles.modal}>
             <View style={styles.header}>
-                <Text style={styles.headerTitle}>Motion primitives — variants</Text>
+                <Text style={styles.headerTitle}>{t('settings.devMotionModalTitle')}</Text>
                 <Pressable onPress={props.onClose} style={styles.closeButton}>
                     <Ionicons name="close" size={20} color={theme.colors.text.primary} />
                 </Pressable>
@@ -234,11 +235,11 @@ function showMotionVariantsPreview(): void {
 export function MotionPreviewDevSection(): React.ReactElement {
     const { theme } = useUnistyles();
     return (
-        <ItemGroup title="Motion Primitives" footer="Phase 1A.11 — slide transition variants for visual QA">
+        <ItemGroup title={t('settings.devMotionPrimitivesTitle')} footer={t('settings.devMotionPrimitivesFooter')}>
             <Item
                 testID="dev-motion-preview-slide-variants"
-                title="Slide Transition Variants"
-                subtitle="Discrete switch + carousel drag/tap, with blur/preset/reduced-motion toggles"
+                title={t('settings.devMotionSlideVariantsTitle')}
+                subtitle={t('settings.devMotionSlideVariantsSubtitle')}
                 icon={<Ionicons name="layers-outline" size={28} color={theme.colors.text.primary} />}
                 onPress={showMotionVariantsPreview}
             />
