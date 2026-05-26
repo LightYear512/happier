@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { t } from '@/text';
 import {
     readWebHmrOptOutRuntimeState,
     setWebHmrOptOutDisabledForWebTab,
@@ -47,11 +48,11 @@ function reloadCurrentWebTab(): void {
 
 function describeRuntimeState(state: WebHmrOptOutRuntimeState): string {
     const runtime = state.guardInstalled
-        ? 'Expo web / Metro runtime detected'
-        : 'Expo web / Metro runtime';
-    const status = state.enabled ? 'enabled for this tab' : 'disabled for this tab';
-    const reload = state.requiresPageReload ? 'Changes reload this tab.' : '';
-    return `${runtime}. Fast Refresh / HMR is ${status}. ${reload}`.trim();
+        ? t('settings.devWebHmrRuntimeDetected')
+        : t('settings.devWebHmrRuntime');
+    const status = state.enabled ? t('settings.devWebHmrEnabled') : t('settings.devWebHmrDisabled');
+    const reload = state.requiresPageReload ? t('settings.devWebHmrReload') : '';
+    return t('settings.devWebHmrSubtitle', { runtime, status, reload });
 }
 
 export const WebHmrDevSettingsSection = React.memo(function WebHmrDevSettingsSection() {
@@ -68,10 +69,10 @@ export const WebHmrDevSettingsSection = React.memo(function WebHmrDevSettingsSec
     }
 
     return (
-        <ItemGroup title="Hot Reload">
+        <ItemGroup title={t('settings.devWebHmrTitle')}>
             <Item
                 testID="dev-web-hmr-toggle-row"
-                title="Fast Refresh / HMR"
+                title={t('settings.devWebHmrToggleTitle')}
                 subtitle={describeRuntimeState(state)}
                 rightElement={
                     <Switch

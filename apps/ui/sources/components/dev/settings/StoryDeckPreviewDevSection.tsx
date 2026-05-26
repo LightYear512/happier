@@ -15,6 +15,7 @@ import {
     type ReleaseNotesRelease,
 } from '@/changelog/releaseNotes';
 import { ONBOARDING_SHOWCASE_MANIFEST } from '@/onboarding/showcase';
+import { t } from '@/text';
 
 type ReleaseNotesPreviewState = Readonly<{
     latestReleaseId: string | null;
@@ -91,22 +92,22 @@ export function StoryDeckPreviewDevSection() {
 
     return (
         <ItemGroup
-            title="Story Deck Preview"
-            footer="Preview surfaces without changing onboarding or release-note seen state."
+            title={t('settings.devStoryDeckPreviewTitle')}
+            footer={t('settings.devStoryDeckPreviewFooter')}
             selectableItemCountOverride={releases.length === 0 ? 2 : 1 + releases.length}
         >
             <Item
                 testID="dev-story-deck-preview-onboarding"
-                title="Onboarding showcase"
-                subtitle={`${ONBOARDING_SHOWCASE_MANIFEST.cards.length} cards · first-open story`}
+                title={t('settings.devStoryDeckOnboardingTitle')}
+                subtitle={t('settings.devStoryDeckOnboardingSubtitle', { count: ONBOARDING_SHOWCASE_MANIFEST.cards.length })}
                 icon={<Ionicons name="sparkles-outline" size={28} color={accentColor} />}
                 onPress={openOnboardingPreview}
             />
             {releases.length === 0 ? (
                 <Item
                     testID="dev-story-deck-preview-empty"
-                    title="No release notes available"
-                    subtitle="Add authored release notes and run parseReleaseNotes to generate the manifest."
+                    title={t('settings.devStoryDeckNoReleaseTitle')}
+                    subtitle={t('settings.devStoryDeckNoReleaseSubtitle')}
                     icon={<Ionicons name="albums-outline" size={28} color={theme.colors.text.tertiary} />}
                     mode="info"
                     showChevron={false}
@@ -116,7 +117,7 @@ export function StoryDeckPreviewDevSection() {
                     key={release.releaseId}
                     testID={`dev-story-deck-preview-release:${release.releaseId}`}
                     title={release.versionLabel || release.releaseId}
-                    subtitle={`${release.cards.length} cards · ${release.releaseId}`}
+                    subtitle={t('settings.devStoryDeckReleaseSubtitle', { count: release.cards.length, releaseId: release.releaseId })}
                     detail={release.releaseId === latestReleaseId ? 'Latest' : undefined}
                     icon={<Ionicons name="newspaper-outline" size={28} color={accentColor} />}
                     onPress={() => openReleasePreview(release)}
