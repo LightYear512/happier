@@ -6,5 +6,6 @@ export default defineConfig({
         include: ['src/**/*.test.ts'],
         hookTimeout: 60_000,
         testTimeout: 60_000,
+        fileParallelism: false,
     },
 });

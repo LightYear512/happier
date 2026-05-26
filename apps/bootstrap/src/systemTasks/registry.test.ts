@@ -276,8 +276,8 @@ function createFakeTailscaleCli(scenario: Readonly<{
   writeFileSync(cliPath, `#!/usr/bin/env node
 const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
 
-const statePath = process.env.HAPPIER_FAKE_TAILSCALE_STATE_PATH;
-const logPath = process.env.HAPPIER_FAKE_TAILSCALE_LOG_PATH;
+const statePath = ${JSON.stringify(statePath)};
+const logPath = ${JSON.stringify(logPath)};
 const argv = process.argv.slice(2);
 appendFileSync(logPath, JSON.stringify(argv) + '\\n');
 
