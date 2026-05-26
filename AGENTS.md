@@ -139,6 +139,17 @@ Provider-specific behavior must live behind the canonical catalog/registry surfa
 
 The detailed provider architecture lives in `docs/agents-catalog.md`.
 
+
+## Fork-safe release workflow
+
+For release validation, promotion, GitHub release, npm, Docker, Expo, or deploy work in a fork:
+
+- Never rely on hardcoded upstream repository values such as `happier-dev/happier`.
+- Default to the current fork repository `LightYear512/happier` for this checkout.
+- If the local `origin` remote points at a different fork, resolve the GitHub repository from `git remote get-url origin`, or use the repository explicitly provided by the user.
+- Pass the resolved repository explicitly to release commands, for example `--repository <owner>/<repo>`, `GH_REPO`, or `GITHUB_REPOSITORY` when tooling reads those values.
+- Run the canonical dry run first, summarize the planned side effects, and ask for explicit approval before any non-dry-run release, publish, or deploy command.
+
 ## Feature gating
 
 Use the canonical feature system only. Do not add ad-hoc env checks, direct payload poking, or feature-specific inference logic.

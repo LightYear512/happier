@@ -1,7 +1,7 @@
 ---
 name: happier-release-validation-review
 description: Review a completed Happier release-validation worktree before any preview promotion. Audits validation fixes, diffs, evidence, lane completion, unresolved risks, and dry-run output. Read-only by default and never releases.
-metadata: {"openclaw":{"homepage":"https://github.com/happier-dev/happier"}}
+metadata: {"openclaw":{"homepage":"https://github.com/LightYear512/happier"}}
 ---
 
 # Happier Release Validation Review

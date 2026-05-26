@@ -187,7 +187,7 @@ Validation ends with a dry-run only:
 ```bash
 node scripts/pipeline/run.mjs release \
   --confirm "release dev to preview" \
-  --repository happier-dev/happier \
+  --repository LightYear512/happier \
   --deploy-environment preview \
   --deploy-targets ui,server,website,docs,cli,server_runner \
   --bump none \

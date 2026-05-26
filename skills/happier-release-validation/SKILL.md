@@ -1,7 +1,7 @@
 ---
 name: happier-release-validation
 description: Run a local-first Happier release validation cycle for a candidate version before preview promotion. Creates a validation worktree and ignored tracking workspace, orchestrates parallel checks, deep manual QA on Lima/macOS/Windows, root-cause fixes, evidence capture, independent reviews, and a final dry-run. This skill never promotes or releases.
-metadata: {"openclaw":{"homepage":"https://github.com/happier-dev/happier"}}
+metadata: {"openclaw":{"homepage":"https://github.com/LightYear512/happier"}}
 ---
 
 # Happier Release Validation
