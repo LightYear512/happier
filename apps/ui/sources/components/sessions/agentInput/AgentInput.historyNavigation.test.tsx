@@ -450,7 +450,7 @@ describe('AgentInput (history navigation)', () => {
     expect(mocks.onSend).toHaveBeenCalledWith({ forceImmediate: true });
   });
 
-  it('uses the configured immediate-send shortcut instead of hardcoded Mod+Enter', async () => {
+  it('uses hardcoded Mod+Enter for composer immediate-send', async () => {
     localSettingState.values.keyboardShortcutOverridesV1 = {
       'composer.sendImmediate': [{ binding: 'Alt+Enter' }],
     };
@@ -484,8 +484,9 @@ describe('AgentInput (history navigation)', () => {
       });
     });
 
-    expect(handled).toBe(false);
-    expect(mocks.onSend).not.toHaveBeenCalled();
+    expect(handled).toBe(true);
+    expect(mocks.onSend).toHaveBeenCalledTimes(1);
+    expect(mocks.onSend).toHaveBeenCalledWith({ forceImmediate: true });
 
     await act(async () => {
       handled = input.props.onKeyPress?.({
@@ -498,12 +499,11 @@ describe('AgentInput (history navigation)', () => {
       });
     });
 
-    expect(handled).toBe(true);
+    expect(handled).toBe(false);
     expect(mocks.onSend).toHaveBeenCalledTimes(1);
-    expect(mocks.onSend).toHaveBeenCalledWith({ forceImmediate: true });
   });
 
-  it('sends to the pending queue intent with the configured pending-send shortcut', async () => {
+  it('does not bind Shift+Mod+Enter to pending-send in the composer key handler', async () => {
     const { AgentInput } = await import('./AgentInput');
     const screen = await renderScreen(
       <AgentInput
@@ -534,9 +534,8 @@ describe('AgentInput (history navigation)', () => {
       });
     });
 
-    expect(handled).toBe(true);
-    expect(mocks.onSend).toHaveBeenCalledTimes(1);
-    expect(mocks.onSend).toHaveBeenCalledWith({ deliveryIntent: 'server_pending' });
+    expect(handled).toBe(false);
+    expect(mocks.onSend).not.toHaveBeenCalled();
   });
 
   it('does not treat Ctrl+Enter as immediate-send on Apple web platforms', async () => {

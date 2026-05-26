@@ -115,6 +115,10 @@ vi.mock('@/components/tools/shell/presentation/ToolError', () => ({
     ToolError: () => React.createElement('ToolError'),
 }));
 
+vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
+    ActivitySpinner: (props: any) => React.createElement('ActivityIndicator', props),
+}));
+
 vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: [],
     DEFAULT_AGENT_ID: 'claude',

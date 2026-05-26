@@ -20,7 +20,10 @@ export type VitestRnShimOptions = Readonly<{
 
 const SHIM_INSTALLED_KEY = '__HAPPIER_VITEST_RN_SHIM_INSTALLED__';
 const ASSET_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ttf', '.otf']);
-const ALIAS_REQUIRE_ALLOWLIST = ['agents/providers/auggie/AuggieIndexingChip'];
+const ALIAS_REQUIRE_ALLOWLIST = [
+    'agents/providers/auggie/AuggieIndexingChip',
+    'agents/registry/registryUi',
+];
 
 function hasAssetExtension(path: string): boolean {
     for (const ext of ASSET_EXTENSIONS) {
@@ -66,6 +69,17 @@ export function installVitestRnShim(options: VitestRnShimOptions = {}): void {
     const resolveAlias = (request: string): string => resolve(sourcesDir, request.slice(2));
     const loadAlias = (request: string): unknown => {
         const aliasPath = request.slice(2);
+        if (aliasPath === 'agents/registry/registryUi') {
+            return {
+                AGENTS_UI: {},
+                getAgentIconSource: () => null,
+                getAgentIconSvgXml: () => null,
+                getAgentIconTintColor: () => undefined,
+                getAgentPickerIconScale: () => 1,
+                getAgentAvatarOverlaySizes: (_agentId: unknown, size: number) => ({ circleSize: size, iconSize: size }),
+                getAgentCliGlyph: () => '',
+            };
+        }
         if (!isAllowedAliasRequire(aliasPath)) {
             throw new Error(
                 `[vitestRnShim] Unsupported alias require("${request}") in Node test runtime. ` +

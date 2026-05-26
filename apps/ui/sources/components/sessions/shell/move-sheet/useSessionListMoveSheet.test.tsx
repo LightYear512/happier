@@ -28,6 +28,10 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key) => key });
 });
 
+vi.mock('./SessionListMoveSheet', () => ({
+    SessionListMoveSheet: (props: Record<string, unknown>) => React.createElement('SessionListMoveSheet', props),
+}));
+
 const rootTarget: SessionListMoveSheetTarget = {
     id: 'root:workspace-a',
     kind: 'root',

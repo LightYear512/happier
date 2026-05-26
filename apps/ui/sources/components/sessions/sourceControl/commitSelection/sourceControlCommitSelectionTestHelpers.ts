@@ -85,6 +85,8 @@ export function installSourceControlCommitSelectionCommonModuleMocks(
         return {
             Typography: {
                 default: () => ({}),
+                eyebrow: () => ({}),
+                keyHint: () => ({}),
                 mono: () => ({}),
             },
         };

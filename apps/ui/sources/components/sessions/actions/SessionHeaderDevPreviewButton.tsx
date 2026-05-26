@@ -50,7 +50,7 @@ export const SessionHeaderDevPreviewButton = React.memo((props: Readonly<{
                 opacity: pressed ? 0.7 : 1,
             })}
             accessibilityRole="button"
-            accessibilityLabel={`${t('common.open')} preview`}
+            accessibilityLabel={t('common.open')}
         >
             <Ionicons name="globe-outline" size={22} color={theme.colors.chrome.header.foreground} />
         </Pressable>

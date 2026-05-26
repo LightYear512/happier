@@ -17,7 +17,8 @@
  */
 
 import * as React from 'react';
-import { StyleSheet, type StyleProp, type ViewStyle, View } from 'react-native';
+import { type StyleProp, type ViewStyle, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import Animated, { useAnimatedStyle, type SharedValue } from 'react-native-reanimated';
 
 import { resolveSlideLayerStyle, type SlideLayerRole } from './resolveSlideLayerStyle';

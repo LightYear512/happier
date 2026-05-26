@@ -13,7 +13,8 @@
  */
 
 import * as React from 'react';
-import { Platform, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import { Platform, type StyleProp, type ViewStyle } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import Animated, {
     useAnimatedProps,
     useAnimatedStyle,

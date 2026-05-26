@@ -474,7 +474,6 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         }
     }, [favoriteMachines, setFavoriteMachines]);
     const canvasBackgroundColor = theme.colors.background?.canvas
-        ?? theme.colors.groupped?.background
         ?? theme.colors.input?.background;
     const defaultBorderColor = theme.colors.border?.default ?? theme.colors.divider;
     const warningBackgroundColor = theme.colors.state?.warning?.background ?? theme.colors.box?.warning?.background;

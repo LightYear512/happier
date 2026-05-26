@@ -363,7 +363,7 @@ const compactScmChangeRowWebItemLayout = (_data: unknown, index: number) => {
 const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
     const themeBorderDefault = props.theme.colors.border?.default ?? props.theme.colors.divider;
     const themeSurfaceBase = props.theme.colors.surface?.base ?? props.theme.colors.surface;
-    const themeSurfaceInset = props.theme.colors.surface?.inset ?? props.theme.colors.surfaceHigh ?? themeSurfaceBase;
+    const themeSurfaceInset = props.theme.colors.surface?.inset ?? themeSurfaceBase;
     const themeTextPrimary = props.theme.colors.text?.primary ?? props.theme.colors.text;
     const themeTextSecondary = props.theme.colors.text?.secondary ?? props.theme.colors.textSecondary;
     const selectedMode = props.changedFilesViewMode === 'selected';

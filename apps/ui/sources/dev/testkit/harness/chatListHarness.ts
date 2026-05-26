@@ -163,6 +163,7 @@ export function createFlashListChatListWebScroller(
 
 type LegacyChatListHarnessState = {
     capturedFlatListProps: any | null;
+    forkedTranscriptSnapshot: any | null;
     sessionMessagesState: SessionMessagesState;
     sessionPendingState: SessionPendingState;
     sessionActionDraftsState: any[];
@@ -173,6 +174,7 @@ type LegacyChatListHarnessState = {
 
 export const legacyChatListHarnessState: LegacyChatListHarnessState = {
     capturedFlatListProps: null,
+    forkedTranscriptSnapshot: null,
     sessionMessagesState: { messages: [], isLoaded: true },
     sessionPendingState: { messages: [], discarded: [], isLoaded: true },
     sessionActionDraftsState: [],
@@ -732,6 +734,7 @@ export function resetLegacyChatListHarness(options: {
     flatListRefValue?: any;
 } = {}) {
     legacyChatListHarnessState.capturedFlatListProps = null;
+    legacyChatListHarnessState.forkedTranscriptSnapshot = null;
     legacyChatListHarnessState.sessionMessagesState = { messages: [], isLoaded: true };
     legacyChatListHarnessState.sessionPendingState = { messages: [], discarded: [], isLoaded: true };
     legacyChatListHarnessState.sessionActionDraftsState = [];
@@ -878,7 +881,7 @@ export async function createLegacyChatListStorageMock(
             useSessionMessagesReducerState: () => createReducer(),
             useSessionForkSupportSource: () => null,
             useSessionWorkspacePath: () => null,
-            useForkedTranscriptSnapshot: () => null,
+            useForkedTranscriptSnapshot: () => legacyChatListHarnessState.forkedTranscriptSnapshot,
             useSessionPendingMessages: () => legacyChatListHarnessState.sessionPendingState,
             useSessionActionDrafts: () => legacyChatListHarnessState.sessionActionDraftsState,
             useSessionLatestThinkingMessageId: () => null,

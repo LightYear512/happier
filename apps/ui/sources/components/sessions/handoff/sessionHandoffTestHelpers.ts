@@ -112,6 +112,10 @@ export function installSessionHandoffCommonModuleMocks(
         TextInput: (props: Record<string, unknown>) => React.createElement('TextInput', props),
     }));
 
+    vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
+        ActivitySpinner: (props: Record<string, unknown>) => React.createElement('ActivityIndicator', props),
+    }));
+
     vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         const activeOptions = sessionHandoffModuleState.options;
         if (activeOptions.storage) {
