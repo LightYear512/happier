@@ -1863,7 +1863,9 @@ describe('ApiSessionClient connection handling', () => {
         const res = await client.fetchLatestUserPermissionIntentFromTranscript({ take: 25 });
         expect(res).toEqual({ intent: 'safe-yolo', updatedAt: 200 });
         expect(getSpy.mock.calls[0]?.[0]).toContain(`/v1/sessions/${mockSession.id}/messages`);
-        expect(getSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ params: { limit: 25, role: 'user' } }));
+        expect(getSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+            params: expect.objectContaining({ limit: 25, role: 'user' }),
+        }));
 
         getSpy.mockRestore();
     });

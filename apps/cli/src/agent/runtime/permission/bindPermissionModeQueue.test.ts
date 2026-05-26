@@ -72,7 +72,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: expect.objectContaining({ text: 'hello world', localId: 'local-1' }),
+        message: expect.objectContaining({ text: 'hello world', localId: 'local-1', meta: {} }),
         mode: { permissionMode: 'default' },
       },
     ]);
@@ -171,7 +171,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'clear',
-        message: expect.objectContaining({ text: '/clear', localId: 'local-3' }),
+        message: expect.objectContaining({ text: '/clear', localId: 'local-3', meta: {} }),
         mode: { permissionMode: 'default' },
       },
     ]);
