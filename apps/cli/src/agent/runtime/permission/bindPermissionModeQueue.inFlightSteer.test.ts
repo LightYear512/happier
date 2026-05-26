@@ -51,7 +51,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
 
     emitUserMessage({ content: { text: 'hello' }, meta: {} });
     expect(spyPush).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'hello', localId: null }),
+      expect.objectContaining({ text: 'hello', localId: null, meta: {} }),
       { permissionMode: 'default' },
     );
   });
@@ -148,7 +148,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(spyPush).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'queue me', localId: null }),
+      expect.objectContaining({ text: 'queue me', localId: null, meta: {} }),
       { permissionMode: 'default' },
     );
   });
@@ -268,11 +268,11 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
 
     expect(steerText).not.toHaveBeenCalled();
     expect(spyPush).toHaveBeenCalledWith(
-      {
+      expect.objectContaining({
         text: 'mode change',
         localId: null,
         meta: { permissionMode: 'read-only' },
-      },
+      }),
       { permissionMode: 'read-only' },
     );
   });
@@ -301,7 +301,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     expect(steerText).not.toHaveBeenCalled();
     expect(spyPush).not.toHaveBeenCalled();
     expect(spyIsolate).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '/clear', localId: null }),
+      expect.objectContaining({ text: '/clear', localId: null, meta: {} }),
       { permissionMode: 'default' },
     );
   });
@@ -330,7 +330,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     expect(steerText).not.toHaveBeenCalled();
     expect(spyIsolate).not.toHaveBeenCalled();
     expect(spyPush).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '/compact', localId: null }),
+      expect.objectContaining({ text: '/compact', localId: null, meta: {} }),
       { permissionMode: 'default' },
     );
   });
