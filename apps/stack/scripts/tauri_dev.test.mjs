@@ -128,6 +128,8 @@ test('tauri_dev fails fast with a clear error when repo dir does not contain src
   const scriptPath = join(scriptsDir, 'tauri_dev.mjs');
 
   const fakeRepo = await mkdir(join(tmpdir(), `happier-tauri-dev-missing-repo-${Date.now()}`), { recursive: true });
+  const fakeHome = await mkdir(join(tmpdir(), `happier-tauri-dev-missing-home-${Date.now()}`), { recursive: true });
+  const fakeStorage = await mkdir(join(tmpdir(), `happier-tauri-dev-missing-storage-${Date.now()}`), { recursive: true });
 
   let stderr = '';
   try {
@@ -137,6 +139,12 @@ test('tauri_dev fails fast with a clear error when repo dir does not contain src
         ...process.env,
         HAPPIER_STACK_TAURI_WAIT_FOR_EXPO: '0',
         HAPPIER_STACK_REPO_DIR: fakeRepo,
+        HAPPIER_STACK_HOME_DIR: fakeHome,
+        HAPPIER_STACK_STORAGE_DIR: fakeStorage,
+        HAPPIER_STACK_CLI_ROOT_DIR: '',
+        HAPPIER_STACK_INVOKED_CWD: '',
+        HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
+        HAPPIER_STACK_ENV_FILE: join(fakeRepo, 'missing-env'),
       },
       encoding: 'utf8',
     });
