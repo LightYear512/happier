@@ -18,6 +18,7 @@ import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers'
 const previousDev = (globalThis as { __DEV__?: boolean }).__DEV__;
 const openRightSpy = vi.hoisted(() => vi.fn());
 const setRightTabSpy = vi.hoisted(() => vi.fn());
+const openDetailsTabSpy = vi.hoisted(() => vi.fn());
 const themeColors = vi.hoisted(() => ({
     text: '#000',
     textSecondary: '#666',
@@ -56,6 +57,8 @@ let uiMultiPanePanelsEnabledSetting: any = true;
 let lastUrlSyncEnabled: boolean | null = null;
 let sessionScreenFocused = true;
 let mockPathname = '/session/s1';
+let platformOS: 'web' | 'ios' = 'web';
+let sessionMessagesState: any[] = [];
 let pendingMessagesState: { messages: any[]; discarded: any[]; isLoaded: boolean } = {
     messages: [],
     discarded: [],
@@ -71,10 +74,12 @@ installSessionShellCommonModuleMocks({
             Pressable: 'Pressable',
             ActivityIndicator: 'ActivityIndicator',
             Platform: {
-                OS: 'web',
+                get OS() {
+                    return platformOS;
+                },
                 select: (spec: Record<string, unknown>) =>
-                    spec && Object.prototype.hasOwnProperty.call(spec, 'web')
-                        ? (spec as any).web
+                    spec && Object.prototype.hasOwnProperty.call(spec, platformOS)
+                        ? (spec as any)[platformOS]
                         : (spec as any).default,
             },
             useWindowDimensions: () => ({ width: 1200, height: 800 }),
@@ -122,8 +127,9 @@ installSessionShellCommonModuleMocks({
             useSession: () => session,
             useIsDataReady: () => true,
             useRealtimeStatus: () => 'connected',
-            useSessionMessages: () => ({ messages: [], isLoaded: true }),
+            useSessionMessages: () => ({ messages: sessionMessagesState, isLoaded: true }),
             useSessionTranscriptIds: () => ({ ids: [], isLoaded: true }),
+            useSessionSubagentSourceMessages: () => [],
             useSessionPendingMessages: () => pendingMessagesState,
             useSessionSubagentSourceMessages: () => [],
             useSessionReviewCommentsDrafts: () => [],
@@ -195,7 +201,7 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
         openRight: openRightSpy,
         setRightTab: setRightTabSpy,
         closeRight: vi.fn(),
-        openDetailsTab: vi.fn(),
+        openDetailsTab: openDetailsTabSpy,
         closeDetails: vi.fn(),
         pinDetailsTab: vi.fn(),
         closeDetailsTab: vi.fn(),
@@ -356,6 +362,8 @@ describe('SessionView (right pane auto-open)', () => {
         lastUrlSyncEnabled = null;
         sessionScreenFocused = true;
         mockPathname = '/session/s1';
+        platformOS = 'web';
+        sessionMessagesState = [];
         pendingMessagesState = {
             messages: [],
             discarded: [],
@@ -363,6 +371,7 @@ describe('SessionView (right pane auto-open)', () => {
         };
         openRightSpy.mockReset();
         setRightTabSpy.mockReset();
+        openDetailsTabSpy.mockReset();
         fetchPendingMessagesSpy.mockReset();
     });
 
@@ -420,6 +429,56 @@ describe('SessionView (right pane auto-open)', () => {
         const screen = await renderSessionView({ rightTabId: 'git' });
 
         expect(lastUrlSyncEnabled).toBe(false);
+
+        await screen.unmount();
+    });
+
+    it('opens a native local-service preview deep link through the session view resolver', async () => {
+        platformOS = 'ios';
+        sessionMessagesState = [{
+            kind: 'agent-text',
+            id: 'message_preview_1',
+            localId: null,
+            createdAt: 1,
+            text: '',
+            meta: {
+                happier: {
+                    kind: 'local_service_preview.v1',
+                    payload: {
+                        resourceId: 'preview_1',
+                        sessionId: 's1',
+                        machineId: 'machine_1',
+                        port: 5173,
+                        origin: 'http://127.0.0.1:5173',
+                        url: 'http://127.0.0.1:5173/ai-console/develop/',
+                        name: 'layaideamanagementpage',
+                        framework: 'vite',
+                        source: 'mcp_tool',
+                        registeredAtMs: 1,
+                        health: { status: 'ready' },
+                        preview: {
+                            rewriteUrls: true,
+                            supportsWebSocket: true,
+                            routeKey: 'route_1',
+                            initialPath: '/ai-console/develop/',
+                        },
+                    },
+                },
+            },
+        }];
+
+        const screen = await renderSessionView({
+            details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+        });
+
+        expect(openDetailsTabSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                key: 'localServicePreview:preview_1',
+                kind: 'localServicePreview',
+                title: 'layaideamanagementpage',
+            }),
+            { intent: 'preview' },
+        );
 
         await screen.unmount();
     });

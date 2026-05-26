@@ -7,11 +7,14 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import type { AttachmentDraft } from '@/components/sessions/attachments/attachmentDraftModel';
+import { SessionLocalServicePreviewPane } from '@/components/sessions/devPreview/SessionLocalServicePreviewPane';
+import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { SessionDetailsPanel } from '@/components/sessions/panes/SessionDetailsPanel';
 import {
     createSessionCommitDetailsTab,
     createSessionDetailsTerminalTab,
     createSessionFileDetailsTab,
+    createSessionLocalServicePreviewDetailsTab,
     createSessionScmReviewDetailsTab,
     createSessionScmStashDetailsTab,
 } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
@@ -24,6 +27,7 @@ import {
 } from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { SessionView } from '@/components/sessions/shell/SessionView';
 import type { SessionRouteHydrationState } from '@/sync/domains/session/sessionRouteHydrationState';
+import { useSession, useSessionMessages } from '@/sync/domains/state/storage';
 import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 
 import {
@@ -31,6 +35,7 @@ import {
     type SessionMobileSurface,
 } from './sessionCockpitState';
 import { useSessionCockpitSurfaceNavigation } from './SessionCockpitSurfaceNavigation';
+import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
 
 export type SessionCockpitSurfaceScreenProps = Readonly<{
     sessionId: string;
@@ -44,6 +49,31 @@ export type SessionCockpitSurfaceScreenProps = Readonly<{
     terminalTabAvailable?: boolean;
     routeHydrationState?: SessionRouteHydrationState | null;
 }>;
+
+function createRouteDetailsTargetSignature(
+    target: SessionPaneUrlDetailsTarget | null | undefined,
+    localServicePreviewSignature: string,
+): string | null {
+    if (!target) return null;
+
+    if (target.kind === 'file') {
+        return `file:${target.path}`;
+    }
+    if (target.kind === 'commit') {
+        return `commit:${target.sha}`;
+    }
+    if (target.kind === 'terminal') {
+        return 'terminal';
+    }
+    if (target.kind === 'scmReview') {
+        return 'scmReview';
+    }
+    if (target.kind === 'scmStash') {
+        return 'scmStash';
+    }
+
+    return `localServicePreview:${target.resourceId ?? ''}:${localServicePreviewSignature}`;
+}
 
 export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurfaceScreenProps) => {
     const { theme } = useUnistyles();
@@ -59,9 +89,46 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
     const setRightTab = pane.setRightTab;
     const terminalTabAvailable = props.terminalTabAvailable !== false;
     const hasDeepLinkedDetailsTarget = props.paneUrlState?.details != null;
+    const session = useSession(props.sessionId);
+    const { messages: committedMessages } = useSessionMessages(props.sessionId);
+    const localServicePreviews = React.useMemo(
+        () => listLocalServicePreviewPayloadsFromSources({
+            metadata: session?.metadata ?? null,
+            messages: committedMessages,
+        }),
+        [committedMessages, session?.metadata],
+    );
+    const localServicePreviewSignature = React.useMemo(
+        () => localServicePreviews.map((preview) => preview.resourceId).join('|'),
+        [localServicePreviews],
+    );
+    const routeDetailsTargetSignature = React.useMemo(
+        () => createRouteDetailsTargetSignature(props.paneUrlState?.details, localServicePreviewSignature),
+        [localServicePreviewSignature, props.paneUrlState?.details],
+    );
+    const routeLocalServicePreviewPayload = React.useMemo(() => {
+        const target = props.paneUrlState?.details;
+        if (target?.kind !== 'localServicePreview') {
+            return null;
+        }
+
+        const resourceId = target.resourceId?.trim() ?? '';
+        return resourceId
+            ? localServicePreviews.find((preview) => preview.resourceId === resourceId) ?? null
+            : localServicePreviews[0] ?? null;
+    }, [localServicePreviews, props.paneUrlState?.details]);
+    const routeLocalServicePreviewTabKey = routeLocalServicePreviewPayload
+        ? createSessionLocalServicePreviewDetailsTab(routeLocalServicePreviewPayload).key
+        : null;
+    const shouldRenderRouteLocalServicePreview = props.surface === 'tabs'
+        && routeLocalServicePreviewPayload != null
+        && pane.scopeState?.details?.activeTabKey !== routeLocalServicePreviewTabKey;
     const paneRef = React.useRef(pane);
+    const localServicePreviewsRef = React.useRef(localServicePreviews);
     const surfaceNavigationRef = React.useRef(surfaceNavigation);
+    const openedRouteDetailsTargetSignatureRef = React.useRef<string | null>(null);
     paneRef.current = pane;
+    localServicePreviewsRef.current = localServicePreviews;
     surfaceNavigationRef.current = surfaceNavigation;
 
     const targetRightTabId = resolveSessionRightTabIdForSurface(props.surface, terminalTabAvailable);
@@ -124,10 +191,42 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
                 return;
             }
 
-            currentPane.openDetailsTab(createSessionScmReviewDetailsTab(), intent);
-            openDetailsSurface();
+            if (target.kind === 'scmReview') {
+                currentPane.openDetailsTab(createSessionScmReviewDetailsTab(), intent);
+                openDetailsSurface();
+                return;
+            }
+
+            if (target.kind === 'scmStash') {
+                currentPane.openDetailsTab(createSessionScmStashDetailsTab(), intent);
+                openDetailsSurface();
+                return;
+            }
+
+            if (target.kind === 'localServicePreview') {
+                const resourceId = target.resourceId?.trim() ?? '';
+                const payload = resourceId
+                    ? localServicePreviewsRef.current.find((preview) => preview.resourceId === resourceId) ?? null
+                    : localServicePreviewsRef.current[0] ?? null;
+                if (!payload) return;
+
+                currentPane.openDetailsTab(createSessionLocalServicePreviewDetailsTab(payload), { intent: 'preview' });
+                openDetailsSurface();
+            }
         });
     }, [openDetailsSurface]);
+
+    React.useEffect(() => {
+        if (!isFocused) return;
+        if (!props.paneUrlState?.details || !routeDetailsTargetSignature) {
+            openedRouteDetailsTargetSignatureRef.current = null;
+            return;
+        }
+        if (openedRouteDetailsTargetSignatureRef.current === routeDetailsTargetSignature) return;
+
+        openedRouteDetailsTargetSignatureRef.current = routeDetailsTargetSignature;
+        openDetailsRoute(props.paneUrlState.details);
+    }, [isFocused, openDetailsRoute, props.paneUrlState?.details, routeDetailsTargetSignature]);
 
     const openFileInDetails = React.useCallback((fullPath: string) => {
         openDetailsRoute({ kind: 'file', path: fullPath });
@@ -231,15 +330,41 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
 
     return renderSessionChrome(
         <View testID="session-details-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-            <SessionDetailsPanel
-                sessionId={props.sessionId}
-                scopeId={props.scopeId}
-                presentation={props.safeAreaPadding === false ? 'screen' : undefined}
-                showHeaderActions={false}
-            />
+            {shouldRenderRouteLocalServicePreview ? (
+                <RouteLocalServicePreviewPane
+                    payload={routeLocalServicePreviewPayload}
+                    scopeId={props.scopeId}
+                />
+            ) : (
+                <SessionDetailsPanel
+                    sessionId={props.sessionId}
+                    scopeId={props.scopeId}
+                    presentation={props.safeAreaPadding === false ? 'screen' : undefined}
+                    showHeaderActions={false}
+                />
+            )}
         </View>,
     );
 });
+
+const RouteLocalServicePreviewPane = React.memo((props: Readonly<{
+    payload: LocalServicePreviewV1;
+    scopeId: string;
+}>) => (
+    <SessionLocalServicePreviewPane
+        scopeId={props.scopeId}
+        resourceId={props.payload.resourceId}
+        sessionId={props.payload.sessionId}
+        machineId={props.payload.machineId}
+        port={props.payload.port}
+        initialPath={props.payload.preview.initialPath}
+        routeKey={props.payload.preview.routeKey}
+        rewriteUrls={props.payload.preview.rewriteUrls}
+        supportsWebSocket={props.payload.preview.supportsWebSocket}
+        name={props.payload.name}
+        healthStatus={props.payload.health.status}
+    />
+));
 
 const SessionCockpitLoadingFallback = React.memo((props: Readonly<{ color: string }>) => (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>

@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
@@ -14,37 +13,12 @@ import {
 installSessionActionsCommonModuleMocks();
 
 const openDetailsTab = vi.fn();
-
-vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
-    DropdownMenu: (props: Readonly<{
-        open: boolean;
-        onOpenChange: (next: boolean) => void;
-        trigger?: ((props: Readonly<{
-            open: boolean;
-            toggle: () => void;
-            openMenu: () => void;
-            closeMenu: () => void;
-            selectedItem: null;
-        }>) => React.ReactNode) | React.ReactNode;
-        items: ReadonlyArray<unknown>;
-        onSelect: (itemId: string) => void;
-    }>) => {
-        const trigger = typeof props.trigger === 'function'
-            ? props.trigger({
-                open: props.open,
-                toggle: () => props.onOpenChange(!props.open),
-                openMenu: () => props.onOpenChange(true),
-                closeMenu: () => props.onOpenChange(false),
-                selectedItem: null,
-            })
-            : props.trigger;
-        return React.createElement('DropdownMenu', props, trigger);
-    },
-}));
+const setActiveDetailsTab = vi.fn();
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     useAppPaneScope: () => ({
         openDetailsTab,
+        setActiveDetailsTab,
     }),
 }));
 
@@ -85,6 +59,7 @@ describe('SessionHeaderDevPreviewButton', () => {
     beforeEach(() => {
         resetSessionActionsCommonModuleMockState();
         openDetailsTab.mockClear();
+        setActiveDetailsTab.mockClear();
     });
 
     it('opens the latest local service preview details tab from the session header', async () => {
@@ -121,7 +96,7 @@ describe('SessionHeaderDevPreviewButton', () => {
         expect(screen.findByTestId('session-header-dev-preview-button')).toBeNull();
     });
 
-    it('opens a preview picker when more than one preview has been registered', async () => {
+    it('opens all registered previews as details tabs from the session header', async () => {
         const { SessionHeaderDevPreviewButton } = await import('./SessionHeaderDevPreviewButton');
 
         const screen = await renderScreen(
@@ -130,36 +105,32 @@ describe('SessionHeaderDevPreviewButton', () => {
 
         await screen.pressByTestIdAsync('session-header-dev-preview-button');
 
-        const dropdown = screen.findByType('DropdownMenu' as React.ElementType);
-        expect(dropdown.props.open).toBe(true);
-        expect(dropdown.props.items).toEqual([
+        expect(screen.findAllByType('DropdownMenu' as React.ElementType)).toHaveLength(0);
+        expect(openDetailsTab).toHaveBeenCalledTimes(2);
+        expect(openDetailsTab).toHaveBeenNthCalledWith(
+            1,
             expect.objectContaining({
-                id: 'preview_2',
-                testID: 'session-header-dev-preview-menu-item-preview_2',
-                title: 'Docs app',
-                subtitle: '127.0.0.1:3000/docs',
+                key: 'localServicePreview:preview_2',
+                kind: 'localServicePreview',
+                resource: expect.objectContaining({
+                    resourceId: 'preview_2',
+                    initialPath: '/docs',
+                }),
             }),
-            expect.objectContaining({
-                id: 'preview_1',
-                testID: 'session-header-dev-preview-menu-item-preview_1',
-                title: 'Preview app',
-                subtitle: '127.0.0.1:5173/dashboard',
-            }),
-        ]);
-
-        await act(async () => {
-            dropdown.props.onSelect('preview_1');
-        });
-
-        expect(openDetailsTab).toHaveBeenCalledWith(
+            { intent: 'preview' },
+        );
+        expect(openDetailsTab).toHaveBeenNthCalledWith(
+            2,
             expect.objectContaining({
                 key: 'localServicePreview:preview_1',
                 kind: 'localServicePreview',
                 resource: expect.objectContaining({
                     resourceId: 'preview_1',
+                    initialPath: '/dashboard',
                 }),
             }),
             { intent: 'preview' },
         );
+        expect(setActiveDetailsTab).toHaveBeenCalledWith('localServicePreview:preview_2');
     });
 });

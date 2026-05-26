@@ -20,6 +20,7 @@ import {
   type AccountSettings,
   getActionSpec,
   isActionSpecSurfacedOn,
+  writeLocalServicePreviewToSessionMetadata,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { MemorySearchResultV1Schema, MemoryWindowV1Schema, type MemorySearchResultV1, type MemoryWindowV1 } from '@happier-dev/protocol';
@@ -198,6 +199,17 @@ export function createHappierMcpServer(
           preview,
           sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
         });
+        try {
+          await Promise.resolve(client.updateMetadata((current) => (
+            writeLocalServicePreviewToSessionMetadata(current, preview)
+          )));
+        } catch (error) {
+          logger.debug('[mcp] Failed to update dev preview metadata via session-scoped bridge', {
+            sessionId,
+            machineId,
+            error,
+          });
+        }
         return preview;
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),

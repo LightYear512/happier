@@ -18,11 +18,13 @@ let routeHydrationState: 'available' | 'loading' | 'missing' = 'available';
 let mockDetailsParam: string | undefined;
 let mockPathParam: string | undefined;
 let mockShaParam: string | undefined;
+let mockResourceIdParam: string | undefined;
 let mockSourceSurfaceParam: string | undefined;
 let safeAreaInsets = { top: 47, right: 0, bottom: 34, left: 0 };
 const routerBackSpy = vi.fn();
 const routerReplaceSpy = vi.fn();
 const ensureSessionVisibleSpy = vi.fn((_sessionId: string, _options?: { serverId?: string }) => Promise.resolve());
+const refreshSessionMessagesSpy = vi.fn((_sessionId: string) => Promise.resolve());
 const closeDetailsSpy = vi.fn();
 const openDetailsTabSpy = vi.fn();
 let canGoBack = true;
@@ -61,6 +63,7 @@ installSessionRouteCommonModuleMocks({
             details: mockDetailsParam,
             path: mockPathParam,
             sha: mockShaParam,
+            resourceId: mockResourceIdParam,
             sourceSurface: mockSourceSurfaceParam,
         }),
         useGlobalSearchParams: () => ({
@@ -69,6 +72,7 @@ installSessionRouteCommonModuleMocks({
             details: mockDetailsParam,
             path: mockPathParam,
             sha: mockShaParam,
+            resourceId: mockResourceIdParam,
             sourceSurface: mockSourceSurfaceParam,
         }),
         useNavigation: () => ({ canGoBack: () => canGoBack }),
@@ -152,6 +156,14 @@ vi.mock('@/components/sessions/panes/url/sessionPaneUrlState', () => ({
         if (mockDetailsParam === 'commit' && mockShaParam) {
             return { details: { kind: 'commit', sha: mockShaParam } };
         }
+        if (mockDetailsParam === 'localServicePreview') {
+            return {
+                details: {
+                    kind: 'localServicePreview',
+                    ...(mockResourceIdParam ? { resourceId: mockResourceIdParam } : {}),
+                },
+            };
+        }
         return null;
     },
     buildActiveDetailsRouteParams: (detailsTabs: any[], activeDetailsKey: string | null) => {
@@ -165,6 +177,7 @@ vi.mock('@/components/sessions/panes/url/sessionPaneUrlState', () => ({
         }
         return {};
     },
+    createLocalServicePreviewDetailsTabResolver: () => () => null,
     applySessionPaneUrlState: (pane: any, state: any) => {
         if (state?.details?.kind === 'file') {
             pane.openDetailsTab({
@@ -204,6 +217,7 @@ vi.mock('@/components/sessions/shell/SessionInvalidLinkFallback', () => ({
 vi.mock('@/sync/sync', () => ({
     sync: {
         ensureSessionVisibleForMessageRoute: (sessionId: string) => ensureSessionVisibleSpy(sessionId),
+        refreshSessionMessages: (sessionId: string) => refreshSessionMessagesSpy(sessionId),
     },
 }));
 
@@ -222,6 +236,7 @@ describe('/session/[id]/details', () => {
         mockDetailsParam = undefined;
         mockPathParam = undefined;
         mockShaParam = undefined;
+        mockResourceIdParam = undefined;
         mockSourceSurfaceParam = undefined;
         safeAreaInsets = { top: 47, right: 0, bottom: 34, left: 0 };
         canGoBack = true;
@@ -231,6 +246,7 @@ describe('/session/[id]/details', () => {
         routerBackSpy.mockClear();
         routerReplaceSpy.mockClear();
         ensureSessionVisibleSpy.mockClear();
+        refreshSessionMessagesSpy.mockClear();
         closeDetailsSpy.mockClear();
         openDetailsTabSpy.mockClear();
         vi.clearAllMocks();
@@ -289,6 +305,31 @@ describe('/session/[id]/details', () => {
         expect(getStyleValue(routeSurface?.props.style, 'paddingTop')).toBe(0);
         expect(getStyleValue(routeSurface?.props.style, 'paddingBottom')).toBe(34);
         expect(routerReplaceSpy).not.toHaveBeenCalled();
+    });
+
+    it('passes local-service preview details params into the cockpit route shell', async () => {
+        deviceType = 'phone';
+        mobileWorkspaceExperience = 'cockpit';
+        mockDetailsParam = 'localServicePreview';
+        mockResourceIdParam = 'preview_1';
+
+        const screen = await renderScreen(<Screen />);
+
+        const cockpit = screen.findByType('SessionCockpitShell' as any);
+        expect(cockpit.props.paneUrlState).toEqual({
+            details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+        });
+    });
+
+    it('refreshes session messages for cockpit local-service preview deep links', async () => {
+        deviceType = 'phone';
+        mobileWorkspaceExperience = 'cockpit';
+        mockDetailsParam = 'localServicePreview';
+        mockResourceIdParam = 'preview_1';
+
+        await renderScreen(<Screen />);
+
+        expect(refreshSessionMessagesSpy).toHaveBeenCalledWith('session-1');
     });
 
     it('does not redirect away before the session has hydrated', async () => {
