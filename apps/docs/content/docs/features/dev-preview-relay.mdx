@@ -1,0 +1,100 @@
+---
+title: Dev preview relay
+description: Preview local development servers inside Happier sessions across web and native clients.
+---
+
+Dev preview relay lets an agent register a local development server with a Happier session so the user can open that app from the session UI.
+
+The product contract is:
+
+- the agent registers the dev server through `happier_dev_preview_register`
+- Happier shows a preview affordance in the session
+- opening the preview uses the same session details-tab model as files, commits, terminals, and other resources
+- the displayed URL is the resolved preview URL, not the machine-local `127.0.0.1` URL
+
+## UI model
+
+Preview pages are session **details tabs**.
+
+They are not part of the fixed right-panel tool tabs. The right panel is for stable session tools such as Git, files, agents, and terminal. A preview is a session resource, like a file or commit, so it belongs in the details tab strip.
+
+Entry points:
+
+- the session header preview button
+- the local-service preview card in the transcript
+
+When multiple previews are registered, each preview opens as its own details tab. Reopening the same preview should reuse the same tab key. On narrow native screens, the same details pane can present as a full-screen or overlay surface while preserving the same tab model.
+
+## Rendering model
+
+The preview pane is platform-specific behind one shared details-tab contract:
+
+- Web renders the preview with an `iframe`.
+- iOS and Android render the preview with `react-native-webview`.
+
+The pane asks the server for a preview token and consumes the server-provided `previewUrl`. Clients must not reconstruct host-based preview URLs themselves. The server owns preview-origin selection because it is the only layer that knows which preview transports are available for the current deployment.
+
+## Transport profiles
+
+The token endpoint should describe the selected transport capability with the returned preview URL.
+
+| Profile | Client use | Notes |
+| --- | --- | --- |
+| `host_https_public` | Preferred on web and native | Real routable host-based origin with trusted TLS. |
+| `path_https` | Native fallback | Compatible without wildcard DNS, but weaker origin isolation. |
+| `host_http_localhost` | Web local-development fallback | Only valid when browser, server, and relay are on the same machine. |
+| `unavailable` | Error state | Include a user-actionable reason. |
+
+For the current implementation, clients infer the transport from the returned URL and namespace strategy. The protocol should grow an explicit profile field before relying on profile-specific native behavior.
+
+## HTTPS and external requirements
+
+Native app product behavior should target HTTPS.
+
+Development tiers:
+
+| Tier | Requires real domain? | Requires trusted TLS? | Suitable for |
+| --- | --- | --- | --- |
+| UI shell only | No | No | Building loading/error/WebView chrome with mocked URLs. |
+| Simulator smoke | No, if using a reachable local server fallback | Prefer yes | Basic WebView rendering and state transitions. |
+| Native realistic QA | Yes | Yes | Cookies, WebSocket, redirects, OAuth, service-worker-like behavior, and third-party SDK checks. |
+| Product deployment | Yes | Yes | Cross-device preview. |
+
+Host-based native preview needs:
+
+- wildcard DNS for the preview base domain
+- wildcard TLS for that domain
+- a server/relay URL reachable from the device
+- WebSocket relay support for dev-server HMR
+
+`*.localhost` is a web-local fallback only. In iOS or Android, `localhost` means the device itself, not the Mac or server that owns the dev server.
+
+## Native WebView policy
+
+The native WebView surface should:
+
+- load only the server-provided preview URL
+- restrict navigation to the preview origin and explicitly allowed same-preview URLs
+- open unrelated external links outside the preview WebView
+- display a sanitized URL in the details tab and chrome, without `previewToken`
+- expose reload and close controls through the existing details-pane chrome
+- show clear error states for unavailable relay, token failure, TLS/certificate failure, navigation rejection, and offline dev server
+
+The first native implementation can use the existing preview token URL directly. Follow-up work should add explicit transport profile fields and more granular native error mapping.
+
+## Testing
+
+Required test coverage:
+
+- Web preview still renders an `iframe` and shows the resolved host-based URL in the details tab.
+- Native preview requests a relay token and renders `react-native-webview`.
+- Native preview does not attempt same-machine `127.0.0.1` fallback.
+- Native preview reports the resolved preview URL to the details tab state.
+- Parent rerenders do not cause repeated preview URL state writes.
+
+Manual QA for native should cover:
+
+- iOS Simulator
+- Android Emulator
+- one physical device against a real HTTPS preview domain before release
+

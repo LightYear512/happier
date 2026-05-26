@@ -9,6 +9,7 @@ import { readStoredSessionPaneUrlState, writeStoredSessionPaneUrlState } from '.
 import { pushSessionPaneUrlParams } from './pushSessionPaneUrlParams';
 
 import type { SessionPaneUrlState } from './sessionPaneUrlState';
+import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReducer';
 import {
     applySessionPaneUrlState,
     deriveSessionPaneUrlStateFromScopeState,
@@ -31,19 +32,20 @@ export type UseSessionPaneUrlSyncInput = Readonly<{
         openBottom: (options?: Readonly<{ tabId?: string }>) => void;
         closeBottom: () => void;
         setBottomTab: (tabId: string) => void;
-        openDetailsTab: (tab: any, options?: any) => void;
+        openDetailsTab: (tab: DetailsTab, options?: Readonly<{ intent?: 'default' | 'pinned' | 'preview' }>) => void;
         closeDetails: () => void;
     }>;
+    resolveLocalServicePreviewDetailsTab?: (resourceId: string) => DetailsTab | null;
     scopeState: unknown;
     urlState: SessionPaneUrlState | null;
     setParams: ((params: Record<string, unknown>) => void) | null | undefined;
 }>;
 
-function signatureFromSerialized(params: Readonly<{ right?: unknown; bottom?: unknown; details?: unknown; path?: unknown; sha?: unknown }>): string {
-    return `${String(params.right ?? '')}|${String(params.bottom ?? '')}|${String(params.details ?? '')}|${String(params.path ?? '')}|${String(params.sha ?? '')}`;
+function signatureFromSerialized(params: Readonly<{ right?: unknown; bottom?: unknown; details?: unknown; path?: unknown; sha?: unknown; resourceId?: unknown }>): string {
+    return `${String(params.right ?? '')}|${String(params.bottom ?? '')}|${String(params.details ?? '')}|${String(params.path ?? '')}|${String(params.sha ?? '')}|${String(params.resourceId ?? '')}`;
 }
 
-function serializeToParamShape(state: SessionPaneUrlState | null): Readonly<{ right?: string; bottom?: string; details?: string; path?: string; sha?: string }> {
+function serializeToParamShape(state: SessionPaneUrlState | null): Readonly<{ right?: string; bottom?: string; details?: string; path?: string; sha?: string; resourceId?: string }> {
     const serialized = state ? serializeSessionPaneUrlState(state) : {};
     return {
         right: serialized.right,
@@ -51,6 +53,7 @@ function serializeToParamShape(state: SessionPaneUrlState | null): Readonly<{ ri
         details: serialized.details,
         path: serialized.path,
         sha: serialized.sha,
+        resourceId: serialized.resourceId,
     };
 }
 
@@ -121,8 +124,10 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         }
 
         pendingStoredStateWriteSigRef.current = signatureFromSerialized(serializeToParamShape(storedState));
-        applySessionPaneUrlState(input.pane, storedState);
-    }, [currentHistoryPaneState?.urlSig, input.enabled, input.pane, input.urlState, scopeKey, storedState, urlSig]);
+        applySessionPaneUrlState(input.pane, storedState, {
+            resolveLocalServicePreviewDetailsTab: input.resolveLocalServicePreviewDetailsTab,
+        });
+    }, [currentHistoryPaneState?.urlSig, input.enabled, input.pane, input.resolveLocalServicePreviewDetailsTab, input.urlState, scopeKey, storedState, urlSig]);
 
     React.useEffect(() => {
         if (!input.enabled) return;
@@ -191,14 +196,18 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         // Important: initial state application should be additive (open requested panes),
         // not subtractive (closing panes the URL cannot represent, e.g. `scmReview`).
         if (isFirstRun && input.urlState) {
-            applySessionPaneUrlState(input.pane, input.urlState);
+            applySessionPaneUrlState(input.pane, input.urlState, {
+                resolveLocalServicePreviewDetailsTab: input.resolveLocalServicePreviewDetailsTab,
+            });
             pendingPaneReconcileRef.current = { targetUrlSig: urlSig };
             return;
         }
 
         // Browser back/forward: URL changed without us writing it.
         if (prevUrlSig !== null && urlSig !== prevUrlSig) {
-            reconcileSessionPaneScopeFromUrlState(input.pane, input.urlState);
+            reconcileSessionPaneScopeFromUrlState(input.pane, input.urlState, {
+                resolveLocalServicePreviewDetailsTab: input.resolveLocalServicePreviewDetailsTab,
+            });
             pendingPaneReconcileRef.current = { targetUrlSig: urlSig };
             return;
         }
@@ -218,6 +227,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
                 details: derivedParams.details,
                 path: derivedParams.path,
                 sha: derivedParams.sha,
+                resourceId: derivedParams.resourceId,
             });
         }
         pendingUrlWriteRef.current = { fromSig: urlSig, toSig: derivedSig };
@@ -227,16 +237,19 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
             details: derivedParams.details,
             path: derivedParams.path,
             sha: derivedParams.sha,
+            resourceId: derivedParams.resourceId,
         });
         scheduleCurrentSessionPaneHistoryState({ scopeKey, urlSig: derivedSig });
     }, [
         derivedParams.bottom,
         derivedParams.details,
         derivedParams.path,
+        derivedParams.resourceId,
         derivedParams.right,
         derivedParams.sha,
         derivedSig,
         input.enabled,
+        input.resolveLocalServicePreviewDetailsTab,
         scopeKey,
         urlSig,
         input.pane,

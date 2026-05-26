@@ -6,11 +6,13 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionInvalidLinkFallback';
+import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { SessionDetailsPanel } from '@/components/sessions/panes/SessionDetailsPanel';
 import { SessionFullscreenPaneSafeAreaView } from '@/components/sessions/panes/SessionFullscreenPaneSafeAreaView';
 import {
     applySessionPaneUrlState,
     buildActiveDetailsRouteParams,
+    createLocalServicePreviewDetailsTabResolver,
     parseSessionPaneUrlState,
 } from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { SessionCockpitShell } from '@/components/workspaceCockpit/session/SessionCockpitShell';
@@ -22,6 +24,8 @@ import { useFullscreenDetailsRouteParamSync } from '@/components/workspaceCockpi
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
 import { useSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
+import { useSession, useSessionMessages } from '@/sync/domains/state/storage';
+import { sync } from '@/sync/sync';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 
@@ -30,6 +34,7 @@ type SessionDetailsRouteParamsShape = Readonly<{
     path?: string;
     sha?: string;
     terminalInstanceId?: string;
+    resourceId?: string;
     sourceSurface?: string;
 }>;
 
@@ -39,6 +44,7 @@ function createDetailsRouteParamsSignature(params: SessionDetailsRouteParamsShap
         params.path ?? '',
         params.sha ?? '',
         params.terminalInstanceId ?? '',
+        params.resourceId ?? '',
         params.sourceSurface ?? '',
     ].join('|');
 }
@@ -47,7 +53,7 @@ export default function SessionDetailsScreenRoute() {
     const router = useRouter();
     const navigation = useNavigation();
     const isFocused = useIsFocused();
-    const params = useLocalSearchParams<{ id: string; serverId?: string; details?: string; path?: string; sha?: string; terminalInstanceId?: string; sourceSurface?: string }>();
+    const params = useLocalSearchParams<{ id: string; serverId?: string; details?: string; path?: string; sha?: string; terminalInstanceId?: string; resourceId?: string; sourceSurface?: string }>();
     const { id: sessionIdParam } = params;
     const sessionId = String(sessionIdParam ?? '').trim();
     const routeScope = useSessionRouteServerScope(params);
@@ -61,6 +67,15 @@ export default function SessionDetailsScreenRoute() {
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
     const scopeId = React.useMemo(() => `session:${sessionId}`, [sessionId]);
     const pane = useAppPaneScope(scopeId);
+    const session = useSession(sessionId);
+    const { messages: committedMessages } = useSessionMessages(sessionId);
+    const localServicePreviewDetailsTabResolver = React.useMemo(
+        () => createLocalServicePreviewDetailsTabResolver(listLocalServicePreviewPayloadsFromSources({
+            metadata: session?.metadata ?? null,
+            messages: committedMessages,
+        })),
+        [committedMessages, session?.metadata],
+    );
     const detailsState = pane.scopeState?.details ?? null;
     const detailsSelection = React.useMemo(() => resolveFullscreenDetailsRouteSelection({
         detailsTabs: detailsState?.tabs,
@@ -68,6 +83,7 @@ export default function SessionDetailsScreenRoute() {
     }), [detailsState?.activeTabKey, detailsState?.tabs]);
     const parsedRouteDetailsState = parseSessionPaneUrlState(params as Record<string, unknown>);
     const routeDetailsState = parsedRouteDetailsState?.details ? { details: parsedRouteDetailsState.details } : null;
+    const routeDetailsKind = routeDetailsState?.details.kind ?? null;
     const hasDetails = detailsSelection.hasAnyDetails;
     const detailsIsOpen = detailsState?.isOpen ?? false;
     const routeDetailsParams = React.useMemo<SessionDetailsRouteParamsShape>(() => ({
@@ -75,6 +91,7 @@ export default function SessionDetailsScreenRoute() {
         path: typeof params.path === 'string' ? params.path : undefined,
         sha: typeof params.sha === 'string' ? params.sha : undefined,
         terminalInstanceId: typeof params.terminalInstanceId === 'string' ? params.terminalInstanceId : undefined,
+        resourceId: typeof params.resourceId === 'string' ? params.resourceId : undefined,
         sourceSurface: typeof params.sourceSurface === 'string' ? params.sourceSurface : undefined,
     }), [params]);
     const selectedDetailsParams = React.useMemo<SessionDetailsRouteParamsShape>(() => {
@@ -84,6 +101,7 @@ export default function SessionDetailsScreenRoute() {
             path: next.path,
             sha: next.sha,
             terminalInstanceId: next.terminalInstanceId,
+            resourceId: next.resourceId,
             sourceSurface: typeof params.sourceSurface === 'string' ? params.sourceSurface : undefined,
         };
     }, [detailsSelection.activeKey, detailsSelection.tabs, params.sourceSurface]);
@@ -120,14 +138,17 @@ export default function SessionDetailsScreenRoute() {
         selectedSelectionSignature: selectedDetailsSignature,
         onApplyRouteSelection: React.useCallback(() => {
             if (!routeDetailsState) return;
-            applySessionPaneUrlState(pane, routeDetailsState);
-        }, [pane, routeDetailsState]),
+            applySessionPaneUrlState(pane, routeDetailsState, {
+                resolveLocalServicePreviewDetailsTab: localServicePreviewDetailsTabResolver,
+            });
+        }, [localServicePreviewDetailsTabResolver, pane, routeDetailsState]),
         onWriteSelectedSelection: React.useCallback(() => {
             router.setParams({
                 details: selectedDetailsParams.details,
                 path: selectedDetailsParams.path,
                 sha: selectedDetailsParams.sha,
                 terminalInstanceId: selectedDetailsParams.terminalInstanceId,
+                resourceId: selectedDetailsParams.resourceId,
                 sourceSurface: selectedDetailsParams.sourceSurface,
             });
         }, [
@@ -136,9 +157,19 @@ export default function SessionDetailsScreenRoute() {
             selectedDetailsParams.path,
             selectedDetailsParams.sha,
             selectedDetailsParams.terminalInstanceId,
+            selectedDetailsParams.resourceId,
             selectedDetailsParams.sourceSurface,
         ]),
     });
+
+    React.useEffect(() => {
+        if (!sessionId) return;
+        if (!isFocused) return;
+        if (!sessionHydrated) return;
+        if (routeDetailsKind !== 'localServicePreview') return;
+
+        void sync.refreshSessionMessages(sessionId).catch(() => undefined);
+    }, [isFocused, routeDetailsKind, sessionHydrated, sessionId]);
 
     const { onRequestClose } = useFullscreenDetailsRouteController({
         resetKey: sessionId,
@@ -179,6 +210,7 @@ export default function SessionDetailsScreenRoute() {
                         routeServerId={routeScope.serverId ?? undefined}
                         routeHydrationState={routeHydrationState}
                         safeAreaPadding={false}
+                        paneUrlState={routeDetailsState}
                     />
                 ) : (
                     <SessionDetailsPanel sessionId={sessionId} scopeId={scopeId} presentation="screen" onRequestClose={onRequestClose} />

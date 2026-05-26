@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
 
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
@@ -11,6 +12,7 @@ import {
     useSessionCockpitDismissingSessionId,
 } from './SessionCockpitChromeRegistry';
 import { SessionCockpitShell } from './SessionCockpitShell';
+import type { Message } from '@/sync/domains/messages/messageTypes';
 import { SessionCockpitSurfaceNavigationProvider } from './SessionCockpitSurfaceNavigation';
 import {
     SessionCockpitSurfaceScreen,
@@ -51,6 +53,12 @@ const navigationEventsState = vi.hoisted(() => {
         listenersByEventName,
     };
 });
+const sessionMessagesState = vi.hoisted(() => ({
+    messages: [] as Message[],
+}));
+const sessionState = vi.hoisted(() => ({
+    metadata: null as Record<string, unknown> | null,
+}));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -77,6 +85,8 @@ vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
         useLocalSetting: () => null,
+        useSession: () => ({ id: 's_1', metadata: sessionState.metadata }),
+        useSessionMessages: () => ({ messages: sessionMessagesState.messages, isLoaded: true }),
     });
 });
 
@@ -90,6 +100,13 @@ vi.mock('@/components/sessions/shell/SessionView', () => ({
 
 vi.mock('@/components/sessions/panes/SessionDetailsPanel', () => ({
     SessionDetailsPanel: (props: Record<string, unknown>) => React.createElement('SessionDetailsPanel', props),
+}));
+
+vi.mock('@/components/sessions/devPreview/SessionLocalServicePreviewPane', () => ({
+    SessionLocalServicePreviewPane: (props: Record<string, unknown>) => React.createElement(
+        'SessionLocalServicePreviewPane',
+        props,
+    ),
 }));
 
 vi.mock('@/components/sessions/panes/surfaces/SessionBrowseFilesSurface', () => ({
@@ -139,6 +156,45 @@ function DeepLinkDetailsProbe(props: Readonly<{ scopeId: string; path: string }>
     }, [pane, props.path]);
 
     return null;
+}
+
+function createPreviewPayload(overrides: Partial<LocalServicePreviewV1> = {}): LocalServicePreviewV1 {
+    return {
+        resourceId: 'preview_1',
+        sessionId: 's_1',
+        machineId: 'machine_1',
+        port: 5173,
+        origin: 'http://127.0.0.1:5173',
+        url: 'http://127.0.0.1:5173/ai-console/develop/',
+        name: 'layaideamanagementpage',
+        framework: 'vite',
+        source: 'mcp_tool',
+        registeredAtMs: 1,
+        health: { status: 'ready', checkedAtMs: 2 },
+        preview: {
+            rewriteUrls: true,
+            supportsWebSocket: true,
+            routeKey: 'route_1',
+            initialPath: '/ai-console/develop/',
+        },
+        ...overrides,
+    };
+}
+
+function createPreviewMessage(payload: LocalServicePreviewV1): Message {
+    return {
+        kind: 'agent-text',
+        id: `message_${payload.resourceId}`,
+        localId: null,
+        createdAt: payload.registeredAtMs,
+        text: '',
+        meta: {
+            happier: {
+                kind: 'local_service_preview.v1',
+                payload,
+            },
+        },
+    };
 }
 
 function CockpitSurfaceHarness(props: SessionCockpitSurfaceScreenProps) {
@@ -256,6 +312,8 @@ describe('SessionCockpitSurfaceScreen', () => {
         navigationEventsState.listenersByEventName.clear();
         navigationEventsState.addListener.mockClear();
         bottomTabsState.navigations = [];
+        sessionMessagesState.messages = [];
+        sessionState.metadata = null;
         navigationFocusState.isFocused = true;
         safeAreaInsetsMock.top = 0;
         safeAreaInsetsMock.bottom = 0;
@@ -612,6 +670,196 @@ describe('SessionCockpitSurfaceScreen', () => {
             isOpen: true,
             activeTabKey: 'file:src/example.ts',
         }));
+        expect(probe.props.scopeState?.details?.tabs).toHaveLength(1);
+    });
+
+    it('opens the latest local-service preview from a root-route details deep link', async () => {
+        sessionMessagesState.messages = [createPreviewMessage(createPreviewPayload())];
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <CockpitSurfaceHarness
+                    sessionId="s_1"
+                    scopeId="session:s_1"
+                    surface="chat"
+                    routeServerId="server-b"
+                    paneUrlState={{
+                        details: { kind: 'localServicePreview' },
+                    }}
+                    terminalTabAvailable
+                />
+                <PaneScopeProbe scopeId="session:s_1" />
+            </AppPaneProvider>,
+        );
+
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        const probe = screen.tree.findByType('PaneScopeProbe' as never);
+        expect(probe.props.scopeState?.details).toEqual(expect.objectContaining({
+            isOpen: true,
+            activeTabKey: 'localServicePreview:preview_1',
+        }));
+        expect(probe.props.scopeState?.details?.tabs[0]).toEqual(expect.objectContaining({
+            key: 'localServicePreview:preview_1',
+            kind: 'localServicePreview',
+            title: 'layaideamanagementpage',
+        }));
+        expect(bottomTabsState.navigations).toContain('tabs');
+    });
+
+    it('opens a deep-linked local-service preview after preview messages load', async () => {
+        const paneUrlState = {
+            details: { kind: 'localServicePreview' as const },
+        };
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <CockpitSurfaceHarness
+                    sessionId="s_1"
+                    scopeId="session:s_1"
+                    surface="chat"
+                    routeServerId="server-b"
+                    paneUrlState={paneUrlState}
+                    terminalTabAvailable
+                />
+                <PaneScopeProbe scopeId="session:s_1" />
+            </AppPaneProvider>,
+        );
+
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        let probe = screen.tree.findByType('PaneScopeProbe' as never);
+        expect(probe.props.scopeState?.details).toBeUndefined();
+
+        sessionMessagesState.messages = [createPreviewMessage(createPreviewPayload())];
+        await act(async () => {
+            await screen.update(
+                <AppPaneProvider>
+                    <CockpitSurfaceHarness
+                        sessionId="s_1"
+                        scopeId="session:s_1"
+                        surface="chat"
+                        routeServerId="server-b"
+                        paneUrlState={paneUrlState}
+                        terminalTabAvailable
+                    />
+                    <PaneScopeProbe scopeId="session:s_1" />
+                </AppPaneProvider>,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        probe = screen.tree.findByType('PaneScopeProbe' as never);
+        expect(probe.props.scopeState?.details).toEqual(expect.objectContaining({
+            isOpen: true,
+            activeTabKey: 'localServicePreview:preview_1',
+        }));
+    });
+
+    it('renders a route-targeted local-service preview on the tabs surface before pane state settles', async () => {
+        sessionMessagesState.messages = [createPreviewMessage(createPreviewPayload())];
+        navigationFocusState.isFocused = false;
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <CockpitSurfaceHarness
+                    sessionId="s_1"
+                    scopeId="session:s_1"
+                    surface="tabs"
+                    routeServerId="server-b"
+                    paneUrlState={{
+                        details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+                    }}
+                    terminalTabAvailable
+                />
+            </AppPaneProvider>,
+        );
+
+        const previewPane = screen.tree.findByType('SessionLocalServicePreviewPane' as never);
+        expect(previewPane.props).toEqual(expect.objectContaining({
+            resourceId: 'preview_1',
+            sessionId: 's_1',
+            machineId: 'machine_1',
+            port: 5173,
+            routeKey: 'route_1',
+            initialPath: '/ai-console/develop/',
+            rewriteUrls: true,
+            supportsWebSocket: true,
+            name: 'layaideamanagementpage',
+            healthStatus: 'ready',
+        }));
+    });
+
+    it('opens a deep-linked local-service preview from session metadata without transcript messages', async () => {
+        sessionState.metadata = {
+            localServicePreviewsV1: {
+                v: 1,
+                previews: [createPreviewPayload()],
+            },
+        };
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <CockpitSurfaceHarness
+                    sessionId="s_1"
+                    scopeId="session:s_1"
+                    surface="chat"
+                    routeServerId="server-b"
+                    paneUrlState={{
+                        details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+                    }}
+                    terminalTabAvailable
+                />
+                <PaneScopeProbe scopeId="session:s_1" />
+            </AppPaneProvider>,
+        );
+
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        const probe = screen.tree.findByType('PaneScopeProbe' as never);
+        expect(probe.props.scopeState?.details).toEqual(expect.objectContaining({
+            isOpen: true,
+            activeTabKey: 'localServicePreview:preview_1',
+        }));
+    });
+
+    it('does not reopen the same deep-linked local-service preview on equivalent route rerenders', async () => {
+        sessionMessagesState.messages = [createPreviewMessage(createPreviewPayload())];
+
+        const renderHarness = () => (
+            <AppPaneProvider>
+                <CockpitSurfaceHarness
+                    sessionId="s_1"
+                    scopeId="session:s_1"
+                    surface="chat"
+                    routeServerId="server-b"
+                    paneUrlState={{
+                        details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+                    }}
+                    terminalTabAvailable
+                />
+                <PaneScopeProbe scopeId="session:s_1" />
+            </AppPaneProvider>
+        );
+
+        const screen = await renderScreen(renderHarness());
+
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        await act(async () => {
+            await screen.update(renderHarness());
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        expect(bottomTabsState.navigations.filter((surface) => surface === 'tabs')).toHaveLength(1);
+        const probe = screen.tree.findByType('PaneScopeProbe' as never);
         expect(probe.props.scopeState?.details?.tabs).toHaveLength(1);
     });
 });

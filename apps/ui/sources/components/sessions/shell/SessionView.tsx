@@ -241,7 +241,10 @@ import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit
 import { resolvePaneLayout } from '@/components/ui/panels/paneBreakpoints';
 import { PANE_SIZING_DEFAULTS } from '@/components/appShell/panes/layout/paneSizing';
 import { resolveMultiPaneDeviceType } from '@/components/appShell/panes/layout/resolveMultiPaneDeviceType';
-import type { SessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import {
+    createLocalServicePreviewDetailsTabResolver,
+    type SessionPaneUrlState,
+} from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { useSessionPaneUrlSync } from '@/components/sessions/panes/url/useSessionPaneUrlSync';
 import { SessionResumeProvider } from '@/components/sessions/model/SessionResumeContext';
 import { useSessionResumeRequestListener } from '@/components/sessions/model/sessionResumeRequests';
@@ -254,7 +257,7 @@ import {
     resolveConnectedServiceProfileActionRoute,
 } from '@/components/sessions/connectedServices/actions/resolveConnectedServiceProfileActionRoute';
 import { resolveConnectedServiceUxDiagnosticPresentation } from '@/components/sessions/connectedServices/diagnostics/connectedServiceUxDiagnostics';
-import { listLocalServicePreviewPayloads } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
+import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
 import { tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
 import { useAuth } from '@/auth/context/AuthContext';
@@ -651,6 +654,7 @@ type SessionViewLoadedProps = Readonly<{
     jumpToSeq: number | null;
     participantTargets: readonly SessionParticipantTarget[];
     paneUrlState: SessionPaneUrlState | null;
+    localServicePreviews: readonly LocalServicePreviewV1[];
     initialAttachmentDrafts: readonly AttachmentDraft[] | null;
     paneScopeId: string;
     // Stable per-pane-mount id (NOT keyed by session) used to seed the first-frame content width
@@ -1382,8 +1386,11 @@ export const SessionView = React.memo((props: SessionViewProps) => {
     }, [contentWidthSurfaceId]);
     const { messages: committedMessages } = useSessionMessages(sessionId);
     const localServicePreviews = React.useMemo(
-        () => listLocalServicePreviewPayloads(committedMessages),
-        [committedMessages],
+        () => listLocalServicePreviewPayloadsFromSources({
+            metadata: session?.metadata ?? null,
+            messages: committedMessages,
+        }),
+        [committedMessages, session?.metadata],
     );
     const sessionAutomationsEnabledCount = useSessionAutomationsEnabledCount(sessionId, showAutomations);
 
@@ -1531,6 +1538,7 @@ export const SessionView = React.memo((props: SessionViewProps) => {
                 executionRunsEnabled={executionRunsEnabled}
                 jumpToSeq={props.jumpToSeq ?? null}
                 paneUrlState={props.paneUrlState ?? null}
+                localServicePreviews={localServicePreviews}
                 initialAttachmentDrafts={props.initialAttachmentDrafts ?? null}
                 paneScopeId={paneScopeId}
                 contentWidthSurfaceId={contentWidthSurfaceId}
@@ -1995,6 +2003,7 @@ function SessionViewLoaded({
     jumpToSeq,
     participantTargets,
     paneUrlState,
+    localServicePreviews,
     initialAttachmentDrafts,
     paneScopeId,
     contentWidthSurfaceId,
@@ -2087,6 +2096,10 @@ function SessionViewLoaded({
         issue: session.lastRuntimeIssue ?? null,
         recovery: usageLimitRecovery,
     }), [session.lastRuntimeIssue, usageLimitRecovery]);
+    const localServicePreviewDetailsTabResolver = React.useMemo(
+        () => createLocalServicePreviewDetailsTabResolver(localServicePreviews),
+        [localServicePreviews],
+    );
     const [usageLimitRecoveryNowMs, setUsageLimitRecoveryNowMs] = React.useState(() => nowServerMs());
     const [usageLimitRecoveryOperationStatus, setUsageLimitRecoveryOperationStatus] = React.useState<Readonly<{
         issueFingerprint: string;
@@ -2129,8 +2142,25 @@ function SessionViewLoaded({
         scopeState: pane.scopeState,
         urlState: paneUrlState,
         pane,
+        resolveLocalServicePreviewDetailsTab: localServicePreviewDetailsTabResolver,
         setParams: typeof (router as any)?.setParams === 'function' ? (router as any).setParams.bind(router) : null,
     });
+
+    React.useEffect(() => {
+        if (Platform.OS === 'web') return;
+        if (paneUrlState?.details?.kind !== 'localServicePreview') return;
+
+        const tab = localServicePreviewDetailsTabResolver(paneUrlState.details.resourceId ?? '');
+        if (!tab) return;
+        if (pane.scopeState?.details?.activeTabKey === tab.key) return;
+
+        pane.openDetailsTab(tab, { intent: 'preview' });
+    }, [
+        localServicePreviewDetailsTabResolver,
+        pane,
+        pane.scopeState?.details?.activeTabKey,
+        paneUrlState?.details,
+    ]);
 
     // Session preference: optionally open the right sidebar by default (files tab) when
     // entering a session for the first time on this device.

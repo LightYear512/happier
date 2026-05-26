@@ -4,18 +4,22 @@ import {
     createSessionCommitDetailsTab,
     createSessionDetailsTerminalTab,
     createSessionFileDetailsTab,
+    createSessionLocalServicePreviewDetailsTab,
     createSessionScmReviewDetailsTab,
     createSessionScmStashDetailsTab,
     SESSION_DETAILS_SCM_REVIEW_TAB_KEY,
     SESSION_DETAILS_SCM_STASH_TAB_KEY,
 } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
+import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReducer';
+import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
 
 export type SessionPaneUrlDetailsTarget =
     | Readonly<{ kind: 'file'; path: string }>
     | Readonly<{ kind: 'commit'; sha: string }>
     | Readonly<{ kind: 'scmReview' }>
     | Readonly<{ kind: 'scmStash' }>
-    | Readonly<{ kind: 'terminal' }>;
+    | Readonly<{ kind: 'terminal' }>
+    | Readonly<{ kind: 'localServicePreview'; resourceId?: string }>;
 
 export type SessionPaneUrlState = Readonly<{
     rightTabId?: 'git' | 'files' | 'terminal';
@@ -39,6 +43,10 @@ function readSingleStringParam(params: Readonly<Record<string, unknown>>, key: s
     return null;
 }
 
+function normalizeResourceId(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
 export function parseSessionPaneUrlState(params: Readonly<Record<string, unknown>>): SessionPaneUrlState | null {
     const rightRaw = readSingleStringParam(params, 'right')?.trim() ?? '';
     const rightTabId = rightRaw === 'git' || rightRaw === 'files' || rightRaw === 'terminal' ? rightRaw : null;
@@ -48,6 +56,7 @@ export function parseSessionPaneUrlState(params: Readonly<Record<string, unknown
     const detailsRaw = readSingleStringParam(params, 'details')?.trim() ?? '';
     const pathRaw = readSingleStringParam(params, 'path')?.trim() ?? '';
     const shaRaw = readSingleStringParam(params, 'sha')?.trim() ?? '';
+    const resourceIdRaw = normalizeResourceId(readSingleStringParam(params, 'resourceId') ?? '');
 
     let details: SessionPaneUrlDetailsTarget | null = null;
     if (detailsRaw === 'file' && pathRaw && isSafeWorkspaceRelativePath(pathRaw)) {
@@ -64,6 +73,12 @@ export function parseSessionPaneUrlState(params: Readonly<Record<string, unknown
     }
     if (detailsRaw === 'terminal') {
         details = { kind: 'terminal' };
+    }
+    if (detailsRaw === 'localServicePreview') {
+        details = {
+            kind: 'localServicePreview',
+            ...(resourceIdRaw ? { resourceId: resourceIdRaw } : null),
+        };
     }
 
     if (!rightTabId && !bottomTabId && !details) return null;
@@ -98,6 +113,12 @@ export function serializeSessionPaneUrlState(state: SessionPaneUrlState): Record
     }
     if (state.details?.kind === 'terminal') {
         out.details = 'terminal';
+    }
+    if (state.details?.kind === 'localServicePreview') {
+        out.details = 'localServicePreview';
+        if (state.details.resourceId) {
+            out.resourceId = state.details.resourceId;
+        }
     }
     return out;
 }
@@ -140,6 +161,12 @@ export function buildActiveDetailsRouteParams(
         return serializeSessionPaneUrlState({ details: { kind: 'terminal' } });
     }
 
+    if (activeTab.kind === 'localServicePreview') {
+        const resourceId = normalizeResourceId(typeof activeTab.resource?.resourceId === 'string' ? activeTab.resource.resourceId : '');
+        if (!resourceId) return {};
+        return serializeSessionPaneUrlState({ details: { kind: 'localServicePreview', resourceId } });
+    }
+
     return {};
 }
 
@@ -179,6 +206,11 @@ export function deriveSessionPaneUrlStateFromScopeState(scopeState: PaneScopeSta
             details = { kind: 'scmStash' };
         } else if (tab?.key === SESSION_DETAILS_TERMINAL_TAB_KEY || tab?.kind === 'terminal') {
             details = { kind: 'terminal' };
+        } else if (tab?.kind === 'localServicePreview') {
+            const resourceId = normalizeResourceId((tab.resource as { resourceId?: unknown })?.resourceId);
+            if (resourceId) {
+                details = { kind: 'localServicePreview', resourceId };
+            }
         }
     }
 
@@ -198,7 +230,10 @@ export function applySessionPaneUrlState(
         setBottomTab: (tabId: string) => void;
         openDetailsTab: (tab: any, options?: any) => void;
     }>,
-    state: SessionPaneUrlState
+    state: SessionPaneUrlState,
+    options: Readonly<{
+        resolveLocalServicePreviewDetailsTab?: (resourceId: string) => DetailsTab | null;
+    }> = {},
 ): void {
     if (state.rightTabId) {
         pane.openRight({ tabId: state.rightTabId });
@@ -234,6 +269,14 @@ export function applySessionPaneUrlState(
 
     if (state.details?.kind === 'scmStash') {
         pane.openDetailsTab(createSessionScmStashDetailsTab(), { intent: 'pinned' });
+        return;
+    }
+
+    if (state.details?.kind === 'localServicePreview') {
+        const tab = options.resolveLocalServicePreviewDetailsTab?.(state.details.resourceId ?? '') ?? null;
+        if (tab) {
+            pane.openDetailsTab(tab, { intent: 'preview' });
+        }
     }
 }
 
@@ -248,7 +291,10 @@ export function reconcileSessionPaneScopeFromUrlState(
         openDetailsTab: (tab: any, options?: any) => void;
         closeDetails: () => void;
     }>,
-    state: SessionPaneUrlState | null
+    state: SessionPaneUrlState | null,
+    options: Readonly<{
+        resolveLocalServicePreviewDetailsTab?: (resourceId: string) => DetailsTab | null;
+    }> = {},
 ): void {
     if (state?.rightTabId) {
         pane.openRight({ tabId: state.rightTabId });
@@ -265,8 +311,20 @@ export function reconcileSessionPaneScopeFromUrlState(
     }
 
     if (state?.details) {
-        applySessionPaneUrlState(pane, { details: state.details });
+        applySessionPaneUrlState(pane, { details: state.details }, options);
     } else {
         pane.closeDetails();
     }
+}
+
+export function createLocalServicePreviewDetailsTabResolver(
+    previews: readonly LocalServicePreviewV1[],
+): (resourceId: string) => DetailsTab | null {
+    return (resourceId: string) => {
+        const normalizedResourceId = normalizeResourceId(resourceId);
+        const preview = normalizedResourceId
+            ? previews.find((candidate) => candidate.resourceId === normalizedResourceId) ?? null
+            : previews[0] ?? null;
+        return preview ? createSessionLocalServicePreviewDetailsTab(preview) : null;
+    };
 }

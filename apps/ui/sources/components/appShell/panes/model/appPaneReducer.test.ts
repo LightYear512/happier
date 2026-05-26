@@ -5,6 +5,15 @@ function createFileTab(path: string) {
     return { key: `file:${path}`, kind: 'file', title: path.split('/').at(-1) ?? path, resource: { path } };
 }
 
+function createLocalServicePreviewTab(resourceId: string) {
+    return {
+        key: `localServicePreview:${resourceId}`,
+        kind: 'localServicePreview',
+        title: resourceId,
+        resource: { kind: 'localServicePreview', resourceId },
+    };
+}
+
 describe('appPaneReduce', () => {
     it('creates and activates scopes, keeping an LRU order', () => {
         let state = createAppPaneState({ maxScopesInMemory: 3 });
@@ -73,6 +82,44 @@ describe('appPaneReduce', () => {
             ['file:a.txt', true, false],
         ]);
         expect(state.scopes['session:1']?.details.activeTabKey).toBe('file:a.txt');
+    });
+
+    it('keeps local service preview tabs separate from the file preview slot', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:1' });
+
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createLocalServicePreviewTab('preview_1'), openAs: 'preview' });
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createLocalServicePreviewTab('preview_2'), openAs: 'preview' });
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createFileTab('a.txt'), openAs: 'preview' });
+
+        expect(state.scopes['session:1']?.details.tabs.map((t) => [t.key, t.isPreview, t.isPinned])).toEqual([
+            ['localServicePreview:preview_1', true, false],
+            ['localServicePreview:preview_2', true, false],
+            ['file:a.txt', true, false],
+        ]);
+
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createFileTab('b.txt'), openAs: 'preview' });
+
+        expect(state.scopes['session:1']?.details.tabs.map((t) => [t.key, t.isPreview, t.isPinned])).toEqual([
+            ['localServicePreview:preview_1', true, false],
+            ['localServicePreview:preview_2', true, false],
+            ['file:b.txt', true, false],
+        ]);
+    });
+
+    it('unpins local service preview tabs without removing other local previews', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:1' });
+
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createLocalServicePreviewTab('preview_1'), openAs: 'preview' });
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createLocalServicePreviewTab('preview_2'), openAs: 'pinned' });
+        state = appPaneReduce(state, { type: 'unpinDetailsTab', scopeId: 'session:1', tabKey: 'localServicePreview:preview_2' });
+
+        expect(state.scopes['session:1']?.details.tabs.map((t) => [t.key, t.isPreview, t.isPinned])).toEqual([
+            ['localServicePreview:preview_1', true, false],
+            ['localServicePreview:preview_2', true, false],
+        ]);
+        expect(state.scopes['session:1']?.details.activeTabKey).toBe('localServicePreview:preview_2');
     });
 
     it('evicts least-recently-used scopes beyond the max', () => {

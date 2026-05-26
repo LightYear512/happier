@@ -117,7 +117,11 @@ installSessionDetailsPanelCommonModuleMocks({
 });
 
 vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}), eyebrow: () => ({}), keyHint: () => ({}) },
+    Typography: {
+        default: () => ({}),
+        eyebrow: () => ({}),
+        keyHint: () => ({}),
+    },
 }));
 
 vi.mock('@/components/sessions/files/views/SessionCommitDetailsView', () => ({
