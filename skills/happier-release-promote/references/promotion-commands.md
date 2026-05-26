@@ -5,7 +5,7 @@
 ```bash
 node scripts/pipeline/run.mjs release \
   --confirm "release dev to preview" \
-  --repository happier-dev/happier \
+  --repository LightYear512/happier \
   --deploy-environment preview \
   --deploy-targets ui,server,website,docs,cli,server_runner \
   --bump none \
@@ -19,7 +19,7 @@ Ask for explicit human approval immediately before removing `--dry-run`.
 ```bash
 node scripts/pipeline/run.mjs release \
   --confirm "release dev to preview" \
-  --repository happier-dev/happier \
+  --repository LightYear512/happier \
   --deploy-environment preview \
   --deploy-targets ui,server,website,docs,cli,server_runner \
   --bump none
@@ -34,7 +34,7 @@ Production dry-run:
 ```bash
 node scripts/pipeline/run.mjs release \
   --confirm "release preview to main" \
-  --repository happier-dev/happier \
+  --repository LightYear512/happier \
   --deploy-environment production \
   --deploy-targets ui,server,website,docs,cli,server_runner \
   --bump none \

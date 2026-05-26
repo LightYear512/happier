@@ -42,6 +42,34 @@ Persist until the task is fully handled end-to-end within the current turn whene
 Unless the user explicitly asks for a plan, asks a question about the code, is brainstorming potential solutions, or some other intent that makes it clear that code should not be written, assume the user wants you to make code changes or run tools to solve the user's problem. In these cases, it's bad to output your proposed solution in a message, you should go ahead and actually implement the change. If you encounter challenges or blockers, you should attempt to resolve them yourself.
 </autonomy_and_persistence>
 
+<repo_local_skills>
+## Repo-Local Skills (Mandatory)
+
+This repository keeps project-specific skills under `skills/<skill-name>/SKILL.md`.
+Codex does not automatically load this bare repo-local `skills/` directory like Claude's `.claude/skills`; treat this section as the project skill registry.
+
+At the start of any task that matches one of these domains, read the matching `SKILL.md` before planning or executing:
+- Release validation: `skills/happier-release-validation/SKILL.md`
+- Release validation review: `skills/happier-release-validation-review/SKILL.md`
+- Release promotion/publishing: `skills/happier-release-promote/SKILL.md`
+- Release notes: `skills/happier-release-notes/SKILL.md`
+- Happier diagnosis/debugging: `skills/happier-diagnose/SKILL.md`
+- GitHub bot operations: `skills/happier-github-ops/SKILL.md`
+- Session control via Happier CLI: `skills/happier-session-control/SKILL.md`
+- Repo-specific testing/TDD workflow: `skills/happier-testing/SKILL.md`
+
+Skill instructions are scoped to this repository. Do not copy or symlink these project skills into global Codex skill directories unless the user explicitly asks.
+
+### Fork-Safe Release Rule
+
+For release, promotion, GitHub release, npm, Docker, Expo, or deploy work in a fork:
+- Never rely on hardcoded upstream repository values such as `happier-dev/happier`.
+- Default to the current fork repository `LightYear512/happier` for this checkout.
+- If the local `origin` remote points at a different fork, resolve the GitHub repository from `git remote get-url origin`, or use the repository explicitly provided by the user.
+- Pass the resolved repository explicitly to release commands (for example `--repository <owner>/<repo>`, and `GH_REPO` / `GITHUB_REPOSITORY` when the called tooling reads those env vars).
+- Run the canonical dry-run first, summarize the planned side effects, and ask for explicit approval before any non-dry-run release/publish/deploy command.
+</repo_local_skills>
+
 <mandatory_critical_testing_rules>
 ## TDD Principles
 
