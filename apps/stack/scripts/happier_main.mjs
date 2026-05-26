@@ -20,6 +20,9 @@ import { resolveCliRuntimeLaunchSpec } from './runtime/launch/resolveCliRuntimeL
 import { resolveJavaScriptRuntimeCommand } from '@happier-dev/cli-common/providers/managedJavaScriptRuntime';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 
+const HOSTED_SERVER_URL = 'https://api.happier.dev';
+const HOSTED_WEBAPP_URL = 'https://app.happier.dev';
+
 function isNodeRuntimeEntrypoint(entrypoint) {
   return /\.(?:cjs|js|mjs)$/i.test(String(entrypoint ?? '').trim());
 }
@@ -446,8 +449,8 @@ async function main() {
       env.HAPPIER_SERVER_URL = internalServerUrl;
       env.HAPPIER_WEBAPP_URL = publicServerUrl;
     } else {
-      env.HAPPIER_SERVER_URL = env.HAPPIER_SERVER_URL || internalServerUrl;
-      env.HAPPIER_WEBAPP_URL = env.HAPPIER_WEBAPP_URL || publicServerUrl;
+      env.HAPPIER_SERVER_URL = env.HAPPIER_SERVER_URL || HOSTED_SERVER_URL;
+      env.HAPPIER_WEBAPP_URL = env.HAPPIER_WEBAPP_URL || HOSTED_WEBAPP_URL;
     }
   }
   if (resolvedCli.kind === 'tsx') {
@@ -467,7 +470,7 @@ async function main() {
     } else {
       delete env.HAPPIER_ACTIVE_SERVER_ID;
     }
-  } else if (!settingsDefaults) {
+  } else if (isStackScopedInvocation && !settingsDefaults) {
     env = applyStackActiveServerScopeEnv({
       env,
       stackName,
