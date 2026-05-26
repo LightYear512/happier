@@ -188,7 +188,9 @@ async function main() {
     env: envWithStackDefaults,
     resolveUserHomeDir,
   });
-  assertCargoAvailableForTauri({ env: runtimeEnv, resolveUserHomeDir });
+  if (!json) {
+    assertCargoAvailableForTauri({ env: runtimeEnv, resolveUserHomeDir });
+  }
   if (String(runtimeEnv.HAPPIER_STACK_TUI ?? '').trim() === '1') {
     const pathEntries = String(runtimeEnv.PATH ?? '')
       .split(process.platform === 'win32' ? ';' : ':')
@@ -263,6 +265,7 @@ async function main() {
       configPath,
       configOverride,
       resolveUserHomeDir,
+      requireCargo: false,
     });
     printResult({
       json,

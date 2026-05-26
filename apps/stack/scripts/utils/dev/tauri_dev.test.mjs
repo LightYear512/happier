@@ -68,6 +68,7 @@ test('buildStackTauriDevProcessInvocation launches tauri from apps/ui/src-tauri 
         devUrl: 'http://localhost:8081',
       },
     },
+    requireCargo: false,
   });
 
   assert.equal(invocation.command, process.execPath);
@@ -103,6 +104,7 @@ test('buildStackTauriDevProcessInvocation scopes the cargo target directory to t
         devUrl: 'http://localhost:8081',
       },
     },
+    requireCargo: false,
   });
 
   assert.equal(
@@ -131,6 +133,7 @@ test('buildStackTauriDevProcessInvocation uses the explicitly resolved UI dir ev
         devUrl: 'http://localhost:8081',
       },
     },
+    requireCargo: false,
   });
 
   assert.equal(invocation.cwd, join(explicitUiDir, 'src-tauri'));
