@@ -123,11 +123,11 @@ installSessionRouteCommonModuleMocks({
                 } as any,
                 useSessions: () => (storageFixture.isStorageDataReady ? [] : null),
                 useSession: (id: string) => storageFixture.sessionById[id] ?? null,
-                useSessionRpcAvailabilityState: (id: string) => ({
-                    sessionExists: Boolean(storageFixture.sessionById[id]),
+                useSessionRpcAvailabilityState: (id: string | null) => ({
+                    sessionExists: Boolean(id ? storageFixture.sessionById[id] : null),
                     sessionRpcAvailable: true,
                 }),
-                useSessionWorkspacePath: (id: string) => storageFixture.sessionById[id]?.metadata?.path ?? null,
+                useSessionWorkspacePath: (id: string | null) => (id ? storageFixture.sessionById[id]?.metadata?.path ?? null : null),
                 useSessionProjectScmInFlightOperation: () => null,
                 // Narrow test fixture: this route only reads repo/branch/totals from the snapshot.
                 useSessionProjectScmSnapshot: (() => ({

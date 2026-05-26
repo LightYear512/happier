@@ -543,6 +543,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                         { paddingRight: showPinAction ? 52 : 34 },
                                     ]}
                                     accessibilityRole="button"
+                                    accessibilityState={{ selected: isActive }}
                                     accessibilityLabel={t('session.detailsPanel.openTabA11y', { title: tab.title })}
                                 >
                                     {tab.kind === 'file' ? (

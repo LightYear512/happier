@@ -113,12 +113,7 @@ describe('SessionDetailsPanel (active tab fallback)', () => {
         expect(firstTab).toBeTruthy();
         expect(secondTab).toBeTruthy();
 
-        const firstStyles = firstTab?.props.style;
-        const secondStyles = secondTab?.props.style;
-
-        const hasSurfaceHighBg = (styleProp: any) =>
-            Array.isArray(styleProp) && styleProp.some((s: any) => s && s.backgroundColor === '#f5f5f5');
-        expect(hasSurfaceHighBg(firstStyles)).toBe(false);
-        expect(hasSurfaceHighBg(secondStyles)).toBe(true);
+        expect(firstTab?.props.accessibilityState?.selected).toBe(false);
+        expect(secondTab?.props.accessibilityState?.selected).toBe(true);
     });
 });

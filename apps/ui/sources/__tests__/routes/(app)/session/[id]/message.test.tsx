@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
+import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 import type { SessionParticipantTarget } from '@/sync/domains/session/participants/participantTargets';
 import type { DeferredPromise } from './testUtils/deferredPromise';
 import { createDeferredPromise } from './testUtils/deferredPromise';
@@ -87,6 +88,7 @@ installSessionRouteCommonModuleMocks({
   },
   storageModule: async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
     return createStorageModuleMock({
       importOriginal,
       overrides: {
@@ -100,7 +102,7 @@ installSessionRouteCommonModuleMocks({
         useSessionTranscriptIds: () => ({ ids: [], isLoaded: mockMessagesLoaded }),
         useMessage: (_sessionId: string, messageId: string) => mockMessagesById[messageId] ?? mockMessage,
         useResolvedSessionMessageRouteId: (_sessionId: string, _routeMessageId: string) => mockResolvedRouteMessageId,
-        useLocalSetting: () => true,
+        useLocalSetting: <K extends keyof LocalSettings>(name: K): LocalSettings[K] => localSettingsDefaults[name],
       },
     });
   },
