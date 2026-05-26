@@ -31,11 +31,12 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', async () => {
 describe('FilesToolbar', () => {
     const theme = {
         colors: {
+            border: { default: '#000' },
             divider: '#000',
             input: { background: '#111', placeholder: '#999' },
-            surface: '#222',
+            surface: { base: '#222', elevated: '#333', inset: '#222' },
             surfaceHigh: '#333',
-            text: '#eee',
+            text: { primary: '#eee', secondary: '#aaa' },
             textSecondary: '#aaa',
         },
     };
@@ -49,7 +50,7 @@ describe('FilesToolbar', () => {
         const onToggleScmPanel = vi.fn();
 
         const screen = await renderScreen(<FilesToolbar
-            theme={theme}
+            theme={theme as any}
             searchQuery=""
             onSearchQueryChange={vi.fn()}
             showAllRepositoryFiles={false}
@@ -95,7 +96,7 @@ describe('FilesToolbar', () => {
         const { FilesToolbar } = await import('./FilesToolbar');
 
         const screen = await renderScreen(<FilesToolbar
-            theme={theme}
+            theme={theme as any}
             searchQuery=""
             onSearchQueryChange={vi.fn()}
             showAllRepositoryFiles={false}

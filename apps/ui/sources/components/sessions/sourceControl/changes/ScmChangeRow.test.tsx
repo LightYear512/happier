@@ -3,6 +3,7 @@ import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { Pressable as RNPressable } from 'react-native';
 import { renderScreen } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { installSourceControlChangesCommonModuleMocks } from './sourceControlChangesTestHelpers';
 
 
@@ -32,6 +33,36 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
+function createScmChangeRowTheme() {
+    return createThemeFixture({
+        colors: {
+            surface: {
+                base: '#fff',
+                inset: '#f8f8f8',
+                elevated: '#fff',
+                selected: '#eef',
+            },
+            surfaceHigh: '#f8f8f8',
+            border: { default: '#ddd', surface: '#ddd' },
+            divider: '#ddd',
+            text: {
+                primary: '#111',
+                secondary: '#666',
+                tertiary: '#777',
+                link: '#09f',
+                destructive: '#a00',
+            },
+            textSecondary: '#666',
+            textLink: '#09f',
+            state: {
+                success: { foreground: '#0a0' },
+                neutral: { foreground: '#b60' },
+                danger: { foreground: '#a00' },
+            },
+        },
+    });
+}
+
 describe('ScmChangeRow', () => {
   it('renders change stats and calls onPress', async () => {
     const onPress = vi.fn();
@@ -39,19 +70,7 @@ describe('ScmChangeRow', () => {
 
     let tree!: renderer.ReactTestRenderer;
     tree = (await renderScreen(<ScmChangeRow
-          theme={{
-            colors: {
-              surface: '#fff',
-              surfaceHigh: '#f8f8f8',
-              divider: '#ddd',
-              text: '#111',
-              textSecondary: '#666',
-              success: '#0a0',
-              danger: '#a00',
-              warning: '#b60',
-              info: '#09f',
-            },
-          } as any}
+          theme={createScmChangeRowTheme() as any}
           file={{
             fileName: 'a.ts',
             filePath: 'src',
@@ -84,19 +103,7 @@ describe('ScmChangeRow', () => {
 
   it('renders untracked files as added (A) for consistency with file tree badges', async () => {
     const { ScmChangeRow } = await import('./ScmChangeRow');
-    const theme = {
-      colors: {
-        surface: '#fff',
-        surfaceHigh: '#f8f8f8',
-        divider: '#ddd',
-        text: '#111',
-        textSecondary: '#666',
-        success: '#0a0',
-        danger: '#a00',
-        warning: '#b60',
-        info: '#09f',
-      },
-    } as any;
+    const theme = createScmChangeRowTheme() as any;
 
     let tree!: renderer.ReactTestRenderer;
     tree = (await renderScreen(<ScmChangeRow
@@ -119,19 +126,7 @@ describe('ScmChangeRow', () => {
 
   it('normalizes leading slashes in file names (prevents "/file" rendering in root paths)', async () => {
     const { ScmChangeRow } = await import('./ScmChangeRow');
-    const theme = {
-      colors: {
-        surface: '#fff',
-        surfaceHigh: '#f8f8f8',
-        divider: '#ddd',
-        text: '#111',
-        textSecondary: '#666',
-        success: '#0a0',
-        danger: '#a00',
-        warning: '#b60',
-        info: '#09f',
-      },
-    } as any;
+    const theme = createScmChangeRowTheme() as any;
 
     let tree!: renderer.ReactTestRenderer;
     tree = (await renderScreen(<ScmChangeRow
@@ -159,19 +154,7 @@ describe('ScmChangeRow', () => {
 
   it('renders nested paths with the web start-ellipsis wrapper so filenames keep priority', async () => {
     const { ScmChangeRow } = await import('./ScmChangeRow');
-    const theme = {
-      colors: {
-        surface: '#fff',
-        surfaceHigh: '#f8f8f8',
-        divider: '#ddd',
-        text: '#111',
-        textSecondary: '#666',
-        success: '#0a0',
-        danger: '#a00',
-        warning: '#b60',
-        info: '#09f',
-      },
-    } as any;
+    const theme = createScmChangeRowTheme() as any;
 
     const screen = await renderScreen(<ScmChangeRow
           theme={theme}
@@ -206,19 +189,7 @@ describe('ScmChangeRow', () => {
 
   it('reserves the provided change stats column width', async () => {
     const { ScmChangeRow } = await import('./ScmChangeRow');
-    const theme = {
-      colors: {
-        surface: '#fff',
-        surfaceHigh: '#f8f8f8',
-        divider: '#ddd',
-        text: '#111',
-        textSecondary: '#666',
-        success: '#0a0',
-        danger: '#a00',
-        warning: '#b60',
-        info: '#09f',
-      },
-    } as any;
+    const theme = createScmChangeRowTheme() as any;
 
     const screen = await renderScreen(<ScmChangeRow
           theme={theme}
@@ -244,19 +215,7 @@ describe('ScmChangeRow', () => {
 
   it('uses surfaceHigh background when highlighted', async () => {
     const { ScmChangeRow } = await import('./ScmChangeRow');
-    const theme = {
-      colors: {
-        surface: '#fff',
-        surfaceHigh: '#f8f8f8',
-        divider: '#ddd',
-        text: '#111',
-        textSecondary: '#666',
-        success: '#0a0',
-        danger: '#a00',
-        warning: '#b60',
-        info: '#09f',
-      },
-    } as any;
+    const theme = createScmChangeRowTheme() as any;
 
     let tree!: renderer.ReactTestRenderer;
     tree = (await renderScreen(<ScmChangeRow
@@ -287,19 +246,7 @@ describe('ScmChangeRow', () => {
     const onPressPinned = vi.fn();
     const onToggleSelection = vi.fn();
     const { ScmChangeRow } = await import('./ScmChangeRow');
-    const theme = {
-      colors: {
-        surface: '#fff',
-        surfaceHigh: '#f8f8f8',
-        divider: '#ddd',
-        text: '#111',
-        textSecondary: '#666',
-        success: '#0a0',
-        danger: '#a00',
-        warning: '#b60',
-        info: '#09f',
-      },
-    } as any;
+    const theme = createScmChangeRowTheme() as any;
 
     let tree!: renderer.ReactTestRenderer;
     tree = (await renderScreen(<ScmChangeRow

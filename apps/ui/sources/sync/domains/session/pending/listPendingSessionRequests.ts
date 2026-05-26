@@ -395,10 +395,6 @@ export function derivePendingRequestFlagsFromSession(
         return EMPTY_PENDING_REQUEST_FLAGS;
     }
 
-    if (hasProjectedPendingRequestCounts(session) && !hasPendingAgentRequests(session)) {
-        return readProjectedPendingRequestFlags(session);
-    }
-
     const transcriptStates = getTranscriptRequestStates(session, messages);
     if (shouldUseProjectedPendingRequestCounts(session, transcriptStates)) {
         return readProjectedPendingRequestFlags(session);

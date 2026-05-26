@@ -147,7 +147,14 @@ installSessionFilesViewCommonModuleMocks({
                             serverId: 'server-1',
                         },
                     } : {},
-                    machines: {},
+                    machines: {
+                        'machine-1': {
+                            id: 'machine-1',
+                            active: true,
+                            activeAt: 1,
+                            metadata: { host: 'tester.local' },
+                        },
+                    },
                     sessionListViewDataByServerId: {},
                     getProjectForSession: () => null,
                     upsertWorkspaceReviewCommentDraft: () => {},
@@ -156,6 +163,12 @@ installSessionFilesViewCommonModuleMocks({
             } as any,
             useSessions: () => sessionsMock,
             useSession: () => sessionMock,
+            useSessionRpcAvailabilityState: () => ({
+                sessionExists: sessionMock !== null,
+                rpcAvailable: sessionMock !== null,
+                reason: null,
+            }),
+            useSessionWorkspacePath: () => sessionMock?.metadata?.path ?? null,
             useProjectForSession: () => null,
             useSessionProjectScmSnapshot: () => stableSnapshot,
             useSessionProjectScmInFlightOperation: () => null,

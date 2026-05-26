@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { StyleSheet } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -88,6 +89,8 @@ vi.mock('@/components/ui/text/Text', () => ({
 vi.mock('@/constants/Typography', () => ({
     Typography: {
         default: () => ({}),
+        eyebrow: () => ({}),
+        keyHint: () => ({}),
         mono: () => ({}),
     },
 }));
@@ -302,7 +305,7 @@ describe('SessionRightPanel git sub-tabs', () => {
         expect(loadCommitHistorySpy).not.toHaveBeenCalled();
     });
 
-    it('shows commit surface by default and hides it on update/history', async () => {
+    it('shows commit surface by default and hides visited sub-tabs on update/history', async () => {
         const { SessionRightPanel } = await import('./SessionRightPanel');
 
         let observedState: any = null;
@@ -349,11 +352,11 @@ describe('SessionRightPanel git sub-tabs', () => {
             </AppPaneProvider>,
         );
         const getOpacity = (node: renderer.ReactTestInstance) => {
-            const style = node.props.style;
-            const styles = Array.isArray(style) ? style : [style];
-            for (const entry of styles) {
-                if (entry && typeof entry === 'object' && 'opacity' in entry) {
-                    return (entry as any).opacity;
+            const candidates = [node, ...node.findAll((child) => child.props.style != null)];
+            for (const candidate of candidates) {
+                const style = StyleSheet.flatten(candidate.props.style);
+                if (style?.opacity !== undefined) {
+                    return style.opacity;
                 }
             }
             return undefined;
@@ -366,15 +369,15 @@ describe('SessionRightPanel git sub-tabs', () => {
         expect(updateSurface).toBeTruthy();
         expect(historySurface).toBeTruthy();
         expect(getOpacity(commitSurface!)).toBe(1);
-        expect(getOpacity(updateSurface!)).toBe(0);
-        expect(getOpacity(historySurface!)).toBe(0);
+        expect(getOpacity(updateSurface!)).toBeUndefined();
+        expect(getOpacity(historySurface!)).toBeUndefined();
 
         await screen.pressByTestIdAsync('session-rightpanel-git-subtab:update');
 
         expect(observedState?.scopes?.['session:s1']?.right?.tabState?.git?.activeSubTabId).toBe('update');
         expect(getOpacity(commitSurface!)).toBe(0);
         expect(getOpacity(updateSurface!)).toBe(1);
-        expect(getOpacity(historySurface!)).toBe(0);
+        expect(getOpacity(historySurface!)).toBeUndefined();
 
         await screen.pressByTestIdAsync('session-rightpanel-git-subtab:history');
 

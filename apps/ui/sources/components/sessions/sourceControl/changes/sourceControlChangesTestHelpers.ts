@@ -88,6 +88,8 @@ export function installSourceControlChangesCommonModuleMocks(
         return {
             Typography: {
                 default: () => ({}),
+                eyebrow: () => ({}),
+                keyHint: () => ({}),
                 mono: () => ({}),
             },
         };

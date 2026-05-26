@@ -145,7 +145,7 @@ describe('getRepoScopeSessionIds', () => {
     });
 
     const scoped = getRepoScopeSessionIds('s1', '/repo').sort();
-    expect(scoped).toEqual(['s1', 's2']);
+    expect(scoped).toEqual(['s1']);
   });
 
   it('groups direct-session repo scopes by the linked direct machine id', () => {

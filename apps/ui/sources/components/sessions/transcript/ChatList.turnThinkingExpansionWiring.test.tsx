@@ -145,6 +145,25 @@ describe('ChatList (turn thinking expansion wiring)', () => {
       isLoaded: true,
       messages: [initialUserMessage, initialAgentMessage],
     };
+    legacyChatListHarnessState.forkedTranscriptSnapshot = {
+      combinedMessageIdsOldestFirst: [initialUserMessage.id, initialAgentMessage.id],
+      combinedMessagesById: {
+        [initialUserMessage.id]: initialUserMessage,
+        [initialAgentMessage.id]: initialAgentMessage,
+      },
+      messageOriginById: {
+        [initialUserMessage.id]: { sessionId: 'session-1', isReadOnlyContext: false },
+        [initialAgentMessage.id]: { sessionId: 'session-1', isReadOnlyContext: false },
+      },
+      segments: [
+        {
+          sessionId: 'session-1',
+          isReadOnlyContext: false,
+          cutoffSeqInclusive: null,
+          messageIdsOldestFirst: [initialUserMessage.id, initialAgentMessage.id],
+        },
+      ],
+    };
     buildChatListItemsMock.mockReturnValue([
       { kind: 'message', id: initialUserMessage.id, messageId: initialUserMessage.id, createdAt: initialUserMessage.createdAt, seq: null },
       { kind: 'message', id: initialAgentMessage.id, messageId: initialAgentMessage.id, createdAt: initialAgentMessage.createdAt, seq: null },
@@ -161,6 +180,25 @@ describe('ChatList (turn thinking expansion wiring)', () => {
     legacyChatListHarnessState.sessionMessagesState = {
       isLoaded: true,
       messages: [updatedUserMessage, updatedAgentMessage],
+    };
+    legacyChatListHarnessState.forkedTranscriptSnapshot = {
+      combinedMessageIdsOldestFirst: [updatedUserMessage.id, updatedAgentMessage.id],
+      combinedMessagesById: {
+        [updatedUserMessage.id]: updatedUserMessage,
+        [updatedAgentMessage.id]: updatedAgentMessage,
+      },
+      messageOriginById: {
+        [updatedUserMessage.id]: { sessionId: 'session-1', isReadOnlyContext: false },
+        [updatedAgentMessage.id]: { sessionId: 'session-1', isReadOnlyContext: false },
+      },
+      segments: [
+        {
+          sessionId: 'session-1',
+          isReadOnlyContext: false,
+          cutoffSeqInclusive: null,
+          messageIdsOldestFirst: [updatedUserMessage.id, updatedAgentMessage.id],
+        },
+      ],
     };
 
     await act(async () => {

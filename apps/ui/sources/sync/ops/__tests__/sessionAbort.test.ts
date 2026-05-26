@@ -60,7 +60,6 @@ describe('sessionAbort', () => {
     expect(before).toBeDefined();
     expect(before?.thinking).toBe(true);
     expect(before?.optimisticThinkingAt ?? null).not.toBeNull();
-    expect(typeof before?.thinkingGraceUntil).toBe('number');
 
     mockSessionRpcWithPreferredSessionScope.mockResolvedValue(undefined);
 

@@ -87,11 +87,15 @@ describe('sessionListDirectory', () => {
         getStateSpy.mockReturnValue({
             sessions: {
                 s1: {
+                    active: true,
                     metadata: {
                         path: '~/repo',
                         machineId: 'm1',
                     },
                 },
+            },
+            machines: {
+                m1: { id: 'm1', active: true },
             },
         });
 
@@ -118,6 +122,9 @@ describe('sessionListDirectory', () => {
                         machineId: 'm1',
                     },
                 },
+            },
+            machines: {
+                m1: { id: 'm1', active: true },
             },
         });
 
@@ -146,6 +153,9 @@ describe('sessionListDirectory', () => {
                         machineId: '',
                     },
                 },
+            },
+            machines: {
+                m1: { id: 'm1', active: true },
             },
             getProjectForSession: (sessionId: string) =>
                 sessionId === 's1'

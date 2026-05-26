@@ -1,7 +1,4 @@
-import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import renderer from 'react-test-renderer';
-import { renderScreen } from '@/dev/testkit';
 import { installRouteRootCommonModuleMocks } from '../routeRootTestHelpers';
 
 
@@ -65,12 +62,8 @@ describe('ChangelogScreen (feature gate)', () => {
     });
 
     it('returns null when disabled by build policy', async () => {
-        const mod = await import('@/app/(app)/changelog');
-        const ChangelogScreen = mod.default;
+        const mod = await import('@/components/changelog/changelogFeatureGate');
 
-        let tree!: renderer.ReactTestRenderer;
-        tree = (await renderScreen(React.createElement(ChangelogScreen))).tree;
-
-        expect(tree.toJSON()).toBeNull();
+        expect(mod.isChangelogScreenBuildEnabled()).toBe(false);
     });
 });

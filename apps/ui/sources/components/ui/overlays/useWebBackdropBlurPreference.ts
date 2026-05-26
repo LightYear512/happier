@@ -13,6 +13,8 @@ export function useWebBackdropBlurPreference(): void {
         if (typeof document === 'undefined') return;
 
         const root = document.documentElement;
+        if (!root?.dataset) return;
+
         const nextValue = enabled ? 'on' : 'off';
         const previousValue = root.dataset[WEB_BACKDROP_DATASET_KEY];
 

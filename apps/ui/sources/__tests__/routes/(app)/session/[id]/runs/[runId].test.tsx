@@ -241,7 +241,7 @@ vi.mock('@/sync/ops/machineExecutionRuns', () => ({
     machineExecutionRunsList: (...args: MachineExecutionRunsListArgs) => machineExecutionRunsListSpy(...args),
 }));
 
-vi.mock('@/components/ui/layout/layout', () => ({ layout: { maxWidth: 999 } }));
+vi.mock('@/components/ui/layout/layout', () => ({ layout: { maxWidth: 999 }, useLayoutMaxWidth: () => 999 }));
 vi.mock('@/components/sessions/transcript/details/SessionMessageDetailsView', () => ({
     SessionMessageDetailsView: () => React.createElement('SessionMessageDetailsView'),
 }));
@@ -278,6 +278,13 @@ describe('Session Run Details Screen', () => {
         const screen = await renderScreen(React.createElement(SessionRunDetailsScreen));
         await flushHookEffects();
         return screen;
+    }
+
+    function findLoadingIndicators(screen: Awaited<ReturnType<typeof renderRunDetailsScreen>>) {
+        return [
+            ...screen.findAllByType('ActivityIndicator' as any),
+            ...screen.tree.root.findAll((node) => node.props.accessibilityRole === 'progressbar'),
+        ];
     }
 
     it('configures the run details header and constrains the content width', async () => {
@@ -326,7 +333,7 @@ describe('Session Run Details Screen', () => {
     it('renders invalid-link fallback when the run id param is missing', async () => {
         localSearchParamsMock = { id: 'session-1' };
         const screen = await renderRunDetailsScreen();
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(findLoadingIndicators(screen)).toHaveLength(0);
         expect(screen.findByTestId('session-invalid-link')).toBeTruthy();
     });
 
@@ -334,7 +341,7 @@ describe('Session Run Details Screen', () => {
         hydrateReady = false;
         localSearchParamsMock = { id: 'session-1', runId: 'run_1', serverId: 'server-b' };
         const screen = await renderRunDetailsScreen();
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(1);
+        expect(findLoadingIndicators(screen)).toHaveLength(1);
         expect(getRunSpy).not.toHaveBeenCalled();
         expect(hydrateSpy).toHaveBeenCalledWith('session-1', 'SessionRunDetailsScreen.hydrate', { serverId: 'server-b' });
     });
@@ -343,7 +350,7 @@ describe('Session Run Details Screen', () => {
         hydrateReady = false;
         localSearchParamsMock = {};
         const screen = await renderRunDetailsScreen();
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(1);
+        expect(findLoadingIndicators(screen)).toHaveLength(1);
         expect(screen.findAllByTestId('session-invalid-link')).toHaveLength(0);
     });
 

@@ -73,6 +73,7 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useLocalSetting,
         useLocalSettingMutable,
         useSessionMessages: () => ({ messages: [], isLoaded: true } as const),
+        useSessionSubagentSourceMessages: () => [],
         useSessionMessagesVersion: () => 0,
         useSessionsReady: () => true,
         useSessionRpcAvailabilityState: () => ({
@@ -97,6 +98,7 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useSessionWorkspacePath: () => null,
         useMachineListByServerId: () => ({}),
         useMachineListStatusByServerId: () => ({}),
+        getStorage: () => store,
     } satisfies Partial<StorageModule>;
 
     // Stub helpers intentionally allow partial boundary-shaped fixtures without forcing

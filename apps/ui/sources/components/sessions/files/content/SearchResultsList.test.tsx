@@ -67,13 +67,25 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
+const searchResultsTheme = {
+    colors: {
+        border: { default: '#ddd' },
+        divider: '#ddd',
+        surface: { base: '#fff', elevated: '#eee', inset: '#f7f7f7' },
+        surfaceHigh: '#eee',
+        text: { primary: '#111', secondary: '#999', link: '#09f' },
+        textSecondary: '#999',
+        textLink: '#09f',
+    },
+};
+
 describe('SearchResultsList', () => {
     it('does not render string children under View when searchQuery is empty', async () => {
         const { SearchResultsList } = await import('./SearchResultsList');
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<SearchResultsList
-                    theme={{ colors: { textSecondary: '#999', text: '#111', surfaceHigh: '#eee', divider: '#ddd', textLink: '#09f' } } as any}
+                    theme={searchResultsTheme as any}
                     isSearching={false}
                     searchQuery=""
                     searchResults={[]}
@@ -100,7 +112,7 @@ describe('SearchResultsList', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<SearchResultsList
-                    theme={{ colors: { textSecondary: '#999', text: '#111', surfaceHigh: '#eee', divider: '#ddd', textLink: '#09f' } } as any}
+                    theme={searchResultsTheme as any}
                     isSearching={false}
                     searchQuery="AG"
                     searchResults={[file]}
@@ -132,7 +144,7 @@ describe('SearchResultsList', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<SearchResultsList
-                    theme={{ colors: { textSecondary: '#999', text: '#111', surfaceHigh: '#eee', divider: '#ddd', textLink: '#09f' } } as any}
+                    theme={searchResultsTheme as any}
                     isSearching={false}
                     searchQuery="a"
                     searchResults={[file]}

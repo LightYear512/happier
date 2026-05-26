@@ -107,6 +107,7 @@ function createRenderableActivitySignature(session: SessionListRenderableSession
             }
             : null,
         thinking: session.thinking,
+        thinkingAt: session.thinkingAt ?? null,
         latestTurnStatus: session.latestTurnStatus ?? null,
         lastRuntimeIssue: session.lastRuntimeIssue ?? null,
         optimisticThinkingAt: session.thinking ? null : session.optimisticThinkingAt ?? null,
@@ -193,6 +194,7 @@ function createFallbackSessionActivitySignature(session: Session | SessionListRe
             }
             : null,
         thinking: session.thinking,
+        thinkingAt: session.thinkingAt ?? null,
         latestTurnStatus: session.latestTurnStatus ?? null,
         lastRuntimeIssue: session.lastRuntimeIssue ?? null,
         optimisticThinkingAt: session.thinking ? null : session.optimisticThinkingAt ?? null,

@@ -12,7 +12,7 @@ import { resolveMachineForActiveServerFromState, resolveVisibleMachinesForActive
 import { readDirectSessionLink } from '@/sync/domains/session/directSessions/readDirectSessionLink';
 import { machineSpawnNewSession } from '@/sync/ops/machines';
 import { readReplacementAwareMachineRpcTarget } from '@/sync/ops/machineRpcTarget';
-import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import { readDisplayMachineTargetForSession, readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { sync } from '@/sync/sync';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
@@ -125,7 +125,7 @@ function resolveSpawnTarget(state: any): { machineId: string; directory: string 
     .filter(Boolean) as string[];
 
   for (const sessionId of candidates) {
-    const resolvedTarget = readMachineTargetForSession(sessionId);
+    const resolvedTarget = readDisplayMachineTargetForSession({ sessionId });
     const machineId = normalizeNonEmptyString(resolvedTarget?.machineId);
     const directory = normalizeNonEmptyString(resolvedTarget?.basePath);
     if (machineId && directory) return { machineId, directory };
@@ -353,7 +353,7 @@ async function waitForSessionMetadata(sessionId: string, timeoutMs: number): Pro
 
 async function resolveSessionRootTarget(sessionId: string): Promise<Readonly<{ machineId: string; directory: string }> | null> {
   const readTarget = () => {
-    const resolvedTarget = readMachineTargetForSession(sessionId);
+    const resolvedTarget = readDisplayMachineTargetForSession({ sessionId });
     const machineId = normalizeNonEmptyString(resolvedTarget?.machineId);
     const directory = normalizeNonEmptyString(resolvedTarget?.basePath);
     return machineId && directory ? { machineId, directory } : null;

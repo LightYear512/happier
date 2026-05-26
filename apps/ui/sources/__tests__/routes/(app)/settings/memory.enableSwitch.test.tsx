@@ -8,6 +8,20 @@ import { installSessionSettingsEntryModuleMocks, resetSessionSettingsEntryState 
 
 const machineRpcSpy = vi.fn();
 const featureEnabledState: Record<string, boolean> = { 'memory.search': true };
+const memorySettingsMachines = [
+    {
+        id: 'm1',
+        seq: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        active: true,
+        activeAt: 0,
+        metadata: { displayName: 'Machine 1' },
+        metadataVersion: 0,
+        daemonState: null,
+        daemonStateVersion: 0,
+    },
+] as const;
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({ serverId: 'srv_1', generation: 1 }),
@@ -15,6 +29,10 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcSpy,
+}));
+
+vi.mock('@/agents/catalog/catalog', () => ({
+    DEFAULT_AGENT_ID: 'agent-default',
 }));
 
 function installMemorySettingsEntryMocks() {
@@ -33,20 +51,7 @@ function installMemorySettingsEntryMocks() {
                 importOriginal,
                 overrides: {
                     // Boundary fixture: only the machine fields exercised by this screen matter here.
-                    useAllMachines: (() => ([
-                        {
-                            id: 'm1',
-                            seq: 0,
-                            createdAt: 0,
-                            updatedAt: 0,
-                            active: true,
-                            activeAt: 0,
-                            metadata: { displayName: 'Machine 1' },
-                            metadataVersion: 0,
-                            daemonState: null,
-                            daemonStateVersion: 0,
-                        },
-                    ])) as any,
+                    useAllMachines: (() => memorySettingsMachines) as any,
                 },
             });
         },
@@ -54,6 +59,15 @@ function installMemorySettingsEntryMocks() {
 
     vi.doMock('@/components/ui/lists/Item', () => ({
         Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),
+    }));
+    vi.doMock('@/components/settings/memory/MemorySettingsBudgetsSection', () => ({
+        MemorySettingsBudgetsSection: () => React.createElement('MemorySettingsBudgetsSection'),
+    }));
+    vi.doMock('@/components/settings/memory/MemorySettingsEmbeddingsSection', () => ({
+        MemorySettingsEmbeddingsSection: () => React.createElement('MemorySettingsEmbeddingsSection'),
+    }));
+    vi.doMock('@/components/settings/memory/MemorySettingsPrivacySection', () => ({
+        MemorySettingsPrivacySection: () => React.createElement('MemorySettingsPrivacySection'),
     }));
 }
 

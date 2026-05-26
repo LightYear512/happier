@@ -77,6 +77,6 @@ describe('CodeLineRow native review affordance', () => {
         });
 
         expect(onPressAddComment).toHaveBeenCalledWith(line);
-        expect(onPressLine).toHaveBeenCalledWith(line);
+        expect(onPressLine).toHaveBeenCalledWith(line, undefined);
     });
 });

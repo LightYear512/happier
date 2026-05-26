@@ -8,10 +8,10 @@
  * `PathSelector` with `searchVariant="belowInput"`. SelectionList unifies the
  * input + search into a single field, so the "below input" search header is
  * not part of the new model — fuzzy filtering happens through the same input
- * that types paths. Callers no longer need to pass `searchQuery` /
- * `onChangeSearchQuery` / `usePickerSearch` / `searchVariant`. Other survival
+ * that types paths. Callers no longer need to pass separate search-query,
+ * search-change, picker-search, or search-variant props. Other survival
  * behaviors (favorites, recents, machine-aware browse, pre-browse hook) are
- * preserved end-to-end.
+ * preserved end-to-end without the retired picker-search setting.
  */
 
 import * as React from 'react';

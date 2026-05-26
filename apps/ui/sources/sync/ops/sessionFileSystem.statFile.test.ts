@@ -81,22 +81,34 @@ vi.mock('../domains/state/storage', () => ({
     },
 }));
 
+function buildSessionFileSystemState() {
+    return {
+        sessions: {
+            s1: {
+                metadata: {
+                    path: '~/repo',
+                    machineId: 'm1',
+                },
+            },
+        },
+        machines: {
+            m1: {
+                id: 'm1',
+                active: true,
+                activeAt: 1,
+                metadata: {},
+            },
+        },
+    };
+}
+
 describe('sessionStatFile', () => {
     it('prefers machine RPC and resolves relative paths against the session cwd', async () => {
         const { sessionStatFile } = await import('./sessionFileSystem');
 
         enforcePolicyConsultedBeforeMachineRpc = true;
         policyConsulted = false;
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         sessionRPCSpy.mockClear();
         machineRPCSpy.mockClear();
@@ -112,16 +124,7 @@ describe('sessionStatFile', () => {
     it('returns a stable failure response when the RPC returns an unsupported shape', async () => {
         const { sessionStatFile } = await import('./sessionFileSystem');
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockResolvedValueOnce(null);
         sessionRPCSpy.mockResolvedValueOnce(null);
@@ -145,6 +148,14 @@ describe('sessionStatFile', () => {
                         path: '~/repo',
                         machineId: 'm1',
                     },
+                },
+            },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: {},
                 },
             },
         });

@@ -7,20 +7,22 @@ import {
     pressTestInstanceAsync,
     renderScreen,
 } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('SourceControlRemoteActionsRail', () => {
-    const theme = {
+    const theme = createThemeFixture({
         colors: {
+            border: { default: '#333' },
             divider: '#333',
-            surface: '#111',
+            surface: { base: '#111', inset: '#181818' },
             surfaceHigh: '#222',
-            text: '#eee',
+            text: { primary: '#eee', secondary: '#aaa', link: '#9cf' },
             textSecondary: '#aaa',
         },
-    } as any;
+    }) as any;
 
     it('renders nothing when there are no actions', async () => {
         const { tree } = await renderScreen(<SourceControlRemoteActionsRail theme={theme} actions={[]} />);

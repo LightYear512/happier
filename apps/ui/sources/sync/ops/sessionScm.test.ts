@@ -26,10 +26,30 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdFo
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
-    storage: {
-        getState: getStateMock,
-    },
-});
+        storage: {
+            getState: () => {
+                const state = getStateMock() ?? {};
+                return {
+                    ...state,
+                    machines: {
+                        'machine-1': {
+                            id: 'machine-1',
+                            active: true,
+                            activeAt: 1,
+                            metadata: {},
+                        },
+                        'machine-direct': {
+                            id: 'machine-direct',
+                            active: true,
+                            activeAt: 1,
+                            metadata: {},
+                        },
+                        ...(state.machines ?? {}),
+                    },
+                };
+            },
+        },
+    });
 });
 
 describe('sessionScm', () => {

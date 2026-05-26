@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
+import type { StorageState } from '@/sync/store/types';
 
 type AccountPetsSettingsSubset = Pick<
     Settings,
@@ -102,13 +103,33 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const { createStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
     const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
     const { settingsDefaults } = await import('@/sync/domains/settings/settings');
     const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
+    const readStorageSnapshot = () => createStorageStoreMock({
+        isDataReady: true,
+        sessions: Object.fromEntries(sessionsState.value.map((session) => [session.id, session])),
+        sessionListRenderables: {},
+    }).getState();
+    const storageMock = Object.assign(
+        ((selector?: (state: StorageState) => unknown) => {
+            const snapshot = readStorageSnapshot();
+            return typeof selector === 'function' ? selector(snapshot) : snapshot;
+        }) as typeof actual.storage,
+        {
+            getState: readStorageSnapshot,
+            getInitialState: readStorageSnapshot,
+            setState: () => undefined,
+            subscribe: () => () => undefined,
+            destroy: () => undefined,
+        },
+    );
     return createStorageModuleMock({
         importOriginal,
         overrides: {
             ...actual,
+            storage: storageMock,
             useSettings: () => ({
                 ...settingsDefaults,
                 ...accountSettingsState.current,

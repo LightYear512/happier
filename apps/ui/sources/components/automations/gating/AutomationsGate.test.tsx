@@ -73,7 +73,7 @@ describe('AutomationsGate', () => {
         const json = JSON.stringify(tree.toJSON());
         expect(json).not.toContain('Allowed');
         expect(json).not.toContain('Automations are disabled');
-        expect(json).toContain('ActivityIndicator');
+        expect(tree.root.findAll((node) => node.props.accessibilityRole === 'progressbar').length).toBeGreaterThan(0);
     });
 
     it('renders children when automations are enabled', async () => {

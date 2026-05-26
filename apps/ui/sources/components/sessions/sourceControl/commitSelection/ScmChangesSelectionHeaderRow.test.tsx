@@ -2,6 +2,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { findTestInstanceByTypeContainingText, pressTestInstance, renderScreen } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { installSourceControlCommitSelectionCommonModuleMocks } from './sourceControlCommitSelectionTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,6 +22,19 @@ installSourceControlCommitSelectionCommonModuleMocks({
     },
 });
 
+function createSelectionHeaderTheme() {
+    return createThemeFixture({
+        colors: {
+            border: { default: '#000' },
+            surface: { inset: '#222' },
+            surfaceHigh: '#222',
+            text: { secondary: '#aaa', link: '#09f' },
+            textSecondary: '#aaa',
+            textLink: '#09f',
+        },
+    });
+}
+
 describe('ScmChangesSelectionHeaderRow', () => {
     it('renders selected/total and triggers All/None actions', async () => {
         const { ScmChangesSelectionHeaderRow } = await import('./ScmChangesSelectionHeaderRow');
@@ -29,7 +43,7 @@ describe('ScmChangesSelectionHeaderRow', () => {
 
         const screen = await renderScreen(
             <ScmChangesSelectionHeaderRow
-                theme={{ colors: { divider: '#000', textSecondary: '#aaa', textLink: '#09f', surfaceHigh: '#222' } }}
+                theme={createSelectionHeaderTheme() as any}
                 selectedCount={2}
                 totalCount={5}
                 onSelectAll={onSelectAll}
@@ -58,7 +72,7 @@ describe('ScmChangesSelectionHeaderRow', () => {
 
         const screen = await renderScreen(
             <ScmChangesSelectionHeaderRow
-                theme={{ colors: { divider: '#000', textSecondary: '#aaa', textLink: '#09f', surfaceHigh: '#222' } }}
+                theme={createSelectionHeaderTheme() as any}
                 selectedCount={0}
                 totalCount={5}
             />,

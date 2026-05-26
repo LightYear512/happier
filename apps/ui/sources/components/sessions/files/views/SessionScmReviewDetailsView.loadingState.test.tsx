@@ -118,6 +118,6 @@ describe('SessionScmReviewDetailsView (loading)', () => {
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<SessionScmReviewDetailsView sessionId="s1" scopeId="session:s1" />)).tree;
 
-        expect(tree!.findAllByType('ActivityIndicator')).toHaveLength(1);
+        expect(tree!.findAllByType('Text').some((node) => node.props.children === 'common.loading')).toBe(true);
     });
 });

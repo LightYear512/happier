@@ -224,11 +224,11 @@ describe('ActionSettingsDetailView', () => {
         )).toBe(true);
     });
 
-    it('uses the action name as the route header title', async () => {
+    it('leaves route header chrome to the owning route', async () => {
         const { ActionSettingsDetailView } = await import('./ActionSettingsDetailView');
 
         await renderScreen(<ActionSettingsDetailView />);
 
-        expect(capture.stackOptions?.headerTitle).toBe('Start review');
+        expect(capture.stackOptions?.headerTitle).toBeUndefined();
     });
 });

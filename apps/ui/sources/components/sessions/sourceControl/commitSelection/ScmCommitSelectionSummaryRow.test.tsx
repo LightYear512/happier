@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { pressTestInstance, renderScreen } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 
@@ -19,9 +20,14 @@ installSourceControlCommitSelectionCommonModuleMocks({
                 OS: 'ios',
                 select: (s: any) => s.ios ?? s.default,
             },
-        }),
+    }),
     typography: async () => ({
-        Typography: { default: () => ({}) },
+        Typography: {
+            default: () => ({}),
+            eyebrow: () => ({}),
+            keyHint: () => ({}),
+            mono: () => ({}),
+        },
     }),
     text: async () =>
         createTextModuleMock({
@@ -35,16 +41,18 @@ describe('ScmCommitSelectionSummaryRow', () => {
     const { ScmCommitSelectionSummaryRow } = await import('./ScmCommitSelectionSummaryRow');
     const onClear = vi.fn();
 
-    const theme = {
+    const theme = createThemeFixture({
       colors: {
+        border: { default: '#ddd', surface: '#ddd' },
         divider: '#ddd',
-        surface: '#fff',
+        surface: { base: '#fff', inset: '#f5f5f5', elevated: '#fff' },
         surfaceHigh: '#f5f5f5',
         input: { background: '#f5f5f5' },
+        text: { primary: '#111', secondary: '#666', link: '#00f' },
         textSecondary: '#666',
         textLink: '#00f',
       },
-    };
+    });
 
     const screen = await renderScreen(
       <ScmCommitSelectionSummaryRow theme={theme} count={3} onClear={onClear} density="compact" />,

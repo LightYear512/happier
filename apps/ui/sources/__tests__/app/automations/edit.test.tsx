@@ -63,7 +63,8 @@ vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: (props: any) => React.createElement('ItemList', props, props.children),
 }));
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
+vi.mock('@/components/ui/lists/ItemGroup', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/components/ui/lists/ItemGroup')>()),
     ItemGroup: (props: any) => React.createElement('ItemGroup', props, props.children),
 }));
 
@@ -223,13 +224,27 @@ describe('AutomationEditScreen route', () => {
                 s1: sessionState.value,
                 'session-1': sessionState.value,
             } : {},
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 10,
+                    metadata: { host: 'm1-host' },
+                },
+                'machine-1': {
+                    id: 'machine-1',
+                    active: true,
+                    activeAt: 10,
+                    metadata: { host: 'machine-1-host' },
+                },
+            },
             getProjectForSession: () => null,
         }));
     });
 
     const settle = async () => {
         await act(async () => {
-            await flushHookEffects({ cycles: 1, turns: 1 });
+            await flushHookEffects({ cycles: 8, turns: 4 });
         });
     };
 
@@ -350,7 +365,8 @@ describe('AutomationEditScreen route', () => {
                 machineId: 'm-stale',
                 path: '/repo/project',
                 homeDir: '/repo',
-                flavor: 'acp:review-bot',
+                flavor: 'claude',
+                claudeSessionId: 'claude-session-1',
             },
         };
         getStateSpy.mockImplementation(() => ({
@@ -358,6 +374,13 @@ describe('AutomationEditScreen route', () => {
                 'session-1': sessionState.value,
             },
             machines: {
+                'm-stale': {
+                    id: 'm-stale',
+                    active: false,
+                    activeAt: 1,
+                    replacedByMachineId: 'm-target',
+                    metadata: { host: 'old-host' },
+                },
                 'm-target': {
                     id: 'm-target',
                     active: true,
@@ -643,9 +666,9 @@ describe('AutomationEditScreen route', () => {
         await renderScreen(React.createElement(EditRoute));
         await settle();
 
-        expect(latestAutomationSettingsFormProps.value).toEqual(expect.objectContaining({
-            variant: 'edit',
-        }));
+        const automationChip = latestAgentInputProps.value?.extraActionChips?.find((chip: any) => chip.controlId === 'automation');
+        expect(automationChip).toBeTruthy();
+        expect(automationChip?.collapsedContentPopover?.renderContent).toBeTypeOf('function');
         expect(latestAgentInputProps.value).toEqual(expect.objectContaining({
             submitAccessibilityLabel: 'Save automation',
         }));

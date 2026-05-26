@@ -47,6 +47,27 @@ const getReadyServerFeaturesSpy = vi.fn(async (_params: unknown): Promise<Featur
 
 const getStateSpy = vi.fn();
 
+function buildSessionFileSystemState() {
+    return {
+        sessions: {
+            s1: {
+                metadata: {
+                    path: '~/repo',
+                    machineId: 'm1',
+                },
+            },
+        },
+        machines: {
+            m1: {
+                id: 'm1',
+                active: true,
+                activeAt: 1,
+                metadata: {},
+            },
+        },
+    };
+}
+
 vi.mock('../api/session/apiSocket', () => ({
     apiSocket: {
         machineRPC: (machineId: string, method: string, payload: unknown) =>
@@ -89,16 +110,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -123,16 +135,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -157,16 +160,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -189,16 +183,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -220,16 +205,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -257,16 +233,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -287,16 +254,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();
@@ -323,16 +281,7 @@ describe('sessionFileSystem policy choke point', () => {
         resetPolicyFlags();
         enforcePolicyConsultedBeforeMachineRpc = true;
 
-        getStateSpy.mockReturnValue({
-            sessions: {
-                s1: {
-                    metadata: {
-                        path: '~/repo',
-                        machineId: 'm1',
-                    },
-                },
-            },
-        });
+        getStateSpy.mockReturnValue(buildSessionFileSystemState());
 
         machineRPCSpy.mockClear();
         sessionRpcWithServerScopeSpy.mockClear();

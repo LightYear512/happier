@@ -45,6 +45,7 @@ installSessionShellCommonModuleMocks({
             useProfile: useProfileSpy,
             useSessionListRowRenderable: useSessionListRowRenderableSpy,
             useSessionListMeaningfulActivityAt: () => 0,
+            useSessionListActivityTimeLabel: () => '',
             useSetting: () => false,
         });
     },

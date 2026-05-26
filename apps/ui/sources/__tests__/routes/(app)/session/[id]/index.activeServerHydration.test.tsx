@@ -47,6 +47,18 @@ vi.mock('@/components/sessions/shell/SessionView', () => ({
     SessionView: (props: any) => React.createElement('SessionView', props),
 }));
 
+vi.mock('@/components/workspaceCockpit/session/SessionCockpitShell', () => ({
+    SessionCockpitShell: (props: any) => React.createElement('SessionCockpitShell', props),
+}));
+
+vi.mock('@/components/workspaceCockpit/useMobileWorkspaceExperienceState', () => ({
+    useMobileWorkspaceExperienceState: () => ({ cockpitEnabled: false }),
+}));
+
+vi.mock('@/components/sessions/terminal/useSessionTerminalAvailability', () => ({
+    useSessionTerminalAvailability: () => ({ sidebarTabAvailable: false }),
+}));
+
 vi.mock('@/components/sessions/panes/url/sessionPaneUrlState', () => ({
     parseSessionPaneUrlState: () => null,
 }));
@@ -63,6 +75,13 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
     useHydrateSessionForRoute: (sessionId: string, tag: string) => hydrateSpy(sessionId, tag),
 }));
+
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
+        useLocalSetting: () => ({}),
+    });
+});
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({

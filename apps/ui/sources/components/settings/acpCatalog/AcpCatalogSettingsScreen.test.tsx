@@ -45,18 +45,15 @@ installAcpCatalogSettingsCommonModuleMocks({
             },
         }).module;
     },
-    storage: async (importOriginal) => {
-        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleMock({
-            importOriginal,
-            overrides: {
-                useSettingMutable: (key: string) => {
-                    if (key === 'acpCatalogSettingsV1') {
-                        return [shared.settingsState.value, shared.setAcpSettingsSpy];
-                    }
-                    if (key === 'secrets') return [[], vi.fn()];
-                    return [null, vi.fn()];
-                },
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({
+            useSettingMutable: (key: string) => {
+                if (key === 'acpCatalogSettingsV1') {
+                    return [shared.settingsState.value, shared.setAcpSettingsSpy];
+                }
+                if (key === 'secrets') return [[], vi.fn()];
+                return [null, vi.fn()];
             },
         });
     },

@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 const THEME_HAIRLINE_WIDTH = StyleSheet.hairlineWidth || 1;
 

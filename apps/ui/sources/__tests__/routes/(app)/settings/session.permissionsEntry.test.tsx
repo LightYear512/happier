@@ -121,7 +121,7 @@ describe('Session settings (Permissions entry)', () => {
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
 
         const dropdown = screen.findAllByType('DropdownMenu' as any).find((node) =>
-            node.props.itemTrigger?.title === 'settingsSession.sessionList.narrowWorkingIndicatorTitle'
+            node.props.itemTrigger?.title === 'settingsSession.sessionList.workingIndicatorTitle'
         );
         expect(dropdown).toBeTruthy();
         expect(dropdown?.props.selectedId).toBe('spinner');

@@ -38,6 +38,18 @@ const sessionFixtures: Record<string, Session> = {
 };
 
 const machineFixtures: Record<string, Machine> = {
+    'machine-stale': createMachineFixture({
+        id: 'machine-stale',
+        replacedByMachineId: 'machine-target',
+        metadata: {
+            displayName: 'Old workstation',
+            host: 'tester.local',
+            platform: 'darwin',
+            happyCliVersion: '0.0.0-test',
+            happyHomeDir: '/Users/leeroy/.happy-dev',
+            homeDir: '/Users/leeroy',
+        },
+    }),
     'machine-target': createMachineFixture({
         id: 'machine-target',
         metadata: {
@@ -56,6 +68,7 @@ const storageState = {
         'session-1': sessionFixtures['session-1'],
     },
     machines: {
+        'machine-stale': machineFixtures['machine-stale'],
         'machine-target': machineFixtures['machine-target'],
     },
     getProjectForSession: (sessionId: string) =>

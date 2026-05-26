@@ -837,6 +837,7 @@ vi.mock('@/components/sessions/sourceControl/changes/ScmChangeRow', () => ({
 vi.mock('@/constants/Typography', () => ({
     Typography: {
         default: () => ({}),
+        eyebrow: () => ({}),
         mono: () => ({}),
     },
 }));
@@ -898,10 +899,32 @@ describe('ChangedFilesReview', () => {
 
     const theme = {
         colors: {
-            surface: '#111',
+            surface: {
+                base: '#111',
+                inset: '#151515',
+                elevated: '#222',
+                ripple: 'rgba(255,255,255,0.08)',
+                pressed: '#181818',
+                selected: '#202020',
+                pressedOverlay: 'rgba(255,255,255,0.08)',
+            },
             surfaceHigh: '#222',
+            border: {
+                default: '#333',
+                surface: '#333',
+                strong: '#555',
+                modal: '#444',
+            },
             divider: '#333',
-            text: '#eee',
+            text: {
+                primary: '#eee',
+                secondary: '#aaa',
+                tertiary: '#888',
+                link: '#08f',
+                destructive: '#f00',
+                placeholder: '#777',
+                disabled: '#666',
+            },
             textSecondary: '#aaa',
             textLink: '#08f',
             warning: '#f80',

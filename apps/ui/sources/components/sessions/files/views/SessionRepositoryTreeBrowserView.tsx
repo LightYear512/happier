@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Platform, Pressable, StyleSheet, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { Platform, Pressable, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
@@ -33,6 +33,7 @@ import { readWebDroppedEntries } from '@/utils/files/webDroppedEntries';
 import { nativePickFiles, type NativePickedFile } from '@/utils/files/nativePickFiles';
 import { applyWebDirectoryInputAttributes } from '@/utils/files/applyWebDirectoryInputAttributes';
 import { useWorkspaceFileTransfers, type WorkspaceUploadEntry } from '@/hooks/session/files/useWorkspaceFileTransfers';
+import { buildWebUploadEntriesFromFiles } from './buildWebUploadEntriesFromFiles';
 import { showUploadConflictResolutionDialog } from '@/components/sessions/files/repositoryTree/showUploadConflictResolutionDialog';
 import { shouldUseRepositoryRootDropTarget } from '@/components/sessions/files/repositoryTree/shouldUseRepositoryRootDropTarget';
 import { createRepositoryTreeUploadMenuConfig } from '@/components/sessions/files/repositoryTree/createRepositoryTreeUploadMenuConfig';
@@ -289,11 +290,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [expandedPaths, props.sessionId, refresh]);
 
     const startWebUploads = React.useCallback(async (files: readonly File[], destinationDir: string) => {
-        const entries: WorkspaceUploadEntry[] = files.map((file) => ({
-            kind: 'web',
-            file,
-            relativePath: (file as any).webkitRelativePath || file.name,
-        }));
+        const entries = buildWebUploadEntriesFromFiles(files);
         const res = await transfers.startUploads({ entries, destinationDir });
         if (!res.ok) {
             Modal.alert(t('common.error'), res.error);

@@ -250,7 +250,6 @@ describe('usePetCompanionActivityModel', () => {
                             ...session,
                             seq: session.seq + 1,
                             updatedAt: session.updatedAt + 1,
-                            thinkingAt: session.thinkingAt + 1,
                             metadata: {
                                 ...session.metadata,
                                 path: session.metadata?.path ?? '',
@@ -497,7 +496,6 @@ describe('usePetCompanionActivityModel', () => {
                         [sessionA.id]: {
                             ...renderableA,
                             updatedAt: 4_000,
-                            thinkingAt: 4_000,
                         },
                     },
                 }));
@@ -772,7 +770,7 @@ describe('usePetCompanionActivityModel', () => {
         }
     });
 
-    it('does not recompute activity when a live renderable thinking heartbeat advances', async () => {
+    it('recomputes activity when a live renderable thinking activity advances', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
             id: 'live-renderable-heartbeat-session',
@@ -821,7 +819,7 @@ describe('usePetCompanionActivityModel', () => {
                 }));
             });
 
-            expect(renderCount).toBe(renderCountBeforeHeartbeat);
+            expect(renderCount).toBeGreaterThan(renderCountBeforeHeartbeat);
 
             await hook.unmount();
         } finally {
@@ -878,7 +876,6 @@ describe('usePetCompanionActivityModel', () => {
                         [session.id]: {
                             ...renderable,
                             updatedAt: 4_000,
-                            thinkingAt: 4_000,
                             optimisticThinkingAt: 4_000,
                             thinkingGraceUntil: 7_000,
                             presence: 4_000,

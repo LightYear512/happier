@@ -92,6 +92,7 @@ installSessionShellCommonModuleMocks({
             useSession: () => null,
             useSessionListRowRenderable: () => null,
             useSessionListMeaningfulActivityAt: () => null,
+            useSessionListActivityTimeLabel: () => null,
         });
     },
 });

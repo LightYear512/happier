@@ -207,9 +207,9 @@ installNavigationShellCommonModuleMocks({
                 },
             ],
             useMachine: (machineId: string) =>
-                machineId === 'machine-target'
+                machineId === 'machine-target' || machineId === 'machine-stale'
                     ? {
-                        id: 'machine-target',
+                        id: machineId,
                         metadata: { displayName: 'Rebound workstation', host: 'workstation.local' },
                     }
                     : null,

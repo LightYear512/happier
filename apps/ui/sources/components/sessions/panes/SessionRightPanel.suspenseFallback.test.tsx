@@ -76,6 +76,6 @@ describe('SessionRightPanel (suspense fallback)', () => {
         tree = (await renderScreen(<SessionRightPanel sessionId="s1" scopeId="session:s1" />)).tree;
 
         // When the active tab suspends, we should still render a visible loading indicator.
-        expect(tree!.findAllByType('ActivityIndicator' as any).length).toBeGreaterThan(0);
+        expect(tree!.root.findAll((node) => node.props.accessibilityRole === 'progressbar').length).toBeGreaterThan(0);
     });
 });

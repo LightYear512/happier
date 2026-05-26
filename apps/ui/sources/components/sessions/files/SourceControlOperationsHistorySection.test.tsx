@@ -30,11 +30,34 @@ describe('SourceControlOperationsHistorySection', () => {
 
     const theme = {
         colors: {
-            text: '#fff',
+            text: {
+                primary: '#fff',
+                secondary: '#aaa',
+                tertiary: '#888',
+                link: '#09f',
+                destructive: '#f66',
+                placeholder: '#777',
+                disabled: '#666',
+            },
             textSecondary: '#aaa',
             textLink: '#09f',
             divider: '#333',
+            surface: {
+                base: '#111',
+                inset: '#151515',
+                elevated: '#222',
+                ripple: 'rgba(255,255,255,0.08)',
+                pressed: '#181818',
+                selected: '#202020',
+                pressedOverlay: 'rgba(255,255,255,0.08)',
+            },
             surfaceHigh: '#222',
+            border: {
+                default: '#333',
+                surface: '#333',
+                strong: '#555',
+                modal: '#444',
+            },
             input: { background: '#111' },
         },
     } as any;

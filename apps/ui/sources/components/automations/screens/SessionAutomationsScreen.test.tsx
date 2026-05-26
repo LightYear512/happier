@@ -127,6 +127,14 @@ describe('SessionAutomationsScreen', () => {
             sessions: {
                 s1: sessionState.value,
             },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: {},
+                },
+            },
             getProjectForSession: () => null,
         }));
         routerPushSpy.mockReset();
@@ -201,6 +209,13 @@ describe('SessionAutomationsScreen', () => {
                 s1: sessionState.value,
             },
             machines: {
+                'm-stale': {
+                    id: 'm-stale',
+                    active: false,
+                    activeAt: 1,
+                    replacedByMachineId: 'm-target',
+                    metadata: { host: 'old-host' },
+                },
                 'm-target': {
                     id: 'm-target',
                     active: true,
@@ -242,6 +257,7 @@ describe('SessionAutomationsScreen', () => {
             encryptionMode: 'plain',
             metadata: {
                 machineId: 'm1',
+                path: '/tmp/project',
                 flavor: 'pi',
                 piSessionId: 'pi-session-1',
             },

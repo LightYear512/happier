@@ -204,11 +204,16 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         ...localSettingsState.current,
     });
 
-    const createPetsStorageStore = () =>
-        createStorageStoreMock({
+    const createPetsStorageStore = () => {
+        const sessionsById = Object.fromEntries(sessionsState.current.map((session) => [session.id, session]));
+        return createStorageStoreMock({
             accountPetsById: accountPetsState.current,
             localPetSourcesBySourceKey: localPetSourcesState.current,
+            isDataReady: true,
+            sessions: sessionsById,
+            sessionListRenderables: sessionsById,
         });
+    };
     function storageStub(): StorageState;
     function storageStub<U>(selector: (state: StorageState) => U): U;
     function storageStub<U>(selector?: (state: StorageState) => U): StorageState | U {
@@ -1241,7 +1246,9 @@ describe('DesktopPetOverlayRoute selectors', () => {
                 id: 'session-dismissed',
                 active: true,
                 pendingCount: 1,
+                pendingUserActionRequestCount: 1,
                 createdAt: 1_000,
+                updatedAt: 1_000,
                 activeAt: 1_000,
                 thinkingAt: 1_000,
             }),
@@ -1256,7 +1263,9 @@ describe('DesktopPetOverlayRoute selectors', () => {
                 id: 'session-dismissed',
                 active: true,
                 pendingCount: 1,
+                pendingUserActionRequestCount: 1,
                 createdAt: 1_000,
+                updatedAt: 2_000,
                 activeAt: 2_000,
                 thinkingAt: 2_000,
             }),

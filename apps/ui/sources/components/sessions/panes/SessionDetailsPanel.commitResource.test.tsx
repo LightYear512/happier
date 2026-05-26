@@ -41,7 +41,12 @@ installSessionDetailsPanelCommonModuleMocks({
 });
 
 vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
+    Typography: {
+        default: () => ({}),
+        eyebrow: () => ({}),
+        keyHint: () => ({}),
+        mono: () => ({}),
+    },
 }));
 
 const closeDetailsSpy = vi.fn();

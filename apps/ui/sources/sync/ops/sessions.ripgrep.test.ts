@@ -26,9 +26,13 @@ const getStateSpy = vi.fn();
 
 vi.mock('../api/session/apiSocket', () => ({
     apiSocket: {
-        sessionRPC: (sessionId: string, method: string, payload: any) => sessionRPCSpy(sessionId, method, payload),
         machineRPC: (machineId: string, method: string, payload: any) => machineRPCSpy(machineId, method, payload),
     },
+}));
+
+vi.mock('../runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSessionScope', () => ({
+    sessionRpcWithPreferredSessionScope: (params: { sessionId: string; method: string; payload: unknown }) =>
+        sessionRPCSpy(params.sessionId, params.method, params.payload),
 }));
 
 vi.mock('../domains/state/storage', () => ({
@@ -44,10 +48,19 @@ describe('sessionRipgrep', () => {
         getStateSpy.mockReturnValue({
             sessions: {
                 s1: {
+                    active: true,
                     metadata: {
                         path: '~/repo',
                         machineId: 'm1',
                     },
+                },
+            },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: {},
                 },
             },
         });
@@ -75,6 +88,14 @@ describe('sessionRipgrep', () => {
                         path: '~/repo',
                         machineId: 'm1',
                     },
+                },
+            },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: {},
                 },
             },
         });

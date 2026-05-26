@@ -224,7 +224,11 @@ vi.mock('@/platform/randomUUID', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
+    Typography: {
+        default: () => ({}),
+        keyHint: () => ({}),
+        pillLabel: () => ({}),
+    },
 }));
 
 async function renderEditorScreen() {

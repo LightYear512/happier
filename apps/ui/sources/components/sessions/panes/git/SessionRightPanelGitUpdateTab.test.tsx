@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { installSessionFilesCommonModuleMocks } from '@/components/sessions/files/sessionFilesTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -105,9 +106,10 @@ vi.mock('@/modal', async () => {
     }).module;
 });
 
-const theme = {
+const theme = createThemeFixture({
     colors: {
         background: 'background',
+        border: { default: 'border-default', surface: 'border-surface' },
         button: {
             primary: {
                 background: 'button-primary-background',
@@ -120,13 +122,17 @@ const theme = {
             border: 'input-border',
         },
         primary: 'primary',
-        surface: 'surface',
+        surface: { base: 'surface', elevated: 'surface-elevated', inset: 'surface-inset' },
         surfaceHigh: 'surface-high',
-        text: 'text',
+        text: {
+            primary: 'text',
+            secondary: 'text-secondary',
+            link: 'text-link',
+        },
         textSecondary: 'text-secondary',
         textLink: 'text-link',
     },
-};
+});
 
 function createSnapshot(overrides: Record<string, unknown> = {}) {
     return {

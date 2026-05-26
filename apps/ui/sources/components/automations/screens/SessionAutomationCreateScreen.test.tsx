@@ -159,6 +159,22 @@ vi.mock('@/sync/http/client', () => ({
     serverFetch: (...args: unknown[]) => serverFetchSpy(...args),
 }));
 
+function buildDefaultStorageState() {
+    const session = sessionState.session;
+    return {
+        sessions: session?.id ? { [session.id]: session } : {},
+        machines: {
+            m1: {
+                id: 'm1',
+                active: true,
+                activeAt: 10,
+                metadata: { host: 'mbp-host' },
+            },
+        },
+        getProjectForSession: () => null,
+    };
+}
+
 async function flushRender(): Promise<void> {
     await act(async () => {
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -200,10 +216,7 @@ describe('SessionAutomationCreateScreen', () => {
                 claudeSessionId: 'claude-session-1',
             },
         };
-        getStateSpy.mockImplementation(() => ({
-            sessions: sessionState.session ? { s1: sessionState.session } : {},
-            getProjectForSession: () => null,
-        }));
+        getStateSpy.mockImplementation(() => buildDefaultStorageState());
         syncSpies.createAutomation.mockClear();
         syncSpies.refreshAutomations.mockClear();
         syncSpies.getSessionEncryptionKeyBase64ForResume.mockClear();
@@ -249,6 +262,13 @@ describe('SessionAutomationCreateScreen', () => {
                 s1: sessionState.session,
             },
             machines: {
+                'm-stale': {
+                    id: 'm-stale',
+                    active: false,
+                    replacedByMachineId: 'm-target',
+                    replacedAt: 5,
+                    metadata: { host: 'old-mbp-host' },
+                },
                 'm-target': {
                     id: 'm-target',
                     active: true,
@@ -351,6 +371,13 @@ describe('SessionAutomationCreateScreen', () => {
                 s1: sessionState.session,
             },
             machines: {
+                'm-stale': {
+                    id: 'm-stale',
+                    active: false,
+                    replacedByMachineId: 'm-target',
+                    replacedAt: 5,
+                    metadata: { host: 'old-mbp-host' },
+                },
                 'm-target': {
                     id: 'm-target',
                     active: true,

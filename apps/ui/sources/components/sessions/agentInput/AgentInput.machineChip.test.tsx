@@ -128,6 +128,7 @@ vi.mock('@/sync/domains/state/storageStore', () => ({
 
 vi.mock('@/sync/store/hooks', () => ({
     useLocalSetting: () => 1,
+    useSessionServerId: () => null,
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({

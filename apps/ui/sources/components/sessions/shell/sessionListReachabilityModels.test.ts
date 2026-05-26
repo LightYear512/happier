@@ -82,7 +82,7 @@ describe('buildSessionListReachabilityModels', () => {
         expect(models.reachableSessionDisplayById.get('session-1')).toMatchObject({
             machineId: 'machine-stale',
             machineLabel: 'Old Machine',
-            workspaceSubtitle: '~/workspace/stable',
+            workspaceSubtitle: 'stable',
         });
     });
 });

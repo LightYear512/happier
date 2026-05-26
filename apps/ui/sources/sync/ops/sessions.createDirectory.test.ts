@@ -25,7 +25,12 @@ const machineRPCSpy = vi.fn(
 );
 
 const machineRpcWithServerScopeSpy = vi.fn(
-    async (_params: unknown): Promise<SessionCreateDirectoryRpcResponse> => ({ success: true }),
+    async (_params: unknown): Promise<SessionCreateDirectoryRpcResponse> => {
+        if (enforcePolicyConsultedBeforeMachineRpc) {
+            expect(policyConsulted).toBe(true);
+        }
+        return { success: true };
+    },
 );
 
 const sessionRpcWithServerScopeSpy = vi.fn(
@@ -99,22 +104,33 @@ describe('sessionCreateDirectory', () => {
         getStateSpy.mockReturnValue({
             sessions: {
                 s1: {
+                    active: true,
                     metadata: {
                         path: '~/repo',
                         machineId: 'm1',
                     },
                 },
             },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: { host: 'host.local' },
+                },
+            },
         });
 
         sessionRPCSpy.mockClear();
         machineRPCSpy.mockClear();
+        machineRpcWithServerScopeSpy.mockClear();
         getReadyServerFeaturesSpy.mockClear();
 
         const res = await sessionCreateDirectory('s1', 'tmp/new-folder');
         expect(res.success).toBe(true);
         expect(getReadyServerFeaturesSpy).toHaveBeenCalledTimes(1);
         expect(machineRPCSpy).toHaveBeenCalledWith('m1', RPC_METHODS.CREATE_DIRECTORY, { path: '~/repo/tmp/new-folder' });
+        expect(machineRpcWithServerScopeSpy).not.toHaveBeenCalled();
         expect(sessionRPCSpy).not.toHaveBeenCalled();
     }, 60_000);
 
@@ -133,6 +149,14 @@ describe('sessionCreateDirectory', () => {
                     },
                 },
             },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: { host: 'host.local' },
+                },
+            },
         });
 
         machineRPCSpy.mockRejectedValueOnce(
@@ -145,6 +169,7 @@ describe('sessionCreateDirectory', () => {
             throw new Error('Expected sessionCreateDirectory to fail');
         }
         expect(res.errorCode).toBe(RPC_ERROR_CODES.METHOD_NOT_FOUND);
+        expect(machineRpcWithServerScopeSpy).not.toHaveBeenCalled();
         expect(sessionRPCSpy).not.toHaveBeenCalled();
     });
 
@@ -163,6 +188,14 @@ describe('sessionCreateDirectory', () => {
                     },
                 },
             },
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 1,
+                    metadata: { host: 'host.local' },
+                },
+            },
         });
 
         machineRPCSpy.mockResolvedValueOnce(null);
@@ -174,6 +207,7 @@ describe('sessionCreateDirectory', () => {
         }
         expect(res.errorCode).toBe(RPC_ERROR_CODES.METHOD_NOT_AVAILABLE);
         expect(typeof res.error).toBe('string');
+        expect(machineRpcWithServerScopeSpy).not.toHaveBeenCalled();
         expect(sessionRPCSpy).not.toHaveBeenCalled();
     });
 });

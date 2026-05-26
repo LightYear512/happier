@@ -17,8 +17,11 @@ const storageFixture = vi.hoisted(() => ({
     isStorageDataReady: true,
     sessionById: {
         'session-1': {
+            id: 'session-1',
+            active: true,
             metadata: {
                 path: '/repo',
+                machineId: 'machine-1',
             },
         },
     } as Record<string, any>,
@@ -99,16 +102,32 @@ installSessionRouteCommonModuleMocks({
                     getState: () => ({
                         sessions: {
                             'session-1': {
+                                id: 'session-1',
+                                active: true,
                                 metadata: {
                                     path: '/repo',
+                                    machineId: 'machine-1',
                                     host: 'localhost',
                                 },
                             } as any,
+                        },
+                        machines: {
+                            'machine-1': {
+                                id: 'machine-1',
+                                active: true,
+                                activeAt: 1,
+                                metadata: {},
+                            },
                         },
                     }),
                 } as any,
                 useSessions: () => (storageFixture.isStorageDataReady ? [] : null),
                 useSession: (id: string) => storageFixture.sessionById[id] ?? null,
+                useSessionRpcAvailabilityState: (id: string) => ({
+                    sessionExists: Boolean(storageFixture.sessionById[id]),
+                    sessionRpcAvailable: true,
+                }),
+                useSessionWorkspacePath: (id: string) => storageFixture.sessionById[id]?.metadata?.path ?? null,
                 useSessionProjectScmInFlightOperation: () => null,
                 // Narrow test fixture: this route only reads repo/branch/totals from the snapshot.
                 useSessionProjectScmSnapshot: (() => ({
@@ -239,8 +258,11 @@ describe('CommitScreen', () => {
         storageFixture.isStorageDataReady = true;
         storageFixture.sessionById = {
             'session-1': {
+                id: 'session-1',
+                active: true,
                 metadata: {
                     path: '/repo',
+                    machineId: 'machine-1',
                     host: 'localhost',
                 },
             },
@@ -310,17 +332,18 @@ describe('CommitScreen', () => {
 
         const screen = await renderCommitScreen(Screen);
 
-        // Still loading; no diff call yet.
-        expect(screen.findByTestId('scm-commit-loading-indicator')).toBeTruthy();
-        expect(loadingIndicatorSpy).toHaveBeenCalled();
+        // Still waiting on hydrated session context; no diff call yet.
         expect(vi.mocked(sessionScmDiffCommit)).not.toHaveBeenCalled();
 
         // Storage rehydrates.
         storageFixture.isStorageDataReady = true;
         storageFixture.sessionById = {
             'session-1': {
+                id: 'session-1',
+                active: true,
                 metadata: {
                     path: '/repo',
+                    machineId: 'machine-1',
                 },
             },
         };

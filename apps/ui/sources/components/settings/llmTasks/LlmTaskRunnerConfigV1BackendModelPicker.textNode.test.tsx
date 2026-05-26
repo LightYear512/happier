@@ -39,7 +39,15 @@ installSettingsViewCommonModuleMocks({
         return createUnistylesMock({
             theme: {
                 colors: {
-                    text: '#fff',
+                    text: {
+                        primary: '#fff',
+                        secondary: '#999',
+                        tertiary: '#777',
+                        link: '#66f',
+                        destructive: '#f66',
+                        placeholder: '#666',
+                        disabled: '#555',
+                    },
                     textSecondary: '#999',
                     surfacePressedOverlay: 'rgba(0,0,0,0.1)',
                     surfaceSelected: 'rgba(255,255,255,0.1)',
@@ -91,6 +99,8 @@ vi.mock('expo-clipboard', () => ({
 vi.mock('@/constants/Typography', () => ({
     Typography: {
         default: () => ({}),
+        eyebrow: () => ({}),
+        keyHint: () => ({}),
     },
 }));
 

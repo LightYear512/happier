@@ -26,6 +26,12 @@ installRouteRootCommonModuleMocks({
         });
     },
     router: async () => routerMock.module,
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({
+            useLocalSetting: () => null,
+        });
+    },
 });
 
 vi.mock('@react-navigation/native', () => ({
@@ -37,6 +43,26 @@ vi.mock('@react-navigation/native', () => ({
 vi.mock('@/components/sessions/shell/SessionView', () => ({
     SessionView: ({ id, jumpToSeq, paneUrlState }: { id: string; jumpToSeq?: number | null; paneUrlState?: any }) =>
         React.createElement('SessionView', { id, jumpToSeq, paneUrlState }),
+}));
+
+vi.mock('@/components/workspaceCockpit/useMobileWorkspaceExperienceState', () => ({
+    useMobileWorkspaceExperienceState: () => ({ cockpitEnabled: false }),
+}));
+
+vi.mock('@/components/workspaceCockpit/session/SessionCockpitShell', () => ({
+    SessionCockpitShell: (props: any) => React.createElement('SessionCockpitShell', props),
+}));
+
+vi.mock('@/components/workspaceCockpit/session/sessionCockpitState', () => ({
+    resolveSessionMobileSurfaceIntent: () => 'chat',
+}));
+
+vi.mock('@/components/sessions/terminal/useSessionTerminalAvailability', () => ({
+    useSessionTerminalAvailability: () => ({ sidebarTabAvailable: false }),
+}));
+
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => ({ generation: 1 }),
 }));
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({

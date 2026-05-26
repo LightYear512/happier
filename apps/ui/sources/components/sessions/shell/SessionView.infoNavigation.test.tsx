@@ -450,7 +450,7 @@ describe('SessionView info navigation', () => {
         );
 
         expect(chatHeaderPropsSpy).toHaveBeenCalledWith(expect.objectContaining({
-            subtitle: '/tmp',
+            subtitle: 'tmp',
             subtitleEllipsizeMode: 'head',
         }));
     });

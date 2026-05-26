@@ -650,7 +650,7 @@ describe('machines domain: sessionListViewData rebuild gating', () => {
                     archivedAt: null,
                     metadataVersion: 1,
                     agentStateVersion: 0,
-                    metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u' },
+                    metadata: { machineId: 'm2', path: '/home/u/repo', homeDir: '/home/u' },
                     thinking: false,
                     thinkingAt: 0,
                     presence: 'online',
