@@ -494,6 +494,7 @@ describe('createHappierMcpServer', () => {
 
   it('registers session dev previews with the daemon registry for relay lookups', async () => {
     const captured: { deps?: any } = {};
+    const metadataUpdates: Array<Record<string, unknown>> = [];
     const daemonDevPreviewRegister = vi.fn(async () => ({
       success: true,
       preview: {
@@ -532,7 +533,11 @@ describe('createHappierMcpServer', () => {
         sessionId: 'sess_dev_preview_daemon_1',
         rpcHandlerManager: { invokeLocal: async () => ({}) },
         sendClaudeSessionMessage: () => {},
-        updateMetadata: () => {},
+        updateMetadata: (updater: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
+          const next = updater(metadataUpdates.at(-1) ?? { machineId: 'machine-1' });
+          metadataUpdates.push(next);
+          return next;
+        },
         getMetadataSnapshot: () => ({ machineId: 'machine-1' }),
       } as any,
       {
@@ -563,6 +568,17 @@ describe('createHappierMcpServer', () => {
       name: 'Preview app',
       framework: 'vite',
       rewriteUrls: true,
+    });
+    expect(metadataUpdates.at(-1)).toMatchObject({
+      localServicePreviewsV1: {
+        v: 1,
+        previews: [
+          expect.objectContaining({
+            resourceId: 'preview_daemon_1',
+            preview: expect.objectContaining({ routeKey: 'route_daemon_1' }),
+          }),
+        ],
+      },
     });
   });
 });

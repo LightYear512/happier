@@ -68,6 +68,18 @@ describe('sessionPaneUrlState', () => {
                 details: { kind: 'scmStash' },
             });
         });
+
+        it('parses local-service preview details target', () => {
+            expect(parseSessionPaneUrlState({ details: 'localServicePreview', resourceId: 'preview_1' })).toEqual({
+                details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+            });
+        });
+
+        it('parses latest local-service preview details target', () => {
+            expect(parseSessionPaneUrlState({ details: 'localServicePreview' })).toEqual({
+                details: { kind: 'localServicePreview' },
+            });
+        });
     });
 
     describe('applySessionPaneUrlState', () => {
@@ -228,6 +240,62 @@ describe('sessionPaneUrlState', () => {
             expect(pane.setRightTab).toHaveBeenCalledWith('files');
             expect(pane.openDetailsTab).toHaveBeenCalledTimes(0);
         });
+
+        it('opens a local-service preview details tab through the supplied resolver', () => {
+            const pane = {
+                openRight: vi.fn(),
+                setRightTab: vi.fn(),
+                openDetailsTab: vi.fn(),
+            };
+
+            applySessionPaneUrlState(pane as any, {
+                details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+            }, {
+                resolveLocalServicePreviewDetailsTab: (resourceId) => ({
+                    key: `localServicePreview:${resourceId}`,
+                    kind: 'localServicePreview',
+                    title: 'Preview app',
+                    resource: { kind: 'localServicePreview', resourceId },
+                }),
+            });
+
+            expect(pane.openDetailsTab).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    key: 'localServicePreview:preview_1',
+                    kind: 'localServicePreview',
+                    resource: { kind: 'localServicePreview', resourceId: 'preview_1' },
+                }),
+                { intent: 'preview' },
+            );
+        });
+
+        it('opens the latest local-service preview details tab when no resource id is provided', () => {
+            const pane = {
+                openRight: vi.fn(),
+                setRightTab: vi.fn(),
+                openDetailsTab: vi.fn(),
+            };
+
+            applySessionPaneUrlState(pane as any, {
+                details: { kind: 'localServicePreview' },
+            }, {
+                resolveLocalServicePreviewDetailsTab: (resourceId) => ({
+                    key: resourceId ? `localServicePreview:${resourceId}` : 'localServicePreview:latest',
+                    kind: 'localServicePreview',
+                    title: 'Preview app',
+                    resource: { kind: 'localServicePreview', resourceId: resourceId || 'latest' },
+                }),
+            });
+
+            expect(pane.openDetailsTab).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    key: 'localServicePreview:latest',
+                    kind: 'localServicePreview',
+                    resource: { kind: 'localServicePreview', resourceId: 'latest' },
+                }),
+                { intent: 'preview' },
+            );
+        });
     });
 
     describe('serializeSessionPaneUrlState', () => {
@@ -306,9 +374,34 @@ describe('sessionPaneUrlState', () => {
                 details: 'scmStash',
             });
         });
+
+        it('serializes local-service preview details state', () => {
+            expect(
+                serializeSessionPaneUrlState({
+                    details: { kind: 'localServicePreview', resourceId: 'preview_1' },
+                })
+            ).toEqual({
+                details: 'localServicePreview',
+                resourceId: 'preview_1',
+            });
+        });
     });
 
     describe('buildActiveDetailsRouteParams', () => {
+        it('serializes active local-service preview details tabs', () => {
+            expect(buildActiveDetailsRouteParams([
+                {
+                    key: 'localServicePreview:preview_1',
+                    kind: 'localServicePreview',
+                    title: 'Preview app',
+                    resource: { kind: 'localServicePreview', resourceId: 'preview_1' },
+                },
+            ], 'localServicePreview:preview_1')).toEqual({
+                details: 'localServicePreview',
+                resourceId: 'preview_1',
+            });
+        });
+
         it('serializes active source-control stash details tabs', () => {
             expect(buildActiveDetailsRouteParams([
                 {

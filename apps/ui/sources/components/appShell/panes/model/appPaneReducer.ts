@@ -123,6 +123,17 @@ function setDetailsTabs(scope: PaneScopeState, nextTabs: ReadonlyArray<DetailsTa
     };
 }
 
+function isLocalServicePreviewDetailsTab(tab: Readonly<{ kind: string; resource: unknown }>): boolean {
+    if (tab.kind === 'localServicePreview') return true;
+    const resource = tab.resource;
+    return Boolean(
+        resource
+        && typeof resource === 'object'
+        && !Array.isArray(resource)
+        && (resource as { kind?: unknown }).kind === 'localServicePreview',
+    );
+}
+
 function scopeHasFocusablePane(scope: PaneScopeState | undefined): boolean {
     return Boolean(scope?.right.isOpen || scope?.details.isOpen);
 }
@@ -231,7 +242,9 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
 
                 let nextTabs = prev.details.tabs;
                 if (action.openAs === 'preview') {
-                    nextTabs = nextTabs.filter((t) => !t.isPreview);
+                    nextTabs = isLocalServicePreviewDetailsTab(action.tab)
+                        ? nextTabs
+                        : nextTabs.filter((t) => !t.isPreview || isLocalServicePreviewDetailsTab(t));
                 }
 
                 const nextTab: DetailsTabState = {
@@ -275,19 +288,25 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
             return upsertScope(state, action.scopeId, (prev) => {
                 const index = prev.details.tabs.findIndex((t) => t.key === action.tabKey);
                 if (index < 0) return prev;
+                const targetTab = prev.details.tabs[index]!;
+                const targetIsLocalServicePreview = isLocalServicePreviewDetailsTab(targetTab);
 
-                // Revert the tab into the preview slot (unpinned + preview) and preserve the
-                // invariant that only one preview tab exists at a time.
+                // Revert the tab into the preview slot (unpinned + preview). Regular file-style
+                // previews preserve the single-slot invariant; local service previews can coexist
+                // because multiple dev servers are a first-class session resource.
                 const nextTabsWithTarget = prev.details.tabs.map((t, i) => (i === index
                     ? { ...t, isPinned: false, isPreview: true }
                     : t));
 
                 const removedPreviewKeys = new Set<string>();
-                for (const tab of nextTabsWithTarget) {
-                    if (tab.key === action.tabKey) continue;
-                    if (tab.isPinned) continue;
-                    if (!tab.isPreview) continue;
-                    removedPreviewKeys.add(tab.key);
+                if (!targetIsLocalServicePreview) {
+                    for (const tab of nextTabsWithTarget) {
+                        if (tab.key === action.tabKey) continue;
+                        if (tab.isPinned) continue;
+                        if (!tab.isPreview) continue;
+                        if (isLocalServicePreviewDetailsTab(tab)) continue;
+                        removedPreviewKeys.add(tab.key);
+                    }
                 }
 
                 let nextTabs = nextTabsWithTarget;

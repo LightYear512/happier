@@ -160,13 +160,16 @@ import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit
 import { resolvePaneLayout } from '@/components/ui/panels/paneBreakpoints';
 import { PANE_SIZING_DEFAULTS } from '@/components/appShell/panes/layout/paneSizing';
 import { resolveMultiPaneDeviceType } from '@/components/appShell/panes/layout/resolveMultiPaneDeviceType';
-import type { SessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import {
+    createLocalServicePreviewDetailsTabResolver,
+    type SessionPaneUrlState,
+} from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { useSessionPaneUrlSync } from '@/components/sessions/panes/url/useSessionPaneUrlSync';
 import { SessionResumeProvider } from '@/components/sessions/model/SessionResumeContext';
 import { useSessionResumeRequestListener } from '@/components/sessions/model/sessionResumeRequests';
 import { useDirectSessionTakeover } from '@/components/sessions/model/useDirectSessionTakeover';
 import { useDirectSessionRuntime } from '@/components/sessions/model/useDirectSessionRuntime';
-import { listLocalServicePreviewPayloads } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
+import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
 import { listOpenApprovalArtifactsForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
@@ -453,8 +456,11 @@ export const SessionView = React.memo((props: SessionViewProps) => {
     const { messages: pendingMessages } = useSessionPendingMessages(sessionId);
     const { messages: committedMessages } = useSessionMessages(sessionId);
     const localServicePreviews = React.useMemo(
-        () => listLocalServicePreviewPayloads(committedMessages),
-        [committedMessages],
+        () => listLocalServicePreviewPayloadsFromSources({
+            metadata: session?.metadata ?? null,
+            messages: committedMessages,
+        }),
+        [committedMessages, session?.metadata],
     );
     const subagentSourceMessages = useSessionSubagentSourceMessages(sessionId);
     const directSessionRuntime = useDirectSessionRuntime({
@@ -968,14 +974,41 @@ function SessionViewLoaded({
         return buildSessionHref(sessionId, suffix);
     }, [buildSessionHref, sessionId]);
 
+    const { ids: committedMessageIds, isLoaded } = useSessionTranscriptIds(sessionId);
+    const { messages: committedMessages } = useSessionMessages(sessionId);
+    const localServicePreviewDetailsTabResolver = React.useMemo(
+        () => createLocalServicePreviewDetailsTabResolver(listLocalServicePreviewPayloadsFromSources({
+            metadata: session?.metadata ?? null,
+            messages: committedMessages,
+        })),
+        [committedMessages, session?.metadata],
+    );
+
     useSessionPaneUrlSync({
         enabled: paneUrlSyncRouteActive && multiPaneEnabled && Platform.OS === 'web',
         scopeKey: paneScopeId,
         scopeState: pane.scopeState,
         urlState: paneUrlState,
         pane,
+        resolveLocalServicePreviewDetailsTab: localServicePreviewDetailsTabResolver,
         setParams: typeof (router as any)?.setParams === 'function' ? (router as any).setParams.bind(router) : null,
     });
+
+    React.useEffect(() => {
+        if (Platform.OS === 'web') return;
+        if (paneUrlState?.details?.kind !== 'localServicePreview') return;
+
+        const tab = localServicePreviewDetailsTabResolver(paneUrlState.details.resourceId ?? '');
+        if (!tab) return;
+        if (pane.scopeState?.details?.activeTabKey === tab.key) return;
+
+        pane.openDetailsTab(tab, { intent: 'preview' });
+    }, [
+        localServicePreviewDetailsTabResolver,
+        pane,
+        pane.scopeState?.details?.activeTabKey,
+        paneUrlState?.details,
+    ]);
 
     // Session preference: optionally open the right sidebar by default (files tab) when
     // entering a session for the first time on this device.
@@ -1002,8 +1035,6 @@ function SessionViewLoaded({
     ]);
     const [message, setMessage] = React.useState('');
     const realtimeStatus = useRealtimeStatus();
-    const { ids: committedMessageIds, isLoaded } = useSessionTranscriptIds(sessionId);
-    const { messages: committedMessages } = useSessionMessages(sessionId);
     const pendingPermissionRequests = React.useMemo(
         () => listPendingPermissionRequests(session, committedMessages),
         [committedMessages, session],

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const relayFeatureState = vi.hoisted(() => ({
     enabled: false,
@@ -38,14 +38,17 @@ function installWindow(href: string) {
 
 installSessionDetailsPanelCommonModuleMocks({
     storage: async (importOriginal) => {
-        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        const {
+            createStorageModuleMock,
+            createUseLocalSettingMock,
+            createUseLocalSettingMutableMock,
+        } = await import('@/dev/testkit/mocks/storage');
+        const useLocalSetting = createUseLocalSettingMock();
         return createStorageModuleMock({
             importOriginal,
             overrides: {
-                useLocalSetting: ((key: string) => {
-                    return null;
-                }) as any,
-                useLocalSettingMutable: (() => [false, vi.fn()]) as any,
+                useLocalSetting,
+                useLocalSettingMutable: createUseLocalSettingMutableMock(useLocalSetting),
             },
         });
     },
@@ -154,7 +157,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
 
         expect(screen.getTextContent()).toContain('Preview app');
-        expect(screen.findByTestId('session-details-tab-unpin-localServicePreview_preview_1')).toBeNull();
+        expect(screen.findByTestId('session-details-tab-unpin-localServicePreview_preview_1')).toBeTruthy();
         expect(screen.findByTestId('session-details-tab-pin-localServicePreview_preview_1')).toBeNull();
         expect(screen.findByTestId('session-details-tab-close-localServicePreview_preview_1')).toBeTruthy();
         expect(screen.getTextContent()).toContain('http://127.0.0.1:3000');
@@ -167,6 +170,47 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(String(iframe.props.src)).not.toContain('route_1');
         expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
         expect(serverFetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('prefers a server-routed iframe preview for loopback web origins when relay is enabled', async () => {
+        installWindow('http://localhost:8081/session/s1');
+        relayFeatureState.enabled = true;
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+
+        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        const iframe = screen.findByType('iframe');
+        expect(String(iframe.props.src)).toBe('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
+        expect(String(iframe.props.src)).not.toContain('127.0.0.1:3000');
+        expect(iframe.props.sandbox).toContain('allow-same-origin');
+        expect(setDetailsTabStateSpy).toHaveBeenCalledWith(
+            'localServicePreview:preview_1',
+            { previewDisplayUrl: 'https://preview-route.example.test/dashboard' },
+        );
+        expect(serverFetchSpy).toHaveBeenCalledWith(
+            '/v1/sessions/s1/dev-preview/machine-1/route_1/token',
+            { method: 'POST' },
+        );
+    });
+
+    it('falls back to same-machine loopback preview when relay resolution fails', async () => {
+        installWindow('http://localhost:8081/session/s1');
+        relayFeatureState.enabled = true;
+        serverFetchSpy.mockResolvedValue({ ok: false, status: 503, json: async () => ({}) });
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+
+        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        const iframe = screen.findByType('iframe');
+        expect(iframe.props.src).toBe('http://127.0.0.1:3000/dashboard');
+        expect(iframe.props.sandbox).toBeUndefined();
+        expect(screen.getTextContent()).toContain('http://127.0.0.1:3000');
+        expect(serverFetchSpy).toHaveBeenCalledWith(
+            '/v1/sessions/s1/dev-preview/machine-1/route_1/token',
+            { method: 'POST' },
+        );
     });
 
     it('renders a server-routed iframe preview for host-namespaced remote web origins when relay is enabled', async () => {
@@ -187,7 +231,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(String(iframe.props.src)).not.toContain('3000');
         expect(setDetailsTabStateSpy).toHaveBeenCalledWith(
             'localServicePreview:preview_1',
-            { previewDisplayUrl: 'https://preview-route.example.test/dashboard?previewToken=preview_token_1' },
+            { previewDisplayUrl: 'https://preview-route.example.test/dashboard' },
         );
         expect(iframe.props['data-testid']).toBe('session.localServicePreview.iframe');
         expect(iframe.props.sandbox).toContain('allow-scripts');
@@ -204,7 +248,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         relayFeatureState.enabled = true;
         detailsTabState.value = {
             'localServicePreview:preview_1': {
-                previewDisplayUrl: 'https://preview-route.example.test/dashboard?previewToken=preview_token_1',
+                previewDisplayUrl: 'https://preview-route.example.test/dashboard',
             },
         };
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
@@ -212,7 +256,8 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
 
         expect(screen.getTextContent()).toContain('Preview app');
-        expect(screen.getTextContent()).toContain('https://preview-route.example.test/dashboard?previewToken=preview_token_1');
+        expect(screen.getTextContent()).toContain('https://preview-route.example.test/dashboard');
+        expect(screen.getTextContent()).not.toContain('previewToken=preview_token_1');
         expect(screen.getTextContent()).not.toContain('http://127.0.0.1:3000');
     });
 
@@ -225,7 +270,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         await flushHookEffects({ cycles: 1, turns: 2 });
         expect(setDetailsTabStateSpy).toHaveBeenCalledWith(
             'localServicePreview:preview_1',
-            { previewDisplayUrl: 'https://preview-route.example.test/dashboard?previewToken=preview_token_1' },
+            { previewDisplayUrl: 'https://preview-route.example.test/dashboard' },
         );
 
         setDetailsTabStateSpy.mockClear();
