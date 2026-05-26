@@ -1726,6 +1726,13 @@ export {
   type LocalServicePreviewSource,
   type LocalServicePreviewV1,
 } from './structuredMessages/localServicePreviewV1.js';
+export {
+  LOCAL_SERVICE_PREVIEW_METADATA_MAX_PREVIEWS,
+  LocalServicePreviewsMetadataV1Schema,
+  readLocalServicePreviewsFromSessionMetadata,
+  writeLocalServicePreviewToSessionMetadata,
+  type LocalServicePreviewsMetadataV1,
+} from './structuredMessages/localServicePreviewMetadataV1.js';
 
 export {
   ParticipantRecipientV1Schema,
