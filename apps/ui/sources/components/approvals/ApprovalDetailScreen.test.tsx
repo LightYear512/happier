@@ -110,6 +110,18 @@ function createSessionFixtures() {
 
 function createMachineFixtures() {
     return {
+        'machine-stale': createMachineFixture({
+            id: 'machine-stale',
+            replacedByMachineId: 'machine-target',
+            metadata: {
+                displayName: 'Old workstation',
+                host: 'tester.local',
+                platform: 'darwin',
+                happyCliVersion: '0.0.0-test',
+                happyHomeDir: '/Users/leeroy/.happy-dev',
+                homeDir: '/Users/leeroy',
+            },
+        }),
         'machine-target': createMachineFixture({
             id: 'machine-target',
             metadata: {
@@ -139,6 +151,18 @@ function createStorageState() {
             }),
         },
         machines: {
+            'machine-stale': createMachineFixture({
+                id: 'machine-stale',
+                replacedByMachineId: 'machine-target',
+                metadata: {
+                    displayName: 'Old workstation',
+                    host: 'tester.local',
+                    platform: 'darwin',
+                    happyCliVersion: '0.0.0-test',
+                    happyHomeDir: '/Users/leeroy/.happy-dev',
+                    homeDir: '/Users/leeroy',
+                },
+            }),
             'machine-target': createMachineFixture({
                 id: 'machine-target',
                 active: true,
