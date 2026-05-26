@@ -1,7 +1,7 @@
 ---
 name: happier-release-promote
 description: Promote a Happier release only after validation and human review approval. Runs release dry-run first, requires explicit human approval for external side effects, then executes preview or production promotion through the repo release orchestrator.
-metadata: {"openclaw":{"homepage":"https://github.com/happier-dev/happier"}}
+metadata: {"openclaw":{"homepage":"https://github.com/LightYear512/happier"}}
 ---
 
 # Happier Release Promote
