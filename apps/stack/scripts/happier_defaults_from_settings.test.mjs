@@ -43,6 +43,38 @@ function stackRootDirFromMeta(metaUrl) {
   return dirname(scriptsDir);
 }
 
+test('hstack happier defaults to hosted cloud when no CLI settings exist', async (t) => {
+  const rootDir = stackRootDirFromMeta(import.meta.url);
+  const fixture = await createMonorepoFixture(t, { prefix: 'hstack-happier-no-settings-cloud-default-' });
+
+  const homeDir = join(fixture.dir, '.happy-home');
+  await mkdir(homeDir, { recursive: true });
+
+  const env = {
+    ...process.env,
+    HAPPIER_STACK_STACK: 'test-stack',
+    HAPPIER_STACK_SERVER_PORT: '53288',
+    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
+    HAPPIER_STACK_REPO_DIR: fixture.dir,
+    HAPPIER_HOME_DIR: homeDir,
+  };
+  delete env.HAPPIER_SERVER_URL;
+  delete env.HAPPIER_PUBLIC_SERVER_URL;
+  delete env.HAPPIER_LOCAL_SERVER_URL;
+  delete env.HAPPIER_WEBAPP_URL;
+  delete env.HAPPIER_ACTIVE_SERVER_ID;
+
+  const res = await runNodeCapture([hstackBinPath(rootDir), 'happier'], { cwd: rootDir, env });
+  assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
+  const parsed = JSON.parse(res.stdout.trim());
+  assert.equal(parsed.serverUrl, 'https://api.happier.dev');
+  assert.equal(parsed.webappUrl, 'https://app.happier.dev');
+  assert.equal(parsed.publicServerUrl, null);
+  assert.equal(parsed.localServerUrl, null);
+  assert.equal(parsed.activeServerId, null);
+  assert.equal(parsed.homeDir, homeDir);
+});
+
 test('hstack happier defaults serverUrl/webappUrl from existing CLI settings (no localServerUrl)', async (t) => {
   const rootDir = stackRootDirFromMeta(import.meta.url);
   const fixture = await createMonorepoFixture(t, { prefix: 'hstack-happier-settings-defaults-' });
