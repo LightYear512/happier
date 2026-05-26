@@ -9,7 +9,25 @@ import {
 } from './listPendingSessionRequests';
 
 describe('derivePendingRequestFlagsFromSession', () => {
-    it('uses projected pending request counts without scanning large transcript message lists', () => {
+    it('uses projected pending request counts when no transcript request states exist', () => {
+        const session = createSessionFixture({
+            active: true,
+            updatedAt: 10_000,
+            agentState: {
+                requests: {},
+                completedRequests: null,
+            },
+            pendingPermissionRequestCount: 0,
+            pendingUserActionRequestCount: 0,
+        });
+
+        expect(derivePendingRequestFlagsFromSession(session, [])).toEqual({
+            hasPendingPermissionRequests: false,
+            hasPendingUserActionRequests: false,
+        });
+    });
+
+    it('does not let projected pending request counts hide transcript pending requests', () => {
         const messages: Message[] = Array.from({ length: 1_000 }, (_, index) => ({
             id: `msg-${index}`,
             kind: 'tool-call',
@@ -44,7 +62,7 @@ describe('derivePendingRequestFlagsFromSession', () => {
         });
 
         expect(derivePendingRequestFlagsFromSession(session, messages)).toEqual({
-            hasPendingPermissionRequests: false,
+            hasPendingPermissionRequests: true,
             hasPendingUserActionRequests: false,
         });
     });
