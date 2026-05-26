@@ -99,6 +99,7 @@ installSessionRouteCommonModuleMocks({
   },
   storageModule: async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
     return createStorageModuleMock({
       importOriginal,
       overrides: {
@@ -110,13 +111,12 @@ installSessionRouteCommonModuleMocks({
           }),
         } as any,
         useSession: () => mockSession,
+        useSessionServerId: () => mockSearchParams.serverId ?? 'server-a',
         useSessionTranscriptIds: () => ({ ids: [], isLoaded: mockMessagesLoaded }),
         useSessionServerId: () => mockSession?.serverId ?? (typeof mockSearchParams?.serverId === 'string' ? mockSearchParams.serverId : null),
         useMessage: (_sessionId: string, messageId: string) => mockMessagesById[messageId] ?? mockMessage,
         useResolvedSessionMessageRouteId: (_sessionId: string, _routeMessageId: string) => mockResolvedRouteMessageId,
-        // Boundary fixture: this route only needs falsy local settings while preserving the hook signature.
-        useLocalSetting: (<K extends keyof LocalSettings>(_name: K) =>
-          false as unknown as LocalSettings[K]) as typeof import('@/sync/domains/state/storage')['useLocalSetting'],
+        useLocalSetting: <K extends keyof LocalSettings>(name: K): LocalSettings[K] => localSettingsDefaults[name],
       },
     });
   },

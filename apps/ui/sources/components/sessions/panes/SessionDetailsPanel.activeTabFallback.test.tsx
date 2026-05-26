@@ -112,13 +112,7 @@ describe('SessionDetailsPanel (active tab fallback)', () => {
         expect(firstTab).toBeTruthy();
         expect(secondTab).toBeTruthy();
 
-        const firstStyles = firstTab?.props.style;
-        const secondStyles = secondTab?.props.style;
-
-        const hasInsetBg = (styleProp: any) =>
-            Array.isArray(styleProp)
-            && styleProp.some((s: any) => s && s.backgroundColor === detailsPanelTheme.colors.surface.inset);
-        expect(hasInsetBg(firstStyles)).toBe(false);
-        expect(hasInsetBg(secondStyles)).toBe(true);
+        expect(firstTab?.props.accessibilityState?.selected).toBe(false);
+        expect(secondTab?.props.accessibilityState?.selected).toBe(true);
     });
 });

@@ -2,7 +2,6 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import {
-    createStorageStoreMock,
     createThemeFixture,
     flushHookEffects,
     renderScreen,
@@ -85,34 +84,55 @@ installSessionRouteCommonModuleMocks({
             confirmResult: true,
         }).module;
     },
-    storageModule: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            storage: createStorageStoreMock({
-                sessions: storageFixture.sessionById as any,
-            }),
-            useSessions: () => (storageFixture.isStorageDataReady ? [] : null),
-            useSession: (id: string) => storageFixture.sessionById[id] ?? null,
-            useSessionRpcAvailabilityState: (id: string) => ({
-                sessionExists: Boolean(storageFixture.sessionById[id]),
-                sessionRpcAvailable: Boolean(storageFixture.sessionById[id]),
-            }),
-            useSessionWorkspacePath: (id: string) => (
-                storageFixture.sessionById[id]?.metadata?.path ?? null
-            ),
-            useSessionProjectScmInFlightOperation: () => null,
-            // Narrow test fixture: this route only reads repo/branch/totals from the snapshot.
-            useSessionProjectScmSnapshot: (() => ({
-                projectKey: 'session-1',
-                fetchedAt: 0,
-                entries: [],
-                repo: { isRepo: true, rootPath: '/repo' },
-                branch: { head: 'main', detached: false },
-                hasConflicts: false,
-                totals: { includedFiles: 0, pendingFiles: 0 },
-            })) as any,
-            useSetting: () => true,
-            useLocalSetting: (() => null) as any,
+    storageModule: async (importOriginal) => {
+        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleMock({
+            importOriginal,
+            overrides: {
+                storage: {
+                    getState: () => ({
+                        sessions: {
+                            'session-1': {
+                                id: 'session-1',
+                                active: true,
+                                metadata: {
+                                    path: '/repo',
+                                    machineId: 'machine-1',
+                                    host: 'localhost',
+                                },
+                            } as any,
+                        },
+                        machines: {
+                            'machine-1': {
+                                id: 'machine-1',
+                                active: true,
+                                activeAt: 1,
+                                metadata: {},
+                            },
+                        },
+                    }),
+                } as any,
+                useSessions: () => (storageFixture.isStorageDataReady ? [] : null),
+                useSession: (id: string) => storageFixture.sessionById[id] ?? null,
+                useSessionRpcAvailabilityState: (id: string | null) => ({
+                    sessionExists: Boolean(id ? storageFixture.sessionById[id] : null),
+                    sessionRpcAvailable: true,
+                }),
+                useSessionWorkspacePath: (id: string | null) => (id ? storageFixture.sessionById[id]?.metadata?.path ?? null : null),
+                useSessionProjectScmInFlightOperation: () => null,
+                // Narrow test fixture: this route only reads repo/branch/totals from the snapshot.
+                useSessionProjectScmSnapshot: (() => ({
+                    projectKey: 'session-1',
+                    fetchedAt: 0,
+                    entries: [],
+                    repo: { isRepo: true, rootPath: '/repo' },
+                    branch: { head: 'main', detached: false },
+                    hasConflicts: false,
+                    totals: { includedFiles: 0, pendingFiles: 0 },
+                })) as any,
+                useSetting: () => true,
+                useLocalSetting: (() => null) as any,
+            },
         });
     },
 });
