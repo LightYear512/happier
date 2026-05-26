@@ -35,11 +35,13 @@ async function createActiveServerDirWithProfile(params: Readonly<{
 }>): Promise<string> {
   const activeServerDir = await createTempDir(`happier-switch-profile-${params.backendId}-`);
   tempDirs.add(activeServerDir);
-  const profileDir = join(activeServerDir, 'profiles', params.backendId, params.profileId);
+  const profileDir = join(activeServerDir, 'profiles', 'native-cli', params.backendId, params.profileId);
   mkdirSync(profileDir, { recursive: true });
   writeFileSync(
     join(profileDir, params.backendId === 'claude' ? '.credentials.json' : 'auth.json'),
-    '{}',
+    params.backendId === 'claude'
+      ? JSON.stringify({ accessToken: 'test-claude-token' })
+      : JSON.stringify({ tokens: { access_token: 'test-codex-token' } }),
     'utf8',
   );
   return activeServerDir;

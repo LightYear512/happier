@@ -72,7 +72,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'hello world', localId: 'local-1' },
+        message: { text: 'hello world', localId: 'local-1', meta: {} },
         mode: { permissionMode: 'default' },
       },
     ]);
@@ -95,7 +95,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'approve this', localId: 'local-2' },
+        message: { text: 'approve this', localId: 'local-2', meta: { permissionMode: 'acceptEdits' } },
         mode: { permissionMode: 'safe-yolo' },
       },
     ]);
@@ -122,7 +122,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'approve this', localId: 'local-rebind-1' },
+        message: { text: 'approve this', localId: 'local-rebind-1', meta: { permissionMode: 'acceptEdits' } },
         mode: { permissionMode: 'safe-yolo' },
       },
     ]);
@@ -163,7 +163,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'clear',
-        message: { text: '/clear', localId: 'local-3' },
+        message: { text: '/clear', localId: 'local-3', meta: {} },
         mode: { permissionMode: 'default' },
       },
     ]);
@@ -185,7 +185,11 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'hello world', localId: 'local-4' },
+        message: {
+          text: 'hello world',
+          localId: 'local-4',
+          meta: { appendSystemPrompt: 'Use the latest project conventions.' },
+        },
         mode: {
           permissionMode: 'default',
           appendSystemPrompt: 'Use the latest project conventions.',

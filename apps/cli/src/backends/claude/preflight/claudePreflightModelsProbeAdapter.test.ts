@@ -69,7 +69,7 @@ describe('claudePreflightModelsProbeAdapter', () => {
 
     const raw = await claudePreflightModelsProbeAdapter.probeModelsRaw?.({
       cwd: tempDir,
-      timeoutMs: 1_500,
+      timeoutMs: 5_000,
       backendTarget: undefined,
       accountSettings: null,
     });

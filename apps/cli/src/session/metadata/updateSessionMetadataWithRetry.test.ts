@@ -47,6 +47,7 @@ vi.mock('@/session/transport/socket/waitForSocketConnect', () => ({
 
 vi.mock('@/session/transport/shared/sessionTimeouts', () => ({
   resolveSessionControlSocketConnectTimeoutMs: () => 10,
+  resolveSessionControlSocketAckTimeoutMs: () => 10,
 }));
 
 describe('updateSessionMetadataWithRetry', () => {

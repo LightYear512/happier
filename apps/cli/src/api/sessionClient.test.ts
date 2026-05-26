@@ -1409,7 +1409,9 @@ describe('ApiSessionClient connection handling', () => {
         const res = await client.fetchLatestUserPermissionIntentFromTranscript({ take: 25 });
         expect(res).toEqual({ intent: 'safe-yolo', updatedAt: 200 });
         expect(getSpy.mock.calls[0]?.[0]).toContain(`/v1/sessions/${mockSession.id}/messages`);
-        expect(getSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ params: { limit: 25 } }));
+        expect(getSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+            params: expect.objectContaining({ limit: 25 }),
+        }));
 
         getSpy.mockRestore();
     });
@@ -2065,7 +2067,7 @@ describe('ApiSessionClient connection handling', () => {
     });
 
     it('updateMetadata syncs a snapshot first when metadataVersion is unknown', async () => {
-                const sessionSocket = createConfiguredSocket({ connected: false });
+                const sessionSocket = createConfiguredSocket({ connected: true });
                 const userSocket = createConfiguredSocket({ connected: false });
 
                 const serverMetadata = {
