@@ -1,4 +1,5 @@
-import { Platform, StyleSheet } from 'react-native';
+import { Platform } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 const THEME_HAIRLINE_WIDTH = StyleSheet.hairlineWidth || 1;
 const THEME_VISIBLE_BORDER_WIDTH = Platform.OS === 'ios' ? 1 : THEME_HAIRLINE_WIDTH;

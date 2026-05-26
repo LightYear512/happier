@@ -395,6 +395,22 @@ vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({
     }),
 }));
 
+vi.mock('@/hooks/server/useDaemonScopedMachineCapabilitiesCache', () => ({
+    useDaemonScopedMachineCapabilitiesCache: () => ({
+        state: {
+            status: 'loaded',
+            snapshot: {
+                response: {
+                    protocolVersion: 1 as const,
+                    results: machineCapabilitiesResultsState.value,
+                },
+            },
+        },
+        refresh: machineCapabilitiesCacheRefreshMock,
+    }),
+    resolveDaemonCapabilitiesCacheKeySalt: () => 'test',
+}));
+
 vi.mock('@/components/sessions/new/hooks/useNewSessionCapabilitiesPrefetch', () => ({
     useNewSessionCapabilitiesPrefetch: () => {},
 }));

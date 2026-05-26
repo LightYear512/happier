@@ -84,12 +84,12 @@ export function ProfileAuthPrompt(props: ProfileAuthPromptProps) {
                         {props.backendId === 'codex' ? 'Waiting for Codex device code' : 'Waiting for Claude login link'}
                     </Text>
                     <Text style={styles.authPromptBody}>
-                        Happier is starting the provider CLI on this machine.
+                        {t('profiles.machineLogin.subtitle')}
                     </Text>
                 </>
             ) : displayState.kind === 'device-code' ? (
                 <>
-                    <Text style={styles.authPromptTitle}>Enter this Codex code</Text>
+                    <Text style={styles.authPromptTitle}>{t('connectedServices.deviceAuth.userCode')}</Text>
                     <View testID="profile-provision-device-code" style={styles.valueBox}>
                         <Text selectable style={styles.deviceCodeText}>{displayState.deviceCode}</Text>
                     </View>
@@ -98,8 +98,8 @@ export function ProfileAuthPrompt(props: ProfileAuthPromptProps) {
                     </View>
                     <View style={styles.actionRow}>
                         <RoundButton testID="profile-provision-open-link" title={t('common.open')} size="normal" onPress={() => props.onOpen(displayState.loginUrl)} />
-                        <RoundButton testID="profile-provision-copy-link" title="Copy URL" size="normal" onPress={() => props.onCopy(displayState.loginUrl)} />
-                        <RoundButton testID="profile-provision-copy-code" title="Copy Code" size="normal" onPress={() => props.onCopy(displayState.deviceCode)} />
+                        <RoundButton testID="profile-provision-copy-link" title={t('common.copyWithLabel', { label: 'URL' })} size="normal" onPress={() => props.onCopy(displayState.loginUrl)} />
+                        <RoundButton testID="profile-provision-copy-code" title={t('common.copyWithLabel', { label: 'Code' })} size="normal" onPress={() => props.onCopy(displayState.deviceCode)} />
                     </View>
                 </>
             ) : (
@@ -112,7 +112,7 @@ export function ProfileAuthPrompt(props: ProfileAuthPromptProps) {
                     </View>
                     <View style={styles.actionRow}>
                         <RoundButton testID="profile-provision-open-link" title={t('common.open')} size="normal" onPress={() => props.onOpen(displayState.loginUrl)} />
-                        <RoundButton testID="profile-provision-copy-link" title="Copy URL" size="normal" onPress={() => props.onCopy(displayState.loginUrl)} />
+                        <RoundButton testID="profile-provision-copy-link" title={t('common.copyWithLabel', { label: 'URL' })} size="normal" onPress={() => props.onCopy(displayState.loginUrl)} />
                     </View>
                 </>
             )}

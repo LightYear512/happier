@@ -2,6 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { createSyncOpsModuleMock, renderScreen } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { installSessionGitPaneCommonModuleMocks } from './sessionGitPaneTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -53,6 +54,30 @@ vi.mock('@/sync/ops', async (importOriginal) => {
     });
 });
 
+function createGitCommitTabTheme() {
+    return createThemeFixture({
+        colors: {
+            border: { default: '#ddd', surface: '#ddd' },
+            divider: '#ddd',
+            surface: { base: '#fff', inset: '#f6f6f6', elevated: '#fff' },
+            surfaceHigh: '#f6f6f6',
+            text: {
+                primary: '#000',
+                secondary: '#666',
+                link: '#09f',
+                destructive: '#c00',
+            },
+            textSecondary: '#666',
+            textLink: '#09f',
+            state: {
+                success: { foreground: '#0a0' },
+                neutral: { foreground: '#f90' },
+                danger: { foreground: '#c00' },
+            },
+        },
+    });
+}
+
 describe('SessionRightPanelGitCommitTab (stash summary)', () => {
     it('renders stash summary row immediately from the snapshot stash count before the live stash RPC resolves', async () => {
         stashListMock.mockResolvedValue({
@@ -66,7 +91,7 @@ describe('SessionRightPanelGitCommitTab (stash summary)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
 
         const screen = await renderScreen(<SessionRightPanelGitCommitTab
-                    theme={{ colors: { divider: '#ddd', surface: '#fff', surfaceHigh: '#f6f6f6', text: '#000', textSecondary: '#666', success: '#0a0', warning: '#f90', textLink: '#09f', danger: '#c00' } }}
+                    theme={createGitCommitTabTheme() as any}
                     sessionId="s1"
                     sessionPath="/workspace"
                     backendLabel="Git"
@@ -151,7 +176,7 @@ describe('SessionRightPanelGitCommitTab (stash summary)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
 
         const screen = await renderScreen(<SessionRightPanelGitCommitTab
-                    theme={{ colors: { divider: '#ddd', surface: '#fff', surfaceHigh: '#f6f6f6', text: '#000', textSecondary: '#666', success: '#0a0', warning: '#f90', textLink: '#09f', danger: '#c00' } }}
+                    theme={createGitCommitTabTheme() as any}
                     sessionId="s1"
                     sessionPath="/workspace"
                     backendLabel="Git"
@@ -221,7 +246,7 @@ describe('SessionRightPanelGitCommitTab (stash summary)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
 
         const screen = await renderScreen(<SessionRightPanelGitCommitTab
-                    theme={{ colors: { divider: '#ddd', surface: '#fff', surfaceHigh: '#f6f6f6', text: '#000', textSecondary: '#666', success: '#0a0', warning: '#f90', textLink: '#09f', danger: '#c00' } }}
+                    theme={createGitCommitTabTheme() as any}
                     sessionId="s1"
                     sessionPath="/workspace"
                     backendLabel="Git"

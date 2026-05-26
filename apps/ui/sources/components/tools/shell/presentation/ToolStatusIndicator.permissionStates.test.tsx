@@ -32,6 +32,10 @@ installToolShellPresentationCommonModuleMocks({
     },
 });
 
+vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
+    ActivitySpinner: (props: any) => React.createElement('ActivityIndicator', props),
+}));
+
 describe('ToolStatusIndicator (permission states)', () => {
     it('renders lock icon when waiting for permission', async () => {
         const { ToolStatusIndicator } = await import('./ToolStatusIndicator');

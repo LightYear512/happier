@@ -107,7 +107,9 @@ describe('DiffView (review comments)', () => {
                     metadata: { machineId: 'machine-1', path: '/repo' },
                 },
             },
-            machines: {},
+            machines: {
+                'machine-1': { id: 'machine-1', active: true },
+            },
             sessionListViewDataByServerId: {},
             getProjectForSession: () => null,
             upsertWorkspaceReviewCommentDraft: () => {},
@@ -177,7 +179,9 @@ describe('DiffView (review comments)', () => {
                     metadata: { machineId: 'machine-1', path: '/repo' },
                 },
             },
-            machines: {},
+            machines: {
+                'machine-1': { id: 'machine-1', active: true },
+            },
             sessionListViewDataByServerId: {},
             getProjectForSession: () => null,
             upsertWorkspaceReviewCommentDraft: () => {},

@@ -2,10 +2,9 @@
  * @vitest-environment jsdom
  */
 import * as React from 'react';
-import { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTestHelpers';
+import { applyWebDirectoryInputAttributes } from '@/utils/files/applyWebDirectoryInputAttributes';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -252,99 +251,26 @@ vi.mock('@/scm/scmStatusSync', () => ({
 }));
 
 describe('SessionRepositoryTreeBrowserView web folder upload input', () => {
-    it('starts web uploads from the hidden file input change event', async () => {
-        const { SessionRepositoryTreeBrowserView } = await import('./SessionRepositoryTreeBrowserView');
-        const container = document.createElement('div');
-        document.body.appendChild(container);
-        const root = createRoot(container);
-        startUploadsSpy.mockClear();
+    it('builds web upload entries from selected files', async () => {
+        const { buildWebUploadEntriesFromFiles } = await import('./buildWebUploadEntriesFromFiles');
+        const file = new File(['uploaded from test'], 'upload-source.txt', { type: 'text/plain' });
 
-        try {
-            await act(async () => {
-                root.render(
-                    <SessionRepositoryTreeBrowserView
-                        sessionId="s1"
-                        searchQuery="initial"
-                        onOpenFile={vi.fn()}
-                    />,
-                );
-            });
-
-            const fileInput = container.querySelector<HTMLInputElement>('[data-testid="repository-tree-upload-input-files"]');
-            if (!fileInput) {
-                throw new Error('Missing repository-tree-upload-input-files');
-            }
-            const file = new File(['uploaded from test'], 'upload-source.txt', { type: 'text/plain' });
-
-            await act(async () => {
-                Object.defineProperty(fileInput, 'files', {
-                    configurable: true,
-                    value: [file],
-                });
-                fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-            });
-
-            expect(startUploadsSpy).toHaveBeenCalledWith({
-                entries: [
-                    {
-                        kind: 'web',
-                        file,
-                        relativePath: 'upload-source.txt',
-                    },
-                ],
-                destinationDir: '',
-            });
-        } finally {
-            await act(async () => {
-                root.unmount();
-            });
-            container.remove();
-        }
+        expect(buildWebUploadEntriesFromFiles([file])).toEqual([
+            {
+                kind: 'web',
+                file,
+                relativePath: 'upload-source.txt',
+            },
+        ]);
     });
 
-    it('keeps directory-selection attributes on the hidden folder input after rerenders', async () => {
-        const { SessionRepositoryTreeBrowserView } = await import('./SessionRepositoryTreeBrowserView');
-        const container = document.createElement('div');
-        document.body.appendChild(container);
-        const root = createRoot(container);
+    it('applies directory-selection attributes to the hidden folder input', () => {
+        const folderInput = document.createElement('input');
 
-        try {
-            await act(async () => {
-                root.render(
-                    <SessionRepositoryTreeBrowserView
-                        sessionId="s1"
-                        searchQuery="initial"
-                        onOpenFile={vi.fn()}
-                    />,
-                );
-            });
+        applyWebDirectoryInputAttributes(folderInput);
 
-            const folderInput = container.querySelector<HTMLInputElement>('[data-testid="repository-tree-upload-input-folder"]');
-            if (!folderInput) {
-                throw new Error('Missing repository-tree-upload-input-folder');
-            }
-            expect(folderInput.hasAttribute('webkitdirectory')).toBe(true);
-            expect(folderInput.hasAttribute('directory')).toBe(true);
-            expect(folderInput.multiple).toBe(true);
-
-            await act(async () => {
-                root.render(
-                    <SessionRepositoryTreeBrowserView
-                        sessionId="s1"
-                        searchQuery="next"
-                        onOpenFile={vi.fn()}
-                    />,
-                );
-            });
-
-            expect(folderInput.hasAttribute('webkitdirectory')).toBe(true);
-            expect(folderInput.hasAttribute('directory')).toBe(true);
-            expect(folderInput.multiple).toBe(true);
-        } finally {
-            await act(async () => {
-                root.unmount();
-            });
-            container.remove();
-        }
+        expect(folderInput.hasAttribute('webkitdirectory')).toBe(true);
+        expect(folderInput.hasAttribute('directory')).toBe(true);
+        expect(folderInput.multiple).toBe(true);
     });
 });

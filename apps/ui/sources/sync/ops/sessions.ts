@@ -544,9 +544,13 @@ export async function sessionAbort(sessionId: string): Promise<void> {
         {
             ...session,
             thinking: false,
+            optimisticThinkingAt: null,
+            thinkingGraceUntil: null,
             updatedAt: nowServerMs(),
         },
     ]);
+    storage.getState().clearSessionOptimisticThinking(sessionId);
+    storage.getState().clearSessionThinkingGrace(sessionId);
 }
 
 /**
@@ -659,9 +663,13 @@ export async function sessionDeny(
         {
             ...session,
             thinking: false,
+            optimisticThinkingAt: null,
+            thinkingGraceUntil: null,
             updatedAt: nowServerMs(),
         },
     ]);
+    storage.getState().clearSessionOptimisticThinking(sessionId);
+    storage.getState().clearSessionThinkingGrace(sessionId);
 }
 
 /**
