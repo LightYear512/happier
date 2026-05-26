@@ -137,14 +137,18 @@ describe('ProfileAuthPrompt', () => {
 
         const prompt = screen.findByTestId('profile-provision-auth-prompt') as unknown as RenderedNode;
         const seenTestIds = new Set<unknown>();
-        const actionTitles = prompt
+        const actionTestIds = prompt
             .findAll((node) => typeof node.props.testID === 'string' && typeof node.props.title === 'string')
             .filter((node) => {
                 if (seenTestIds.has(node.props.testID)) return false;
                 seenTestIds.add(node.props.testID);
                 return true;
             })
-            .map((node) => node.props.title);
-        expect(actionTitles).toEqual(['common.open', 'Copy URL', 'Copy Code']);
+            .map((node) => node.props.testID);
+        expect(actionTestIds).toEqual([
+            'profile-provision-open-link',
+            'profile-provision-copy-link',
+            'profile-provision-copy-code',
+        ]);
     });
 });
