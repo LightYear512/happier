@@ -75,7 +75,7 @@ function createVersionSlug(version) {
 }
 
 /**
- * @param {{ repoRoot: string; version: string; date?: string; sourceBranch?: string; worktreePath?: string; reviewSlug?: string; customChecks?: string[] }} input
+ * @param {{ repoRoot: string; version: string; date?: string; sourceBranch?: string; baselineRef?: string; worktreePath?: string; reviewSlug?: string; customChecks?: string[] }} input
  */
 export function createReleaseValidationWorkspacePlan(input) {
   const repoRoot = path.resolve(input.repoRoot);
@@ -84,6 +84,7 @@ export function createReleaseValidationWorkspacePlan(input) {
   const branchName = `release/v${normalizedVersion}/upstream-dev`;
   const date = input.date ?? new Date().toISOString().slice(0, 10);
   const sourceBranch = input.sourceBranch ?? 'dev';
+  const baselineRef = input.baselineRef ?? 'origin/preview';
   const worktreePath = path.resolve(input.worktreePath ?? path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${versionSlug}`));
   const reviewSlug = input.reviewSlug ?? `${date}-${versionSlug}-release-validation`;
   const reviewDir = path.join(worktreePath, '.project', 'reviews', reviewSlug);
@@ -98,12 +99,17 @@ export function createReleaseValidationWorkspacePlan(input) {
     date,
     branchName,
     sourceBranch,
+    baselineRef,
     worktreePath,
     reviewSlug,
     reviewDir,
     customChecks,
     customChecksCommand,
-    lanes: DEFAULT_LANES.map(([id, slug, scope]) => ({ id, slug, scope })),
+    lanes: DEFAULT_LANES.map(([id, slug, scope]) => ({
+      id,
+      slug,
+      scope: scope.replaceAll('origin/preview', baselineRef),
+    })),
     worktreeCommand: ['git', '-C', repoRoot, 'worktree', 'add', '-b', branchName, worktreePath, sourceBranch],
   };
 }
@@ -121,8 +127,9 @@ function runGitOptional(repoRoot, args) {
  * @param {ReturnType<typeof createReleaseValidationWorkspacePlan>} plan
  */
 export function collectBaselineMetadata(plan) {
-  const previewBase = runGitOptional(plan.repoRoot, ['rev-parse', 'origin/preview']);
-  const driftCount = runGitOptional(plan.repoRoot, ['rev-list', '--count', 'origin/preview..HEAD']);
+  const baselineRef = plan.baselineRef ?? 'origin/preview';
+  const previewBase = runGitOptional(plan.repoRoot, ['rev-parse', baselineRef]);
+  const driftCount = runGitOptional(plan.repoRoot, ['rev-list', '--count', `${baselineRef}..HEAD`]);
   const packageVersions = PACKAGE_VERSION_PATHS.map((packageDir) => {
     const packageJsonPath = path.join(plan.repoRoot, packageDir, 'package.json');
     if (!fs.existsSync(packageJsonPath)) {
@@ -193,6 +200,7 @@ export function renderTemplate(template, plan) {
     ['DATE', plan.date],
     ['BRANCH_NAME', plan.branchName],
     ['SOURCE_BRANCH', plan.sourceBranch],
+    ['BASELINE_REF', plan.baselineRef ?? 'origin/preview'],
     ['REPO_ROOT', plan.repoRoot],
     ['WORKTREE_PATH', plan.worktreePath],
     ['REVIEW_DIR', plan.reviewDir],
@@ -293,12 +301,13 @@ export function assertSafeToResume(plan) {
 }
 
 function parseArgs(argv) {
-  const args = { version: '', repoRoot: process.cwd(), date: undefined, dryRun: false, resume: false };
+  const args = { version: '', repoRoot: process.cwd(), date: undefined, baselineRef: undefined, dryRun: false, resume: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--version') args.version = argv[++i];
     else if (arg === '--repo-root') args.repoRoot = argv[++i];
     else if (arg === '--date') args.date = argv[++i];
+    else if (arg === '--baseline-ref') args.baselineRef = argv[++i];
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--resume') args.resume = true;
     else if (arg === '--help' || arg === '-h') args.help = true;
@@ -308,7 +317,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: node skills/happier-release-validation/scripts/bootstrap-release-validation.mjs --version 0.2.6 [--repo-root /path/to/remote-dev] [--date YYYY-MM-DD] [--dry-run] [--resume]\n\nCreates a release validation worktree and ignored .project/reviews tracking workspace. It never releases or promotes.`);
+  console.log(`Usage: node skills/happier-release-validation/scripts/bootstrap-release-validation.mjs --version 0.2.6 [--repo-root /path/to/remote-dev] [--date YYYY-MM-DD] [--baseline-ref origin/preview] [--dry-run] [--resume]\n\nCreates a release validation worktree and ignored .project/reviews tracking workspace. It never releases or promotes.`);
 }
 
 async function main() {
@@ -317,7 +326,7 @@ async function main() {
     printHelp();
     process.exit(args.help ? 0 : 1);
   }
-  const plan = createReleaseValidationWorkspacePlan({ repoRoot: args.repoRoot, version: args.version, date: args.date });
+  const plan = createReleaseValidationWorkspacePlan({ repoRoot: args.repoRoot, version: args.version, date: args.date, baselineRef: args.baselineRef });
   const hydratedPlan = {
     ...plan,
     metadata: collectBaselineMetadata(plan),
