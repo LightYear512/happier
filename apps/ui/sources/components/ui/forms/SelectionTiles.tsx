@@ -298,19 +298,19 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     title: {
         ...Typography.default('regular'),
-        fontSize: ITEM_TITLE_TEXT_METRICS.comfortable.fontSize,
+        ...ITEM_TITLE_TEXT_METRICS.comfortable,
         color: theme.colors.text.primary,
     },
     titleCompact: {
-        fontSize: ITEM_TITLE_TEXT_METRICS.compact.fontSize,
+        ...ITEM_TITLE_TEXT_METRICS.compact,
     },
     subtitle: {
         ...Typography.default(),
-        fontSize: ITEM_SUBTITLE_TEXT_METRICS.comfortable.fontSize,
+        ...ITEM_SUBTITLE_TEXT_METRICS.comfortable,
         color: theme.colors.text.secondary,
     },
     subtitleCompact: {
-        fontSize: ITEM_SUBTITLE_TEXT_METRICS.compact.fontSize,
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
         marginTop: 2,
     },
     badge: {

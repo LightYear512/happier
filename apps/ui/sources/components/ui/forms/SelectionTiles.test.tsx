@@ -42,6 +42,15 @@ vi.mock('@/constants/Typography', () => ({
 }));
 
 describe('SelectionTiles', () => {
+    function flattenStyle(style: unknown): Record<string, unknown> {
+        return Object.assign(
+            {},
+            ...(Array.isArray(style)
+                ? style.filter(Boolean)
+                : [style].filter(Boolean)),
+        );
+    }
+
     it('supports single selection mode', async () => {
         const onChange = vi.fn();
         const { SelectionTiles } = await import('./SelectionTiles');
@@ -179,6 +188,30 @@ describe('SelectionTiles', () => {
         });
 
         expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('uses explicit subtitle line heights to avoid vertical text clipping', async () => {
+        const onChange = vi.fn();
+        const { SelectionTiles } = await import('./SelectionTiles');
+
+        const screen = await renderScreen(<SelectionTiles
+            options={[
+                {
+                    id: 'voice_tool',
+                    title: 'Voice tool',
+                    subtitle: 'Supporting hint text that may wrap on landscape mobile viewports.',
+                },
+            ]}
+            value={null}
+            onChange={onChange}
+            testIdPrefix="line-height-select"
+        />);
+
+        const subtitle = screen.findAllByType('Text').find((node) =>
+            node.props?.children === 'Supporting hint text that may wrap on landscape mobile viewports.',
+        );
+        expect(subtitle).toBeTruthy();
+        expect(flattenStyle(subtitle?.props.style).lineHeight).toBe(20);
     });
 
     it('assigns stable tile test ids when a prefix is provided', async () => {

@@ -217,6 +217,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                         testID={`settings-actions:action:${entry.actionId}:summary`}
                         title={entry.title}
                         subtitle={entry.description ?? t('settingsActions.noDescription')}
+                        subtitleLines={0}
                         detail={entry.enabled ? t('common.enabled') : t('common.disabled')}
                         icon={(
                             <Ionicons
@@ -278,6 +279,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                                     testID={targetTestIDPrefix}
                                     title={t(target.titleKey)}
                                     subtitle={getTargetSubtitle(target)}
+                                    subtitleLines={0}
                                     icon={<Ionicons name={target.icon as React.ComponentProps<typeof Ionicons>['name']} size={29} color={theme.colors.text.secondary} />}
                                     mode={available ? 'interactive' : 'info'}
                                     disabled={!entry.enabled || !available}

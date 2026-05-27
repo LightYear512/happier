@@ -181,6 +181,23 @@ describe('ActionSettingsDetailView', () => {
         )).toBe(true);
     });
 
+    it('renders action and target descriptions as unconstrained supporting text', async () => {
+        const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
+
+        await renderScreen(<ActionSettingsDetailContent actionId="review.start" />);
+
+        const summary = capture.items.find((item) =>
+            item.testID === 'settings-actions:action:review.start:summary',
+        );
+        const cliTarget = capture.items.find((item) =>
+            item.testID === 'settings-actions:action:review.start:target:cli',
+        );
+        expect(summary).toBeTruthy();
+        expect(cliTarget).toBeTruthy();
+        expect(summary?.subtitleLines).toBe(0);
+        expect(cliTarget?.subtitleLines).toBe(0);
+    });
+
     it('persists ask-first approval mode through the canonical settings writer', async () => {
         const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
 
