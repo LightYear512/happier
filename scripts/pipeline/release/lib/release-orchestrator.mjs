@@ -9,6 +9,7 @@
  * @typedef {'dev'|'preview'|'production'} DeployEnvironment
  * @typedef {'ui'|'server'|'website'|'docs'|'cli'|'stack'|'server_runner'} DeployTarget
  * @typedef {'none'|'patch'|'minor'|'major'} Bump
+ * @typedef {'none'|'pack'|'pack+publish'} NpmMode
  * @typedef {'none'|'ota'|'native'|'native_submit'} UiExpoAction
  * @typedef {'none'|'build_only'|'build_and_publish'} DesktopMode
  *
@@ -82,6 +83,7 @@ function hasTarget(deployTargets, target) {
  *   deployTargets: DeployTarget[];
  *   uiExpoAction: UiExpoAction;
  *   desktopMode: DesktopMode;
+ *   npmMode?: NpmMode;
  *   changed: ChangedComponents;
  *   bumpPlan: BumpPlan;
  *   deployPlan?: DeployPlan | null;
@@ -95,6 +97,7 @@ export function computeReleaseExecutionPlan(input) {
   const targets = input.deployTargets;
   const changed = input.changed;
   const bumpPlan = input.bumpPlan;
+  const npmMode = input.npmMode ?? 'pack+publish';
   const deployPlan = input.deployPlan ?? null;
 
   const hasUi = hasTarget(targets, 'ui');
@@ -149,7 +152,7 @@ export function computeReleaseExecutionPlan(input) {
   const dockerBuildDevBox = forceDeploy || changed.changed_cli || changed.changed_stack || changed.changed_shared;
 
   // `release.yml` routes npm publishing through `release-npm.yml` when any publish_* is true.
-  const runPublishNpm = !dryRun && (bumpPlan.publish_cli || bumpPlan.publish_stack || bumpPlan.publish_server);
+  const runPublishNpm = !dryRun && npmMode !== 'none' && (bumpPlan.publish_cli || bumpPlan.publish_stack || bumpPlan.publish_server);
 
   // Local parity: publishing CLI via the release orchestrator also publishes its rolling GitHub release.
   // hstack remains available as an explicit dev-helper command, but it is no longer release-signoff output.

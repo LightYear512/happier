@@ -4273,8 +4273,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           const npmMode = String(values['npm-mode'] ?? '').trim() || 'pack+publish';
           const npmRunTests = String(values['npm-run-tests'] ?? '').trim() || 'auto';
           const npmServerRunnerDir = String(values['npm-server-runner-dir'] ?? '').trim() || 'packages/relay-server';
-          if (npmMode !== 'pack' && npmMode !== 'pack+publish') {
-            fail(`--npm-mode must be 'pack' or 'pack+publish' (got: ${npmMode})`);
+          if (npmMode !== 'none' && npmMode !== 'pack' && npmMode !== 'pack+publish') {
+            fail(`--npm-mode must be 'none', 'pack', or 'pack+publish' (got: ${npmMode})`);
           }
 
           const { env, sources } = loadPipelineEnv({ repoRoot, deployEnvironment });
@@ -4547,6 +4547,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               deployTargets,
               uiExpoAction,
               desktopMode,
+              npmMode,
               changed,
               bumpPlan,
               deployPlan,
@@ -4638,6 +4639,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             deployTargets,
             uiExpoAction,
             desktopMode,
+            npmMode,
             changed,
             bumpPlan,
             deployPlan,
