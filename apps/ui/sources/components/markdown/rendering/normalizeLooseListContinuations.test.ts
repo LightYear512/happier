@@ -185,4 +185,28 @@ describe('normalizeLooseListContinuations', () => {
             'Description for the second idea.',
         ].join('\n'));
     });
+
+    it('normalizes the final heading-style list item when a block boundary follows it', () => {
+        expect(normalizeLooseListContinuations([
+            '1. **First idea**',
+            '',
+            'Description for the first idea.',
+            '',
+            '2. **Second idea**',
+            '',
+            'Description for the second idea.',
+            '',
+            '**Next Section**',
+        ].join('\n'))).toBe([
+            '1. **First idea**',
+            '',
+            '   Description for the first idea.',
+            '',
+            '2. **Second idea**',
+            '',
+            '   Description for the second idea.',
+            '',
+            '**Next Section**',
+        ].join('\n'));
+    });
 });
