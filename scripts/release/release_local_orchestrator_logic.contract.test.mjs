@@ -74,6 +74,45 @@ test('preview: changed cli publishes docker dev-box but not relay', () => {
   assert.equal(plan.dockerBuildRelay, false);
 });
 
+test('dev: npm mode none keeps cli binary release and skips npm package lane', () => {
+  const plan = computeReleaseExecutionPlan({
+    environment: 'dev',
+    dryRun: false,
+    forceDeploy: true,
+    deployTargets: ['ui', 'cli'],
+    uiExpoAction: 'none',
+    desktopMode: 'none',
+    npmMode: 'none',
+    changed: {
+      changed_ui: false,
+      changed_cli: false,
+      changed_server: false,
+      changed_website: false,
+      changed_docs: false,
+      changed_shared: false,
+      changed_stack: false,
+    },
+    bumpPlan: {
+      bump_app: 'none',
+      bump_cli: 'none',
+      bump_stack: 'none',
+      bump_server: 'none',
+      bump_website: 'none',
+      should_bump: false,
+      publish_cli: true,
+      publish_stack: false,
+      publish_server: false,
+    },
+    deployPlan: null,
+  });
+
+  assert.equal(plan.runPublishUiWeb, true);
+  assert.equal(plan.runPublishCliBinaries, true);
+  assert.equal(plan.runPublishDocker, true);
+  assert.equal(plan.runPublishNpm, false);
+  assert.equal(plan.runPublishServerRuntime, false);
+});
+
 test('production: ui deploy runs when deploy plan says needed', () => {
   const plan = computeReleaseExecutionPlan({
     environment: 'production',
