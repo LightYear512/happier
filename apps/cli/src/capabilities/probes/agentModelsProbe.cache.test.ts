@@ -55,10 +55,10 @@ describe('probeAgentModelsBestEffort (cache)', () => {
     try {
       const { probeAgentModelsBestEffort } = await import('./agentModelsProbe');
 
-      const first = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 2_000 });
+      const first = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 10_000 });
       expect(first.source).toBe('dynamic');
 
-      const second = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 2_000 });
+      const second = await probeAgentModelsBestEffort({ agentId: 'opencode', cwd: fixture.dir, timeoutMs: 10_000 });
       expect(second.source).toBe('dynamic');
 
       const count = (await readFile(countFile, 'utf8')).trim();

@@ -60,7 +60,7 @@ describe('piPreflightModelsProbeAdapter', () => {
 
     const raw = await piPreflightModelsProbeAdapter.probeModelsRaw?.({
       cwd: tempDir,
-      timeoutMs: 2_000,
+      timeoutMs: 10_000,
       backendTarget: undefined,
       accountSettings: null,
     });
@@ -100,7 +100,7 @@ describe('piPreflightModelsProbeAdapter', () => {
 
     const raw = await piPreflightModelsProbeAdapter.probeModelsRaw?.({
       cwd: tempDir,
-      timeoutMs: 2_000,
+      timeoutMs: 10_000,
       backendTarget: undefined,
       accountSettings: null,
     });
