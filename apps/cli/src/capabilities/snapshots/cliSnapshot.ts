@@ -95,7 +95,7 @@ const cliSnapshotCache = new AsyncTtlCache<DetectCliSnapshot>({
     errorTtlMs: 2_000,
 });
 
-const DEFAULT_CLI_SNAPSHOT_PROBE_TIMEOUT_MS = process.env.CI ? 3_000 : 1_500;
+const DEFAULT_CLI_SNAPSHOT_PROBE_TIMEOUT_MS = 5_000;
 const DEFAULT_CLI_SNAPSHOT_LOGIN_STATUS_PROBE_TIMEOUT_MS = process.env.CI ? 7_000 : 6_500;
 const CLI_SNAPSHOT_PROBE_TIMEOUT = Symbol('CLI_SNAPSHOT_PROBE_TIMEOUT');
 
@@ -381,7 +381,7 @@ async function detectCliVersion(params: { name: DetectCliName; resolvedPath: str
     // Best-effort, must never throw.
     try {
         // Keep this short (runs in parallel for multiple CLIs), but give enough headroom for slower systems.
-        const timeoutMs = process.env.CI ? 2500 : 1200;
+        const timeoutMs = 4_000;
         const isWindows = process.platform === 'win32';
         const isCmdScript = isWindows && /\.(cmd|bat)$/i.test(params.resolvedPath);
         const needsJavaScriptRuntime = providerCliPathRequiresJavaScriptRuntime(params.resolvedPath);
