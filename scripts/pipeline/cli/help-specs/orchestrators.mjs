@@ -33,7 +33,7 @@ export const COMMAND_HELP_ORCHESTRATORS = {
       '--ui-expo-android-release-status <status> profile|completed|draft|halted|inProgress (default: draft).',
       '--desktop-mode <mode>             none|build_only|build_and_publish (default: none).',
       '--release-message <text>          Optional; included in GitHub releases.',
-      '--npm-mode <mode>                 pack|pack+publish (default: pack+publish).',
+      '--npm-mode <mode>                 none|pack|pack+publish (default: pack+publish).',
       '--npm-run-tests <mode>            auto|true|false (default: auto).',
       '--npm-server-runner-dir <dir>     (default: packages/relay-server).',
       '--sync-dev-from-main <bool>       true|false (default: true).',

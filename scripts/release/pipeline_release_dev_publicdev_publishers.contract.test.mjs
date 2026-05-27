@@ -117,3 +117,54 @@ test('pipeline CLI release can dry-run the public dev lane in a fork without pre
         stub.cleanup();
     }
 });
+
+test('pipeline CLI release can dry-run web and cli binary tarballs without npm package lane', async () => {
+    const stub = createReleaseCliDryRunEnv(process.env, { missingRemoteBranches: ['main', 'preview'] });
+    try {
+        const out = execFileSync(
+            process.execPath,
+            [
+                resolve(repoRoot, 'scripts', 'pipeline', 'run.mjs'),
+                'release',
+                '--confirm',
+                'release dev to dev',
+                '--deploy-environment',
+                'dev',
+                '--deploy-targets',
+                'ui,cli',
+                '--force-deploy',
+                'true',
+                '--repository',
+                'LightYear512/happier',
+                '--npm-mode',
+                'none',
+                '--dry-run',
+                '--secrets-source',
+                'env',
+            ],
+            {
+                cwd: repoRoot,
+                env: {
+                    ...stub.env,
+                    NPM_TOKEN: '',
+                    GH_TOKEN: '',
+                    GH_REPO: '',
+                    GITHUB_REPOSITORY: '',
+                },
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+                timeout: RELEASE_CLI_DRY_RUN_TIMEOUT_MS,
+            },
+        );
+
+        assert.match(out, /\[pipeline\] release: fetching origin dev for plan/);
+        assert.match(out, /- runPublishUiWeb: true/);
+        assert.match(out, /- runPublishDocker: true/);
+        assert.match(out, /- runPublishCliBinaries: true/);
+        assert.match(out, /- runPublishNpm: false/);
+        assert.match(out, /- runPublishServerRuntime: false/);
+        assert.match(out, /- runDeployDocs: false/);
+    } finally {
+        stub.cleanup();
+    }
+});
