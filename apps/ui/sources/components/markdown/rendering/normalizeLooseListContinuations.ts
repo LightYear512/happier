@@ -74,6 +74,43 @@ function isExpectedNextOrderedMarker(current: OrderedListMarker, next: OrderedLi
     return next.number === current.number + 1 || next.number === 1;
 }
 
+function findNextOrderedMarkerIndex(
+    lines: readonly string[],
+    startIndex: number,
+    marker: OrderedListMarker,
+): number | null {
+    let openingFence: CodeFenceMarker | null = null;
+
+    for (let index = startIndex; index < lines.length; index++) {
+        const line = lines[index] ?? '';
+
+        if (openingFence) {
+            if (isClosingCodeFence(line, openingFence)) {
+                openingFence = null;
+            }
+            continue;
+        }
+
+        const nextOpeningFence = parseOpeningCodeFence(line);
+        if (nextOpeningFence) {
+            openingFence = nextOpeningFence;
+            continue;
+        }
+
+        if (isBlankLine(line)) continue;
+
+        const nextMarker = parseOrderedListMarker(line);
+        if (!nextMarker) continue;
+
+        return nextMarker.indent.length === marker.indent.length &&
+            isExpectedNextOrderedMarker(marker, nextMarker)
+            ? index
+            : null;
+    }
+
+    return null;
+}
+
 function findLooseContinuationBoundaryIndex(
     lines: readonly string[],
     startIndex: number,
@@ -113,6 +150,23 @@ function findLooseContinuationBoundaryIndex(
     return null;
 }
 
+function findContinuationTerminatorIndex(
+    lines: readonly string[],
+    startIndex: number,
+    marker: OrderedListMarker,
+): number | null {
+    const nextMarkerIndex = findNextOrderedMarkerIndex(lines, startIndex, marker);
+    if (nextMarkerIndex !== null) return nextMarkerIndex;
+
+    for (let index = startIndex; index < lines.length; index++) {
+        const line = lines[index] ?? '';
+        if (isBlankLine(line)) continue;
+        return isBlockBoundary(line) ? index : null;
+    }
+
+    return null;
+}
+
 function isOutlineStyleMarker(marker: OrderedListMarker): boolean {
     const content = marker.content.trim();
     if (!content) return true;
@@ -135,7 +189,7 @@ function shouldNormalizeLooseContinuation(
     if (isBlockBoundary(firstContinuationLine)) return null;
     if (readLeadingSpaceCount(firstContinuationLine) > marker.indent.length) return null;
 
-    return findLooseContinuationBoundaryIndex(lines, continuationStartIndex + 1, marker);
+    return findContinuationTerminatorIndex(lines, continuationStartIndex + 1, marker);
 }
 
 function indentLooseContinuationLine(line: string, continuationIndent: string): string {
