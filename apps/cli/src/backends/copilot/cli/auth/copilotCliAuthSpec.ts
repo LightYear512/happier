@@ -2,7 +2,7 @@ import { createCatalogCliAuthSpec } from '@/capabilities/cliAuth/createCatalogCl
 import { resolveCommonApiKeyStatus, runCliCommandBestEffort } from '@/capabilities/cliAuth/shared';
 import type { CliAuthSpec } from '@/backends/types';
 
-const DEFAULT_COPILOT_CLI_AUTH_PROBE_TIMEOUT_MS = 1_500;
+const DEFAULT_COPILOT_CLI_AUTH_PROBE_TIMEOUT_MS = 6_000;
 
 function resolveCopilotCliAuthProbeTimeoutMs(): number {
   const raw = process.env.HAPPIER_COPILOT_CLI_AUTH_PROBE_TIMEOUT_MS;
