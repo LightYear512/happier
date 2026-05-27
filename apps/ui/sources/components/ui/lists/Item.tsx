@@ -65,7 +65,7 @@ export interface ItemProps {
     subtitle?: React.ReactNode;
     subtitleTestID?: string;
     subtitleAccessory?: React.ReactNode;
-    subtitleLines?: number; // set 0 or undefined for auto/multiline
+    subtitleLines?: number; // set 0 for unconstrained multiline; omit for the shared two-line default
     detail?: string;
     detailTestID?: string;
     icon?: React.ReactNode;
@@ -558,7 +558,7 @@ export const Item = React.memo<ItemProps>((props) => {
                             const asText = String(value);
                             const effectiveLines = subtitleLines !== undefined
                                 ? (subtitleLines <= 0 ? undefined : subtitleLines)
-                                : (asText.indexOf('\n') !== -1 ? undefined : 1);
+                                : (asText.indexOf('\n') !== -1 ? undefined : 2);
 
                             return renderPrimitiveText({
                                 value: asText,
@@ -590,7 +590,7 @@ export const Item = React.memo<ItemProps>((props) => {
                     // Allow multiline when requested or when content contains line breaks
                     const effectiveLines = subtitleLines !== undefined
                         ? (subtitleLines <= 0 ? undefined : subtitleLines)
-                        : (subtitle.indexOf('\n') !== -1 ? undefined : 1);
+                        : (subtitle.indexOf('\n') !== -1 ? undefined : 2);
 
                     return renderPrimitiveText({
                         value: subtitle,

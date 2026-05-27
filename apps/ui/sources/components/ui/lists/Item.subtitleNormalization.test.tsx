@@ -182,6 +182,22 @@ describe('Item', () => {
         expect(findTestInstanceByTypeWithProps(screen, 'SubtitleAccessory' as any, { marker: 'chips' })).toBeTruthy();
     });
 
+    it('defaults string subtitles to two lines so supporting text is readable in narrow layouts', async () => {
+        const { Item } = await import('./Item');
+
+        const screen = await renderScreen(
+            <Item
+                title="Title"
+                subtitle="Long supporting text that should remain readable when a phone is rotated into landscape."
+                showChevron={false}
+            />,
+        );
+
+        const subtitleNode = findTestInstanceByTypeContainingText(screen, 'Text', 'Long supporting text');
+        expect(subtitleNode).toBeTruthy();
+        expect(subtitleNode?.props.numberOfLines).toBe(2);
+    });
+
     it('wraps primitive accessory children before rendering them inside view slots', async () => {
         const { Item } = await import('./Item');
 
