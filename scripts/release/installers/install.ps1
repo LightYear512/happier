@@ -89,8 +89,8 @@ else {
   $WithDaemonPreference = "0"
 }
 $DefaultMinisignPubKey = @"
-untrusted comment: minisign public key 91AE28177BF6E43C
-RWQ85PZ7FyiukYbL3qv/bKnwgbT68wLVzotapeMFIb8n+c7pBQ7U8W2t
+untrusted comment: minisign public key BDE70D97601B6F20
+RWQgbxtglw3nvS0knJwI0lh+BleaCJDnpAic1/zvkoI6YbGx82jgb3Zq
 "@
 $MinisignPubKey = if ($env:HAPPIER_MINISIGN_PUBKEY) { $env:HAPPIER_MINISIGN_PUBKEY } else { $DefaultMinisignPubKey.Trim() }
 $MinisignPubKeyUrl = if ($env:HAPPIER_MINISIGN_PUBKEY_URL) { $env:HAPPIER_MINISIGN_PUBKEY_URL } else { "https://happier.dev/happier-release.pub" }
