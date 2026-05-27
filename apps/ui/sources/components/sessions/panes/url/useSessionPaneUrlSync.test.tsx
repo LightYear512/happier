@@ -407,7 +407,7 @@ describe('useSessionPaneUrlSync', () => {
             id: 'session-entry',
             happierSessionPane: {
                 scopeKey: 'session:restore-me',
-                urlSig: '||||',
+                urlSig: '|||||',
             },
         };
 
@@ -691,7 +691,7 @@ describe('useSessionPaneUrlSync', () => {
             id: 'history-entry',
             happierSessionPane: {
                 scopeKey: 'session:history',
-                urlSig: 'files|terminal|file|src/app.ts|',
+                urlSig: 'files|terminal|file|src/app.ts||',
             },
         });
 

@@ -94,6 +94,23 @@ function findNextOrderedMarkerIndex(
     return null;
 }
 
+function findContinuationTerminatorIndex(
+    lines: readonly string[],
+    startIndex: number,
+    marker: OrderedListMarker,
+): number | null {
+    const nextMarkerIndex = findNextOrderedMarkerIndex(lines, startIndex, marker);
+    if (nextMarkerIndex !== null) return nextMarkerIndex;
+
+    for (let index = startIndex; index < lines.length; index++) {
+        const line = lines[index] ?? '';
+        if (isBlankLine(line)) continue;
+        return isBlockBoundary(line) ? index : null;
+    }
+
+    return null;
+}
+
 function isOutlineStyleMarker(marker: OrderedListMarker): boolean {
     const content = marker.content.trim();
     if (!content) return true;
@@ -117,7 +134,7 @@ function shouldNormalizeLooseContinuation(
     if (isBlockBoundary(firstContinuationLine)) return null;
     if (readLeadingSpaceCount(firstContinuationLine) > marker.indent.length) return null;
 
-    return findNextOrderedMarkerIndex(lines, continuationStartIndex + 1, marker);
+    return findContinuationTerminatorIndex(lines, continuationStartIndex + 1, marker);
 }
 
 function indentLooseContinuationLine(line: string, continuationIndent: string): string {
