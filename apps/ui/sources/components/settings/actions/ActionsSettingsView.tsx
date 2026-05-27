@@ -192,6 +192,7 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
                             testID={actionTestIdPrefix}
                             title={entry.title}
                             subtitle={entry.description ?? t('settingsActions.noDescription')}
+                            subtitleLines={0}
                             subtitleAccessory={compactLayout && statusText ? (
                                 <Text
                                     testID={`${actionTestIdPrefix}:status`}

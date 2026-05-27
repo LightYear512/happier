@@ -118,6 +118,17 @@ describe('ActionsSettingsView', () => {
         expect(capture.items.every((item) => typeof item.testID === 'string' && item.testID.startsWith('settings-actions:action:'))).toBe(true);
     });
 
+    it('renders action descriptions as unconstrained supporting text', async () => {
+        capture.reset();
+        const { ActionsSettingsView } = await import('./ActionsSettingsView');
+
+        await renderScreen(<ActionsSettingsView />);
+
+        const reviewRow = capture.items.find((item) => item.testID === 'settings-actions:action:review.start');
+        expect(reviewRow).toBeTruthy();
+        expect(reviewRow?.subtitleLines).toBe(0);
+    });
+
     it('shows a compact target status and settings affordance beside each action switch', async () => {
         capture.reset();
         const { ActionsSettingsView } = await import('./ActionsSettingsView');
