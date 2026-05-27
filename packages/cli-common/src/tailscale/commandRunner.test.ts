@@ -156,6 +156,24 @@ describe('runTailscaleServeEnable', () => {
 
 describe('runTailscaleStatusJson', () => {
   it('parses a logged-in status snapshot without exposing raw command output', async () => {
+    const runCommand = vi.fn(async () => ({
+      command: '/bin/tailscale',
+      args: ['status', '--json'],
+      exitCode: 0,
+      stdout: JSON.stringify({
+        BackendState: 'Running',
+        AuthURL: '',
+        HaveNodeKey: true,
+        TailscaleIPs: ['100.64.0.10'],
+        Self: {
+          DNSName: 'relay.tailf00.ts.net.',
+        },
+        CurrentTailnet: {
+          Name: 'example-tailnet',
+        },
+      }),
+      stderr: '',
+    }));
     const mod = await import('./commandRunner.js') as {
       runTailscaleStatusJson?: (
         params?: { env?: NodeJS.ProcessEnv },
@@ -179,27 +197,13 @@ describe('runTailscaleStatusJson', () => {
       { env: {} },
       {
         resolveTailscaleBin: vi.fn(async () => '/bin/tailscale'),
-        runCommand: vi.fn(async () => ({
-          command: '/bin/tailscale',
-          args: ['status', '--json'],
-          exitCode: 0,
-          stdout: JSON.stringify({
-            BackendState: 'Running',
-            AuthURL: '',
-            HaveNodeKey: true,
-            TailscaleIPs: ['100.64.0.10'],
-            Self: {
-              DNSName: 'relay.tailf00.ts.net.',
-            },
-            CurrentTailnet: {
-              Name: 'example-tailnet',
-            },
-          }),
-          stderr: '',
-        })),
+        runCommand,
       },
     );
 
+    expect(runCommand).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: 5_000,
+    }));
     expect(result).toEqual({
       backendState: 'Running',
       authUrl: null,

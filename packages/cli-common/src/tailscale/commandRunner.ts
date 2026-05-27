@@ -86,6 +86,7 @@ const MACOS_TAILSCALE_CLI_PATHS = [
   '/Applications/Tailscale.app/Contents/MacOS/tailscale',
   '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
 ] as const;
+const DEFAULT_TAILSCALE_QUERY_TIMEOUT_MS = 5_000;
 
 function normalizeTimeoutMs(value: unknown, defaultMs: number): number {
   const numeric = Number(value);
@@ -162,7 +163,7 @@ export async function resolveTailscaleBin(
 }
 
 const runCommand: TailscaleCommandRunner = async (request) => {
-  const timeoutMs = normalizeTimeoutMs(request.timeoutMs, 750);
+  const timeoutMs = normalizeTimeoutMs(request.timeoutMs, DEFAULT_TAILSCALE_QUERY_TIMEOUT_MS);
   const env = sanitizeTailscaleEnv(request.env ?? process.env);
   const command = String(request.command ?? '').trim();
   const args = Array.isArray(request.args) ? request.args.map((value) => String(value)) : [];
@@ -296,7 +297,7 @@ async function runTextCommand(
     command,
     args: params.args,
     env: sanitizeTailscaleEnv(params.env ?? process.env),
-    timeoutMs: normalizeTimeoutMs(params.timeoutMs, 750),
+    timeoutMs: normalizeTimeoutMs(params.timeoutMs, DEFAULT_TAILSCALE_QUERY_TIMEOUT_MS),
   });
   return String(result.stdout ?? '');
 }
