@@ -4324,7 +4324,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           }
 
             // Plan: compute changed components and resolve bump/publish plan.
-            const releasePlanBranches = deployEnvironment === 'dev' ? ['dev'] : ['main', 'dev', 'preview'];
+            const releasePlanBranches =
+              deployEnvironment === 'dev' ? ['dev'] : deployEnvironment === 'preview' ? ['dev', 'preview'] : ['main', 'dev', 'preview'];
             console.log(`[pipeline] release: fetching origin ${releasePlanBranches.join('/')} for plan`);
             // Release planning only needs branch refs plus immutable component version tags.
             // Rolling tags move during publishing, so syncing all tags here can fail with
@@ -4369,17 +4370,6 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 10_000,
           }).trim();
-          const mainSha =
-            deployEnvironment === 'dev'
-              ? devSha
-              : execFileSync('git', ['rev-parse', 'origin/main'], {
-                  cwd: repoRoot,
-                  env: process.env,
-                  encoding: 'utf8',
-                  stdio: ['ignore', 'pipe', 'pipe'],
-                  timeout: 10_000,
-                }).trim();
-
           const previewSha =
             deployEnvironment === 'dev'
               ? devSha
@@ -4390,6 +4380,19 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
                   stdio: ['ignore', 'pipe', 'pipe'],
                   timeout: 10_000,
                 }).trim();
+
+          const mainSha =
+            deployEnvironment === 'dev'
+              ? devSha
+              : deployEnvironment === 'preview'
+                ? previewSha
+                : execFileSync('git', ['rev-parse', 'origin/main'], {
+                    cwd: repoRoot,
+                    env: process.env,
+                    encoding: 'utf8',
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    timeout: 10_000,
+                  }).trim();
 
           const planHeadSha =
             action === 'release preview to main' || action === 'reset main from preview' ? previewSha : devSha;
