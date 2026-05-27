@@ -476,6 +476,7 @@ describe('runDaemonServiceCliCommand', () => {
             : { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('inactive') };
         }
         scheduleDelayedOwnerWriteOnce(delayedOwnerWrites, () => {
+          if (!installedPath || !existsSync(installedPath)) return;
           const installedContents = readFileSync(installedPath, 'utf-8');
           writeFileSync(installedPath, installedContents, 'utf-8');
           writeDaemonStateImpl?.({
@@ -570,6 +571,7 @@ describe('runDaemonServiceCliCommand', () => {
             : { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('inactive') };
         }
         scheduleDelayedOwnerWriteOnce(delayedOwnerWrites, () => {
+          if (!installedPath || !existsSync(installedPath)) return;
           const installedContents = readFileSync(installedPath, 'utf-8');
           writeFileSync(installedPath, installedContents, 'utf-8');
           writeDaemonStateImpl?.({
@@ -668,6 +670,7 @@ describe('runDaemonServiceCliCommand', () => {
         }
         if (command === 'systemctl' && args.includes('enable')) {
           scheduleDelayedOwnerWriteOnce(delayedOwnerWrites, () => {
+            if (!installedPath || !existsSync(installedPath)) return;
             const installedContents = readFileSync(installedPath, 'utf-8');
             writeFileSync(installedPath, installedContents, 'utf-8');
             writeDaemonStateImpl?.({

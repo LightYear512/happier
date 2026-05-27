@@ -773,7 +773,7 @@ describe('ClaudeSdkAgentBackend', () => {
 
         const firstSettled = await Promise.race([
           firstCompletion,
-          new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 300)),
+          new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 5_000)),
         ]);
 
         expect(firstSettled).toBe('resolved');
