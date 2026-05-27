@@ -116,6 +116,34 @@ describe('happier release validation bootstrap planner', () => {
     assert.match(rendered, /\n  - @happier-dev\/stack@0\.2\.2/);
   });
 
+  it('collects baseline metadata from an explicit baseline ref for dev-only fork validation', async () => {
+    const { collectBaselineMetadata, createReleaseValidationWorkspacePlan, renderTemplate } = await loadModule();
+    const { repo } = createMetadataRepo();
+    const devBase = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['update-ref', 'refs/remotes/origin/dev', devBase]);
+    fs.writeFileSync(path.join(repo, 'dev-candidate.txt'), 'candidate\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-qm', 'dev candidate']);
+    const plan = createReleaseValidationWorkspacePlan({
+      repoRoot: repo,
+      version: '0.2.7',
+      date: '2026-05-27',
+      baselineRef: 'origin/dev',
+    });
+
+    const metadata = collectBaselineMetadata(plan);
+    const rendered = renderTemplate('baseline={{BASELINE_REF}} base={{PREVIEW_BASE}} drift={{DRIFT_COUNT}}', {
+      ...plan,
+      metadata,
+    });
+
+    assert.equal(plan.baselineRef, 'origin/dev');
+    assert.match(plan.lanes.find((lane) => lane.id === 'L01')?.scope ?? '', /origin\/dev\.\.HEAD/);
+    assert.equal(metadata.previewBase, devBase);
+    assert.equal(metadata.driftCount, '1');
+    assert.equal(rendered, `baseline=origin/dev base=${devBase} drift=1`);
+  });
+
   it('refuses to create a new workspace when the worktree path already exists', async () => {
     const { assertSafeToCreate, createReleaseValidationWorkspacePlan } = await loadModule();
     const repoRoot = createTempDir();

@@ -4326,8 +4326,9 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             console.log(`[pipeline] rolling version suffix: ${releaseRing.rollingVersionPrefix}.${runNumber}`);
           }
 
-            // Plan: compute changed components (main..dev) and resolve bump/publish plan.
-            console.log('[pipeline] release: fetching origin main/dev/preview for plan');
+            // Plan: compute changed components and resolve bump/publish plan.
+            const releasePlanBranches = deployEnvironment === 'dev' ? ['dev'] : ['main', 'dev', 'preview'];
+            console.log(`[pipeline] release: fetching origin ${releasePlanBranches.join('/')} for plan`);
             // Release planning only needs branch refs plus immutable component version tags.
             // Rolling tags move during publishing, so syncing all tags here can fail with
             // "would clobber existing tag" on healthy repos.
@@ -4336,9 +4337,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               [
                 'fetch',
                 'origin',
-                'main',
-                'dev',
-                'preview',
+                ...releasePlanBranches,
                 '--prune',
                 '--no-tags',
                 'refs/tags/cli-v*:refs/tags/cli-v*',
@@ -4373,21 +4372,27 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 10_000,
           }).trim();
-          const mainSha = execFileSync('git', ['rev-parse', 'origin/main'], {
-            cwd: repoRoot,
-            env: process.env,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: 10_000,
-          }).trim();
+          const mainSha =
+            deployEnvironment === 'dev'
+              ? devSha
+              : execFileSync('git', ['rev-parse', 'origin/main'], {
+                  cwd: repoRoot,
+                  env: process.env,
+                  encoding: 'utf8',
+                  stdio: ['ignore', 'pipe', 'pipe'],
+                  timeout: 10_000,
+                }).trim();
 
-          const previewSha = execFileSync('git', ['rev-parse', 'origin/preview'], {
-            cwd: repoRoot,
-            env: process.env,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: 10_000,
-          }).trim();
+          const previewSha =
+            deployEnvironment === 'dev'
+              ? devSha
+              : execFileSync('git', ['rev-parse', 'origin/preview'], {
+                  cwd: repoRoot,
+                  env: process.env,
+                  encoding: 'utf8',
+                  stdio: ['ignore', 'pipe', 'pipe'],
+                  timeout: 10_000,
+                }).trim();
 
           const planHeadSha =
             action === 'release preview to main' || action === 'reset main from preview' ? previewSha : devSha;
@@ -4479,7 +4484,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             publish_server: String(bumpPlanRaw?.publish_server ?? '').trim() === 'true',
           };
 
-          console.log('[pipeline] release plan: changed components (main..dev)');
+          const changedComparisonLabel = deployEnvironment === 'dev' ? 'dev-only working ref' : 'main..dev';
+          console.log(`[pipeline] release plan: changed components (${changedComparisonLabel})`);
           for (const [k, v] of Object.entries(changed)) {
             console.log(`- ${k.replace(/^changed_/, '')}: ${v}`);
           }

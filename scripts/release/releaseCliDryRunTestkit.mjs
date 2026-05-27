@@ -8,10 +8,12 @@ function writeExecutable(filePath, content) {
   fs.writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o700 });
 }
 
-export function createReleaseCliDryRunEnv(baseEnv = process.env) {
+export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-release-cli-dry-run-'));
   const binDir = path.join(dir, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
+  const missingRemoteBranches = new Set(options.missingRemoteBranches ?? []);
+  const missingRemoteBranchesCsv = [...missingRemoteBranches].join(',');
 
   writeExecutable(
     path.join(binDir, 'git'),
@@ -19,6 +21,17 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env) {
       '#!/usr/bin/env bash',
       'set -euo pipefail',
       'if [ "${1:-}" = "fetch" ]; then',
+      '  missing=",${HAPPIER_TEST_MISSING_REMOTE_BRANCHES:-},"',
+      '  for arg in "$@"; do',
+      '    case "$arg" in',
+      '      main|dev|preview)',
+      '        if [[ "$missing" == *",$arg,"* ]]; then',
+      '          echo "fatal: couldn\'t find remote ref $arg" >&2',
+      '          exit 128',
+      '        fi',
+      '        ;;',
+      '    esac',
+      '  done',
       '  exit 0',
       'fi',
       'if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--abbrev-ref" ] && [ "${3:-}" = "HEAD" ]; then',
@@ -79,6 +92,7 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env) {
     env: {
       ...baseEnv,
       PATH: `${binDir}:${baseEnv.PATH ?? ''}`,
+      HAPPIER_TEST_MISSING_REMOTE_BRANCHES: missingRemoteBranchesCsv,
     },
     cleanup() {
       fs.rmSync(dir, { recursive: true, force: true });
