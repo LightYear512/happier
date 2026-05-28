@@ -143,10 +143,55 @@ export function resolveLinuxAppImageDiagnosticsLayout(opts) {
 }
 
 /**
+ * @param {NodeJS.ProcessEnv} base
+ * @param {Record<string, string | undefined>} overrides
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function mergeChildProcessEnv(base, overrides = {}) {
+  const env = { ...base };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value == null) {
+      delete env[key];
+      continue;
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
+/**
+ * Tauri's macOS bundler treats the mere presence of Apple signing env vars as a request to import
+ * a certificate. GitHub Actions exposes missing secrets as empty strings, so scrub incomplete values
+ * to keep preview/self-use builds unsigned.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Record<string, string | undefined>}
+ */
+export function resolveMacosTauriSigningEnvOverrides(env = process.env) {
+  const appleCertificate = String(env.APPLE_CERTIFICATE ?? '').trim();
+  const appleCertificatePassword = String(env.APPLE_CERTIFICATE_PASSWORD ?? '').trim();
+  const appleSigningIdentity = String(env.APPLE_SIGNING_IDENTITY ?? '').trim();
+
+  if (appleCertificate && appleCertificatePassword) {
+    return {
+      APPLE_CERTIFICATE: appleCertificate,
+      APPLE_CERTIFICATE_PASSWORD: appleCertificatePassword,
+      ...(appleSigningIdentity ? { APPLE_SIGNING_IDENTITY: appleSigningIdentity } : {}),
+    };
+  }
+
+  return {
+    APPLE_CERTIFICATE: undefined,
+    APPLE_CERTIFICATE_PASSWORD: undefined,
+    APPLE_SIGNING_IDENTITY: undefined,
+  };
+}
+
+/**
  * @param {{ dryRun: boolean }} opts
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ cwd: string; env?: Record<string, string>; timeoutMs?: number; stdio?: import('node:child_process').StdioOptions }} extra
+ * @param {{ cwd: string; env?: Record<string, string | undefined>; timeoutMs?: number; stdio?: import('node:child_process').StdioOptions }} extra
  */
 function run(opts, cmd, args, extra) {
   const printable = `${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`;
@@ -157,7 +202,7 @@ function run(opts, cmd, args, extra) {
 
   execFileSyncPortable(cmd, args, {
     cwd: extra.cwd,
-    env: { ...process.env, ...(extra.env ?? {}) },
+    env: mergeChildProcessEnv(process.env, extra.env ?? {}),
     stdio: extra.stdio ?? 'inherit',
     timeout: extra.timeoutMs ?? 30 * 60_000,
   });
@@ -167,7 +212,7 @@ function run(opts, cmd, args, extra) {
  * @param {{ dryRun: boolean }} opts
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ cwd: string; env?: Record<string, string> }} extra
+ * @param {{ cwd: string; env?: Record<string, string | undefined> }} extra
  * @returns {string}
  */
 function runCapture(opts, cmd, args, extra) {
@@ -179,7 +224,7 @@ function runCapture(opts, cmd, args, extra) {
 
   return execFileSyncPortable(cmd, args, {
     cwd: extra.cwd,
-    env: { ...process.env, ...(extra.env ?? {}) },
+    env: mergeChildProcessEnv(process.env, extra.env ?? {}),
     stdio: 'pipe',
     timeout: 2 * 60_000,
   });
@@ -489,6 +534,7 @@ function main() {
     CI: 'true',
     APP_ENV: environment,
     ...(process.platform === 'linux' ? resolveLinuxTauriBundlerEnvOverrides(process.env) : {}),
+    ...(process.platform === 'darwin' ? resolveMacosTauriSigningEnvOverrides(process.env) : {}),
     ...(signingKeyPath ? { TAURI_SIGNING_PRIVATE_KEY: signingKeyPath } : {}),
     ...(signingKeyPassword ? { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: signingKeyPassword } : {}),
   };
