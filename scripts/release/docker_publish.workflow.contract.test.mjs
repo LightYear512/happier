@@ -80,7 +80,12 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   );
   assert.match(
     publishDocker,
-    /Create GitHub App token[\s\S]*?if:\s*\${{\s*secrets\.RELEASE_BOT_APP_ID != '' && secrets\.RELEASE_BOT_PRIVATE_KEY != ''\s*}}/,
+    /RELEASE_BOT_APP_ID:\s*\${{\s*secrets\.RELEASE_BOT_APP_ID\s*}}[\s\S]*?RELEASE_BOT_PRIVATE_KEY:\s*\${{\s*secrets\.RELEASE_BOT_PRIVATE_KEY\s*}}/,
+    'publish-docker should expose release bot secrets through job env for conditional steps',
+  );
+  assert.match(
+    publishDocker,
+    /Create GitHub App token[\s\S]*?if:\s*\${{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*}}/,
     'publish-docker should not require release bot secrets for self-use fork publishing',
   );
   assert.match(
