@@ -36,6 +36,7 @@ function shouldExclude(normalized) {
     normalized.startsWith('dist/') ||
     normalized.startsWith('output/') ||
     normalized.startsWith('test-results/') ||
+    normalized.startsWith('apps/cli/tools/archives/') ||
     normalized.startsWith('node_modules/') ||
     normalized.includes('/node_modules/')
   );
