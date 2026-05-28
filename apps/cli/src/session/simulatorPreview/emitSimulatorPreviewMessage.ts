@@ -14,6 +14,7 @@ export type SimulatorPreviewRegistrationInput = Readonly<{
   mode?: SimulatorPreviewV1['mode'];
   owner?: SimulatorPreviewV1['owner'];
   connectionPath?: SimulatorPreviewV1['connectionPath'];
+  relay?: SimulatorPreviewV1['relay'];
 }>;
 
 export function buildSimulatorPreviewPayload(input: SimulatorPreviewRegistrationInput): SimulatorPreviewV1 {
@@ -27,6 +28,7 @@ export function buildSimulatorPreviewPayload(input: SimulatorPreviewRegistration
     mode: input.mode ?? 'ai_control',
     ...(input.owner ? { owner: input.owner } : {}),
     connectionPath: input.connectionPath ?? 'relay',
+    ...(input.relay ? { relay: input.relay } : {}),
     registeredAtMs: Date.now(),
   };
 }

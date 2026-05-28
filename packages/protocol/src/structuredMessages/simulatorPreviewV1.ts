@@ -30,6 +30,15 @@ export const SimulatorPreviewStreamUrlSchema = z
   }, { message: 'streamUrl must be an http(s) URL' });
 export type SimulatorPreviewStreamUrl = z.infer<typeof SimulatorPreviewStreamUrlSchema>;
 
+export const SimulatorPreviewRelaySchema = z.object({
+  machineId: z.string().min(1),
+  routeKey: z.string().min(1),
+  streamPath: z.string().min(1).max(2000).refine((value) => value.startsWith('/') && !value.startsWith('//'), {
+    message: 'streamPath must be an absolute preview path',
+  }),
+}).passthrough();
+export type SimulatorPreviewRelay = z.infer<typeof SimulatorPreviewRelaySchema>;
+
 export const SimulatorPreviewV1Schema = z.object({
   simulatorSessionId: z.string().min(1),
   sessionId: z.string().min(1),
@@ -40,6 +49,7 @@ export const SimulatorPreviewV1Schema = z.object({
   mode: SimulatorPreviewModeSchema,
   owner: SimulatorPreviewOwnerSchema.optional(),
   connectionPath: SimulatorPreviewConnectionPathSchema,
+  relay: SimulatorPreviewRelaySchema.optional(),
   registeredAtMs: z.number().int(),
 }).passthrough();
 export type SimulatorPreviewV1 = z.infer<typeof SimulatorPreviewV1Schema>;

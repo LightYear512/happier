@@ -4063,6 +4063,12 @@ deps: {
                   defaultIosSubtitle: 'Simulador iOS',
                   screenAlt: ({ deviceName }: { deviceName: string }) => `Pantalla del simulador ${deviceName}`,
                   ownerLabel: ({ owner }: { owner: string }) => `Propietari: ${owner}`,
+                  requestControl: 'Controla',
+                  owner: {
+                      ai: 'IA',
+                      user: 'usuari',
+                      system: 'sistema',
+                  },
                   mode: {
                       idle: 'Inactiu',
                       aiControl: 'Control de la IA',

@@ -4167,6 +4167,12 @@ export const zhHans: TranslationStructure = {
       defaultIosSubtitle: "iOS 模拟器",
       screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} 模拟器屏幕`,
       ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
+      requestControl: "控制",
+      owner: {
+        ai: "AI",
+        user: "用户",
+        system: "系统",
+      },
       mode: {
         idle: "空闲",
         aiControl: "AI 控制",

@@ -4767,6 +4767,12 @@ export const ru: TranslationStructure = {
         defaultIosSubtitle: "Симулятор iOS",
         screenAlt: ({ deviceName }: { deviceName: string }) => `Экран симулятора ${deviceName}`,
         ownerLabel: ({ owner }: { owner: string }) => `Владелец: ${owner}`,
+        requestControl: "Управлять",
+        owner: {
+          ai: "ИИ",
+          user: "пользователь",
+          system: "система",
+        },
         mode: {
           idle: "Ожидание",
           aiControl: "Управляет ИИ",

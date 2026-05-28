@@ -4094,6 +4094,12 @@ export const en = {
             defaultIosSubtitle: 'iOS Simulator',
             screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} simulator screen`,
             ownerLabel: ({ owner }: { owner: string }) => `Owner: ${owner}`,
+            requestControl: 'Control',
+            owner: {
+                ai: 'AI',
+                user: 'user',
+                system: 'system',
+            },
             mode: {
                 idle: 'Idle',
                 aiControl: 'AI control',

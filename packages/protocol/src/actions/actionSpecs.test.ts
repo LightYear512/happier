@@ -70,6 +70,9 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.devPreview.register',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
+  'session.simulatorPreview.control.acquire',
+  'session.simulatorPreview.control.release',
+  'session.simulatorPreview.input.send',
   'session.spawn_new',
   'session.spawn_picker',
   'session.message.send',
@@ -502,6 +505,86 @@ describe('Action Spec Registry', () => {
       appName: 'Example Android App',
     });
     expect(() => spec.inputSchema.parse({ port: 70000 })).toThrow();
+  });
+
+  it('registers simulator preview control lease actions as feature-gated tools', () => {
+    const acquire = getActionSpec('session.simulatorPreview.control.acquire' as any);
+    const release = getActionSpec('session.simulatorPreview.control.release' as any);
+
+    expect(acquire.requiredFeatureId).toBe('sessions.devPreview');
+    expect(acquire.surfaces.session_agent).toBe(true);
+    expect(acquire.bindings?.mcpToolName).toBe('happier_simulator_preview_control_acquire');
+    expect(acquire.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 30_000,
+    })).toEqual({
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 30_000,
+    });
+    expect(() => acquire.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      owner: 'ai',
+      leaseTtlMs: 10,
+    })).toThrow();
+
+    expect(release.requiredFeatureId).toBe('sessions.devPreview');
+    expect(release.surfaces.session_agent).toBe(true);
+    expect(release.bindings?.mcpToolName).toBe('happier_simulator_preview_control_release');
+    expect(release.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).toEqual({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+  });
+
+  it('registers simulator preview input send as a feature-gated session-agent tool', () => {
+    const spec = getActionSpec('session.simulatorPreview.input.send' as any);
+
+    expect(spec.requiredFeatureId).toBe('sessions.devPreview');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_input_send');
+    expect(spec.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'tap',
+        x: 0.25,
+        y: 0.75,
+      },
+    })).toEqual({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'tap',
+        x: 0.25,
+        y: 0.75,
+      },
+    });
+    expect(() => spec.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'tap',
+        x: 1.25,
+        y: 0.75,
+      },
+    })).toThrow();
   });
 
   it('does not expose legacy voice_mediator intent in ExecutionRunIntentSchema', () => {

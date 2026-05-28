@@ -170,6 +170,91 @@ describe('createActionExecutor (session control)', () => {
     });
   });
 
+  it('executes session.simulatorPreview.control.acquire via deps.sessionSimulatorPreviewControlAcquire', async () => {
+    const sessionSimulatorPreviewControlAcquire = vi.fn(async () => ({ ok: true, leaseId: 'lease_1', generation: 1 }));
+    const executor = createExecutor({ sessionSimulatorPreviewControlAcquire } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.control.acquire' as any,
+      {
+        simulatorSessionId: 'sim_android_1',
+        owner: 'user',
+        holderId: 'browser_tab_1',
+        leaseTtlMs: 30_000,
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true, leaseId: 'lease_1', generation: 1 } });
+    expect(sessionSimulatorPreviewControlAcquire).toHaveBeenCalledWith({
+      sessionId: 's1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 30_000,
+    });
+  });
+
+  it('executes session.simulatorPreview.control.release via deps.sessionSimulatorPreviewControlRelease', async () => {
+    const sessionSimulatorPreviewControlRelease = vi.fn(async () => ({ ok: true, generation: 2 }));
+    const executor = createExecutor({ sessionSimulatorPreviewControlRelease } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.control.release' as any,
+      {
+        simulatorSessionId: 'sim_android_1',
+        leaseId: 'lease_1',
+        owner: 'user',
+        holderId: 'browser_tab_1',
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true, generation: 2 } });
+    expect(sessionSimulatorPreviewControlRelease).toHaveBeenCalledWith({
+      sessionId: 's1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+  });
+
+  it('executes session.simulatorPreview.input.send via deps.sessionSimulatorPreviewInputSend', async () => {
+    const sessionSimulatorPreviewInputSend = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSimulatorPreviewInputSend } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.input.send' as any,
+      {
+        simulatorSessionId: 'sim_android_1',
+        leaseId: 'lease_1',
+        generation: 1,
+        owner: 'user',
+        input: {
+          type: 'tap',
+          x: 0.5,
+          y: 0.25,
+        },
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(sessionSimulatorPreviewInputSend).toHaveBeenCalledWith({
+      sessionId: 's1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 1,
+      owner: 'user',
+      input: {
+        type: 'tap',
+        x: 0.5,
+        y: 0.25,
+      },
+    });
+  });
+
   it('executes session.stop via deps.sessionStop', async () => {
     const sessionStop = vi.fn(async () => ({ ok: true, stopped: true }));
     const executor = createExecutor({

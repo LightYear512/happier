@@ -209,13 +209,39 @@ describe('createHappierMcpServer', () => {
     const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
 
     const sendClaudeSessionMessage = vi.fn();
+    const daemonDevPreviewRegister = vi.fn(async () => ({
+      success: true,
+      preview: {
+        sessionId: 'sess_simulator_preview_android_start_1',
+        machineId: 'machine_android_1',
+        port: 9812,
+        resourceId: 'preview_android_stream_1',
+        origin: 'http://127.0.0.1:9812',
+        name: 'Android SDK API 34 simulator',
+        source: 'mcp_tool',
+        registeredAtMs: 1,
+        health: { status: 'ready' },
+        preview: {
+          rewriteUrls: false,
+          supportsWebSocket: false,
+          routeKey: 'route_android_stream_1',
+          initialPath: '/stream.mjpeg',
+        },
+      },
+    }));
     const close = vi.fn(async () => {});
+    const resolveAndroidSimulatorPreviewGeometry = vi.fn(async () => ({
+      deviceWidth: 720,
+      deviceHeight: 1600,
+    }));
     const { mcp } = createHappierMcpServer({
       sessionId: 'sess_simulator_preview_android_start_1',
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       sendClaudeSessionMessage,
       updateMetadata: () => {},
+      getMetadataSnapshot: () => ({ machineId: 'machine_android_1' }),
     } as any, {
+      daemonDevPreviewRegister,
       startAndroidSimulatorPreviewStream: vi.fn(async () => ({
         host: '127.0.0.1',
         port: 9812,
@@ -223,6 +249,7 @@ describe('createHappierMcpServer', () => {
         streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
         close,
       })),
+      resolveAndroidSimulatorPreviewGeometry,
     } as any);
 
     expect(captured.deps).toBeDefined();
@@ -243,8 +270,21 @@ describe('createHappierMcpServer', () => {
       streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
       mode: 'ai_control',
       owner: 'ai',
-      connectionPath: 'direct',
+      connectionPath: 'relay',
+      relay: {
+        machineId: 'machine_android_1',
+        routeKey: 'route_android_stream_1',
+        streamPath: '/stream.mjpeg',
+      },
     }));
+    expect(daemonDevPreviewRegister).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_android_start_1',
+      expectedMachineId: 'machine_android_1',
+      port: 9812,
+      name: 'Android SDK API 34 simulator',
+      healthPath: '/frame.jpg',
+      rewriteUrls: false,
+    });
     expect(sendClaudeSessionMessage).toHaveBeenCalledWith(
       {
         type: 'user',
@@ -260,12 +300,19 @@ describe('createHappierMcpServer', () => {
             platform: 'android',
             deviceName: 'Android SDK API 34',
             streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+            connectionPath: 'relay',
+            relay: {
+              machineId: 'machine_android_1',
+              routeKey: 'route_android_stream_1',
+              streamPath: '/stream.mjpeg',
+            },
           }),
         },
       },
     );
 
     expect(close).not.toHaveBeenCalled();
+    expect(resolveAndroidSimulatorPreviewGeometry).toHaveBeenCalledWith({ deviceId: 'emulator-5554' });
     await mcp.close();
     expect(close).not.toHaveBeenCalled();
   });
@@ -333,6 +380,86 @@ describe('createHappierMcpServer', () => {
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(secondClose).not.toHaveBeenCalled();
     expect(androidSimulatorPreviewStreams.get('sess_simulator_preview_android_replace_1')?.port).toBe(9813);
+  });
+
+  it('routes simulator preview control and input through a shared Android control registry', async () => {
+    const capturedDeps: any[] = [];
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          capturedDeps.push(deps);
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const androidSimulatorPreviewControlRegistry = {
+      registerAndroidPreview: vi.fn(),
+      acquire: vi.fn(async () => ({ ok: true, leaseId: 'lease_user_1', generation: 1 })),
+      release: vi.fn(async () => ({ ok: true, generation: 2 })),
+      sendInput: vi.fn(async () => ({ ok: true })),
+    };
+    const fakeClient = {
+      sessionId: 'sess_simulator_preview_control_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any;
+
+    createHappierMcpServer(fakeClient, {
+      androidSimulatorPreviewControlRegistry,
+    } as any);
+
+    await expect(capturedDeps[0].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 30_000,
+    })).resolves.toEqual({ ok: true, leaseId: 'lease_user_1', generation: 1 });
+    await expect(capturedDeps[0].sessionSimulatorPreviewInputSend({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    })).resolves.toEqual({ ok: true });
+    await expect(capturedDeps[0].sessionSimulatorPreviewControlRelease({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toEqual({ ok: true, generation: 2 });
+
+    expect(androidSimulatorPreviewControlRegistry.acquire).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 30_000,
+    });
+    expect(androidSimulatorPreviewControlRegistry.sendInput).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    });
+    expect(androidSimulatorPreviewControlRegistry.release).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
   });
 
   it('uses account action settings for in-session MCP approval policy when provided', async () => {

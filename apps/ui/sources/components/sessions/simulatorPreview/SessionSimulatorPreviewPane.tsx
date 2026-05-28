@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Image, Platform, View } from 'react-native';
+import { Image, Platform, Pressable, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -14,6 +14,23 @@ export type SessionSimulatorPreviewPaneProps = Readonly<{
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended' | undefined;
     owner?: 'ai' | 'user' | 'system' | undefined;
     connectionPath?: 'relay' | 'direct' | 'adb_reverse' | undefined;
+    controlLease?: Readonly<{
+        leaseId: string;
+        generation: number;
+        owner: 'ai' | 'user';
+    }> | undefined;
+    onSendInput?: ((input: Readonly<{
+        simulatorSessionId: string;
+        leaseId: string;
+        generation: number;
+        owner: 'ai' | 'user';
+        input: Readonly<{
+            type: 'tap';
+            x: number;
+            y: number;
+        }>;
+    }>) => void) | undefined;
+    onRequestControl?: (() => void | Promise<unknown>) | undefined;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -39,6 +56,30 @@ const stylesheet = StyleSheet.create((theme) => ({
     subtitle: {
         color: theme.colors.text.secondary,
         fontSize: 11,
+    },
+    headerRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 10,
+    },
+    titleGroup: {
+        flex: 1,
+        minWidth: 0,
+        gap: 4,
+    },
+    controlButton: {
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        backgroundColor: theme.colors.surface.elevated,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+    },
+    controlButtonText: {
+        color: theme.colors.text.primary,
+        fontSize: 11,
+        fontWeight: '600',
     },
     surface: {
         flex: 1,
@@ -126,48 +167,115 @@ function formatConnectionPath(path: SessionSimulatorPreviewPaneProps['connection
     }
 }
 
+function formatOwner(owner: NonNullable<SessionSimulatorPreviewPaneProps['owner']>): string {
+    switch (owner) {
+        case 'ai':
+            return t('session.simulatorPreview.owner.ai');
+        case 'user':
+            return t('session.simulatorPreview.owner.user');
+        case 'system':
+            return t('session.simulatorPreview.owner.system');
+    }
+}
+
 export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPaneProps) {
+    const viewportSizeRef = React.useRef<Readonly<{ width: number; height: number }> | null>(null);
     const title = props.appName && props.appName.trim().length > 0
         ? `${props.deviceName} · ${props.appName.trim()}`
         : props.deviceName;
     const subtitle = [
         props.platform === 'ios' ? t('session.simulatorPreview.platform.ios') : t('session.simulatorPreview.platform.android'),
         formatMode(props.mode),
-        props.owner ? t('session.simulatorPreview.ownerLabel', { owner: props.owner }) : null,
+        props.owner ? t('session.simulatorPreview.ownerLabel', { owner: formatOwner(props.owner) }) : null,
         formatConnectionPath(props.connectionPath),
     ].filter(Boolean).join(' · ');
+    const hasUserControl = props.mode === 'user_control'
+        && props.owner === 'user'
+        && props.controlLease?.owner === 'user'
+        && Boolean(props.onSendInput);
+    const canRequestControl = !hasUserControl && Boolean(props.onRequestControl);
+    const handleLayout = React.useCallback((event: LayoutChangeEvent) => {
+        const { width, height } = event.nativeEvent.layout;
+        viewportSizeRef.current = { width, height };
+    }, []);
+    const handlePress = React.useCallback((event: GestureResponderEvent) => {
+        const viewportSize = viewportSizeRef.current;
+        if (!hasUserControl || !props.controlLease || !props.onSendInput || !viewportSize || viewportSize.width <= 0 || viewportSize.height <= 0) {
+            return;
+        }
+        props.onSendInput({
+            simulatorSessionId: props.simulatorSessionId,
+            leaseId: props.controlLease.leaseId,
+            generation: props.controlLease.generation,
+            owner: props.controlLease.owner,
+            input: {
+                type: 'tap',
+                x: Math.max(0, Math.min(1, event.nativeEvent.locationX / viewportSize.width)),
+                y: Math.max(0, Math.min(1, event.nativeEvent.locationY / viewportSize.height)),
+            },
+        });
+    }, [hasUserControl, props.controlLease, props.onSendInput, props.simulatorSessionId]);
+    const frame = Platform.OS === 'web'
+        ? React.createElement('img', {
+            'data-testid': 'session.simulatorPreview.frame',
+            alt: t('session.simulatorPreview.screenAlt', { deviceName: props.deviceName }),
+            src: props.streamUrl,
+            style: {
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                display: 'block',
+            },
+        })
+        : (
+            <Image
+                testID="session.simulatorPreview.frame"
+                accessibilityLabel={t('session.simulatorPreview.screenAlt', { deviceName: props.deviceName })}
+                source={{ uri: props.streamUrl }}
+                style={stylesheet.frame}
+            />
+        );
 
     return (
         <View style={stylesheet.container} testID="session.simulatorPreview.root">
             <View style={stylesheet.header}>
-                <Text style={stylesheet.title}>{title}</Text>
-                                <Text style={stylesheet.subtitle}>{subtitle}</Text>
+                <View style={stylesheet.headerRow}>
+                    <View style={stylesheet.titleGroup}>
+                        <Text style={stylesheet.title}>{title}</Text>
+                        <Text style={stylesheet.subtitle}>{subtitle}</Text>
+                    </View>
+                    {canRequestControl
+                        ? (
+                            <Pressable
+                                onPress={props.onRequestControl}
+                                style={stylesheet.controlButton}
+                                testID="session.simulatorPreview.requestControl"
+                            >
+                                <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.requestControl')}</Text>
+                            </Pressable>
+                        )
+                        : null}
+                </View>
             </View>
             <View style={stylesheet.surface} testID="session.simulatorPreview.surface">
                 <View style={stylesheet.deviceChrome} testID="session.simulatorPreview.deviceChrome">
                     <View style={stylesheet.deviceSpeaker} testID="session.simulatorPreview.deviceSpeaker" />
-                    <View style={stylesheet.screenViewport} testID="session.simulatorPreview.screenViewport">
-                        {Platform.OS === 'web'
-                            ? React.createElement('img', {
-                                'data-testid': 'session.simulatorPreview.frame',
-                                alt: t('session.simulatorPreview.screenAlt', { deviceName: props.deviceName }),
-                                src: props.streamUrl,
-                                style: {
-                                    width: '100%',
-                                    height: '100%',
-                                    objectFit: 'contain',
-                                    display: 'block',
-                                },
-                            })
-                            : (
-                                <Image
-                                    testID="session.simulatorPreview.frame"
-                                    accessibilityLabel={t('session.simulatorPreview.screenAlt', { deviceName: props.deviceName })}
-                                    source={{ uri: props.streamUrl }}
-                                    style={stylesheet.frame}
-                                />
-                            )}
-                    </View>
+                    {hasUserControl
+                        ? (
+                            <Pressable
+                                onLayout={handleLayout}
+                                onPress={handlePress}
+                                style={stylesheet.screenViewport}
+                                testID="session.simulatorPreview.screenViewport"
+                            >
+                                {frame}
+                            </Pressable>
+                        )
+                        : (
+                            <View style={stylesheet.screenViewport} testID="session.simulatorPreview.screenViewport">
+                                {frame}
+                            </View>
+                        )}
                     <View style={stylesheet.deviceHomeIndicator} testID="session.simulatorPreview.deviceHomeIndicator" />
                 </View>
             </View>

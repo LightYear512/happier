@@ -4633,6 +4633,12 @@ localTailscale: {
         defaultIosSubtitle: "iOS シミュレーター",
         screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} シミュレーター画面`,
         ownerLabel: ({ owner }: { owner: string }) => `所有者: ${owner}`,
+        requestControl: "操作",
+        owner: {
+          ai: "AI",
+          user: "ユーザー",
+          system: "システム",
+        },
         mode: {
           idle: "アイドル",
           aiControl: "AI 制御",
