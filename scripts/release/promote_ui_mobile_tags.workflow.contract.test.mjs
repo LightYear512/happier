@@ -73,3 +73,21 @@ test('production mobile APK publishing keeps an immutable version tag alongside 
   assert.equal(immutableMeta?.rollingTag, false);
   assert.equal(immutableMeta?.generateNotes, true);
 });
+
+test('preview mobile APK publishing keeps an immutable prerelease version tag alongside the rolling preview tag', async () => {
+  process.env.GITHUB_RUN_NUMBER = '456';
+  try {
+    const { resolveMobileImmutableReleaseMetadata, resolveMobileReleaseMetadata } = await loadMobileReleaseEnvironmentsModule();
+    const meta = resolveMobileReleaseMetadata({ environment: 'preview', appVersion: '1.2.3' });
+    const immutableMeta = resolveMobileImmutableReleaseMetadata({ environment: 'preview', appVersion: '1.2.3' });
+
+    assert.equal(meta.tag, 'ui-mobile-preview');
+    assert.equal(meta.rollingTag, true);
+    assert.equal(immutableMeta?.tag, 'ui-mobile-v1.2.3-preview.456');
+    assert.equal(immutableMeta?.prerelease, true);
+    assert.equal(immutableMeta?.rollingTag, false);
+    assert.equal(immutableMeta?.generateNotes, true);
+  } finally {
+    delete process.env.GITHUB_RUN_NUMBER;
+  }
+});

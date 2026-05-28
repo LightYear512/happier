@@ -385,6 +385,7 @@ jobs:
     needs: [resolve_source, build]
     outputs:
       ui_version: ${{ steps.meta.outputs.ui_version }}
+      release_version: ${{ steps.meta.outputs.release_version }}
       target_sha: ${{ steps.meta.outputs.target_sha }}
     steps:
       - name: Checkout
@@ -407,7 +408,15 @@ jobs:
             echo "Unable to resolve apps/ui/package.json version" >&2
             exit 1
           fi
+          if [ "${{ inputs.environment }}" = "preview" ]; then
+            release_version="${ui_version}-preview.${GITHUB_RUN_NUMBER}"
+          elif [ "${{ inputs.environment }}" = "dev" ]; then
+            release_version="${ui_version}-dev.${GITHUB_RUN_NUMBER}"
+          else
+            release_version="${ui_version}"
+          fi
           echo "ui_version=${ui_version}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${{ needs.resolve_source.outputs.source_sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Download updater assets artifacts
@@ -455,6 +464,23 @@ jobs:
       assets_dir: dist/ui-desktop-assets/ui-desktop-preview
       clobber: true
 
+  publish_preview_versioned:
+    if: ${{ inputs.publish_release == true && inputs.environment == 'preview' }}
+    needs: [prepare_assets, publish_preview]
+    uses: ./.github/workflows/publish-ui-release.yml
+    secrets: inherit
+    with:
+      tag: ui-desktop-v${{ needs.prepare_assets.outputs.release_version }}
+      title: Happier UI Desktop v${{ needs.prepare_assets.outputs.release_version }}
+      target_sha: ${{ needs.prepare_assets.outputs.target_sha }}
+      prerelease: true
+      rolling_tag: false
+      generate_notes: true
+      assets_artifact: ui-desktop-assets
+      assets_artifact_path: dist/ui-desktop-assets
+      assets_dir: dist/ui-desktop-assets/ui-desktop-v
+      clobber: true
+
   publish_dev:
     if: ${{ inputs.publish_release == true && inputs.environment == 'dev' }}
     needs: [prepare_assets]
@@ -471,6 +497,23 @@ jobs:
       assets_artifact: ui-desktop-assets
       assets_artifact_path: dist/ui-desktop-assets
       assets_dir: dist/ui-desktop-assets/ui-desktop-dev
+      clobber: true
+
+  publish_dev_versioned:
+    if: ${{ inputs.publish_release == true && inputs.environment == 'dev' }}
+    needs: [prepare_assets, publish_dev]
+    uses: ./.github/workflows/publish-ui-release.yml
+    secrets: inherit
+    with:
+      tag: ui-desktop-v${{ needs.prepare_assets.outputs.release_version }}
+      title: Happier UI Desktop v${{ needs.prepare_assets.outputs.release_version }}
+      target_sha: ${{ needs.prepare_assets.outputs.target_sha }}
+      prerelease: true
+      rolling_tag: false
+      generate_notes: true
+      assets_artifact: ui-desktop-assets
+      assets_artifact_path: dist/ui-desktop-assets
+      assets_dir: dist/ui-desktop-assets/ui-desktop-v
       clobber: true
 
   publish_stable_release:

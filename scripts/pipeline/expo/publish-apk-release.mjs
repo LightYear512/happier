@@ -61,6 +61,19 @@ function deriveRollingStableApkPath(apkAbs) {
 }
 
 /**
+ * @param {string} apkAbs
+ * @param {string} immutableTag
+ */
+function deriveImmutableApkPath(apkAbs, immutableTag) {
+  const dir = path.dirname(apkAbs);
+  const ext = path.extname(apkAbs) || '.apk';
+  const version = immutableTag.replace(/^ui-mobile-v/, '');
+  const base = path.basename(apkAbs, ext);
+  if (base.includes(`-v${version}`)) return apkAbs;
+  return path.join(dir, `${base}-v${version}${ext}`);
+}
+
+/**
  * @param {{
  *   opts: { dryRun: boolean };
  *   repoRoot: string;
@@ -177,6 +190,13 @@ function main() {
   });
 
   if (immutableReleaseMeta) {
+    let immutableApkAbs = apkAbs;
+    const derivedImmutableApkAbs = deriveImmutableApkPath(apkAbs, immutableReleaseMeta.tag);
+    if (!opts.dryRun && derivedImmutableApkAbs !== apkAbs) {
+      fs.copyFileSync(apkAbs, derivedImmutableApkAbs);
+    }
+    immutableApkAbs = derivedImmutableApkAbs;
+
     console.log(
       `[pipeline] ui-mobile apk release: immutable_tag=${immutableReleaseMeta.tag} version=${appVersion}`,
     );
@@ -185,7 +205,7 @@ function main() {
       repoRoot,
       releaseMeta: immutableReleaseMeta,
       targetSha,
-      apkAbs,
+      apkAbs: immutableApkAbs,
       releaseMessage,
     });
   }
