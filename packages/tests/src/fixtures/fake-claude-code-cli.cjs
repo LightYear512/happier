@@ -21,6 +21,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { resolveClaudeProjectId } = require('../testkit/claudeProjectId.cjs');
 const {
   findArgValue,
+  callMcpServerTool,
   mergeMcpServers,
   parseHookForwarderCommand,
   parseMcpConfigs,
@@ -510,6 +511,29 @@ async function runSdkStreamUntilEof() {
       session_id: sessionId,
       message: { role: 'user', content },
     };
+  }
+
+  function formatMcpToolResultContent(result) {
+    const entries = Array.isArray(result?.content) ? result.content : [];
+    const text = entries
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return '';
+        if (typeof entry.text === 'string') return entry.text;
+        try {
+          return JSON.stringify(entry);
+        } catch {
+          return String(entry);
+        }
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    if (text) return text;
+    try {
+      return JSON.stringify(result);
+    } catch {
+      return String(result);
+    }
   }
 
   function createResultSuccess() {
@@ -1009,6 +1033,65 @@ async function runSdkStreamUntilEof() {
       emitSdk(assistant);
       emitSdk(toolResult);
       emitSdk(createResultSuccess());
+      continue;
+    }
+
+    if (scenario === 'simulator-preview-android-mcp-start') {
+      const toolUseId = `tool_simulator_preview_android_start_${turn}`;
+      const toolName = 'mcp__happier__happier_simulator_preview_android_start';
+      const portRaw = String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_PORT || '').trim();
+      const pollMsRaw = String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_POLL_MS || '').trim();
+      const toolInput = {
+        ...(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_ID
+          ? { deviceId: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_ID) }
+          : {}),
+        ...(portRaw ? { port: Number(portRaw) } : {}),
+        ...(pollMsRaw ? { pollMs: Number(pollMsRaw) } : {}),
+        deviceName: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_NAME || 'Android Emulator'),
+        ...(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_APP_NAME
+          ? { appName: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_APP_NAME) }
+          : {}),
+      };
+
+      emitSdk(createAssistantMessage([
+        {
+          type: 'tool_use',
+          id: toolUseId,
+          name: toolName,
+          input: toolInput,
+        },
+      ]));
+
+      try {
+        const result = await callMcpServerTool({
+          serverConfig: mergedMcpServers.happier,
+          toolName: 'happier_simulator_preview_android_start',
+          toolArgs: toolInput,
+          logPath,
+          invocationId,
+        });
+        emitSdk(createUserMessage([
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: formatMcpToolResultContent(result),
+            is_error: Boolean(result?.isError),
+          },
+        ]));
+        emitSdk(createAssistantMessage([{ type: 'text', text: `FAKE_SIMULATOR_PREVIEW_ANDROID_STARTED_${turn}` }]));
+        emitSdk(createResultSuccess());
+      } catch (error) {
+        emitSdk(createUserMessage([
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: error instanceof Error ? error.message : String(error),
+            is_error: true,
+          },
+        ]));
+        emitSdk(createAssistantMessage([{ type: 'text', text: `FAKE_SIMULATOR_PREVIEW_ANDROID_FAILED_${turn}` }]));
+        emitSdk(createResultSuccess());
+      }
       continue;
     }
 
