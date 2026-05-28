@@ -18,3 +18,11 @@ test('dagger expoAndroidLocalBuild must not use Secret default values (breaks da
   );
 });
 
+test('dagger expoAndroidLocalBuild allows builds without SENTRY_AUTH_TOKEN', () => {
+  const repoRoot = path.resolve(process.cwd());
+  const filePath = path.join(repoRoot, 'dagger', 'src', 'index.ts');
+  const src = fs.readFileSync(filePath, 'utf8');
+
+  assert.match(src, /sentryAuthToken\?:\s*Secret/);
+  assert.match(src, /if \(sentryAuthToken\)[\s\S]*withSecretVariable\("SENTRY_AUTH_TOKEN", sentryAuthToken\)/);
+});
