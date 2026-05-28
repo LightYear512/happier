@@ -11,6 +11,8 @@ export const ACTION_IDS = [
   'session.rollback',
   'session.handoff',
   'session.devPreview.register',
+  'session.simulatorPreview.register',
+  'session.simulatorPreview.android.start',
   'session.spawn_new',
   'session.spawn_picker',
   // Local inventory + discovery (voice)
