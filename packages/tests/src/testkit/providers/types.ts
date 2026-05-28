@@ -126,6 +126,12 @@ export type ProviderScenario = {
    */
   cliArgs?: string[] | ((ctx: { workspaceDir: string }) => string[]);
   /**
+   * Optional environment variables to apply to the spawned provider CLI after provider-level env/envFrom.
+   *
+   * Use this for scenario-specific runtime selection that must be visible at process start.
+   */
+  cliEnv?: Record<string, string> | ((ctx: { workspaceDir: string; cliHome: string }) => Record<string, string>);
+  /**
    * When true, the provider CLI must be spawned with a pseudo TTY so backends that require an
    * interactive terminal (for example, starting Claude in local mode) can boot successfully.
    */
@@ -178,6 +184,10 @@ export type ProviderScenario = {
   allowPermissionAutoApproveInYolo?: boolean;
   // Optional per-scenario setup hook (create files, seed workspace, etc.).
   setup?: (ctx: { workspaceDir: string; cliHome: string }) => Promise<void>;
+  // Optional account settings to seed before the provider CLI starts.
+  accountSettings?: unknown | ((ctx: { workspaceDir: string; cliHome: string }) => unknown);
+  // Optional trace protocol override for scenarios that intentionally exercise an alternate runtime path.
+  traceProtocols?: readonly ProviderProtocol[];
   // Tool-trace fixture keys that must exist after running the scenario.
   requiredFixtureKeys?: string[];
   // Optional alternative keys: if any of these are present, treat as satisfying that requirement bucket.

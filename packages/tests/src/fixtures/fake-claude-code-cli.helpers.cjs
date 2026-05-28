@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 function safeAppendJsonl(filePath, obj) {
   if (!filePath) return;
@@ -40,6 +41,85 @@ function mergeMcpServers(configs) {
     }
   }
   return merged;
+}
+
+async function callMcpServerTool(params) {
+  const { serverConfig, toolName, toolArgs, logPath, invocationId } = params;
+  if (!serverConfig || typeof serverConfig !== 'object') {
+    safeAppendJsonl(logPath, {
+      type: 'mcp_tool_call_failed',
+      invocationId,
+      ts: Date.now(),
+      toolName,
+      message: 'Missing MCP server config',
+    });
+    throw new Error('Missing MCP server config');
+  }
+  const command = typeof serverConfig.command === 'string' ? serverConfig.command.trim() : '';
+  if (!command) {
+    safeAppendJsonl(logPath, {
+      type: 'mcp_tool_call_failed',
+      invocationId,
+      ts: Date.now(),
+      toolName,
+      message: 'Missing MCP server command',
+    });
+    throw new Error('Missing MCP server command');
+  }
+  const args = Array.isArray(serverConfig.args) ? serverConfig.args.map((arg) => String(arg)) : [];
+  const rootDir = path.resolve(__dirname, '../../../..');
+  const sdkClientIndexPath = path.join(rootDir, 'apps/cli/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js');
+  const sdkClientStdioPath = path.join(rootDir, 'apps/cli/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js');
+  const { Client } = await import(pathToFileURL(sdkClientIndexPath).href);
+  const { StdioClientTransport } = await import(pathToFileURL(sdkClientStdioPath).href);
+  const env = {
+    ...process.env,
+    ...(serverConfig.env && typeof serverConfig.env === 'object' ? serverConfig.env : {}),
+  };
+
+  const transport = new StdioClientTransport({
+    command,
+    args,
+    env,
+    stderr: 'pipe',
+  });
+  const stderrLines = [];
+  transport.stderr?.on?.('data', (chunk) => {
+    stderrLines.push(Buffer.from(chunk).toString('utf8'));
+  });
+
+  const client = new Client({ name: 'fake-claude-e2e', version: '0.0.0' }, { capabilities: {} });
+  try {
+    await client.connect(transport);
+    safeAppendJsonl(logPath, {
+      type: 'mcp_tool_call_started',
+      invocationId,
+      ts: Date.now(),
+      toolName,
+    });
+    const result = await client.callTool({ name: toolName, arguments: toolArgs });
+    safeAppendJsonl(logPath, {
+      type: 'mcp_tool_call_completed',
+      invocationId,
+      ts: Date.now(),
+      toolName,
+      isError: Boolean(result?.isError),
+    });
+    return result;
+  } catch (error) {
+    safeAppendJsonl(logPath, {
+      type: 'mcp_tool_call_failed',
+      invocationId,
+      ts: Date.now(),
+      toolName,
+      message: error instanceof Error ? error.message : String(error),
+      stderrTail: stderrLines.join('').slice(-2000),
+    });
+    throw error;
+  } finally {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+  }
 }
 
 function findArgValue(argv, name) {
@@ -156,6 +236,7 @@ async function runHookForwarder(params) {
 
 module.exports = {
   findArgValue,
+  callMcpServerTool,
   mergeMcpServers,
   parseHookForwarderCommand,
   parseMcpConfigs,

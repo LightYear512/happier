@@ -40,7 +40,7 @@ import {
   writeProviderBaseline,
 } from '../baselines';
 import { validateNormalizedToolFixturesV2 } from '../toolSchemas/validateToolSchemas';
-import { checkMaxTraceEvents, filterImportedTraceEvents, scenarioSatisfiedByTrace } from '../satisfaction/traceSatisfaction';
+import { checkMaxTraceEvents, scenarioSatisfiedByTrace } from '../satisfaction/traceSatisfaction';
 import { scenarioSatisfiedByMessages } from '../satisfaction/messageSatisfaction';
 import { loadProvidersFromCliSpecs } from '../specs/providerSpecs';
 import { waitForAcpSidechainMessages } from '../assertions';
@@ -60,6 +60,9 @@ import {
 } from './commandArgs';
 import { formatProviderSkipWarning, resetProviderFailureReport, writeProviderFailureReport } from './failureReports';
 import { parseScenarioFilter, resolveScenarioById, resolveScenariosForProvider, selectScenariosFromRegistry } from './scenarioSelection';
+import { seedScenarioAccountSettings } from './scenarioAccountSettings';
+import { resolveScenarioCliEnv } from './scenarioCliEnv';
+import { filterScenarioRelevantTraceEvents } from './scenarioTraceEvents';
 import {
   appendProviderTokenTelemetryEntries,
   ensureProviderTokenTelemetryEntries,
@@ -513,6 +516,14 @@ async function runOneScenario(params: {
   // Legacy encryption is the simplest way to run real provider flows without requiring dataKey provisioning yet.
   const secret = Uint8Array.from(randomBytes(32));
   await seedCliAuthForServer({ cliHome, serverUrl: server.baseUrl, token: auth.token, secret });
+  await seedScenarioAccountSettings({
+    scenario,
+    baseUrl: server.baseUrl,
+    token: auth.token,
+    secret,
+    workspaceDir,
+    cliHome,
+  });
 
   const metadataCiphertextBase64 = encryptLegacyBase64(
     { path: workspaceDir, host: 'e2e', name: `providers-${provider.id}`, createdAt: Date.now() },
@@ -660,6 +671,7 @@ async function runOneScenario(params: {
         repoRootDir: repoRootDir(),
         env: {
           ...authedCliEnv,
+          ...resolveScenarioCliEnv({ scenario, workspaceDir, cliHome }),
           HAPPIER_SESSION_ATTACH_FILE: attachFile,
           HAPPIER_STACK_TOOL_TRACE_FILE: params.traceFile,
         },
@@ -1008,12 +1020,7 @@ async function runOneScenario(params: {
           traceRaw = await readFileText(params.traceFile).catch(() => '');
           traceEvents = readJsonlEvents(traceRaw);
 
-          const relevant = filterImportedTraceEvents(traceEvents).filter(
-            (e) =>
-              e?.v === 1 &&
-              e.protocol === provider.protocol &&
-              (typeof e.provider === 'string' ? e.provider === provider.traceProvider : false),
-          );
+          const relevant = filterScenarioRelevantTraceEvents({ provider, scenario, events: traceEvents });
           if (traceRaw.length !== lastTraceRawLength || relevant.length !== lastRelevantTraceCount) {
             lastTraceRawLength = traceRaw.length;
             lastRelevantTraceCount = relevant.length;
@@ -1333,12 +1340,7 @@ async function runOneScenario(params: {
 
   // Optional: cap the amount of provider activity for deterministic scenarios.
   if (scenario.maxTraceEvents) {
-      const relevant = filterImportedTraceEvents(traceEvents).filter(
-        (e) =>
-          e?.v === 1 &&
-          e.protocol === provider.protocol &&
-        (typeof e.provider === 'string' ? e.provider === provider.traceProvider : false),
-    );
+    const relevant = filterScenarioRelevantTraceEvents({ provider, scenario, events: traceEvents });
     const cap = checkMaxTraceEvents(relevant as any, scenario.maxTraceEvents);
     if (!cap.ok) {
       throw new Error(`Scenario exceeded maxTraceEvents (${provider.id}.${scenario.id}): ${cap.reason}`);
