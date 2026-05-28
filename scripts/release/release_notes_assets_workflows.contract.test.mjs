@@ -15,8 +15,6 @@ async function loadWorkflow(name) {
 
 const releaseNotesAssetCallers = [
   ['promote-ui.yml', 'promote'],
-  ['build-ui-mobile-local.yml', 'release_notes_assets'],
-  ['publish-ui-web.yml', 'publish'],
   ['publish-ui-mobile-dev.yml', 'publish'],
 ];
 
@@ -52,6 +50,34 @@ for (const [workflow, jobName] of releaseNotesAssetCallers) {
       publishStep.env?.GH_TOKEN,
       '${{ steps.release_notes_assets_token.outputs.token }}',
       `${workflow} should publish release notes assets with the token scoped to happier-assets`,
+    );
+  });
+}
+
+for (const [workflow, jobName] of [
+  ['build-ui-mobile-local.yml', 'release_notes_assets'],
+  ['publish-ui-web.yml', 'publish'],
+]) {
+  test(`${workflow} keeps release notes assets optional and scoped to the current fork`, async () => {
+    const { raw, parsed } = await loadWorkflow(workflow);
+    const job = parsed?.jobs?.[jobName];
+    assert.ok(job, `${workflow} should define job '${jobName}'`);
+    assert.equal(job.environment, 'release-shared', `${workflow} job '${jobName}' should use release-shared secrets`);
+
+    assert.match(raw, /publish_release_notes_assets/);
+    assert.match(raw, /Publish release notes assets/);
+    assert.match(raw, /GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}/);
+    assert.match(raw, /--repo\s+"\$\{\{\s*github\.repository\s*\}\}"/);
+    assert.doesNotMatch(raw, /GH_REPO:\s*happier-dev\/happier-assets/);
+    assert.doesNotMatch(raw, /--repo\s+"?happier-dev\/happier-assets"?/);
+
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    const publishStep = steps.find((step) => step?.name === 'Publish release notes assets');
+    assert.ok(publishStep, `${workflow} should publish release notes assets when enabled`);
+    assert.match(
+      String(publishStep.env?.GH_TOKEN ?? ''),
+      /github\.token/,
+      `${workflow} should fall back to GITHUB_TOKEN for fork-scoped assets`,
     );
   });
 }
