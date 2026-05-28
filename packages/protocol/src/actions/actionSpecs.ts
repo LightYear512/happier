@@ -12,6 +12,13 @@ import { BackendTargetKeySchema, BackendTargetRefSchema, parseBackendTargetKey }
 import { ExecutionRunListRequestSchema } from '../executionRunListRequest.js';
 import { ExecutionRunStartRequestSchema } from '../executionRunStartRequest.js';
 import { SessionRollbackTargetSchema } from '../sessionRollback.js';
+import {
+  SimulatorPreviewConnectionPathSchema,
+  SimulatorPreviewModeSchema,
+  SimulatorPreviewOwnerSchema,
+  SimulatorPreviewPlatformSchema,
+  SimulatorPreviewStreamUrlSchema,
+} from '../structuredMessages/simulatorPreviewV1.js';
 import { SessionHandoffWorkspaceTransferSchema } from '../sessionControl/handoff/handoffSchemas.js';
 import { ActionApprovalSchema, type ActionApproval } from './actionApprovalMetadata.js';
 import {
@@ -398,6 +405,27 @@ const SessionDevPreviewRegisterInputSchema = z.object({
     });
   }
 });
+
+const SessionSimulatorPreviewRegisterInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  simulatorSessionId: z.string().trim().min(1).max(200).optional(),
+  platform: SimulatorPreviewPlatformSchema,
+  deviceName: z.string().trim().min(1).max(200),
+  appName: z.string().trim().min(1).max(200).optional(),
+  streamUrl: SimulatorPreviewStreamUrlSchema,
+  mode: SimulatorPreviewModeSchema.optional(),
+  owner: SimulatorPreviewOwnerSchema.optional(),
+  connectionPath: SimulatorPreviewConnectionPathSchema.optional(),
+}).passthrough();
+
+const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  deviceId: z.string().trim().min(1).max(200).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  pollMs: z.number().int().min(50).max(60_000).optional(),
+  deviceName: z.string().trim().min(1).max(200).default('Android Emulator'),
+  appName: z.string().trim().min(1).max(200).optional(),
+}).passthrough();
 
 const IntentStartCommonSchema = z.object({
   sessionId: z.string().min(1).optional(),
@@ -1483,6 +1511,94 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: SessionDevPreviewRegisterInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.register',
+    title: 'Register simulator preview',
+    description: 'Register an already-running iOS or Android simulator stream so the user can view it in the session details preview tab.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_register' },
+    examples: {
+      mcp: {
+        argsExample: '{"platform":"ios","deviceName":"iPhone 15 Pro","streamUrl":"http://127.0.0.1:9100/frame.mjpeg","mode":"ai_control","connectionPath":"relay"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Register a simulator preview',
+      description: 'Use after starting a native simulator stream on the current session machine.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'platform', title: 'Platform', widget: 'select', options: [
+          { value: 'ios', label: 'iOS' },
+          { value: 'android', label: 'Android' },
+        ] },
+        { path: 'deviceName', title: 'Device name', widget: 'text' },
+        { path: 'appName', title: 'App name', widget: 'text' },
+        { path: 'streamUrl', title: 'Stream URL', widget: 'text' },
+        { path: 'mode', title: 'Mode', widget: 'select', options: [
+          { value: 'idle', label: 'Idle' },
+          { value: 'ai_control', label: 'AI control' },
+          { value: 'user_control', label: 'User control' },
+          { value: 'system_locked', label: 'System locked' },
+          { value: 'ended', label: 'Ended' },
+        ] },
+        { path: 'connectionPath', title: 'Connection path', widget: 'select', options: [
+          { value: 'relay', label: 'Relay' },
+          { value: 'direct', label: 'Direct' },
+          { value: 'adb_reverse', label: 'ADB reverse' },
+        ] },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewRegisterInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.android.start',
+    title: 'Start Android simulator preview',
+    description: 'Start an Android emulator screenshot stream on the current session machine and register it as a simulator preview for the user.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_android_start' },
+    examples: {
+      mcp: {
+        argsExample: '{"deviceId":"emulator-5554","port":9812,"pollMs":500,"deviceName":"Android SDK API 34","appName":"Example Android App"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Start Android simulator preview',
+      description: 'Use when the user asks to open or preview an Android emulator from the current session.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'deviceId', title: 'ADB device id', widget: 'text' },
+        { path: 'port', title: 'Local stream port', widget: 'text' },
+        { path: 'pollMs', title: 'Screenshot poll interval ms', widget: 'text' },
+        { path: 'deviceName', title: 'Device name', widget: 'text' },
+        { path: 'appName', title: 'App name', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewAndroidStartInputSchema,
   },
   {
     id: 'session.spawn_new',

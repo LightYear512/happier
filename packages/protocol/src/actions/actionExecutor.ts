@@ -70,6 +70,25 @@ export type ActionExecutorContext = Readonly<{
   approvalOrigin?: ApprovalRequestOriginV1 | null;
 }>;
 
+type SessionSimulatorPreviewRegisterActionInput = Readonly<{
+  simulatorSessionId?: unknown;
+  platform?: unknown;
+  deviceName?: unknown;
+  appName?: unknown;
+  streamUrl?: unknown;
+  mode?: unknown;
+  owner?: unknown;
+  connectionPath?: unknown;
+}>;
+
+type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
+  deviceId?: unknown;
+  deviceName?: unknown;
+  appName?: unknown;
+  port?: unknown;
+  pollMs?: unknown;
+}>;
+
 export type ActionExecutorDeps = Readonly<{
   // Execution runs (session-scoped RPC)
   executionRunStart: (sessionId: string, request: any, opts?: Readonly<{ serverId?: string | null }>) => Promise<unknown>;
@@ -107,6 +126,25 @@ export type ActionExecutorDeps = Readonly<{
     framework?: string;
     rewriteUrls?: boolean;
     healthPath?: string;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewRegister?: (args: Readonly<{
+    sessionId: string;
+    simulatorSessionId?: string;
+    platform: 'android' | 'ios';
+    deviceName: string;
+    appName?: string;
+    streamUrl: string;
+    mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
+    owner?: 'ai' | 'user' | 'system';
+    connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewAndroidStart?: (args: Readonly<{
+    sessionId: string;
+    deviceId?: string;
+    port?: number;
+    pollMs?: number;
+    deviceName: string;
+    appName?: string;
   }>) => Promise<unknown>;
   sessionSpawnNew: (args: Readonly<{
     tag?: string;
@@ -1328,6 +1366,57 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(framework ? { framework } : {}),
             ...(typeof (parsed.data as any).rewriteUrls === 'boolean' ? { rewriteUrls: (parsed.data as any).rewriteUrls } : {}),
             ...(healthPath ? { healthPath } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.register') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewRegister) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.register' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewRegisterActionInput;
+          const simulatorSessionId = normalizeId(input.simulatorSessionId);
+          const deviceName = normalizeId(input.deviceName);
+          const appName = normalizeId(input.appName);
+          const streamUrl = normalizeId(input.streamUrl);
+          if (!deviceName || !streamUrl) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionSimulatorPreviewRegister({
+            sessionId,
+            ...(simulatorSessionId ? { simulatorSessionId } : {}),
+            platform: input.platform === 'ios' ? 'ios' : 'android',
+            deviceName,
+            ...(appName ? { appName } : {}),
+            streamUrl,
+            ...(input.mode === 'idle' || input.mode === 'ai_control' || input.mode === 'user_control' || input.mode === 'system_locked' || input.mode === 'ended' ? { mode: input.mode } : {}),
+            ...(input.owner === 'ai' || input.owner === 'user' || input.owner === 'system' ? { owner: input.owner } : {}),
+            ...(input.connectionPath === 'relay' || input.connectionPath === 'direct' || input.connectionPath === 'adb_reverse' ? { connectionPath: input.connectionPath } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.android.start') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewAndroidStart) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.android.start' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewAndroidStartActionInput;
+          const deviceId = normalizeId(input.deviceId);
+          const deviceName = normalizeId(input.deviceName) || 'Android Emulator';
+          const appName = normalizeId(input.appName);
+          const port = input.port;
+          const pollMs = input.pollMs;
+          const res = await deps.sessionSimulatorPreviewAndroidStart({
+            sessionId,
+            ...(deviceId ? { deviceId } : {}),
+            ...(typeof port === 'number' ? { port } : {}),
+            ...(typeof pollMs === 'number' ? { pollMs } : {}),
+            deviceName,
+            ...(appName ? { appName } : {}),
           });
           return { ok: true, result: res };
         }
