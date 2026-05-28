@@ -87,6 +87,9 @@ export class HappierPipeline {
     expoAppName: string = "",
     expoAppBundleId: string = "",
     expoAndroidPackage: string = "",
+    androidGradleHeapMb: string = "",
+    androidKotlinDaemonHeapMb: string = "",
+    androidGradleWorkersMax: string = "",
     containerPlatform: string = "linux/amd64",
   ): Promise<Directory> {
     const workdir = "/repo"
@@ -187,6 +190,15 @@ export class HappierPipeline {
     }
     if (expoAndroidPackage) {
       container = container.withEnvVariable("EXPO_ANDROID_PACKAGE", expoAndroidPackage)
+    }
+    if (androidGradleHeapMb) {
+      container = container.withEnvVariable("HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB", androidGradleHeapMb)
+    }
+    if (androidKotlinDaemonHeapMb) {
+      container = container.withEnvVariable("HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB", androidKotlinDaemonHeapMb)
+    }
+    if (androidGradleWorkersMax) {
+      container = container.withEnvVariable("HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX", androidGradleWorkersMax)
     }
 
     container = container

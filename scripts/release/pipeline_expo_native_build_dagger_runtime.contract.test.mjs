@@ -21,6 +21,9 @@ test('dagger expoAndroidLocalBuild forwards Expo app identity env vars to the co
   assert.match(src, /EXPO_APP_SCHEME/);
   assert.match(src, /EXPO_APP_NAME/);
   assert.match(src, /EXPO_APP_BUNDLE_ID/);
+  assert.match(src, /HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB/);
+  assert.match(src, /HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB/);
+  assert.match(src, /HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX/);
 });
 
 function makeTempDir() {
@@ -107,6 +110,9 @@ test('expo native-build can delegate local Android builds to Dagger runtime', ()
     EXPO_APP_SCHEME: 'happier-dev',
     EXPO_APP_NAME: 'Happier Dev',
     EXPO_APP_BUNDLE_ID: 'dev.happier.stack.dev.leeroy',
+    HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB: '12288',
+    HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB: '3072',
+    HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX: '1',
   };
 
   const stdout = execFileSync(
@@ -145,6 +151,9 @@ test('expo native-build can delegate local Android builds to Dagger runtime', ()
   assert.match(stdout, /--expo-app-scheme happier-dev\b/);
   assert.match(stdout, /--expo-app-name Happier Dev\b/);
   assert.match(stdout, /--expo-app-bundle-id dev\.happier\.stack\.dev\.leeroy\b/);
+  assert.match(stdout, /--android-gradle-heap-mb 12288\b/);
+  assert.match(stdout, /--android-kotlin-daemon-heap-mb 3072\b/);
+  assert.match(stdout, /--android-gradle-workers-max 1\b/);
   assert.ok(fs.existsSync(artifactOut), 'expected dagger runtime to create/export artifact');
   assert.ok(fs.existsSync(outJson), 'expected dagger runtime to create/export metadata json');
 });
