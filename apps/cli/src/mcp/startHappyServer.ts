@@ -2,7 +2,7 @@ import { createServer, type OutgoingHttpHeaders, type ServerResponse } from "nod
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AddressInfo } from "node:net";
 import { logger } from "@/ui/logger";
-import { createHappierMcpServer } from "@/mcp/createHappierMcpServer";
+import { createHappierMcpServer, type AndroidSimulatorPreviewStreamRegistry } from "@/mcp/createHappierMcpServer";
 import { listBuiltInHappierTools } from "@/agent/tools/happierTools/listBuiltInHappierTools";
 import type { RpcHandlerManagerLike } from "@/api/rpc/types";
 import type { Metadata } from "@/api/types";
@@ -39,6 +39,7 @@ export async function startHappyServer(
     // Do not eagerly construct an MCP server on startup; only snapshot the names.
     // Full server creation is done per request inside the handler.
     const devPreviewRegistry = getSharedSessionDevPreviewRegistry();
+    const androidSimulatorPreviewStreams: AndroidSimulatorPreviewStreamRegistry = new Map();
     const isActionEnabled = createMcpActionEnablement({
         accountSettings: opts?.accountSettings ?? null,
         surface: 'session_agent',
@@ -69,6 +70,7 @@ export async function startHappyServer(
             credentials: opts?.credentials ?? null,
             accountSettings: opts?.accountSettings ?? null,
             devPreviewRegistry,
+            androidSimulatorPreviewStreams,
         });
 
         const transport = new StreamableHTTPServerTransport({
@@ -129,9 +131,20 @@ export async function startHappyServer(
         toolNames: toolNamesSnapshot,
         stop: () => {
             logger.debug('[happierMCP] Stopping server');
+            closeAndroidSimulatorPreviewStreams(androidSimulatorPreviewStreams).catch((error) => {
+                logger.debug('[happierMCP] Error closing Android simulator preview streams:', error);
+            });
             server.close();
         }
     }
+}
+
+async function closeAndroidSimulatorPreviewStreams(streams: AndroidSimulatorPreviewStreamRegistry): Promise<void> {
+    const active = [...streams.values()];
+    streams.clear();
+    await Promise.all(active.map(async (stream) => {
+        await stream.close();
+    }));
 }
 
 function startMcpSseKeepAlive(res: ServerResponse, keepAliveIntervalMs: number | null): () => void {

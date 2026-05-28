@@ -93,6 +93,248 @@ describe('createHappierMcpServer', () => {
     expect(enabled.toolNames).toContain('happier_dev_preview_register');
   });
 
+  it('hides the session simulator preview tool until the experimental feature toggle is enabled', async () => {
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const fakeClient = {
+      sessionId: 'sess_mcp_tool_names_simulator_preview_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any;
+
+    const disabled = createHappierMcpServer(fakeClient, {
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': false,
+        },
+      },
+    } as any);
+    const enabled = createHappierMcpServer(fakeClient, {
+      accountSettings: {
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      },
+    } as any);
+
+    expect(disabled.toolNames).not.toContain('happier_simulator_preview_register');
+    expect(enabled.toolNames).toContain('happier_simulator_preview_register');
+    expect(disabled.toolNames).not.toContain('happier_simulator_preview_android_start');
+    expect(enabled.toolNames).toContain('happier_simulator_preview_android_start');
+  });
+
+  it('emits a simulator preview structured message from the in-session action bridge', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const sendClaudeSessionMessage = vi.fn();
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage,
+      updateMetadata: () => {},
+    } as any);
+
+    expect(captured.deps).toBeDefined();
+    const result = await captured.deps.sessionSimulatorPreviewRegister({
+      sessionId: 'sess_simulator_preview_1',
+      platform: 'ios',
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example App',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'relay',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      sessionId: 'sess_simulator_preview_1',
+      platform: 'ios',
+      deviceName: 'iPhone 15 Pro',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'relay',
+    }));
+    expect(sendClaudeSessionMessage).toHaveBeenCalledWith(
+      {
+        type: 'user',
+        message: {
+          content: 'iPhone 15 Pro simulator preview',
+        },
+      },
+      {
+        happier: {
+          kind: 'simulator_preview.v1',
+          payload: expect.objectContaining({
+            sessionId: 'sess_simulator_preview_1',
+            platform: 'ios',
+            deviceName: 'iPhone 15 Pro',
+            streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+          }),
+        },
+      },
+    );
+  });
+
+  it('starts an Android simulator stream and emits a preview message from the in-session action bridge', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const sendClaudeSessionMessage = vi.fn();
+    const close = vi.fn(async () => {});
+    const { mcp } = createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_android_start_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage,
+      updateMetadata: () => {},
+    } as any, {
+      startAndroidSimulatorPreviewStream: vi.fn(async () => ({
+        host: '127.0.0.1',
+        port: 9812,
+        frameUrl: 'http://127.0.0.1:9812/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+        close,
+      })),
+    } as any);
+
+    expect(captured.deps).toBeDefined();
+    const result = await captured.deps.sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_start_1',
+      deviceId: 'emulator-5554',
+      port: 9812,
+      pollMs: 500,
+      deviceName: 'Android SDK API 34',
+      appName: 'Example Android App',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      sessionId: 'sess_simulator_preview_android_start_1',
+      platform: 'android',
+      deviceName: 'Android SDK API 34',
+      appName: 'Example Android App',
+      streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'direct',
+    }));
+    expect(sendClaudeSessionMessage).toHaveBeenCalledWith(
+      {
+        type: 'user',
+        message: {
+          content: 'Android SDK API 34 simulator preview',
+        },
+      },
+      {
+        happier: {
+          kind: 'simulator_preview.v1',
+          payload: expect.objectContaining({
+            sessionId: 'sess_simulator_preview_android_start_1',
+            platform: 'android',
+            deviceName: 'Android SDK API 34',
+            streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+          }),
+        },
+      },
+    );
+
+    expect(close).not.toHaveBeenCalled();
+    await mcp.close();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('replaces Android simulator streams through a shared registry across per-request MCP servers', async () => {
+    const capturedDeps: any[] = [];
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          capturedDeps.push(deps);
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const firstClose = vi.fn(async () => {});
+    const secondClose = vi.fn(async () => {});
+    const startAndroidSimulatorPreviewStream = vi
+      .fn()
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        port: 9812,
+        frameUrl: 'http://127.0.0.1:9812/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+        close: firstClose,
+      })
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        port: 9813,
+        frameUrl: 'http://127.0.0.1:9813/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9813/stream.mjpeg',
+        close: secondClose,
+      });
+    const androidSimulatorPreviewStreams = new Map();
+    const fakeClient = {
+      sessionId: 'sess_simulator_preview_android_replace_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any;
+
+    createHappierMcpServer(fakeClient, {
+      startAndroidSimulatorPreviewStream,
+      androidSimulatorPreviewStreams,
+    } as any);
+    createHappierMcpServer(fakeClient, {
+      startAndroidSimulatorPreviewStream,
+      androidSimulatorPreviewStreams,
+    } as any);
+
+    await capturedDeps[0].sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_replace_1',
+      deviceName: 'Android SDK API 34',
+    });
+    await capturedDeps[1].sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_replace_1',
+      deviceName: 'Android SDK API 34',
+    });
+
+    expect(firstClose).toHaveBeenCalledTimes(1);
+    expect(secondClose).not.toHaveBeenCalled();
+    expect(androidSimulatorPreviewStreams.get('sess_simulator_preview_android_replace_1')?.port).toBe(9813);
+  });
+
   it('uses account action settings for in-session MCP approval policy when provided', async () => {
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,
