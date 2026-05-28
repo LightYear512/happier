@@ -21,6 +21,9 @@ test('build-ui-mobile-local workflow delegates local builds to ui-mobile-release
   assert.match(androidJob, /EXPO_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_EAS_PROJECT_ID\s*\}\}/);
   assert.match(androidJob, /EXPO_UPDATES_URL:\s*\$\{\{\s*vars\.EXPO_UPDATES_URL\s*\}\}/);
   assert.match(androidJob, /EXPO_ANDROID_PACKAGE:\s*\$\{\{\s*vars\.EXPO_ANDROID_PACKAGE\s*\}\}/);
+  assert.match(androidJob, /HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB:\s*\$\{\{\s*vars\.HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB\s*\}\}/);
+  assert.match(androidJob, /HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB:\s*\$\{\{\s*vars\.HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB\s*\}\}/);
+  assert.match(androidJob, /HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX:\s*\$\{\{\s*vars\.HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX\s*\}\}/);
   assert.match(androidJob, /--native-local-runtime dagger/);
   assert.match(src, /--action "\$\{\{\s*inputs\.action == 'build_and_submit' && 'native_submit' \|\| 'native'\s*\}\}"/);
   assert.match(src, /--publish-apk-release false/);

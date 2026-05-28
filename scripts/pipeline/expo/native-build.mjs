@@ -755,6 +755,9 @@ async function main() {
 	      const expoAppName = String(process.env.EXPO_APP_NAME ?? '').trim();
 	      const expoAppBundleId = String(process.env.EXPO_APP_BUNDLE_ID ?? '').trim();
 	      const expoAndroidPackage = String(process.env.EXPO_ANDROID_PACKAGE ?? '').trim();
+	      const androidGradleHeapMb = String(process.env.HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB ?? '').trim();
+	      const androidKotlinDaemonHeapMb = String(process.env.HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB ?? '').trim();
+	      const androidGradleWorkersMax = String(process.env.HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX ?? '').trim();
 	      const sentryAuthToken = String(process.env.SENTRY_AUTH_TOKEN ?? '').trim();
 
 	      const staged = dryRun ? null : stageRepoForDagger({ repoRoot });
@@ -803,9 +806,12 @@ async function main() {
 	            ...(expoEasProjectId ? ['--expo-eas-project-id', expoEasProjectId] : []),
 	            ...(expoUpdatesUrl ? ['--expo-updates-url', expoUpdatesUrl] : []),
             ...(expoAppScheme ? ['--expo-app-scheme', expoAppScheme] : []),
-            ...(expoAppName ? ['--expo-app-name', expoAppName] : []),
+	            ...(expoAppName ? ['--expo-app-name', expoAppName] : []),
 	            ...(expoAppBundleId ? ['--expo-app-bundle-id', expoAppBundleId] : []),
 	            ...(expoAndroidPackage ? ['--expo-android-package', expoAndroidPackage] : []),
+	            ...(androidGradleHeapMb ? ['--android-gradle-heap-mb', androidGradleHeapMb] : []),
+	            ...(androidKotlinDaemonHeapMb ? ['--android-kotlin-daemon-heap-mb', androidKotlinDaemonHeapMb] : []),
+	            ...(androidGradleWorkersMax ? ['--android-gradle-workers-max', androidGradleWorkersMax] : []),
 	          ],
 	          { cwd: repoRoot, stdio: 'inherit', env: daggerEnv },
 	        );
