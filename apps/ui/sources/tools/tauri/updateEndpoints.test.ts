@@ -17,13 +17,13 @@ describe('Tauri updater endpoints', () => {
         const publicdevConfig = readJson(publicdevConfigPath);
 
         expect(stableConfig.plugins.updater.endpoints).toEqual([
-            'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/latest.json',
+            'https://github.com/LightYear512/happier/releases/download/ui-desktop-stable/latest.json',
         ]);
         expect(previewConfig.plugins.updater.endpoints).toEqual([
-            'https://github.com/happier-dev/happier/releases/download/ui-desktop-preview/latest.json',
+            'https://github.com/LightYear512/happier/releases/download/ui-desktop-preview/latest.json',
         ]);
         expect(publicdevConfig.plugins.updater.endpoints).toEqual([
-            'https://github.com/happier-dev/happier/releases/download/ui-desktop-dev/latest.json',
+            'https://github.com/LightYear512/happier/releases/download/ui-desktop-dev/latest.json',
         ]);
     });
 });
