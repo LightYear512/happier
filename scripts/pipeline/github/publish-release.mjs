@@ -229,6 +229,9 @@ function updateRollingTagViaGithubApi(params) {
 
   // PATCH existing ref, otherwise POST a new ref.
   if (oldSha) {
+    if (oldSha === sha) {
+      return true;
+    }
     run(
       'gh',
       // `force` must be a JSON boolean; GitHub rejects `-f force=true` with HTTP 422.
