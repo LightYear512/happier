@@ -33,6 +33,7 @@ import { cmdSessionActionsList } from './actions/list';
 import { cmdSessionActionsDescribe } from './actions/describe';
 import { cmdSessionActionsExecute } from './actions/execute';
 import { cmdSessionPreviewRegister } from './preview/register';
+import { cmdSessionPreviewAndroid } from './preview/android';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 
 function inferSessionKind(argv: readonly string[]): string {
@@ -60,6 +61,7 @@ function inferSessionKind(argv: readonly string[]): string {
   if (sub === 'preview') {
     const previewSub = String(argv[1] ?? '').trim();
     if (previewSub === 'register') return 'session_preview_register';
+    if (previewSub === 'android') return 'session_preview_android';
     return 'session_preview_unknown';
   }
   if (sub === 'run') {
@@ -108,6 +110,7 @@ function printSessionSubcommandHelp(subcommand: string): boolean {
       return true;
     case 'preview':
       console.log('happier session preview register <session-id-or-prefix> (--url <url> | --port <port>) [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
+      console.log('happier session preview android <session-id-or-prefix> [--device-id <adb-serial>] [--port <port>] [--poll-ms <ms>] [--device-name <name>] [--app-name <name>] [--json]');
       return true;
     default:
       return false;
@@ -147,6 +150,7 @@ export async function handleSessionCommand(
       console.log('happier session actions describe <action-id> [--json]');
       console.log('happier session actions execute <session-id> <action-id> [--input-json <json>] [--json]');
       console.log('happier session preview register <session-id-or-prefix> (--url <url> | --port <port>) [--name <name>] [--framework <id>] [--health-path <path>] [--no-rewrite-urls] [--json]');
+      console.log('happier session preview android <session-id-or-prefix> [--device-id <adb-serial>] [--port <port>] [--poll-ms <ms>] [--device-name <name>] [--app-name <name>] [--json]');
       console.log('happier session run start <session-id> --intent <intent> --backend <backend-target> [--json]');
       console.log('happier session run list <session-id> [--json]');
       console.log('happier session run get <session-id> <run-id> [--include-structured] [--json]');
@@ -225,6 +229,10 @@ export async function handleSessionCommand(
         if (!previewSub) throw new Error('Usage: happier session preview <subcommand> ...');
         if (previewSub === 'register') {
           await cmdSessionPreviewRegister(argv, { readCredentialsFn });
+          return;
+        }
+        if (previewSub === 'android') {
+          await cmdSessionPreviewAndroid(argv, { readCredentialsFn });
           return;
         }
         throw new Error(`Unknown session preview subcommand: ${previewSub}`);

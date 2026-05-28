@@ -13,6 +13,14 @@ import type { Credentials } from '@/persistence';
 import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
 import { createSessionDevPreviewRegistry, type SessionDevPreviewRegistry } from '@/session/devPreview/createSessionDevPreviewRegistry';
 import { emitLocalServicePreviewMessage } from '@/session/devPreview/emitLocalServicePreviewMessage';
+import {
+  buildSimulatorPreviewPayload,
+  emitSimulatorPreviewMessage,
+} from '@/session/simulatorPreview/emitSimulatorPreviewMessage';
+import {
+  startAndroidScreenshotMjpegStream,
+  type AndroidScreenshotMjpegStream,
+} from '@/session/simulatorPreview/startAndroidScreenshotMjpegStream';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -31,6 +39,8 @@ import {
   type DaemonDevPreviewRegisterResult,
 } from '@/daemon/controlClient';
 
+export type AndroidSimulatorPreviewStreamRegistry = Map<string, AndroidScreenshotMjpegStream>;
+
 export function createHappierMcpServer(
   client: HappyMcpSessionClient,
   opts?: Readonly<{
@@ -38,6 +48,8 @@ export function createHappierMcpServer(
     accountSettings?: AccountSettings | null;
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
     daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
+    startAndroidSimulatorPreviewStream?: typeof startAndroidScreenshotMjpegStream;
+    androidSimulatorPreviewStreams?: AndroidSimulatorPreviewStreamRegistry;
   }>,
 ): { mcp: McpServer; toolNames: string[] } {
   // This server is the per-session MCP bridge that a running session agent uses.
@@ -48,6 +60,8 @@ export function createHappierMcpServer(
   const actionsSettings = opts?.accountSettings?.actionsSettingsV1 ?? null;
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
+  const startAndroidSimulatorPreviewStream = opts?.startAndroidSimulatorPreviewStream ?? startAndroidScreenshotMjpegStream;
+  const activeAndroidStreams = opts?.androidSimulatorPreviewStreams ?? new Map<string, AndroidScreenshotMjpegStream>();
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -210,6 +224,56 @@ export function createHappierMcpServer(
             error,
           });
         }
+        return preview;
+      },
+      sessionSimulatorPreviewRegister: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        const preview = buildSimulatorPreviewPayload(input);
+        emitSimulatorPreviewMessage({
+          preview,
+          sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
+        });
+        return preview;
+      },
+      sessionSimulatorPreviewAndroidStart: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        const previous = activeAndroidStreams.get(input.sessionId);
+        if (previous) {
+          activeAndroidStreams.delete(input.sessionId);
+          await previous.close().catch((error) => {
+            logger.debug('[mcp] Failed to close previous Android simulator preview stream', {
+              sessionId: input.sessionId,
+              error,
+            });
+          });
+        }
+
+        const stream = await startAndroidSimulatorPreviewStream({
+          host: '127.0.0.1',
+          ...(typeof input.port === 'number' ? { port: input.port } : {}),
+          ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
+          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+        });
+        activeAndroidStreams.set(input.sessionId, stream);
+
+        const preview = buildSimulatorPreviewPayload({
+          sessionId: input.sessionId,
+          platform: 'android',
+          deviceName: input.deviceName,
+          ...(input.appName ? { appName: input.appName } : {}),
+          streamUrl: stream.streamUrl,
+          mode: 'ai_control',
+          owner: 'ai',
+          connectionPath: 'direct',
+        });
+        emitSimulatorPreviewMessage({
+          preview,
+          sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
+        });
         return preview;
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),
