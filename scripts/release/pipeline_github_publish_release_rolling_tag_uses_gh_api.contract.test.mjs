@@ -136,3 +136,112 @@ exit 0
   const gitCalls = fs.readFileSync(gitLog, 'utf8');
   assert.doesNotMatch(gitCalls, /\bgit push\b/);
 });
+
+test('pipeline GitHub rolling release skips ref update when the tag already points at target sha', async () => {
+  const tmp = fs.mkdtempSync(resolve(os.tmpdir(), 'happier-publish-release-'));
+  const binDir = resolve(tmp, 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const ghLog = resolve(tmp, 'gh.log');
+  fs.writeFileSync(ghLog, '', 'utf8');
+
+  const asset = resolve(tmp, 'asset.txt');
+  fs.writeFileSync(asset, 'hello\n', 'utf8');
+
+  const targetSha = '0123456789abcdef0123456789abcdef01234567';
+
+  const gitPath = resolve(binDir, 'git');
+  makeExecutable(
+    gitPath,
+    `#!/bin/sh
+set -eu
+
+cmd="$1"
+shift || true
+
+case "$cmd" in
+  rev-parse)
+    exit 1
+    ;;
+  remote)
+    if [ "$1" = "get-url" ] && [ "$2" = "origin" ]; then
+      echo "https://github.com/test/test.git"
+      exit 0
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+  );
+
+  const ghPath = resolve(binDir, 'gh');
+  makeExecutable(
+    ghPath,
+    `#!/bin/sh
+set -eu
+
+echo "gh $*" >> "${ghLog}"
+
+if [ "$1" = "release" ] && [ "$2" = "view" ]; then
+  exit 1
+fi
+
+if [ "$1" = "api" ]; then
+  if echo "$*" | grep -q "repos/test/test/git/ref/tags/dev-test"; then
+    echo "${targetSha}"
+    exit 0
+  fi
+  exit 0
+fi
+
+exit 0
+`,
+  );
+
+  const env = {
+    ...process.env,
+    GH_REPO: 'test/test',
+    GH_TOKEN: 'dummy',
+    GITHUB_REPOSITORY: '',
+    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+  };
+
+  execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, 'scripts', 'pipeline', 'github', 'publish-release.mjs'),
+      '--tag',
+      'dev-test',
+      '--title',
+      'Dev Test',
+      '--target-sha',
+      targetSha,
+      '--prerelease',
+      'true',
+      '--rolling-tag',
+      'true',
+      '--generate-notes',
+      'false',
+      '--notes',
+      'Rolling dev build.',
+      '--prune-assets',
+      'false',
+      '--assets',
+      asset,
+    ],
+    {
+      cwd: repoRoot,
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  );
+
+  const log = fs.readFileSync(ghLog, 'utf8');
+  assert.doesNotMatch(log, /gh api -X PATCH repos\/test\/test\/git\/refs\/tags\/dev-test/);
+  assert.match(log, /gh release upload dev-test /);
+});
