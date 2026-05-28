@@ -16,6 +16,8 @@ import { SessionExecutionRunLauncherView } from '@/components/sessions/runs/laun
 import { SessionEmbeddedTerminalPane } from '@/components/sessions/terminal/SessionEmbeddedTerminalPane';
 import { SessionLocalServicePreviewPane } from '@/components/sessions/devPreview/SessionLocalServicePreviewPane';
 import { SessionSimulatorPreviewPane } from '@/components/sessions/simulatorPreview/SessionSimulatorPreviewPane';
+import { useSessionSimulatorPreviewControl } from '@/components/sessions/simulatorPreview/useSessionSimulatorPreviewControl';
+import { useSessionSimulatorPreviewStreamUrl } from '@/components/sessions/simulatorPreview/useSessionSimulatorPreviewStreamUrl';
 import { PinIcon, PinSlashIcon } from '@/components/sessions/shell/sessionPinIcons';
 import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
@@ -278,6 +280,11 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
     owner?: 'ai' | 'user' | 'system';
     connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+    relay?: Readonly<{
+        machineId: string;
+        routeKey: string;
+        streamPath: string;
+    }>;
 }> {
     if (!value || typeof value !== 'object') return false;
     const maybe = value as Record<string, unknown>;
@@ -293,7 +300,62 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
         && (maybe.appName === undefined || typeof maybe.appName === 'string')
         && (mode === undefined || mode === 'idle' || mode === 'ai_control' || mode === 'user_control' || mode === 'system_locked' || mode === 'ended')
         && (owner === undefined || owner === 'ai' || owner === 'user' || owner === 'system')
-        && (connectionPath === undefined || connectionPath === 'relay' || connectionPath === 'direct' || connectionPath === 'adb_reverse');
+        && (connectionPath === undefined || connectionPath === 'relay' || connectionPath === 'direct' || connectionPath === 'adb_reverse')
+        && (
+            maybe.relay === undefined
+            || (
+                Boolean(maybe.relay)
+                && typeof maybe.relay === 'object'
+                && typeof (maybe.relay as Record<string, unknown>).machineId === 'string'
+                && typeof (maybe.relay as Record<string, unknown>).routeKey === 'string'
+                && typeof (maybe.relay as Record<string, unknown>).streamPath === 'string'
+            )
+        );
+}
+
+function SessionSimulatorPreviewDetailsPane(props: Readonly<{
+    sessionId: string;
+    resource: Readonly<{
+        kind: 'simulatorPreview';
+        simulatorSessionId: string;
+        platform: 'android' | 'ios';
+        deviceName: string;
+        appName?: string;
+        streamUrl: string;
+        mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
+        owner?: 'ai' | 'user' | 'system';
+        connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+        relay?: Readonly<{
+            machineId: string;
+            routeKey: string;
+            streamPath: string;
+        }>;
+    }>;
+}>) {
+    const control = useSessionSimulatorPreviewControl({
+        sessionId: props.sessionId,
+        simulatorSessionId: props.resource.simulatorSessionId,
+    });
+    const stream = useSessionSimulatorPreviewStreamUrl({
+        sessionId: props.sessionId,
+        directStreamUrl: props.resource.streamUrl,
+        relay: props.resource.relay,
+    });
+    return (
+        <SessionSimulatorPreviewPane
+            simulatorSessionId={props.resource.simulatorSessionId}
+            platform={props.resource.platform}
+            deviceName={props.resource.deviceName}
+            streamUrl={stream.streamUrl}
+            appName={props.resource.appName}
+            mode={control.controlLease ? 'user_control' : props.resource.mode}
+            owner={control.controlLease ? 'user' : props.resource.owner}
+            connectionPath={props.resource.connectionPath}
+            controlLease={control.controlLease ?? undefined}
+            onRequestControl={control.requestControl}
+            onSendInput={control.sendInput}
+        />
+    );
 }
 
 export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) => {
@@ -506,15 +568,9 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         if (resource?.kind === 'simulatorPreview') {
             if (isSimulatorPreviewResource(tab.resource)) {
                 return (
-                    <SessionSimulatorPreviewPane
-                        simulatorSessionId={tab.resource.simulatorSessionId}
-                        platform={tab.resource.platform}
-                        deviceName={tab.resource.deviceName}
-                        streamUrl={tab.resource.streamUrl}
-                        appName={tab.resource.appName}
-                        mode={tab.resource.mode}
-                        owner={tab.resource.owner}
-                        connectionPath={tab.resource.connectionPath}
+                    <SessionSimulatorPreviewDetailsPane
+                        sessionId={props.sessionId}
+                        resource={tab.resource}
                     />
                 );
             }

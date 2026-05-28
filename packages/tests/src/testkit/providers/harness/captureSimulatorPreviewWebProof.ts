@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { appendFile, copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
-import { chromium } from '@playwright/test';
+import { chromium, type Page } from '@playwright/test';
 
 import { repoRootDir } from '../../paths';
 import { startUiWeb, type StartedUiWeb } from '../../process/uiWeb';
@@ -142,6 +142,11 @@ export async function captureSimulatorPreviewWebProof(params: Readonly<{
       await page.getByTestId('simulator-preview-card').first().click();
       await page.getByTestId('session.simulatorPreview.deviceChrome').waitFor({ state: 'visible', timeout: 120_000 });
       await page.getByTestId('session.simulatorPreview.frame').waitFor({ state: 'visible', timeout: 120_000 });
+      await page.waitForFunction(() => {
+        const frame = document.querySelector('[data-testid="session.simulatorPreview.frame"]');
+        return frame instanceof HTMLImageElement && frame.naturalWidth > 0 && frame.naturalHeight > 0;
+      }, undefined, { timeout: 120_000 });
+      await captureSimulatorPreviewUserControlProof(page);
     } catch (error) {
       await page.screenshot({ path: diagnosticScreenshotPath, fullPage: true }).catch(() => {});
       await writeFile(diagnosticHtmlPath, await page.content().catch(() => ''), 'utf8').catch(() => {});
@@ -150,8 +155,22 @@ export async function captureSimulatorPreviewWebProof(params: Readonly<{
 
     const testDirScreenshotPath = resolve(join(testDir, 'real-codex-simulator-preview-web-closed-loop.png'));
     const screenshotPath = resolve(join(repoRootDir(), '.project', 'logs', 'real-codex-simulator-preview-web-closed-loop.png'));
+    const proofJsonPath = resolve(join(repoRootDir(), '.project', 'logs', 'real-codex-simulator-preview-web-closed-loop.json'));
     await mkdir(dirname(screenshotPath), { recursive: true });
     await page.screenshot({ path: testDirScreenshotPath, fullPage: true });
+    await writeFile(
+      proofJsonPath,
+      JSON.stringify({
+        sessionId: params.sessionId,
+        uiBaseUrl,
+        screenshotPath,
+        testDirScreenshotPath,
+        controlLease: 'user',
+        viewportClick: 'sent',
+        capturedAt: new Date().toISOString(),
+      }, null, 2),
+      'utf8',
+    );
     await copyFile(testDirScreenshotPath, screenshotPath);
     await page.close().catch(() => {});
 
@@ -160,4 +179,19 @@ export async function captureSimulatorPreviewWebProof(params: Readonly<{
     await browser.close().catch(() => {});
     await ui?.stop().catch(() => {});
   }
+}
+
+async function captureSimulatorPreviewUserControlProof(page: Page): Promise<void> {
+  const controlButton = page.getByTestId('session.simulatorPreview.requestControl');
+  await controlButton.waitFor({ state: 'visible', timeout: 120_000 });
+  await controlButton.click();
+  await controlButton.waitFor({ state: 'hidden', timeout: 120_000 });
+
+  const viewport = page.getByTestId('session.simulatorPreview.screenViewport');
+  await viewport.waitFor({ state: 'visible', timeout: 120_000 });
+  const box = await viewport.boundingBox();
+  if (!box || box.width <= 0 || box.height <= 0) {
+    throw new Error('Simulator preview viewport is not clickable');
+  }
+  await viewport.click({ position: { x: box.width / 2, y: box.height / 2 } });
 }

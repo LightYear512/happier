@@ -21,6 +21,14 @@ import {
   startAndroidScreenshotMjpegStream,
   type AndroidScreenshotMjpegStream,
 } from '@/session/simulatorPreview/startAndroidScreenshotMjpegStream';
+import {
+  resolveAndroidSimulatorPreviewGeometry,
+  type AndroidSimulatorPreviewGeometry,
+} from '@/session/simulatorPreview/resolveAndroidSimulatorPreviewGeometry';
+import {
+  createAndroidSimulatorPreviewControlRegistry,
+  type AndroidSimulatorPreviewControlRegistry,
+} from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -49,7 +57,9 @@ export function createHappierMcpServer(
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
     daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
     startAndroidSimulatorPreviewStream?: typeof startAndroidScreenshotMjpegStream;
+    resolveAndroidSimulatorPreviewGeometry?: typeof resolveAndroidSimulatorPreviewGeometry;
     androidSimulatorPreviewStreams?: AndroidSimulatorPreviewStreamRegistry;
+    androidSimulatorPreviewControlRegistry?: AndroidSimulatorPreviewControlRegistry;
   }>,
 ): { mcp: McpServer; toolNames: string[] } {
   // This server is the per-session MCP bridge that a running session agent uses.
@@ -61,7 +71,10 @@ export function createHappierMcpServer(
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
   const startAndroidSimulatorPreviewStream = opts?.startAndroidSimulatorPreviewStream ?? startAndroidScreenshotMjpegStream;
+  const resolveAndroidGeometry = opts?.resolveAndroidSimulatorPreviewGeometry ?? resolveAndroidSimulatorPreviewGeometry;
   const activeAndroidStreams = opts?.androidSimulatorPreviewStreams ?? new Map<string, AndroidScreenshotMjpegStream>();
+  const androidSimulatorPreviewControlRegistry = opts?.androidSimulatorPreviewControlRegistry
+    ?? createAndroidSimulatorPreviewControlRegistry();
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -258,7 +271,45 @@ export function createHappierMcpServer(
           ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
           ...(input.deviceId ? { deviceId: input.deviceId } : {}),
         });
+        const geometry: AndroidSimulatorPreviewGeometry = await resolveAndroidGeometry({
+          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+        });
         activeAndroidStreams.set(input.sessionId, stream);
+
+        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+        let relay: { machineId: string; routeKey: string; streamPath: string } | undefined;
+        if (machineId && daemonDevPreviewRegister) {
+          try {
+            const daemonResult = await daemonDevPreviewRegister({
+              sessionId: input.sessionId,
+              expectedMachineId: machineId,
+              port: stream.port,
+              name: `${input.deviceName} simulator`,
+              healthPath: '/frame.jpg',
+              rewriteUrls: false,
+            });
+            if ('success' in daemonResult && daemonResult.success === true) {
+              relay = {
+                machineId: daemonResult.preview.machineId,
+                routeKey: daemonResult.preview.preview.routeKey,
+                streamPath: '/stream.mjpeg',
+              };
+            } else {
+              logger.debug('[mcp] Failed to register Android simulator preview stream with daemon registry', {
+                sessionId: input.sessionId,
+                machineId,
+                result: daemonResult,
+              });
+            }
+          } catch (error) {
+            logger.debug('[mcp] Failed to register Android simulator preview stream with daemon registry', {
+              sessionId: input.sessionId,
+              machineId,
+              error,
+            });
+          }
+        }
 
         const preview = buildSimulatorPreviewPayload({
           sessionId: input.sessionId,
@@ -268,13 +319,39 @@ export function createHappierMcpServer(
           streamUrl: stream.streamUrl,
           mode: 'ai_control',
           owner: 'ai',
-          connectionPath: 'direct',
+          connectionPath: relay ? 'relay' : 'direct',
+          ...(relay ? { relay } : {}),
         });
         emitSimulatorPreviewMessage({
           preview,
           sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
         });
+        androidSimulatorPreviewControlRegistry.registerAndroidPreview({
+          sessionId: input.sessionId,
+          simulatorSessionId: preview.simulatorSessionId,
+          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          deviceWidth: geometry.deviceWidth,
+          deviceHeight: geometry.deviceHeight,
+        });
         return preview;
+      },
+      sessionSimulatorPreviewControlAcquire: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        return await androidSimulatorPreviewControlRegistry.acquire(input);
+      },
+      sessionSimulatorPreviewControlRelease: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        return await androidSimulatorPreviewControlRegistry.release(input);
+      },
+      sessionSimulatorPreviewInputSend: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        return await androidSimulatorPreviewControlRegistry.sendInput(input);
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),
       executionRunList: async (_sessionId, request) => await executionRuns.list(request),

@@ -20,6 +20,31 @@ describe('SimulatorPreviewV1Schema', () => {
     expect(parsed.streamUrl).toBe('https://relay.example.test/simulator/sim_1/frame.jpg');
   });
 
+  it('parses relay metadata for a simulator stream routed through the preview relay', () => {
+    const parsed = SimulatorPreviewV1Schema.parse({
+      simulatorSessionId: 'sim_1',
+      sessionId: 's1',
+      platform: 'android',
+      deviceName: 'Pixel 8',
+      streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'relay',
+      relay: {
+        machineId: 'machine_1',
+        routeKey: 'route_android_sim_1',
+        streamPath: '/stream.mjpeg',
+      },
+      registeredAtMs: 1,
+    });
+
+    expect(parsed.relay).toEqual({
+      machineId: 'machine_1',
+      routeKey: 'route_android_sim_1',
+      streamPath: '/stream.mjpeg',
+    });
+  });
+
   it('rejects non-http simulator stream URLs', () => {
     expect(() => SimulatorPreviewV1Schema.parse({
       simulatorSessionId: 'sim_1',

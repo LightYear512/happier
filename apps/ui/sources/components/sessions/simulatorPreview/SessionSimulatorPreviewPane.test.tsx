@@ -84,4 +84,76 @@ describe('SessionSimulatorPreviewPane', () => {
         expect(frame.type).toBe('Image');
         expect(frame.props.source).toEqual({ uri: 'http://127.0.0.1:9812/stream.mjpeg' });
     });
+
+    it('sends normalized taps only when a user control lease is active', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+        const onSendInput = vi.fn();
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="android"
+                deviceName="Android SDK"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+                mode="user_control"
+                owner="user"
+                controlLease={{
+                    leaseId: 'lease_user_1',
+                    generation: 1,
+                    owner: 'user',
+                }}
+                onSendInput={onSendInput}
+            />,
+        );
+
+        const viewport = screen.findByProps({ testID: 'session.simulatorPreview.screenViewport' });
+        viewport.props.onLayout({
+            nativeEvent: {
+                layout: {
+                    x: 0,
+                    y: 0,
+                    width: 200,
+                    height: 400,
+                },
+            },
+        });
+        viewport.props.onPress({
+            nativeEvent: {
+                locationX: 50,
+                locationY: 100,
+            },
+        });
+
+        expect(onSendInput).toHaveBeenCalledWith({
+            simulatorSessionId: 'sim_1',
+            leaseId: 'lease_user_1',
+            generation: 1,
+            owner: 'user',
+            input: {
+                type: 'tap',
+                x: 0.25,
+                y: 0.25,
+            },
+        });
+    });
+
+    it('does not send taps while AI owns control', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+        const onSendInput = vi.fn();
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="android"
+                deviceName="Android SDK"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+                mode="ai_control"
+                owner="ai"
+                onSendInput={onSendInput}
+            />,
+        );
+
+        const viewport = screen.findByProps({ testID: 'session.simulatorPreview.screenViewport' });
+        expect(viewport.props.onPress).toBeUndefined();
+    });
 });

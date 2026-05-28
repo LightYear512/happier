@@ -92,6 +92,28 @@ type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
   pollMs?: unknown;
 }>;
 
+type SessionSimulatorPreviewControlAcquireActionInput = Readonly<{
+  simulatorSessionId?: unknown;
+  owner?: unknown;
+  holderId?: unknown;
+  leaseTtlMs?: unknown;
+}>;
+
+type SessionSimulatorPreviewControlReleaseActionInput = Readonly<{
+  simulatorSessionId?: unknown;
+  leaseId?: unknown;
+  owner?: unknown;
+  holderId?: unknown;
+}>;
+
+type SessionSimulatorPreviewInputSendActionInput = Readonly<{
+  simulatorSessionId?: unknown;
+  leaseId?: unknown;
+  generation?: unknown;
+  owner?: unknown;
+  input?: unknown;
+}>;
+
 export type ActionExecutorDeps = Readonly<{
   // Execution runs (session-scoped RPC)
   executionRunStart: (sessionId: string, request: any, opts?: Readonly<{ serverId?: string | null }>) => Promise<unknown>;
@@ -148,6 +170,28 @@ export type ActionExecutorDeps = Readonly<{
     pollMs?: number;
     deviceName: string;
     appName?: string;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewControlAcquire?: (args: Readonly<{
+    sessionId: string;
+    simulatorSessionId: string;
+    owner: 'ai' | 'user';
+    holderId?: string;
+    leaseTtlMs?: number;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewControlRelease?: (args: Readonly<{
+    sessionId: string;
+    simulatorSessionId: string;
+    leaseId: string;
+    owner: 'ai' | 'user';
+    holderId?: string;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewInputSend?: (args: Readonly<{
+    sessionId: string;
+    simulatorSessionId: string;
+    leaseId: string;
+    generation: number;
+    owner: 'ai' | 'user';
+    input: Readonly<{ type: 'tap'; x: number; y: number }>;
   }>) => Promise<unknown>;
   sessionSpawnNew: (args: Readonly<{
     tag?: string;
@@ -1446,6 +1490,82 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(typeof pollMs === 'number' ? { pollMs } : {}),
             deviceName,
             ...(appName ? { appName } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.control.acquire') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewControlAcquire) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.control.acquire' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewControlAcquireActionInput;
+          const simulatorSessionId = normalizeId(input.simulatorSessionId);
+          const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
+          const holderId = normalizeId(input.holderId);
+          if (!simulatorSessionId || !owner) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionSimulatorPreviewControlAcquire({
+            sessionId,
+            simulatorSessionId,
+            owner,
+            ...(holderId ? { holderId } : {}),
+            ...(typeof input.leaseTtlMs === 'number' ? { leaseTtlMs: input.leaseTtlMs } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.control.release') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewControlRelease) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.control.release' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewControlReleaseActionInput;
+          const simulatorSessionId = normalizeId(input.simulatorSessionId);
+          const leaseId = normalizeId(input.leaseId);
+          const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
+          const holderId = normalizeId(input.holderId);
+          if (!simulatorSessionId || !leaseId || !owner) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionSimulatorPreviewControlRelease({
+            sessionId,
+            simulatorSessionId,
+            leaseId,
+            owner,
+            ...(holderId ? { holderId } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.input.send') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewInputSend) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.input.send' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewInputSendActionInput;
+          const simulatorSessionId = normalizeId(input.simulatorSessionId);
+          const leaseId = normalizeId(input.leaseId);
+          const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
+          const payload = input.input as { type?: unknown; x?: unknown; y?: unknown } | null;
+          if (!simulatorSessionId || !leaseId || !owner || typeof input.generation !== 'number' || payload?.type !== 'tap' || typeof payload.x !== 'number' || typeof payload.y !== 'number') {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionSimulatorPreviewInputSend({
+            sessionId,
+            simulatorSessionId,
+            leaseId,
+            generation: input.generation,
+            owner,
+            input: {
+              type: 'tap',
+              x: payload.x,
+              y: payload.y,
+            },
           });
           return { ok: true, result: res };
         }

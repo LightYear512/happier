@@ -5196,6 +5196,12 @@ export const pl: TranslationStructure = {
         defaultIosSubtitle: "Symulator iOS",
         screenAlt: ({ deviceName }: { deviceName: string }) => `Ekran symulatora ${deviceName}`,
         ownerLabel: ({ owner }: { owner: string }) => `Właściciel: ${owner}`,
+        requestControl: "Steruj",
+        owner: {
+          ai: "AI",
+          user: "użytkownik",
+          system: "system",
+        },
         mode: {
           idle: "Bezczynny",
           aiControl: "Sterowanie AI",

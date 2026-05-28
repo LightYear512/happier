@@ -5539,6 +5539,12 @@ export const it: TranslationStructure = {
           defaultIosSubtitle: "Simulatore iOS",
           screenAlt: ({ deviceName }: { deviceName: string }) => `Schermo del simulatore ${deviceName}`,
           ownerLabel: ({ owner }: { owner: string }) => `Proprietario: ${owner}`,
+          requestControl: "Controlla",
+          owner: {
+            ai: "IA",
+            user: "utente",
+            system: "sistema",
+          },
           mode: {
             idle: "Inattivo",
             aiControl: "Controllo IA",
