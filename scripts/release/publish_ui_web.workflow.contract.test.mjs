@@ -64,3 +64,11 @@ test('publish-ui-web embeds build feature policy defaults and exports production
   );
   assert.doesNotMatch(raw, /inputs\.channel\s*==\s*'publicdev'/);
 });
+
+test('publish-ui-web workflow leaves full validation to the pre-release gate', async () => {
+  const raw = await loadWorkflow('publish-ui-web.yml');
+
+  assert.match(raw, /node scripts\/pipeline\/run\.mjs publish-ui-web/);
+  assert.match(raw, /--run-contracts "false"/);
+  assert.match(raw, /--check-installers "false"/);
+});
