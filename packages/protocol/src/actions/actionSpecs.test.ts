@@ -79,6 +79,8 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.rollback',
   'session.handoff',
   'session.devPreview.register',
+  'session.simulatorPreview.register',
+  'session.simulatorPreview.android.start',
   'session.spawn_new',
   'session.spawn_picker',
   'session.message.send',
@@ -579,6 +581,74 @@ describe('Action Spec Registry', () => {
       rewriteUrls: false,
     });
     expect(() => spec.inputSchema.parse({ port: 3000, healthPath: 'http://127.0.0.1:3000/' })).toThrow();
+  });
+
+  it('registers the session simulator preview action as a feature-gated session-agent tool', () => {
+    const spec = getActionSpec('session.simulatorPreview.register' as any);
+
+    expect(spec.requiredFeatureId).toBe('sessions.devPreview');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.surfaces.mcp).toBe(false);
+    expect(spec.surfaces.cli).toBe(false);
+    expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_register');
+    expect(spec.inputSchema.parse({
+      platform: 'android',
+      deviceName: 'Pixel 8',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+    })).toEqual({
+      platform: 'android',
+      deviceName: 'Pixel 8',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+    });
+    expect(spec.inputSchema.parse({
+      platform: 'ios',
+      deviceName: 'iPhone 15 Pro',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+      mode: 'user_control',
+      owner: 'user',
+      connectionPath: 'relay',
+    })).toEqual({
+      platform: 'ios',
+      deviceName: 'iPhone 15 Pro',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+      mode: 'user_control',
+      owner: 'user',
+      connectionPath: 'relay',
+    });
+    expect(() => spec.inputSchema.parse({
+      platform: 'desktop',
+      deviceName: 'iPhone 15 Pro',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+    })).toThrow();
+    expect(() => spec.inputSchema.parse({
+      platform: 'android',
+      deviceName: 'Pixel 8',
+      streamUrl: 'javascript:alert(1)',
+    })).toThrow();
+  });
+
+  it('registers the Android simulator preview start action as a feature-gated session-agent tool', () => {
+    const spec = getActionSpec('session.simulatorPreview.android.start' as any);
+
+    expect(spec.requiredFeatureId).toBe('sessions.devPreview');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.surfaces.mcp).toBe(false);
+    expect(spec.surfaces.cli).toBe(false);
+    expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_android_start');
+    expect(spec.inputSchema.parse({
+      deviceId: 'emulator-5554',
+      port: 9812,
+      pollMs: 500,
+      deviceName: 'Android SDK API 34',
+      appName: 'Example Android App',
+    })).toEqual({
+      deviceId: 'emulator-5554',
+      port: 9812,
+      pollMs: 500,
+      deviceName: 'Android SDK API 34',
+      appName: 'Example Android App',
+    });
+    expect(() => spec.inputSchema.parse({ port: 70000 })).toThrow();
   });
 
   it('does not expose legacy voice_mediator intent in ExecutionRunIntentSchema', () => {

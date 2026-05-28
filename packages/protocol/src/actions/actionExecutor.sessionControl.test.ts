@@ -112,6 +112,64 @@ describe('createActionExecutor (session control)', () => {
     });
   });
 
+  it('executes session.simulatorPreview.register via deps.sessionSimulatorPreviewRegister', async () => {
+    const sessionSimulatorPreviewRegister = vi.fn(async () => ({ ok: true, simulatorSessionId: 'sim_1' }));
+    const executor = createExecutor({ sessionSimulatorPreviewRegister } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.register' as any,
+      {
+        platform: 'ios',
+        deviceName: 'iPhone 15 Pro',
+        appName: 'Example App',
+        streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+        mode: 'ai_control',
+        owner: 'ai',
+        connectionPath: 'relay',
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true, simulatorSessionId: 'sim_1' } });
+    expect(sessionSimulatorPreviewRegister).toHaveBeenCalledWith({
+      sessionId: 's1',
+      platform: 'ios',
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example App',
+      streamUrl: 'http://127.0.0.1:9100/frame.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'relay',
+    });
+  });
+
+  it('executes session.simulatorPreview.android.start via deps.sessionSimulatorPreviewAndroidStart', async () => {
+    const sessionSimulatorPreviewAndroidStart = vi.fn(async () => ({ ok: true, simulatorSessionId: 'sim_android_1' }));
+    const executor = createExecutor({ sessionSimulatorPreviewAndroidStart } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.android.start' as any,
+      {
+        deviceId: 'emulator-5554',
+        port: 9812,
+        pollMs: 500,
+        deviceName: 'Android SDK API 34',
+        appName: 'Example Android App',
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true, simulatorSessionId: 'sim_android_1' } });
+    expect(sessionSimulatorPreviewAndroidStart).toHaveBeenCalledWith({
+      sessionId: 's1',
+      deviceId: 'emulator-5554',
+      port: 9812,
+      pollMs: 500,
+      deviceName: 'Android SDK API 34',
+      appName: 'Example Android App',
+    });
+  });
+
   it('executes session.stop via deps.sessionStop', async () => {
     const sessionStop = vi.fn(async () => ({ ok: true, stopped: true }));
     const executor = createExecutor({

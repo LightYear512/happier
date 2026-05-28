@@ -2107,6 +2107,19 @@ export {
   type LocalServicePreviewV1,
 } from './structuredMessages/localServicePreviewV1.js';
 export {
+  SimulatorPreviewConnectionPathSchema,
+  SimulatorPreviewModeSchema,
+  SimulatorPreviewOwnerSchema,
+  SimulatorPreviewPlatformSchema,
+  SimulatorPreviewV1Schema,
+  parseSimulatorPreviewV1,
+  type SimulatorPreviewConnectionPath,
+  type SimulatorPreviewMode,
+  type SimulatorPreviewOwner,
+  type SimulatorPreviewPlatform,
+  type SimulatorPreviewV1,
+} from './structuredMessages/simulatorPreviewV1.js';
+export {
   LOCAL_SERVICE_PREVIEW_METADATA_MAX_PREVIEWS,
   LocalServicePreviewsMetadataV1Schema,
   readLocalServicePreviewsFromSessionMetadata,
