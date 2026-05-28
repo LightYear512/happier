@@ -1135,6 +1135,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err?.stack || String(err));
+  const details = stringifyExecFailure(err);
+  console.error(details || err?.stack || String(err));
   process.exit(1);
 });

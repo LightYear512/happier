@@ -26,10 +26,11 @@ test('expo native-build supports local mode and writes build metadata json', () 
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
-      'echo "CWD=$(pwd)"',
       'if [ ! -e "../../.git" ]; then echo "MISSING_GIT_REPO" >&2; exit 1; fi',
       'if [ ! -e "../../node_modules" ]; then echo "MISSING_NODE_MODULES" >&2; exit 1; fi',
       'if [ ! -e "./node_modules" ]; then echo "MISSING_UI_NODE_MODULES" >&2; exit 1; fi',
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then printf \'{"hash":"test-fingerprint"}\\n\'; exit 0; fi',
+      'echo "CWD=$(pwd)"',
       'echo "NPX $*"',
       // Simulate `eas build --local --output <path>` by creating the output file.
       'out=""',
@@ -100,6 +101,7 @@ test('expo native-build runs local builds non-interactively in CI', () => {
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then printf \'{"hash":"test-fingerprint"}\\n\'; exit 0; fi',
       'echo "NPX $*"',
       // Simulate `eas build --local --output <path>` by creating the output file.
       'out=""',
@@ -161,6 +163,7 @@ test('expo native-build allows interactive local builds when PIPELINE_INTERACTIV
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then printf \'{"hash":"test-fingerprint"}\\n\'; exit 0; fi',
       'echo "NPX $*"',
       // Simulate `eas build --local --output <path>` by creating the output file.
       'out=""',
@@ -222,6 +225,7 @@ test('expo native-build treats local builds as successful when EAS cleanup fails
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then printf \'{"hash":"test-fingerprint"}\\n\'; exit 0; fi',
       'echo "NPX $*"',
       'out=""',
       'for ((i=1;i<=$#;i++)); do',
@@ -271,4 +275,65 @@ test('expo native-build treats local builds as successful when EAS cleanup fails
   assert.equal(parsed.mode, 'local');
   assert.equal(parsed.platform, 'android');
   assert.equal(parsed.profile, 'preview-apk');
+});
+
+test('expo native-build surfaces hidden fingerprint stderr when fingerprint generation fails', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-pipeline-eas-local-fingerprint-fail-'));
+  const binDir = path.join(dir, 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const outJson = path.join(dir, 'out.json');
+  const artifactOut = path.join(dir, 'app.apk');
+
+  const npxPath = path.join(binDir, 'npx');
+  writeExecutable(
+    npxPath,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then',
+      '  echo "fingerprint diagnostic stdout"',
+      '  echo "fingerprint diagnostic stderr" >&2',
+      '  exit 42',
+      'fi',
+      'echo "unexpected npx command: $*" >&2',
+      'exit 1',
+      '',
+    ].join('\n'),
+  );
+
+  const env = {
+    ...process.env,
+    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+    EXPO_TOKEN: 'test-token',
+  };
+
+  assert.throws(
+    () => {
+      execFileSync(
+        process.execPath,
+        [
+          path.join(repoRoot, 'scripts', 'pipeline', 'expo', 'native-build.mjs'),
+          '--platform',
+          'android',
+          '--profile',
+          'preview-apk',
+          '--out',
+          outJson,
+          '--build-mode',
+          'local',
+          '--artifact-out',
+          artifactOut,
+        ],
+        { cwd: repoRoot, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: PIPELINE_TEST_TIMEOUT_MS },
+      );
+    },
+    (error) => {
+      const stderr = String(error?.stderr ?? '');
+      assert.match(stderr, /Command failed with exit code 42: npx .*fingerprint:generate/);
+      assert.match(stderr, /fingerprint diagnostic stdout/);
+      assert.match(stderr, /fingerprint diagnostic stderr/);
+      return true;
+    },
+  );
 });
