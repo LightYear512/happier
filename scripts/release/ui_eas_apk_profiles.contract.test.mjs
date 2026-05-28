@@ -28,12 +28,15 @@ test('EAS apk build profiles use assembleRelease (no interactive prompt in non-i
   }
 });
 
-test('EAS production APK build enables size reduction (minify, shrink resources, single arch)', async () => {
+test('EAS release APK builds enable size reduction (minify, shrink resources, single arch)', async () => {
   const eas = readEasJson();
-  const profile = eas?.build?.['production-apk'] ?? {};
-  const env = profile?.env ?? {};
 
-  assert.equal(env.HAPPIER_ANDROID_BUILD_ARCHS, 'arm64-v8a', 'production-apk should build a single ABI to keep the APK small');
-  assert.equal(env.HAPPIER_ANDROID_ENABLE_MINIFY, '1', 'production-apk should enable R8 minification');
-  assert.equal(env.HAPPIER_ANDROID_ENABLE_SHRINK_RESOURCES, '1', 'production-apk should enable resource shrinking');
+  for (const profileName of ['preview-apk', 'production-apk', 'production-preview-apk']) {
+    const profile = eas?.build?.[profileName] ?? {};
+    const env = profile?.env ?? {};
+
+    assert.equal(env.HAPPIER_ANDROID_BUILD_ARCHS, 'arm64-v8a', `${profileName} should build a single ABI to keep the APK small`);
+    assert.equal(env.HAPPIER_ANDROID_ENABLE_MINIFY, '1', `${profileName} should enable R8 minification`);
+    assert.equal(env.HAPPIER_ANDROID_ENABLE_SHRINK_RESOURCES, '1', `${profileName} should enable resource shrinking`);
+  }
 });
