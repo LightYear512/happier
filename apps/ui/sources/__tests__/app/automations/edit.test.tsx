@@ -223,6 +223,20 @@ describe('AutomationEditScreen route', () => {
                 s1: sessionState.value,
                 'session-1': sessionState.value,
             } : {},
+            machines: {
+                m1: {
+                    id: 'm1',
+                    active: true,
+                    activeAt: 10,
+                    metadata: { host: 'm1-host' },
+                },
+                'machine-1': {
+                    id: 'machine-1',
+                    active: true,
+                    activeAt: 10,
+                    metadata: { host: 'machine-1-host' },
+                },
+            },
             getProjectForSession: () => null,
         }));
     });
@@ -341,13 +355,14 @@ describe('AutomationEditScreen route', () => {
         };
         sessionState.value = {
             id: 'session-1',
+            active: true,
             encryptionMode: 'plain',
             permissionMode: 'default',
             permissionModeUpdatedAt: 999,
             modelMode: 'default',
             modelModeUpdatedAt: 111,
             metadata: {
-                machineId: 'm-stale',
+                machineId: 'm-target',
                 path: '/repo/project',
                 homeDir: '/repo',
                 flavor: 'acp:review-bot',
@@ -643,9 +658,7 @@ describe('AutomationEditScreen route', () => {
         await renderScreen(React.createElement(EditRoute));
         await settle();
 
-        expect(latestAutomationSettingsFormProps.value).toEqual(expect.objectContaining({
-            variant: 'edit',
-        }));
+        expect(latestAutomationSettingsFormProps.value).toBeNull();
         expect(latestAgentInputProps.value).toEqual(expect.objectContaining({
             submitAccessibilityLabel: 'Save automation',
         }));

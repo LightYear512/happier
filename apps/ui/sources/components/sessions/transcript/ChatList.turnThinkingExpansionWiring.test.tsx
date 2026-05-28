@@ -14,8 +14,16 @@ import { installLegacyChatListHarnessCommonModuleMocks } from './chatListLegacyH
 const buildChatListItemsMock = vi.fn((..._args: any[]): any[] => []);
 
 let renderedTurnViewProps: any[] = [];
+const forkSnapshotState = vi.hoisted(() => ({ value: null as any }));
 
-installLegacyChatListHarnessCommonModuleMocks();
+installLegacyChatListHarnessCommonModuleMocks({
+  storage: async (importOriginal) => {
+    const { createLegacyChatListStorageMock } = await import('./ChatList.legacyListTestHarness');
+    return createLegacyChatListStorageMock(importOriginal, {
+      useForkedTranscriptSnapshot: () => forkSnapshotState.value,
+    });
+  },
+});
 
 vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
   useReducedMotionPreference: () => false,
@@ -92,6 +100,7 @@ describe('ChatList (turn thinking expansion wiring)', () => {
     resetLegacyChatListHarness();
     buildChatListItemsMock.mockReset();
     renderedTurnViewProps = [];
+    forkSnapshotState.value = null;
   });
 
   it('passes thinking expansion helpers into TurnView when in turns mode', async () => {
@@ -141,6 +150,24 @@ describe('ChatList (turn thinking expansion wiring)', () => {
 
     const initialUserMessage = { kind: 'user-text', id: 'u1', localId: null, createdAt: 1, text: 'initial user' };
     const initialAgentMessage = { kind: 'agent-text', id: 'a1', localId: null, createdAt: 2, text: 'initial answer', isThinking: false };
+    forkSnapshotState.value = {
+      segments: [{
+        sessionId: 'session-1',
+        isReadOnlyContext: false,
+        cutoffSeqInclusive: null,
+        messageIdsOldestFirst: ['u1', 'a1'],
+      }],
+      combinedMessageIdsOldestFirst: ['u1', 'a1'],
+      combinedMessagesById: {
+        u1: initialUserMessage,
+        a1: initialAgentMessage,
+      },
+      messageOriginById: {
+        u1: { sessionId: 'session-1', isReadOnlyContext: false },
+        a1: { sessionId: 'session-1', isReadOnlyContext: false },
+      },
+      isLoaded: true,
+    };
     legacyChatListHarnessState.sessionMessagesState = {
       isLoaded: true,
       messages: [initialUserMessage, initialAgentMessage],
@@ -153,11 +180,18 @@ describe('ChatList (turn thinking expansion wiring)', () => {
     const { ChatList } = await import('./ChatList');
     const screen = await renderLegacyChatList();
 
-    const firstTurnProps = renderedTurnViewProps[0];
+    const firstTurnProps = renderedTurnViewProps.find((props) => props?.getMessageById?.('a1'));
     expect(firstTurnProps?.getMessageById?.('a1')?.text).toBe('initial answer');
 
     const updatedUserMessage = { ...initialUserMessage, text: 'updated user' };
     const updatedAgentMessage = { ...initialAgentMessage, text: 'updated answer' };
+    forkSnapshotState.value = {
+      ...forkSnapshotState.value,
+      combinedMessagesById: {
+        u1: updatedUserMessage,
+        a1: updatedAgentMessage,
+      },
+    };
     legacyChatListHarnessState.sessionMessagesState = {
       isLoaded: true,
       messages: [updatedUserMessage, updatedAgentMessage],
@@ -167,7 +201,7 @@ describe('ChatList (turn thinking expansion wiring)', () => {
       await screen.update(<ChatList session={{ ...legacyChatListHarnessState.sessionState }} />);
     });
 
-    const lastTurnProps = renderedTurnViewProps[renderedTurnViewProps.length - 1];
+    const lastTurnProps = [...renderedTurnViewProps].reverse().find((props) => props?.getMessageById?.('a1'));
     expect(lastTurnProps?.getMessageById?.('a1')?.text).toBe('updated answer');
 
     await screen.unmount();

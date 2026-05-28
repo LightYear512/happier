@@ -746,6 +746,7 @@ export async function createLegacyChatListReactNativeMock(options: {
 
 export async function createLegacyChatListStorageMock(
     importOriginal: <T>() => Promise<T>,
+    overrides: Partial<typeof import('@/sync/domains/state/storage')> = {},
 ) {
     return createStorageModuleMock({
         importOriginal,
@@ -772,6 +773,7 @@ export async function createLegacyChatListStorageMock(
                 (legacyChatListHarnessState.sessionMessagesState.messages ?? []).find((message: any) => message.id === messageId) ?? null,
             useSetting: (key: string) => legacyChatListHarnessState.settingValues[key],
             getStorage: () => createStorageStoreMock(createLegacyChatListMessagesSnapshot()),
+            ...overrides,
         },
     });
 }

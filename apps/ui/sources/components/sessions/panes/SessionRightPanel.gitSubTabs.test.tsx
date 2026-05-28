@@ -88,6 +88,8 @@ vi.mock('@/components/ui/text/Text', () => ({
 vi.mock('@/constants/Typography', () => ({
     Typography: {
         default: () => ({}),
+        eyebrow: () => ({}),
+        keyHint: () => ({}),
         mono: () => ({}),
     },
 }));
@@ -366,22 +368,28 @@ describe('SessionRightPanel git sub-tabs', () => {
         expect(updateSurface).toBeTruthy();
         expect(historySurface).toBeTruthy();
         expect(getOpacity(commitSurface!)).toBe(1);
-        expect(getOpacity(updateSurface!)).toBe(0);
-        expect(getOpacity(historySurface!)).toBe(0);
+        expect(getOpacity(updateSurface!) ?? 0).toBe(0);
+        expect(getOpacity(historySurface!) ?? 0).toBe(0);
 
         await screen.pressByTestIdAsync('session-rightpanel-git-subtab:update');
 
+        const commitSurfaceAfterUpdate = screen.findByTestId('session-rightpanel-git-surface:commit');
+        const updateSurfaceAfterUpdate = screen.findByTestId('session-rightpanel-git-surface:update');
+        const historySurfaceAfterUpdate = screen.findByTestId('session-rightpanel-git-surface:history');
         expect(observedState?.scopes?.['session:s1']?.right?.tabState?.git?.activeSubTabId).toBe('update');
-        expect(getOpacity(commitSurface!)).toBe(0);
-        expect(getOpacity(updateSurface!)).toBe(1);
-        expect(getOpacity(historySurface!)).toBe(0);
+        expect(getOpacity(commitSurfaceAfterUpdate!)).toBe(0);
+        expect(getOpacity(updateSurfaceAfterUpdate!)).toBe(1);
+        expect(getOpacity(historySurfaceAfterUpdate!) ?? 0).toBe(0);
 
         await screen.pressByTestIdAsync('session-rightpanel-git-subtab:history');
 
+        const commitSurfaceAfterHistory = screen.findByTestId('session-rightpanel-git-surface:commit');
+        const updateSurfaceAfterHistory = screen.findByTestId('session-rightpanel-git-surface:update');
+        const historySurfaceAfterHistory = screen.findByTestId('session-rightpanel-git-surface:history');
         expect(observedState?.scopes?.['session:s1']?.right?.tabState?.git?.activeSubTabId).toBe('history');
-        expect(getOpacity(commitSurface!)).toBe(0);
-        expect(getOpacity(updateSurface!)).toBe(0);
-        expect(getOpacity(historySurface!)).toBe(1);
+        expect(getOpacity(commitSurfaceAfterHistory!)).toBe(0);
+        expect(getOpacity(updateSurfaceAfterHistory!)).toBe(0);
+        expect(getOpacity(historySurfaceAfterHistory!)).toBe(1);
     });
 
     it('preserves the selected sub-tab when a pending commit-draft flush resolves after switching tabs', async () => {

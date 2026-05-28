@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
+import { resolveProvisionedProfileDir } from '@/auth/provision/profileProvisionPaths';
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import {
@@ -35,11 +36,15 @@ async function createActiveServerDirWithProfile(params: Readonly<{
 }>): Promise<string> {
   const activeServerDir = await createTempDir(`happier-switch-profile-${params.backendId}-`);
   tempDirs.add(activeServerDir);
-  const profileDir = join(activeServerDir, 'profiles', params.backendId, params.profileId);
+  const profileDir = resolveProvisionedProfileDir({
+    activeServerDir,
+    backendId: params.backendId,
+    profileId: params.profileId,
+  });
   mkdirSync(profileDir, { recursive: true });
   writeFileSync(
     join(profileDir, params.backendId === 'claude' ? '.credentials.json' : 'auth.json'),
-    '{}',
+    params.backendId === 'claude' ? '{"accessToken":"token"}' : '{"tokens":{"access_token":"token"}}',
     'utf8',
   );
   return activeServerDir;

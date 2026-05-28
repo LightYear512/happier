@@ -60,6 +60,10 @@ const localSettingsState = vi.hoisted((): { current: LocalPetsSettingsSubset } =
     },
 }));
 
+function setPetSessionsForRuntimeMount(sessions: ReturnType<typeof createSessionFixture>[]): void {
+    sessionsState.value = sessions;
+}
+
 vi.mock('react-native', async (importOriginal) => {
     const actual = await importOriginal<typeof import('react-native')>();
     return {
@@ -87,6 +91,16 @@ vi.mock('@/components/pets/desktop/runtime/DesktopPetOverlayRuntime', () => ({
 vi.mock('@/components/pets/desktop/bridge/desktopPetOverlayBridge', () => ({
     listenDesktopPetOverlayShowMainWindowRequested: listenDesktopPetOverlayShowMainWindowRequestedMock,
 }));
+
+vi.mock('@/components/pets/state/usePetCompanionActivityState', async () => {
+    const { buildPetCompanionActivityState } = await import('@/components/pets/state/buildPetCompanionActivityState');
+    return {
+        usePetCompanionActivityState: () => buildPetCompanionActivityState({
+            sessions: sessionsState.value,
+            nowMs: Date.now(),
+        }),
+    };
+});
 
 vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
     createDefaultActionExecutor: createDefaultActionExecutorMock,
@@ -126,9 +140,9 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         vi.setSystemTime(12_000);
-        sessionsState.value = [
+        setPetSessionsForRuntimeMount([
             createSessionFixture({ id: 'session-running', active: true, thinking: true }),
-        ];
+        ]);
         listenDesktopPetOverlayShowMainWindowRequestedMock.mockResolvedValue(() => {});
         executePetOverlayMainWindowActionMock.mockResolvedValue({ ok: true });
     });
@@ -213,7 +227,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     });
 
     it('shows the desktop pet overlay when enabled even if the companion is idle', async () => {
-        sessionsState.value = [];
+        setPetSessionsForRuntimeMount([]);
         const { DesktopPetOverlayRuntimeMount } = await import('./DesktopPetOverlayRuntimeMount');
 
         const screen = await renderScreen(<DesktopPetOverlayRuntimeMount />);
@@ -232,7 +246,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     });
 
     it('sizes the compact desktop overlay window from the local companion size scale', async () => {
-        sessionsState.value = [];
+        setPetSessionsForRuntimeMount([]);
         localSettingsState.current = {
             ...localSettingsState.current,
             petsCompanionSizeScale: 1.5,
@@ -248,9 +262,9 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     });
 
     it('keeps attention-or-active overlays visible for active idle sessions', async () => {
-        sessionsState.value = [
+        setPetSessionsForRuntimeMount([
             createSessionFixture({ id: 'session-active-idle', active: true, thinking: false }),
-        ];
+        ]);
         accountSettingsState.current = {
             ...accountSettingsState.current,
             petsDesktopOverlayDefaultVisibilityMode: 'attentionOrActive',
@@ -262,7 +276,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         expect(screen.findByTestId('pet-companion-state')).toBeNull();
         expect(desktopRuntimeProps.calls[0]).toMatchObject({
             visible: true,
-            expanded: true,
+            expanded: false,
             policy: {
                 enabled: true,
                 visibilityMode: 'attentionOrActive',
@@ -271,7 +285,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     });
 
     it('hides attention-or-active overlays when there is no active or attention-bearing session', async () => {
-        sessionsState.value = [];
+        setPetSessionsForRuntimeMount([]);
         accountSettingsState.current = {
             ...accountSettingsState.current,
             petsDesktopOverlayDefaultVisibilityMode: 'attentionOrActive',

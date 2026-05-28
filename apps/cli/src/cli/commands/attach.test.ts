@@ -57,6 +57,7 @@ describe('happier attach', () => {
       readCredentialsFn: async () => credentials,
       readSettingsFn: async (): Promise<Settings> => ({ machineId: 'machine-local' } as Settings),
       fetchSessionByIdFn: async () => rawSession,
+      isTmuxAvailableFn: async () => true,
       readTerminalAttachmentInfoFn: async () => null,
       runProviderAttachFn: vi.fn(async () => false),
       runTmuxAttachFn: vi.fn(async () => 0),

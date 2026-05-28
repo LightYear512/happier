@@ -80,7 +80,13 @@ describe('ChangedFilesReviewDiffBlock (svg previews)', () => {
             subscribe: () => () => {},
         } as any;
 
-        const theme = { colors: { textSecondary: '#999', divider: '#333', surfaceHigh: '#111', surface: '#000' } } as any;
+        const theme = {
+            colors: {
+                text: { secondary: '#999' },
+                border: { default: '#333' },
+                surface: { base: '#000', inset: '#111' },
+            },
+        } as any;
 
         let tree!: renderer.ReactTestRenderer;
         tree = (await renderScreen(<ChangedFilesReviewDiffBlock

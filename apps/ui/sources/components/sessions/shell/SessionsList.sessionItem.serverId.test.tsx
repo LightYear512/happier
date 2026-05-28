@@ -107,6 +107,9 @@ vi.mock('@/components/ui/avatar/Avatar', () => ({
         testID: props.testID ?? 'session-item-avatar',
     }),
 }));
+vi.mock('@/agents/registry/AgentIcon', () => ({
+    AgentIcon: 'AgentIcon',
+}));
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: 'StatusDot',
 }));
