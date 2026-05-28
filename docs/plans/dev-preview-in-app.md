@@ -27,6 +27,8 @@ When an agent starts a local web dev server during a Happier session, the user n
 - A transcript link cannot express machine identity, health, rewrite policy, token state, or HMR support.
 - External tunnels add setup burden and create a second security model.
 - Visual Runner solves browser automation and evidence capture, not a live user-controlled preview surface.
+- Native simulator preview is a separate interactive control surface. That design
+  is covered in [interactive-simulator-session.md](./interactive-simulator-session.md).
 
 ## Goals
 
