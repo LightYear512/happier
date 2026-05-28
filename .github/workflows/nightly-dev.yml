@@ -97,7 +97,7 @@ jobs:
       channel: dev
       source_ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_ref || 'dev' }}
       push_latest: true
-      registries: dockerhub,ghcr
+      registries: ghcr
       build_relay: true
       build_dev_box: true
 

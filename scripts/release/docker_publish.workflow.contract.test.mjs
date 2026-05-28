@@ -25,6 +25,26 @@ test('publish-docker supports workflow_call and is wired from release workflow',
     /\n\s*registries:\n/,
     'publish-docker should support configuring which registries receive image pushes',
   );
+  assert.match(
+    publishDocker,
+    /\n\s*default:\s*"?ghcr"?\n/,
+    'publish-docker should default to GHCR-only publishing',
+  );
+  assert.match(
+    publishDocker,
+    /\n\s*ghcr_namespace:\n/,
+    'publish-docker should allow overriding the GHCR namespace for fork publishing',
+  );
+  assert.doesNotMatch(
+    publishDocker,
+    /GHCR_NAMESPACE:\s*ghcr\.io\/happier-dev/,
+    'publish-docker must not hardcode the upstream GHCR namespace',
+  );
+  assert.match(
+    publishDocker,
+    /echo "GHCR_NAMESPACE=\$\{normalized\}" >> "\$GITHUB_ENV"/,
+    'publish-docker should export the resolved GHCR namespace to the pipeline environment',
+  );
   assert.match(publishDocker, /\n\s*build_relay:\n/);
   assert.match(publishDocker, /\n\s*build_dev_box:\n/);
   assert.match(
@@ -40,6 +60,11 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   );
   assert.match(
     publishDocker,
+    /Login to Docker Hub[\s\S]*?if:\s*\${{\s*contains\(format\(',\{0\},', inputs\.registries\), ',dockerhub,'\)\s*}}/,
+    'publish-docker should skip Docker Hub login for GHCR-only runs',
+  );
+  assert.match(
+    publishDocker,
     /DOCKERHUB_TOKEN:\s*\${{\s*secrets\.DOCKERHUB_TOKEN\s*}}/,
     'publish-docker should pass Docker Hub token to the pipeline script',
   );
@@ -50,6 +75,11 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   );
   assert.match(
     publishDocker,
+    /Login to GHCR[\s\S]*?if:\s*\${{\s*contains\(format\(',\{0\},', inputs\.registries\), ',ghcr,'\)\s*}}/,
+    'publish-docker should skip GHCR login when GHCR is not selected',
+  );
+  assert.match(
+    publishDocker,
     /registry:\s*ghcr\.io/,
     'publish-docker should use docker/login-action registry ghcr.io',
   );
@@ -57,6 +87,11 @@ test('publish-docker supports workflow_call and is wired from release workflow',
     publishDocker,
     /peter-evans\/dockerhub-description@/,
     'publish-docker should publish Docker Hub README/description',
+  );
+  assert.match(
+    publishDocker,
+    /Update Docker Hub README \(relay-server\)[\s\S]*?if:\s*\${{\s*inputs\.build_relay && contains\(format\(',\{0\},', inputs\.registries\), ',dockerhub,'\) && inputs\.channel != 'dev'\s*}}/,
+    'publish-docker should only update Docker Hub README when Docker Hub is selected',
   );
   assert.match(
     publishDocker,
