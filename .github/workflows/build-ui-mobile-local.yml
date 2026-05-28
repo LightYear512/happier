@@ -212,11 +212,6 @@ jobs:
           corepack enable
           corepack prepare yarn@1.22.22 --activate
 
-      - name: Install Dagger (Android local build)
-        uses: dagger/dagger-for-github@v8.3.0
-        with:
-          version: "0.19.11"
-
       - name: Install dependencies
         env:
           YARN_PRODUCTION: "false"
@@ -301,6 +296,11 @@ jobs:
           set -euo pipefail
           corepack enable
           corepack prepare yarn@1.22.22 --activate
+
+      - name: Install Dagger (Android local build)
+        uses: dagger/dagger-for-github@v8.3.0
+        with:
+          version: "0.19.11"
 
       - name: Install dependencies
         env:
