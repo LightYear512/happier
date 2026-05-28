@@ -27,6 +27,11 @@ on:
         required: false
         default: ""
         type: string
+      publish_release_notes_assets:
+        description: "Deploy — Publish release notes media assets"
+        required: true
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       channel:
@@ -44,6 +49,10 @@ on:
         required: false
         default: ""
         type: string
+      publish_release_notes_assets:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -74,6 +83,8 @@ jobs:
     environment: release-shared
     env:
       EXPO_UNSTABLE_WEB_MODAL: "1"
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     steps:
       - name: Enforce stable publishing gate
         if: ${{ inputs.channel == 'stable' && inputs.allow_stable != true }}
@@ -104,17 +115,18 @@ jobs:
 
       - name: Create GitHub App token
         id: app_token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Checkout source ref
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.channel_meta.outputs.source_ref }}
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
           persist-credentials: false
 
       - name: Enable Corepack (Yarn)
@@ -143,6 +155,7 @@ jobs:
           yarn --cwd apps/ui tsx sources/scripts/parseReleaseNotes.ts
 
       - name: Build release notes assets
+        if: ${{ inputs.publish_release_notes_assets == true }}
         run: |
           set -euo pipefail
           node scripts/pipeline/release/release-notes/build-release-notes-assets.mjs \
@@ -150,28 +163,28 @@ jobs:
 
       - name: Create release notes assets GitHub App token
         id: release_notes_assets_token
+        if: ${{ inputs.publish_release_notes_assets == true && env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: happier-assets
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
           permission-contents: write
 
       - name: Publish release notes assets
+        if: ${{ inputs.publish_release_notes_assets == true }}
         env:
-          GH_TOKEN: ${{ steps.release_notes_assets_token.outputs.token }}
-          GH_REPO: happier-dev/happier-assets
+          GH_TOKEN: ${{ (steps.release_notes_assets_token.outputs.token != '' && steps.release_notes_assets_token.outputs.token) || github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           node scripts/pipeline/release/release-notes/publish-release-notes-assets.mjs \
             --in-dir "dist/release-notes-assets" \
-            --repo "happier-dev/happier-assets" \
+            --repo "${{ github.repository }}" \
             --tag "release-notes"
 
       - name: Publish UI web bundle (pipeline)
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
           GH_REPO: ${{ github.repository }}
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSPHRASE: ${{ secrets.MINISIGN_PASSPHRASE }}
