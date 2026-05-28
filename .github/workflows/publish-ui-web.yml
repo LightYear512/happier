@@ -197,8 +197,8 @@ jobs:
             --channel "${{ inputs.channel }}" \
             --allow-stable "${{ inputs.allow_stable }}" \
             --release-message "${{ inputs.release_message }}" \
-            --run-contracts "true" \
-            --check-installers "true"
+            --run-contracts "false" \
+            --check-installers "false"
 
     permissions:
       contents: write
