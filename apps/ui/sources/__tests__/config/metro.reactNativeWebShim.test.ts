@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -36,6 +36,13 @@ function loadMetroConfig(envOverrides: Record<string, string | undefined> = {}) 
             }
         }
     }
+}
+
+function isPathWatched(watchedRoots: readonly string[], targetPath: string): boolean {
+    return watchedRoots.some((folder) => {
+        const pathFromFolder = relative(folder, targetPath);
+        return pathFromFolder === '' || (!pathFromFolder.startsWith('..') && !isAbsolute(pathFromFolder));
+    });
 }
 
 async function loadMetroConfigWithSentryFactory(
@@ -123,6 +130,7 @@ describe('metro.config.js (web)', () => {
 
         try {
             const config = loadMetroConfig({ HAPPIER_UI_WORKLETS_BUNDLE_MODE: '1' });
+            const resolvedGeneratedWorkletPath = realpathSync(generatedWorkletPath);
 
             expect(existsSync(generatedWorkletPath)).toBe(true);
 
@@ -139,7 +147,7 @@ describe('metro.config.js (web)', () => {
 
             expect(resolved).toEqual({
                 type: 'sourceFile',
-                filePath: generatedWorkletPath,
+                filePath: resolvedGeneratedWorkletPath,
             });
         } finally {
             rmSync(generatedWorkletPath, { force: true });
@@ -201,10 +209,11 @@ describe('metro.config.js (web)', () => {
     it('watches generated Worklets Bundle Mode modules when explicitly enabled', () => {
         const uiDir = getUiDir();
         const config = loadMetroConfig({ HAPPIER_UI_WORKLETS_BUNDLE_MODE: '1' });
+        const workletsPackageRoot = dirname(require.resolve('react-native-worklets/package.json', { paths: [uiDir] }));
 
         expect(config.watchFolders).toEqual(expect.arrayContaining([
-            join(uiDir, 'node_modules/react-native-worklets/__generatedWorklets'),
-            join(uiDir, 'node_modules/react-native-worklets/.worklets'),
+            join(workletsPackageRoot, '__generatedWorklets'),
+            join(workletsPackageRoot, '.worklets'),
         ]));
     });
 
@@ -260,6 +269,24 @@ describe('metro.config.js (web)', () => {
         const config = loadMetroConfig();
 
         expect(config.watchFolders).toContain(externalNodeModulesDir);
+    });
+
+    it('keeps Metro empty module path inside the project root or watchFolders', () => {
+        const uiDir = getUiDir();
+        const config = loadMetroConfig();
+        const emptyModulePath = String(config.resolver.emptyModulePath);
+        const watchedRoots = [config.projectRoot, ...config.watchFolders].filter(
+            (folder): folder is string => typeof folder === 'string' && folder.length > 0,
+        );
+
+        expect(emptyModulePath).toContain('metro-runtime');
+        expect(isPathWatched(watchedRoots, emptyModulePath)).toBe(true);
+        expect(existsSync(emptyModulePath)).toBe(true);
+        expect(isPathWatched(watchedRoots, dirname(emptyModulePath))).toBe(true);
+        expect(isPathWatched(
+            watchedRoots,
+            dirname(require.resolve('metro-runtime/package.json', { paths: [uiDir] })),
+        )).toBe(true);
     });
 
     it('watches additional absolute folders when explicitly provided for external dependency roots', () => {

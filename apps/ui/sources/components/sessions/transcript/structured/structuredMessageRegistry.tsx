@@ -5,6 +5,7 @@ import { ReviewCommentsV1Schema } from '@/sync/domains/input/reviewComments/revi
 import { ReviewCommentsMessageCard } from '@/components/sessions/reviews/messages/ReviewCommentsMessageCard';
 import {
     LocalServicePreviewV1Schema,
+    SimulatorPreviewV1Schema,
     DelegateOutputV1Schema,
     PlanOutputV1Schema,
     ParticipantMessageV1Schema,
@@ -22,6 +23,7 @@ import { ReviewFollowUpMessageCard } from '@/components/sessions/reviews/message
 import { PlanOutputMessageCard } from '@/components/sessions/plans/messages/PlanOutputMessageCard';
 import { DelegateOutputMessageCard } from '@/components/sessions/delegations/messages/DelegateOutputMessageCard';
 import { LocalServicePreviewMessageCard } from '@/components/sessions/devPreview/LocalServicePreviewMessageCard';
+import { SimulatorPreviewMessageCard } from '@/components/sessions/simulatorPreview/SimulatorPreviewMessageCard';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { ReviewCommentAnchor, ReviewCommentSource } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import { ParticipantMessageCard } from '@/components/sessions/participants/messages/ParticipantMessageCard';
@@ -39,6 +41,7 @@ export type StructuredMessageKind =
     | 'plan_output.v1'
     | 'delegate_output.v1'
     | 'local_service_preview.v1'
+    | 'simulator_preview.v1'
     | 'voice_agent_turn.v1'
     | 'session_synopsis.v1'
     | 'session_summary_shard.v1';
@@ -116,6 +119,13 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
         schema: LocalServicePreviewV1Schema,
         render: (payload, params) => (
             <LocalServicePreviewMessageCard payload={payload} sessionId={params.sessionId} />
+        ),
+    },
+    {
+        kind: 'simulator_preview.v1',
+        schema: SimulatorPreviewV1Schema,
+        render: (payload, params) => (
+            <SimulatorPreviewMessageCard payload={payload} sessionId={params.sessionId} />
         ),
     },
     {

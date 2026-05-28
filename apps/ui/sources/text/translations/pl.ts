@@ -4823,6 +4823,28 @@ export const pl: TranslationStructure = {
           enterFocusModeA11y: "Włącz tryb skupienia panelu",
           exitFocusModeA11y: "Wyłącz tryb skupienia panelu",
       },
+      simulatorPreview: {
+        defaultAndroidSubtitle: "Emulator Androida",
+        defaultIosSubtitle: "Symulator iOS",
+        screenAlt: ({ deviceName }: { deviceName: string }) => `Ekran symulatora ${deviceName}`,
+        ownerLabel: ({ owner }: { owner: string }) => `Właściciel: ${owner}`,
+        mode: {
+          idle: "Bezczynny",
+          aiControl: "Sterowanie AI",
+          userControl: "Sterowanie ręczne",
+          systemLocked: "System zablokowany",
+          ended: "Zakończono",
+        },
+        platform: {
+          android: "Android",
+          ios: "iOS",
+        },
+        connectionPath: {
+          relay: "Relay",
+          direct: "Bezpośrednio",
+          adbReverse: "ADB reverse",
+        },
+      },
   
       actionsDraft: {
         noInputHints: "Ta akcja nie ma podpowiedzi wejściowych.",

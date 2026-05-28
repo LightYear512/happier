@@ -1,5 +1,5 @@
 import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReducer';
-import type { LocalServicePreviewV1 } from '@happier-dev/protocol';
+import type { LocalServicePreviewV1, SimulatorPreviewV1 } from '@happier-dev/protocol';
 
 import { createSessionDetailsTerminalTab } from '@/components/sessions/terminal/embeddedTerminalDocking';
 import { t } from '@/text';
@@ -82,6 +82,34 @@ export function createSessionLocalServicePreviewDetailsTab(payload: LocalService
             healthStatus: payload.health.status,
             ...(payload.name ? { name: payload.name } : {}),
             ...(payload.framework ? { framework: payload.framework } : {}),
+        },
+    };
+}
+
+export function createSessionSimulatorPreviewDetailsTab(payload: SimulatorPreviewV1): DetailsTab {
+    const title = payload.deviceName.trim();
+    const subtitle = payload.appName && payload.appName.trim().length > 0
+        ? payload.appName.trim()
+        : payload.platform === 'ios'
+            ? t('session.simulatorPreview.defaultIosSubtitle')
+            : t('session.simulatorPreview.defaultAndroidSubtitle');
+
+    return {
+        key: `simulatorPreview:${payload.simulatorSessionId}`,
+        kind: 'simulatorPreview',
+        title,
+        subtitle,
+        resource: {
+            kind: 'simulatorPreview',
+            simulatorSessionId: payload.simulatorSessionId,
+            sessionId: payload.sessionId,
+            platform: payload.platform,
+            deviceName: payload.deviceName,
+            ...(payload.appName ? { appName: payload.appName } : {}),
+            streamUrl: payload.streamUrl,
+            mode: payload.mode,
+            ...(payload.owner ? { owner: payload.owner } : {}),
+            connectionPath: payload.connectionPath,
         },
     };
 }

@@ -5166,6 +5166,28 @@ export const it: TranslationStructure = {
               enterFocusModeA11y: "Entra in modalità focus pannello",
               exitFocusModeA11y: "Esci dalla modalità focus pannello",
         },
+        simulatorPreview: {
+          defaultAndroidSubtitle: "Emulatore Android",
+          defaultIosSubtitle: "Simulatore iOS",
+          screenAlt: ({ deviceName }: { deviceName: string }) => `Schermo del simulatore ${deviceName}`,
+          ownerLabel: ({ owner }: { owner: string }) => `Proprietario: ${owner}`,
+          mode: {
+            idle: "Inattivo",
+            aiControl: "Controllo IA",
+            userControl: "Controllo manuale",
+            systemLocked: "Sistema bloccato",
+            ended: "Terminato",
+          },
+          platform: {
+            android: "Android",
+            ios: "iOS",
+          },
+          connectionPath: {
+            relay: "Relay",
+            direct: "Diretto",
+            adbReverse: "ADB reverse",
+          },
+        },
   
       actionsDraft: {
         noInputHints: "Questa azione non ha suggerimenti di input.",

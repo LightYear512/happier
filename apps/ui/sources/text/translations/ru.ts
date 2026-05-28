@@ -5248,6 +5248,28 @@ export const ru: TranslationStructure = {
           enterFocusModeA11y: "Включить режим фокуса панели",
           exitFocusModeA11y: "Выключить режим фокуса панели",
       },
+      simulatorPreview: {
+        defaultAndroidSubtitle: "Эмулятор Android",
+        defaultIosSubtitle: "Симулятор iOS",
+        screenAlt: ({ deviceName }: { deviceName: string }) => `Экран симулятора ${deviceName}`,
+        ownerLabel: ({ owner }: { owner: string }) => `Владелец: ${owner}`,
+        mode: {
+          idle: "Ожидание",
+          aiControl: "Управляет ИИ",
+          userControl: "Ручное управление",
+          systemLocked: "Система заблокирована",
+          ended: "Завершено",
+        },
+        platform: {
+          android: "Android",
+          ios: "iOS",
+        },
+        connectionPath: {
+          relay: "Relay",
+          direct: "Напрямую",
+          adbReverse: "ADB reverse",
+        },
+      },
   
       actionsDraft: {
         noInputHints: "У этого действия нет подсказок ввода.",

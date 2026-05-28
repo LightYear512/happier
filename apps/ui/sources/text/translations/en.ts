@@ -4506,6 +4506,28 @@ export const en = {
             enterFocusModeA11y: 'Enter pane focus mode',
             exitFocusModeA11y: 'Exit pane focus mode',
         },
+        simulatorPreview: {
+            defaultAndroidSubtitle: 'Android Emulator',
+            defaultIosSubtitle: 'iOS Simulator',
+            screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} simulator screen`,
+            ownerLabel: ({ owner }: { owner: string }) => `Owner: ${owner}`,
+            mode: {
+                idle: 'Idle',
+                aiControl: 'AI control',
+                userControl: 'Manual control',
+                systemLocked: 'System locked',
+                ended: 'Ended',
+            },
+            platform: {
+                android: 'Android',
+                ios: 'iOS',
+            },
+            connectionPath: {
+                relay: 'Relay',
+                direct: 'Direct',
+                adbReverse: 'ADB reverse',
+            },
+        },
 
         actionsDraft: {
             noInputHints: 'This action has no input hints.',

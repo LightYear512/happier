@@ -15,6 +15,7 @@ import {
 import { SessionExecutionRunLauncherView } from '@/components/sessions/runs/launcher/SessionExecutionRunLauncherView';
 import { SessionEmbeddedTerminalPane } from '@/components/sessions/terminal/SessionEmbeddedTerminalPane';
 import { SessionLocalServicePreviewPane } from '@/components/sessions/devPreview/SessionLocalServicePreviewPane';
+import { SessionSimulatorPreviewPane } from '@/components/sessions/simulatorPreview/SessionSimulatorPreviewPane';
 import { PinIcon, PinSlashIcon } from '@/components/sessions/shell/sessionPinIcons';
 import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
@@ -267,6 +268,34 @@ function isLocalServicePreviewResource(value: unknown): value is Readonly<{
         && typeof maybe.supportsWebSocket === 'boolean';
 }
 
+function isSimulatorPreviewResource(value: unknown): value is Readonly<{
+    kind: 'simulatorPreview';
+    simulatorSessionId: string;
+    platform: 'android' | 'ios';
+    deviceName: string;
+    streamUrl: string;
+    appName?: string;
+    mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
+    owner?: 'ai' | 'user' | 'system';
+    connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+}> {
+    if (!value || typeof value !== 'object') return false;
+    const maybe = value as Record<string, unknown>;
+    const platform = maybe.platform;
+    const mode = maybe.mode;
+    const owner = maybe.owner;
+    const connectionPath = maybe.connectionPath;
+    return maybe.kind === 'simulatorPreview'
+        && typeof maybe.simulatorSessionId === 'string'
+        && (platform === 'android' || platform === 'ios')
+        && typeof maybe.deviceName === 'string'
+        && typeof maybe.streamUrl === 'string'
+        && (maybe.appName === undefined || typeof maybe.appName === 'string')
+        && (mode === undefined || mode === 'idle' || mode === 'ai_control' || mode === 'user_control' || mode === 'system_locked' || mode === 'ended')
+        && (owner === undefined || owner === 'ai' || owner === 'user' || owner === 'system')
+        && (connectionPath === undefined || connectionPath === 'relay' || connectionPath === 'direct' || connectionPath === 'adb_reverse');
+}
+
 export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) => {
     const styles = stylesheet;
     const { theme } = useUnistyles();
@@ -474,6 +503,22 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                 );
             }
         }
+        if (resource?.kind === 'simulatorPreview') {
+            if (isSimulatorPreviewResource(tab.resource)) {
+                return (
+                    <SessionSimulatorPreviewPane
+                        simulatorSessionId={tab.resource.simulatorSessionId}
+                        platform={tab.resource.platform}
+                        deviceName={tab.resource.deviceName}
+                        streamUrl={tab.resource.streamUrl}
+                        appName={tab.resource.appName}
+                        mode={tab.resource.mode}
+                        owner={tab.resource.owner}
+                        connectionPath={tab.resource.connectionPath}
+                    />
+                );
+            }
+        }
         const providerDetailsTab = renderProviderSessionDetailsTab({
             sessionId: props.sessionId,
             scopeId: props.scopeId,
@@ -535,9 +580,11 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                             ? 'terminal'
                                             : tab.kind === 'executionRunLauncher'
                                                 ? 'play'
-                                                : tab.kind === 'localServicePreview'
-                                                    ? 'globe'
-                                                : resolveProviderSessionDetailsTabIconName(tab) ?? 'circle';
+                                                    : tab.kind === 'localServicePreview'
+                                                        ? 'globe'
+                                                        : tab.kind === 'simulatorPreview'
+                                                            ? 'device-mobile'
+                                                            : resolveProviderSessionDetailsTabIconName(tab) ?? 'circle';
                         return (
                             <View
                                 key={tab.key}
