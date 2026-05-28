@@ -180,7 +180,11 @@
         "gradleCommand": ":app:assembleRelease -x lintVitalRelease -x lintVitalAnalyzeRelease"
       },
       "env": {
-        "APP_ENV": "preview"
+        "APP_ENV": "preview",
+        "HAPPIER_ANDROID_BUILD_ARCHS": "arm64-v8a",
+        "HAPPIER_ANDROID_ENABLE_MINIFY": "1",
+        "HAPPIER_ANDROID_ENABLE_SHRINK_RESOURCES": "1",
+        "HAPPIER_ANDROID_GRADLE_JVMARGS": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8"
       }
     },
     "production": {
