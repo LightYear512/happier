@@ -27,6 +27,7 @@ import {
   waitForAssistantMessageContaining,
   waitForSessionActive,
 } from './sessionRuntime';
+import { captureSimulatorPreviewWebProof } from '../harness/captureSimulatorPreviewWebProof';
 import {
   abortContinuationFollowupSubstrings,
   acpProviderId,
@@ -2705,6 +2706,58 @@ await server.connect(new StdioServerTransport());
         [`acp/${pid}/tool-result/change_title`, `acp/${pid}/tool-result/mcp__happier__change_title`],
       ],
       requiredTraceSubstrings: [title],
+    };
+  },
+
+  simulator_preview_android_start: (provider) => {
+    assertProviderId(provider, 'codex');
+    return {
+      id: 'simulator_preview_android_start',
+      title: 'simulator preview: start Android preview via Happier MCP server',
+      tier: 'extended',
+      yolo: true,
+      assertPendingDrain: false,
+      traceProtocols: ['codex'],
+      cliEnv: {
+        HAPPIER_CODEX_BACKEND_MODE: 'appServer',
+      },
+      accountSettings: {
+        codexBackendMode: 'appServer',
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      },
+      waitMs: 240_000,
+      inactivityTimeoutMs: 120_000,
+      prompt: () =>
+        [
+          'Run exactly one tool call:',
+          '- Use the happier_simulator_preview_android_start tool.',
+          '- Set deviceId to "emulator-5554".',
+          '- Set deviceName to "Android Emulator API 34".',
+          '- Set appName to "Happier Android Preview Proof".',
+          '- Set pollMs to 500.',
+          '- Do not use shell, execute, or file tools.',
+          '- Then reply DONE.',
+        ].join('\n'),
+      requiredTraceSubstrings: [
+        'happier_simulator_preview_android_start',
+        'Android Emulator API 34',
+        'stream.mjpeg',
+      ],
+      postSatisfy: {
+        timeoutMs: 300_000,
+        run: async ({ workspaceDir, baseUrl, token, sessionId, secret }) => {
+          await captureSimulatorPreviewWebProof({
+            workspaceDir,
+            baseUrl,
+            token,
+            sessionId,
+            secret,
+          });
+        },
+      },
     };
   },
 
