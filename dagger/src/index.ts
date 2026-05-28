@@ -79,10 +79,14 @@ export class HappierPipeline {
     easCliVersion: string = "18.0.1",
     nodeOptions: string = "--max-old-space-size=3072",
     nodeVersion: string = "22.14.0",
+    expoAppOwner: string = "",
     expoAppSlug: string = "",
+    expoEasProjectId: string = "",
+    expoUpdatesUrl: string = "",
     expoAppScheme: string = "",
     expoAppName: string = "",
     expoAppBundleId: string = "",
+    expoAndroidPackage: string = "",
     containerPlatform: string = "linux/amd64",
   ): Promise<Directory> {
     const workdir = "/repo"
@@ -158,8 +162,19 @@ export class HappierPipeline {
         "--non-interactive",
       ])
 
+    if (expoAppOwner) {
+      container = container.withEnvVariable("EXPO_APP_OWNER", expoAppOwner)
+    }
     if (expoAppSlug) {
       container = container.withEnvVariable("EXPO_APP_SLUG", expoAppSlug)
+    }
+    if (expoEasProjectId) {
+      container = container.withEnvVariable("EXPO_PUBLIC_EAS_PROJECT_ID", expoEasProjectId)
+      container = container.withEnvVariable("EAS_PROJECT_ID", expoEasProjectId)
+      container = container.withEnvVariable("EXPO_EAS_PROJECT_ID", expoEasProjectId)
+    }
+    if (expoUpdatesUrl) {
+      container = container.withEnvVariable("EXPO_UPDATES_URL", expoUpdatesUrl)
     }
     if (expoAppScheme) {
       container = container.withEnvVariable("EXPO_APP_SCHEME", expoAppScheme)
@@ -169,6 +184,9 @@ export class HappierPipeline {
     }
     if (expoAppBundleId) {
       container = container.withEnvVariable("EXPO_APP_BUNDLE_ID", expoAppBundleId)
+    }
+    if (expoAndroidPackage) {
+      container = container.withEnvVariable("EXPO_ANDROID_PACKAGE", expoAndroidPackage)
     }
 
     container = container
