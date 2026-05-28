@@ -300,7 +300,25 @@ export function resolveMobileReleaseMetadata({ environment, appVersion }) {
  * @param {{ environment: MobileReleaseEnvironment; appVersion: string }}
  */
 export function resolveMobileImmutableReleaseMetadata({ environment, appVersion }) {
-  if (environment !== 'production') return null;
+  if (environment !== 'production') {
+    const cfg = resolveMobileReleaseEnvironmentConfig(environment);
+    if (!cfg.supportsApkReleasePublishing || !cfg.releaseTag) return null;
+    const rollingSuffix = cfg.releaseTag.replace(/^ui-mobile-/, '');
+    const runNumberRaw = Number(process.env.GITHUB_RUN_NUMBER ?? '');
+    const sequence = Number.isFinite(runNumberRaw) && runNumberRaw > 0
+      ? Math.floor(runNumberRaw)
+      : Math.floor(Date.now() / 1000);
+    const version = `${appVersion}-${rollingSuffix}.${sequence}`;
+    return {
+      publish: true,
+      tag: `ui-mobile-v${version}`,
+      title: `Happier UI Mobile v${version}`,
+      prerelease: true,
+      rollingTag: false,
+      generateNotes: true,
+      notes: '',
+    };
+  }
   return {
     publish: true,
     tag: `ui-mobile-v${appVersion}`,

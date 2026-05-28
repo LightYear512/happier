@@ -105,6 +105,42 @@ function copyDirWithRenamedBasenames(repoRoot, fromDir, toDir, replacement, opts
 
 /**
  * @param {string} repoRoot
+ * @param {string} fromDir
+ * @param {string} toDir
+ * @param {(name: string) => string} mapName
+ * @param {{ dryRun: boolean }} opts
+ */
+function copyDirWithMappedBasenames(repoRoot, fromDir, toDir, mapName, opts) {
+  const src = path.resolve(repoRoot, fromDir);
+  const dst = path.resolve(repoRoot, toDir);
+  if (opts.dryRun) {
+    console.log(`[dry-run] copy dir: ${path.relative(repoRoot, src)} -> ${path.relative(repoRoot, dst)}`);
+    return;
+  }
+
+  const queue = [src];
+  while (queue.length > 0) {
+    const current = queue.pop();
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fromPath = path.join(current, entry.name);
+      const relativeParent = path.relative(src, current);
+      if (entry.isDirectory()) {
+        queue.push(fromPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const toName = mapName(entry.name);
+      const toPath = path.join(dst, relativeParent, toName);
+      fs.mkdirSync(path.dirname(toPath), { recursive: true });
+      fs.copyFileSync(fromPath, toPath);
+    }
+  }
+}
+
+/**
+ * @param {string} repoRoot
  * @param {string} fromFile
  * @param {string} toFile
  * @param {{ dryRun: boolean }} opts
@@ -139,6 +175,29 @@ function computeRollingVersion(uiVersion, environment) {
   const runNumber = Number.isFinite(runNumberRaw) ? Math.max(0, Math.floor(runNumberRaw)) : Math.floor(Date.now() / 1000);
   const suffix = environment === 'publicdev' ? 'dev' : 'preview';
   return `${base}-${suffix}.${runNumber}`;
+}
+
+/**
+ * @param {string} name
+ * @param {'preview' | 'publicdev'} environment
+ * @param {string} version
+ */
+function toVersionedPreviewDesktopArtifactName(name, environment, version) {
+  const suffix = environment === 'publicdev' ? 'dev' : 'preview';
+  const prefix = `happier-ui-desktop-${suffix}-`;
+  if (!name.startsWith(prefix)) return name;
+
+  const sigSuffix = name.endsWith('.sig') ? '.sig' : '';
+  const baseName = sigSuffix ? name.slice(0, -sigSuffix.length) : name;
+  const ext = baseName.endsWith('.app.tar.gz')
+    ? '.app.tar.gz'
+    : baseName.endsWith('.AppImage.tar.gz')
+      ? '.AppImage.tar.gz'
+      : baseName.endsWith('.appimage.tar.gz')
+        ? '.appimage.tar.gz'
+        : path.extname(baseName);
+  const stem = ext ? baseName.slice(0, -ext.length) : baseName;
+  return `${stem.replace(prefix, 'happier-ui-desktop-')}-v${version}${ext}${sigSuffix}`;
 }
 
 function main() {
@@ -229,9 +288,23 @@ function main() {
   if (environment === 'preview') {
     copyFile(repoRoot, latestJsonRel, path.join(previewDir, 'latest.json'), opts);
     copyDir(repoRoot, artifactsDir, previewDir, opts);
+    copyDirWithMappedBasenames(
+      repoRoot,
+      artifactsDir,
+      versionedDir,
+      (name) => toVersionedPreviewDesktopArtifactName(name, 'preview', version),
+      opts,
+    );
   } else if (environment === 'publicdev') {
     copyFile(repoRoot, latestJsonRel, path.join(publicdevDir, 'latest.json'), opts);
     copyDir(repoRoot, artifactsDir, publicdevDir, opts);
+    copyDirWithMappedBasenames(
+      repoRoot,
+      artifactsDir,
+      versionedDir,
+      (name) => toVersionedPreviewDesktopArtifactName(name, 'publicdev', version),
+      opts,
+    );
   } else {
     copyFile(repoRoot, latestJsonRel, path.join(stableDir, 'latest.json'), opts);
     copyDirWithRenamedBasenames(
