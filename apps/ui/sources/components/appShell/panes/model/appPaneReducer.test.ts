@@ -14,6 +14,15 @@ function createLocalServicePreviewTab(resourceId: string) {
     };
 }
 
+function createSimulatorPreviewTab(simulatorSessionId: string) {
+    return {
+        key: `simulatorPreview:${simulatorSessionId}`,
+        kind: 'simulatorPreview',
+        title: simulatorSessionId,
+        resource: { kind: 'simulatorPreview', simulatorSessionId },
+    };
+}
+
 describe('appPaneReduce', () => {
     it('creates and activates scopes, keeping an LRU order', () => {
         let state = createAppPaneState({ maxScopesInMemory: 3 });
@@ -105,6 +114,20 @@ describe('appPaneReduce', () => {
             ['localServicePreview:preview_2', true, false],
             ['file:b.txt', true, false],
         ]);
+    });
+
+    it('keeps simulator preview tabs separate from the file preview slot', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:1' });
+
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createSimulatorPreviewTab('sim_1'), openAs: 'preview' });
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createFileTab('app.tsx'), openAs: 'preview' });
+
+        expect(state.scopes['session:1']?.details.tabs.map((t) => [t.key, t.isPreview, t.isPinned])).toEqual([
+            ['simulatorPreview:sim_1', true, false],
+            ['file:app.tsx', true, false],
+        ]);
+        expect(state.scopes['session:1']?.details.activeTabKey).toBe('file:app.tsx');
     });
 
     it('unpins local service preview tabs without removing other local previews', () => {

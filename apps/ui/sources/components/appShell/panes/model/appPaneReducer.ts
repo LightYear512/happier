@@ -123,15 +123,13 @@ function setDetailsTabs(scope: PaneScopeState, nextTabs: ReadonlyArray<DetailsTa
     };
 }
 
-function isLocalServicePreviewDetailsTab(tab: Readonly<{ kind: string; resource: unknown }>): boolean {
+function isIndependentPreviewDetailsTab(tab: Readonly<{ kind: string; resource: unknown }>): boolean {
     if (tab.kind === 'localServicePreview') return true;
+    if (tab.kind === 'simulatorPreview') return true;
     const resource = tab.resource;
-    return Boolean(
-        resource
-        && typeof resource === 'object'
-        && !Array.isArray(resource)
-        && (resource as { kind?: unknown }).kind === 'localServicePreview',
-    );
+    if (!resource || typeof resource !== 'object' || Array.isArray(resource)) return false;
+    const resourceKind = (resource as { kind?: unknown }).kind;
+    return resourceKind === 'localServicePreview' || resourceKind === 'simulatorPreview';
 }
 
 function scopeHasFocusablePane(scope: PaneScopeState | undefined): boolean {
@@ -242,9 +240,9 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
 
                 let nextTabs = prev.details.tabs;
                 if (action.openAs === 'preview') {
-                    nextTabs = isLocalServicePreviewDetailsTab(action.tab)
+                    nextTabs = isIndependentPreviewDetailsTab(action.tab)
                         ? nextTabs
-                        : nextTabs.filter((t) => !t.isPreview || isLocalServicePreviewDetailsTab(t));
+                        : nextTabs.filter((t) => !t.isPreview || isIndependentPreviewDetailsTab(t));
                 }
 
                 const nextTab: DetailsTabState = {
@@ -289,22 +287,23 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
                 const index = prev.details.tabs.findIndex((t) => t.key === action.tabKey);
                 if (index < 0) return prev;
                 const targetTab = prev.details.tabs[index]!;
-                const targetIsLocalServicePreview = isLocalServicePreviewDetailsTab(targetTab);
+                const targetIsIndependentPreview = isIndependentPreviewDetailsTab(targetTab);
 
                 // Revert the tab into the preview slot (unpinned + preview). Regular file-style
-                // previews preserve the single-slot invariant; local service previews can coexist
-                // because multiple dev servers are a first-class session resource.
+                // previews preserve the single-slot invariant; independent previews can coexist
+                // because live resources such as dev servers and simulator sessions are first-class
+                // session resources.
                 const nextTabsWithTarget = prev.details.tabs.map((t, i) => (i === index
                     ? { ...t, isPinned: false, isPreview: true }
                     : t));
 
                 const removedPreviewKeys = new Set<string>();
-                if (!targetIsLocalServicePreview) {
+                if (!targetIsIndependentPreview) {
                     for (const tab of nextTabsWithTarget) {
                         if (tab.key === action.tabKey) continue;
                         if (tab.isPinned) continue;
                         if (!tab.isPreview) continue;
-                        if (isLocalServicePreviewDetailsTab(tab)) continue;
+                        if (isIndependentPreviewDetailsTab(tab)) continue;
                         removedPreviewKeys.add(tab.key);
                     }
                 }

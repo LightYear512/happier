@@ -4480,6 +4480,28 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
                 enterFocusModeA11y: '進入面板專注模式',
                 exitFocusModeA11y: '退出面板專注模式',
           },
+          simulatorPreview: {
+              defaultAndroidSubtitle: 'Android 模擬器',
+              defaultIosSubtitle: 'iOS 模擬器',
+              screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} 模擬器畫面`,
+              ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
+              mode: {
+                  idle: '閒置',
+                  aiControl: 'AI 控制',
+                  userControl: '手動控制',
+                  systemLocked: '系統鎖定',
+                  ended: '已結束',
+              },
+              platform: {
+                  android: 'Android',
+                  ios: 'iOS',
+              },
+              connectionPath: {
+                  relay: 'Relay',
+                  direct: '直連',
+                  adbReverse: 'ADB reverse',
+              },
+          },
           actionsDraft: {
               noInputHints: '此操作沒有輸入提示。',
               validation: {

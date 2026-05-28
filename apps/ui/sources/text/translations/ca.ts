@@ -4838,6 +4838,28 @@ deps: {
                         enterFocusModeA11y: 'Entra al mode de focus del panell',
                         exitFocusModeA11y: 'Surt del mode de focus del panell',
               },
+              simulatorPreview: {
+                  defaultAndroidSubtitle: 'Emulador Android',
+                  defaultIosSubtitle: 'Simulador iOS',
+                  screenAlt: ({ deviceName }: { deviceName: string }) => `Pantalla del simulador ${deviceName}`,
+                  ownerLabel: ({ owner }: { owner: string }) => `Propietari: ${owner}`,
+                  mode: {
+                      idle: 'Inactiu',
+                      aiControl: 'Control de la IA',
+                      userControl: 'Control manual',
+                      systemLocked: 'Sistema bloquejat',
+                      ended: 'Finalitzat',
+                  },
+                  platform: {
+                      android: 'Android',
+                      ios: 'iOS',
+                  },
+                  connectionPath: {
+                      relay: 'Relay',
+                      direct: 'Directe',
+                      adbReverse: 'ADB reverse',
+                  },
+              },
   
           actionsDraft: {
               noInputHints: 'Aquesta acció no té suggeriments d’entrada.',

@@ -293,6 +293,19 @@ function collectSymlinkedPackageRoots(nodeModulesRoot) {
 function resolveExternalNodeModulesWatchFolders(nodeModulesRoots) {
   const externalNodeModulesRoots = [];
   for (const nodeModulesRoot of nodeModulesRoots) {
+    try {
+      const realNodeModulesRoot = fs.realpathSync.native(nodeModulesRoot);
+      if (
+        path.isAbsolute(realNodeModulesRoot)
+        && realNodeModulesRoot !== nodeModulesRoot
+        && !externalNodeModulesRoots.includes(realNodeModulesRoot)
+      ) {
+        externalNodeModulesRoots.push(realNodeModulesRoot);
+      }
+    } catch {
+      // ignore unavailable node_modules roots
+    }
+
     for (const packageRoot of collectSymlinkedPackageRoots(nodeModulesRoot)) {
       let realPackageRoot = null;
       try {
