@@ -98,6 +98,12 @@ test('expo native-build can delegate local Android builds to Dagger runtime', ()
     PATH: `${binDir}:${process.env.PATH ?? ''}`,
     EXPO_TOKEN: 'test-token',
     SENTRY_AUTH_TOKEN: 'sentry-token',
+    EXPO_APP_OWNER: 'lightyear512',
+    EXPO_APP_SLUG: 'happier-fork',
+    EXPO_PUBLIC_EAS_PROJECT_ID: 'fork-project-id',
+    EAS_PROJECT_ID: 'fallback-project-id',
+    EXPO_UPDATES_URL: 'https://updates.example.test/fork',
+    EXPO_ANDROID_PACKAGE: 'dev.lightyear512.happier.preview',
     EXPO_APP_SCHEME: 'happier-dev',
     EXPO_APP_NAME: 'Happier Dev',
     EXPO_APP_BUNDLE_ID: 'dev.happier.stack.dev.leeroy',
@@ -131,6 +137,11 @@ test('expo native-build can delegate local Android builds to Dagger runtime', ()
     stdout.includes('--sentry-auth-token env://SENTRY_AUTH_TOKEN'),
     'expected dagger runtime wrapper to forward SENTRY_AUTH_TOKEN to the build container when set',
   );
+  assert.match(stdout, /--expo-app-owner lightyear512\b/);
+  assert.match(stdout, /--expo-app-slug happier-fork\b/);
+  assert.match(stdout, /--expo-eas-project-id fork-project-id\b/);
+  assert.match(stdout, /--expo-updates-url https:\/\/updates\.example\.test\/fork\b/);
+  assert.match(stdout, /--expo-android-package dev\.lightyear512\.happier\.preview\b/);
   assert.match(stdout, /--expo-app-scheme happier-dev\b/);
   assert.match(stdout, /--expo-app-name Happier Dev\b/);
   assert.match(stdout, /--expo-app-bundle-id dev\.happier\.stack\.dev\.leeroy\b/);

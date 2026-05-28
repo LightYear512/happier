@@ -14,6 +14,13 @@ test('build-ui-mobile-local workflow delegates local builds to ui-mobile-release
   assert.match(src, /--native-build-mode local/);
   assert.match(androidJob, /dagger\/dagger-for-github@v8\.3\.0/);
   assert.match(androidJob, /version:\s*"0\.19\.11"/);
+  assert.match(androidJob, /EXPO_APP_OWNER:\s*\$\{\{\s*vars\.EXPO_APP_OWNER\s*\}\}/);
+  assert.match(androidJob, /EXPO_APP_SLUG:\s*\$\{\{\s*vars\.EXPO_APP_SLUG\s*\}\}/);
+  assert.match(androidJob, /EXPO_PUBLIC_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_PUBLIC_EAS_PROJECT_ID\s*\}\}/);
+  assert.match(androidJob, /EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EAS_PROJECT_ID\s*\}\}/);
+  assert.match(androidJob, /EXPO_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_EAS_PROJECT_ID\s*\}\}/);
+  assert.match(androidJob, /EXPO_UPDATES_URL:\s*\$\{\{\s*vars\.EXPO_UPDATES_URL\s*\}\}/);
+  assert.match(androidJob, /EXPO_ANDROID_PACKAGE:\s*\$\{\{\s*vars\.EXPO_ANDROID_PACKAGE\s*\}\}/);
   assert.match(androidJob, /--native-local-runtime dagger/);
   assert.match(src, /--action "\$\{\{\s*inputs\.action == 'build_and_submit' && 'native_submit' \|\| 'native'\s*\}\}"/);
   assert.match(src, /--publish-apk-release false/);

@@ -748,9 +748,18 @@ async function main() {
       const exportedOutJsonAbs = path.join(exportDirAbs, outJsonName);
 
       const expoAppSlug = String(process.env.EXPO_APP_SLUG ?? '').trim();
+	      const expoAppOwner = String(process.env.EXPO_APP_OWNER ?? '').trim();
+	      const expoEasProjectId = String(
+	        process.env.EXPO_PUBLIC_EAS_PROJECT_ID ??
+	          process.env.EAS_PROJECT_ID ??
+	          process.env.EXPO_EAS_PROJECT_ID ??
+	          '',
+	      ).trim();
+	      const expoUpdatesUrl = String(process.env.EXPO_UPDATES_URL ?? '').trim();
 	      const expoAppScheme = String(process.env.EXPO_APP_SCHEME ?? '').trim();
 	      const expoAppName = String(process.env.EXPO_APP_NAME ?? '').trim();
 	      const expoAppBundleId = String(process.env.EXPO_APP_BUNDLE_ID ?? '').trim();
+	      const expoAndroidPackage = String(process.env.EXPO_ANDROID_PACKAGE ?? '').trim();
 	      const sentryAuthToken = String(process.env.SENTRY_AUTH_TOKEN ?? '').trim();
 
 	      const staged = dryRun ? null : stageRepoForDagger({ repoRoot });
@@ -794,10 +803,14 @@ async function main() {
 	            '--eas-cli-version',
 	            easCliVersion,
 	            ...(daggerContainerPlatform ? ['--container-platform', daggerContainerPlatform] : []),
+	            ...(expoAppOwner ? ['--expo-app-owner', expoAppOwner] : []),
 	            ...(expoAppSlug ? ['--expo-app-slug', expoAppSlug] : []),
+	            ...(expoEasProjectId ? ['--expo-eas-project-id', expoEasProjectId] : []),
+	            ...(expoUpdatesUrl ? ['--expo-updates-url', expoUpdatesUrl] : []),
             ...(expoAppScheme ? ['--expo-app-scheme', expoAppScheme] : []),
             ...(expoAppName ? ['--expo-app-name', expoAppName] : []),
 	            ...(expoAppBundleId ? ['--expo-app-bundle-id', expoAppBundleId] : []),
+	            ...(expoAndroidPackage ? ['--expo-android-package', expoAndroidPackage] : []),
 	          ],
 	          { cwd: repoRoot, stdio: 'inherit', env: daggerEnv },
 	        );

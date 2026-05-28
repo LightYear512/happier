@@ -269,6 +269,16 @@ jobs:
       EAS_CLI_VERSION: 18.0.1
       APP_ENV: ${{ inputs.environment }}
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+      EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+      EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+      EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+      EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+      EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
+      EXPO_ANDROID_PACKAGE: ${{ vars.EXPO_ANDROID_PACKAGE }}
+      EXPO_APP_BUNDLE_ID: ${{ vars.EXPO_APP_BUNDLE_ID }}
+      EXPO_APP_NAME: ${{ vars.EXPO_APP_NAME }}
+      EXPO_APP_SCHEME: ${{ vars.EXPO_APP_SCHEME }}
       EAS_PLATFORM: android
       RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
       RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
@@ -353,6 +363,16 @@ jobs:
       EAS_CLI_VERSION: 18.0.1
       APP_ENV: ${{ inputs.environment }}
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+      EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+      EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+      EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+      EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+      EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
+      EXPO_ANDROID_PACKAGE: ${{ vars.EXPO_ANDROID_PACKAGE }}
+      EXPO_APP_BUNDLE_ID: ${{ vars.EXPO_APP_BUNDLE_ID }}
+      EXPO_APP_NAME: ${{ vars.EXPO_APP_NAME }}
+      EXPO_APP_SCHEME: ${{ vars.EXPO_APP_SCHEME }}
       APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
       APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS: ${{ vars.APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS }}
       APP_STORE_CONNECT_PUBLICDEV_SUBMIT_BETA_REVIEW: ${{ vars.APP_STORE_CONNECT_PUBLICDEV_SUBMIT_BETA_REVIEW }}
@@ -436,6 +456,16 @@ jobs:
       EAS_CLI_VERSION: 18.0.1
       APP_ENV: ${{ inputs.environment }}
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+      EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+      EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+      EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+      EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+      EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
+      EXPO_ANDROID_PACKAGE: ${{ vars.EXPO_ANDROID_PACKAGE }}
+      EXPO_APP_BUNDLE_ID: ${{ vars.EXPO_APP_BUNDLE_ID }}
+      EXPO_APP_NAME: ${{ vars.EXPO_APP_NAME }}
+      EXPO_APP_SCHEME: ${{ vars.EXPO_APP_SCHEME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
