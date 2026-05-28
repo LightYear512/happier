@@ -10,6 +10,8 @@ import { configuration } from "@/configuration";
 import type { Credentials } from '@/persistence';
 import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/session/services/executionRuns";
 import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
+import { createAndroidSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
+import { registerSimulatorPreviewSessionRpcHandlers } from '@/session/simulatorPreview/registerSimulatorPreviewSessionRpcHandlers';
 import type { AccountSettings } from '@happier-dev/protocol';
 import { createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
 
@@ -40,6 +42,12 @@ export async function startHappyServer(
     // Full server creation is done per request inside the handler.
     const devPreviewRegistry = getSharedSessionDevPreviewRegistry();
     const androidSimulatorPreviewStreams: AndroidSimulatorPreviewStreamRegistry = new Map();
+    const androidSimulatorPreviewControlRegistry = createAndroidSimulatorPreviewControlRegistry();
+    registerSimulatorPreviewSessionRpcHandlers({
+        sessionId: client.sessionId,
+        rpcHandlerManager: client.rpcHandlerManager,
+        registry: androidSimulatorPreviewControlRegistry,
+    });
     const isActionEnabled = createMcpActionEnablement({
         accountSettings: opts?.accountSettings ?? null,
         surface: 'session_agent',
@@ -72,6 +80,7 @@ export async function startHappyServer(
             accountSettings: opts?.accountSettings ?? null,
             devPreviewRegistry,
             androidSimulatorPreviewStreams,
+            androidSimulatorPreviewControlRegistry,
         });
 
         const transport = new StreamableHTTPServerTransport({

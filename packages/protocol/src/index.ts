@@ -1937,12 +1937,14 @@ export {
   SimulatorPreviewModeSchema,
   SimulatorPreviewOwnerSchema,
   SimulatorPreviewPlatformSchema,
+  SimulatorPreviewRelaySchema,
   SimulatorPreviewV1Schema,
   parseSimulatorPreviewV1,
   type SimulatorPreviewConnectionPath,
   type SimulatorPreviewMode,
   type SimulatorPreviewOwner,
   type SimulatorPreviewPlatform,
+  type SimulatorPreviewRelay,
   type SimulatorPreviewV1,
 } from './structuredMessages/simulatorPreviewV1.js';
 export {

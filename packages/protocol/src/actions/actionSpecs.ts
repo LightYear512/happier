@@ -427,6 +427,41 @@ const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
   appName: z.string().trim().min(1).max(200).optional(),
 }).passthrough();
 
+const SessionSimulatorPreviewLeaseOwnerSchema = z.enum(['ai', 'user']);
+
+const SessionSimulatorPreviewControlAcquireInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  simulatorSessionId: z.string().trim().min(1).max(200),
+  owner: SessionSimulatorPreviewLeaseOwnerSchema,
+  holderId: z.string().trim().min(1).max(200).optional(),
+  leaseTtlMs: z.number().int().min(1_000).max(600_000).optional(),
+}).passthrough();
+
+const SessionSimulatorPreviewControlReleaseInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  simulatorSessionId: z.string().trim().min(1).max(200),
+  leaseId: z.string().trim().min(1).max(200),
+  owner: SessionSimulatorPreviewLeaseOwnerSchema,
+  holderId: z.string().trim().min(1).max(200).optional(),
+}).passthrough();
+
+const SessionSimulatorPreviewTapInputSchema = z.object({
+  type: z.literal('tap'),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+});
+
+const SessionSimulatorPreviewInputSendInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  simulatorSessionId: z.string().trim().min(1).max(200),
+  leaseId: z.string().trim().min(1).max(200),
+  generation: z.number().int().min(0),
+  owner: SessionSimulatorPreviewLeaseOwnerSchema,
+  input: z.discriminatedUnion('type', [
+    SessionSimulatorPreviewTapInputSchema,
+  ]),
+}).passthrough();
+
 const IntentStartCommonSchema = z.object({
   sessionId: z.string().min(1).optional(),
   backendTargetKeys: z.array(BackendTargetKeySchema).min(1),
@@ -1599,6 +1634,123 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: SessionSimulatorPreviewAndroidStartInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.control.acquire',
+    title: 'Acquire simulator preview control',
+    description: 'Acquire a short-lived control lease for a simulator preview before sending user or agent input.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_control_acquire' },
+    examples: {
+      mcp: {
+        argsExample: '{"simulatorSessionId":"sim_android_1","owner":"user","holderId":"browser_tab_1","leaseTtlMs":30000}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Acquire simulator control',
+      description: 'Use before forwarding interactive input to a simulator preview.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'simulatorSessionId', title: 'Simulator session id', widget: 'text' },
+        { path: 'owner', title: 'Owner', widget: 'select', options: [
+          { value: 'user', label: 'User' },
+          { value: 'ai', label: 'AI' },
+        ] },
+        { path: 'holderId', title: 'Holder id', widget: 'text' },
+        { path: 'leaseTtlMs', title: 'Lease TTL ms', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewControlAcquireInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.control.release',
+    title: 'Release simulator preview control',
+    description: 'Release a simulator preview control lease so another owner can operate the simulator.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_control_release' },
+    examples: {
+      mcp: {
+        argsExample: '{"simulatorSessionId":"sim_android_1","leaseId":"lease_1","owner":"user","holderId":"browser_tab_1"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Release simulator control',
+      description: 'Use when the current owner is done operating the simulator preview.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'simulatorSessionId', title: 'Simulator session id', widget: 'text' },
+        { path: 'leaseId', title: 'Lease id', widget: 'text' },
+        { path: 'owner', title: 'Owner', widget: 'select', options: [
+          { value: 'user', label: 'User' },
+          { value: 'ai', label: 'AI' },
+        ] },
+        { path: 'holderId', title: 'Holder id', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewControlReleaseInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.input.send',
+    title: 'Send simulator preview input',
+    description: 'Send normalized interactive input to a simulator preview using a valid control lease.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_input_send' },
+    examples: {
+      mcp: {
+        argsExample: '{"simulatorSessionId":"sim_android_1","leaseId":"lease_1","generation":1,"owner":"user","input":{"type":"tap","x":0.5,"y":0.25}}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Send simulator input',
+      description: 'Use with a current simulator control lease.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'simulatorSessionId', title: 'Simulator session id', widget: 'text' },
+        { path: 'leaseId', title: 'Lease id', widget: 'text' },
+        { path: 'generation', title: 'Generation', widget: 'text' },
+        { path: 'owner', title: 'Owner', widget: 'select', options: [
+          { value: 'user', label: 'User' },
+          { value: 'ai', label: 'AI' },
+        ] },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewInputSendInputSchema,
   },
   {
     id: 'session.spawn_new',

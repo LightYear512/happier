@@ -4117,6 +4117,12 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
               defaultIosSubtitle: 'iOS 模擬器',
               screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} 模擬器畫面`,
               ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
+              requestControl: '控制',
+              owner: {
+                  ai: 'AI',
+                  user: '使用者',
+                  system: '系統',
+              },
               mode: {
                   idle: '閒置',
                   aiControl: 'AI 控制',

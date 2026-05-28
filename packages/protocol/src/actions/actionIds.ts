@@ -13,6 +13,9 @@ export const ACTION_IDS = [
   'session.devPreview.register',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
+  'session.simulatorPreview.control.acquire',
+  'session.simulatorPreview.control.release',
+  'session.simulatorPreview.input.send',
   'session.spawn_new',
   'session.spawn_picker',
   // Local inventory + discovery (voice)

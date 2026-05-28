@@ -222,6 +222,75 @@ describe('session dev preview routes (integration)', () => {
     }
   });
 
+  it('relays an MJPEG simulator stream path through the same preview relay route', async () => {
+    const fixture = await createFixture();
+    const boundary = 'happier-android-screenshot';
+    const multipartBody = Buffer.from(
+      [
+        `--${boundary}\r\n`,
+        'Content-Type: image/jpeg\r\n',
+        'Content-Length: 4\r\n\r\n',
+        'jpeg\r\n',
+      ].join(''),
+      'utf8',
+    );
+    const forwardRpcForUser = vi.fn(async ({ method, params }: { method: string; params: any }) => {
+      if (method === `${fixture.machineId}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}`) {
+        expect(params.path).toBe('/stream.mjpeg');
+        return {
+          ok: true as const,
+          result: {
+            ok: true,
+            status: 200,
+            headers: {
+              'content-type': `multipart/x-mixed-replace; boundary=${boundary}`,
+              'cache-control': 'no-cache, no-store, must-revalidate',
+            },
+            bodyBase64: multipartBody.toString('base64'),
+          },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const app = createTestApp(forwardRpcForUser);
+    sessionRoutes(app as any);
+    await app.ready();
+
+    try {
+      const previewToken = await mintPreviewToken(app, fixture);
+      const cookie = await movePreviewTokenIntoCookie(app, fixture, previewToken, {
+        path: '/stream.mjpeg',
+      });
+
+      const preview = await app.inject({
+        method: 'GET',
+        url: cookie.location,
+        headers: {
+          cookie: cookie.cookie,
+        },
+      });
+
+      expect(preview.statusCode).toBe(200);
+      expect(preview.headers['content-type']).toBe(`multipart/x-mixed-replace; boundary=${boundary}`);
+      expect(preview.rawPayload).toEqual(multipartBody);
+      expect(forwardRpcForUser).toHaveBeenCalledWith(expect.objectContaining({
+        userId: fixture.accountId,
+        method: `${fixture.machineId}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}`,
+        params: expect.objectContaining({
+          sessionId: fixture.sessionId,
+          machineId: fixture.machineId,
+          routeKey: 'route_1',
+          method: 'GET',
+          path: '/stream.mjpeg',
+          search: '',
+        }),
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   it('uses a host-based preview origin when the server has a preview host base domain configured', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
