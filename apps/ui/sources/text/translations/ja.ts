@@ -4628,6 +4628,28 @@ localTailscale: {
           enterFocusModeA11y: "ペイン集中モードに入る",
           exitFocusModeA11y: "ペイン集中モードを終了",
       },
+      simulatorPreview: {
+        defaultAndroidSubtitle: "Android エミュレーター",
+        defaultIosSubtitle: "iOS シミュレーター",
+        screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} シミュレーター画面`,
+        ownerLabel: ({ owner }: { owner: string }) => `所有者: ${owner}`,
+        mode: {
+          idle: "アイドル",
+          aiControl: "AI 制御",
+          userControl: "手動制御",
+          systemLocked: "システムロック中",
+          ended: "終了",
+        },
+        platform: {
+          android: "Android",
+          ios: "iOS",
+        },
+        connectionPath: {
+          relay: "Relay",
+          direct: "直接",
+          adbReverse: "ADB reverse",
+        },
+      },
   
       actionsDraft: {
         noInputHints: "このアクションには入力ヒントがありません。",

@@ -202,4 +202,40 @@ describe('StructuredMessageBlock', () => {
         expect(serialized).toContain('3000');
         expect(serialized).toContain('ready');
     });
+
+    it('renders simulator preview card for valid payload', async () => {
+        let tree: renderer.ReactTestRenderer | null = null;
+        tree = (await renderScreen(<StructuredMessageBlock
+                    message={{
+                        kind: 'user-text',
+                        id: 'm_simulator_preview',
+                        localId: null,
+                        createdAt: 1,
+                        text: 'simulator',
+                        meta: {
+                            happier: {
+                                kind: 'simulator_preview.v1',
+                                payload: {
+                                    simulatorSessionId: 'sim_1',
+                                    sessionId: 's1',
+                                    platform: 'ios',
+                                    deviceName: 'iPhone 15',
+                                    appName: 'Happier',
+                                    streamUrl: 'https://relay.example.test/simulator/sim_1/frame.jpg',
+                                    mode: 'user_control',
+                                    owner: 'user',
+                                    connectionPath: 'relay',
+                                    registeredAtMs: 1,
+                                },
+                            },
+                        },
+                    } as any}
+                    sessionId="s1"
+                    onJumpToAnchor={() => {}}
+                />)).tree;
+
+        const serialized = JSON.stringify(tree!.toJSON());
+        expect(serialized).toContain('iPhone 15');
+        expect(serialized).toContain('Happier');
+    });
 });

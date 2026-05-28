@@ -4162,6 +4162,28 @@ export const zhHans: TranslationStructure = {
       enterFocusModeA11y: "进入面板专注模式",
       exitFocusModeA11y: "退出面板专注模式",
     },
+    simulatorPreview: {
+      defaultAndroidSubtitle: "Android 模拟器",
+      defaultIosSubtitle: "iOS 模拟器",
+      screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} 模拟器屏幕`,
+      ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
+      mode: {
+        idle: "空闲",
+        aiControl: "AI 控制",
+        userControl: "手动控制",
+        systemLocked: "系统锁定",
+        ended: "已结束",
+      },
+      platform: {
+        android: "Android",
+        ios: "iOS",
+      },
+      connectionPath: {
+        relay: "Relay",
+        direct: "直连",
+        adbReverse: "ADB reverse",
+      },
+    },
 
     actionsDraft: {
       noInputHints: "此操作没有输入提示。",
