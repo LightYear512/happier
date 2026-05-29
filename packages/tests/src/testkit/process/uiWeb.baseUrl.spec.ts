@@ -12,6 +12,8 @@ let lastSpawnEnv: NodeJS.ProcessEnv | null = null;
 let spawnCallCount = 0;
 let runLoggedCalls: Array<{ args: string[]; cwd: string; env?: NodeJS.ProcessEnv }> = [];
 let runLoggedFailureQueue: string[] = [];
+let nodeModulesIsolationPreflightCalls: Array<{ scope: string }> = [];
+let nodeModulesIsolationPreflightFailure: Error | null = null;
 let spawnStdoutText: string | null = null;
 let spawnStderrText: string | null = null;
 
@@ -65,6 +67,15 @@ vi.mock('./spawnProcess', () => {
         stderrPath: params.stderrPath,
         stop: async () => {},
       };
+    },
+  };
+});
+
+vi.mock('./nodeModulesIsolationPreflight', () => {
+  return {
+    assertE2eNodeModulesIsolation: async (params: { scope: string }) => {
+      nodeModulesIsolationPreflightCalls.push({ scope: params.scope });
+      if (nodeModulesIsolationPreflightFailure) throw nodeModulesIsolationPreflightFailure;
     },
   };
 });
@@ -177,6 +188,8 @@ describe('startUiWeb baseUrl resolution', () => {
     spawnCallCount = 0;
     runLoggedCalls = [];
     runLoggedFailureQueue = [];
+    nodeModulesIsolationPreflightCalls = [];
+    nodeModulesIsolationPreflightFailure = null;
     spawnStdoutText = null;
     spawnStderrText = null;
   });
@@ -204,6 +217,40 @@ describe('startUiWeb baseUrl resolution', () => {
     } finally {
       await started.stop();
     }
+  });
+
+  it('runs UI dependency isolation preflight before Expo export', async () => {
+    const { startUiWeb } = await import('./uiWeb');
+
+    const testDir = await mkdtemp(join(tmpdir(), 'happier-uiweb-'));
+    const started = await startUiWeb({
+      testDir,
+      env: {
+        HAPPIER_E2E_UI_WEB_EXPORT_NAMESPACE: `uiweb-nm-preflight-${Date.now()}`,
+      },
+    });
+
+    try {
+      expect(nodeModulesIsolationPreflightCalls).toEqual([{ scope: 'ui' }]);
+      expect(runLoggedCalls).toHaveLength(1);
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it('fails UI export before Expo starts when dependency isolation preflight fails', async () => {
+    const { startUiWeb } = await import('./uiWeb');
+    nodeModulesIsolationPreflightFailure = new Error('dependency isolation preflight failed');
+
+    const testDir = await mkdtemp(join(tmpdir(), 'happier-uiweb-'));
+    await expect(startUiWeb({
+      testDir,
+      env: {
+        HAPPIER_E2E_UI_WEB_EXPORT_NAMESPACE: `uiweb-nm-preflight-fail-${Date.now()}`,
+      },
+    })).rejects.toThrow(/dependency isolation preflight failed/);
+
+    expect(runLoggedCalls).toHaveLength(0);
   });
 
   it('uses exported web mode by default and reuses the shared export build', async () => {

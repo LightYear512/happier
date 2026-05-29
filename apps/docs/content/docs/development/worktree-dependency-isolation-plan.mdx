@@ -1,0 +1,192 @@
+---
+title: Worktree Dependency Isolation Plan
+description: Design plan for preventing cross-checkout node_modules pollution in Happier worktrees.
+---
+
+# Worktree dependency isolation plan
+
+This is an implementation plan for making future Happier worktrees safer. It is
+not the user-facing worktree guide and should be treated as the source document
+for the dependency-isolation fix.
+
+## Problem
+
+Happier worktrees can accidentally run with a mixed dependency tree when
+`node_modules` entries in one checkout resolve into another Happier checkout.
+For example, a worktree may contain links like:
+
+```text
+node_modules/expo-router -> /path/to/happier/node_modules/expo-router
+node_modules/zod -> /path/to/happier/node_modules/zod
+```
+
+This is especially fragile for Expo and Metro because they resolve files, route
+entries, and SHA-1 hashes by real filesystem path. The result can look random:
+
+- Expo plugin resolution failures.
+- Blank Expo web pages.
+- Metro SHA-1 errors for files under another checkout.
+- Provider or CLI builds that appear flaky because packages are resolved from a
+  different repo root.
+
+## Scope
+
+The fix should cover:
+
+- `hstack wt --deps=install` worktree dependency setup.
+- UI export and UI e2e preflight.
+- Provider and CLI e2e preflight.
+
+The fix should not make e2e code mutate `node_modules`. Worktree creation can
+repair tool-managed dependency trees; e2e should only fail fast with actionable
+diagnostics.
+
+## Validator contract
+
+Add a shared dependency-isolation validator. The validator only detects and
+reports pollution. It does not decide how dependencies should be installed.
+
+The validator should return structured results:
+
+```ts
+type NodeModulesIsolationResult = {
+  ok: boolean;
+  errors: NodeModulesIsolationFinding[];
+  warnings: NodeModulesIsolationFinding[];
+  pollutedNodeModulesDirs: string[];
+};
+```
+
+Each finding should include:
+
+- the symlink path
+- the resolved target path
+- the current repo root
+- the node_modules directory that owns the finding
+- a stable reason or code
+
+`pollutedNodeModulesDirs` must contain only scan-scope `node_modules`
+directories that own hard-error findings. Return de-duplicated, sorted absolute
+paths so repair callers can safely delete only directories the validator proved
+polluted.
+
+The validator should shallow-scan package entries only:
+
+- `node_modules/<package>`
+- `node_modules/@scope/<package>`
+- optionally `node_modules/.bin`
+
+It must not recurse into package internals.
+
+## Classification rules
+
+Hard error:
+
+- A package-entry symlink resolves outside the current repo root into another
+  Happier checkout.
+- A workspace package symlink points at the same workspace in a different
+  checkout.
+
+Warning:
+
+- A package-entry symlink resolves outside the current repo root but is not
+  clearly another Happier checkout.
+- A package-entry symlink has a missing or unreadable target. This is not
+  cross-checkout pollution by itself, but callers should surface it because it
+  can still make dependency resolution fail.
+
+Allowed:
+
+- Symlinks resolving inside the current repo root.
+- Explicitly configured external roots via an `allowedExternalRoots` option.
+
+Do not identify another Happier checkout by path-name guessing alone. Resolve
+the symlink target, walk ancestors from the target path, and confirm an ancestor
+`package.json` is a Happier monorepo root before treating the target as another
+checkout. The nearest `package.json` may belong to the dependency package itself,
+not the repo root.
+
+## Worktree install behavior
+
+`hstack wt --deps=install` may repair tool-managed dependency trees:
+
+1. Validate the base checkout before seeding. Use the same scan scope that will
+   be used for the target worktree. If the base dependency tree is polluted,
+   skip seeding from it.
+2. If seeding was used, validate the target worktree immediately afterwards.
+3. If the target is polluted, delete only the `pollutedNodeModulesDirs` returned
+   by the validator. Do not delete a hard-coded directory list.
+4. Validate the target before any install-skip heuristic such as
+   `.yarn-integrity` timestamps. A polluted target must force repair even when
+   the lockfile appears up to date.
+5. Run `yarn install --frozen-lockfile`.
+6. Validate again after install. If pollution remains, fail fast.
+
+The install path should never rely on deleting `.yarn-integrity` as the only
+repair. That can force Yarn to run, but it does not guarantee every polluted
+symlink is replaced.
+
+## E2E and export preflight behavior
+
+E2E and export preflights must be diagnostic only. They should not delete
+dependencies.
+
+Recommended scan scopes:
+
+- UI export and UI e2e: `node_modules`, `apps/ui/node_modules`
+- Provider and CLI e2e: `node_modules`, `apps/cli/node_modules`,
+  `apps/server/node_modules`
+
+Preflight errors should include:
+
+- the exact symlink path
+- the resolved target
+- the current repo root
+- the polluted `node_modules` directories
+- a precise cleanup command for those directories, with a cross-platform Node
+  fallback when shell-specific commands would differ
+- a full reinstall fallback
+
+## Performance constraints
+
+The default scan must be bounded by package-entry count, not total files inside
+`node_modules`.
+
+Do not deep-recursively scan package contents during normal worktree creation
+or e2e startup. A strict mode may scan more directories, but the default path
+should stay fast enough for routine worktree and e2e use.
+
+## Tests
+
+The shared validator should live in one importable implementation used by both
+worktree tooling and test/export preflights. Do not create separate `.mjs` and
+TypeScript implementations that can drift.
+
+Validator unit tests should cover:
+
+- legal workspace symlinks inside the current repo
+- cross-checkout Happier symlinks
+- scoped package entries
+- missing symlink targets
+- shallow traversal behavior
+- allowed external roots
+- warning classification for external non-Happier symlinks
+
+Worktree install tests should cover:
+
+- polluted base checkout skips seeding
+- polluted seeded target deletes only `pollutedNodeModulesDirs`
+- post-install pollution fails fast
+
+UI export testkit coverage should prove the preflight fails before Metro starts.
+
+## Implementation boundaries
+
+Keep the responsibilities separate:
+
+- Validator: detect pollution and return structured results.
+- Worktree install: decide whether and how to repair.
+- E2E/export preflight: diagnose only and fail fast.
+
+This separation keeps future callers from inheriting deletion behavior by
+accident.

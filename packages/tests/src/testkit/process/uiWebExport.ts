@@ -9,6 +9,7 @@ import { runLoggedCommand } from './spawnProcess';
 import { yarnCommand } from './commands';
 import { readPositiveEnvInt } from './uiWebEnv';
 import type { StartedUiWeb } from './uiWebTypes';
+import { assertE2eNodeModulesIsolation } from './nodeModulesIsolationPreflight';
 
 export function resolveUiWebExportRootDir(env: NodeJS.ProcessEnv = process.env): string {
   const rootDir = resolvePath(repoRootDir(), '.project', 'tmp', 'ui-web-export');
@@ -319,6 +320,7 @@ async function ensureUiWebExportBuilt(params: { testDir: string; env: NodeJS.Pro
 	    await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
 
 	    try {
+	      await assertE2eNodeModulesIsolation({ scope: 'ui' });
 	      const exportEnv = buildExportEnv(params.env);
 	      const shouldPinMetroPort = !exportEnv.RCT_METRO_PORT && !exportEnv.EXPO_METRO_PORT && !exportEnv.METRO_PORT;
 	      const metroPort = shouldPinMetroPort ? await reserveAvailablePort() : null;

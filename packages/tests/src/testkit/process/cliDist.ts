@@ -18,6 +18,7 @@ import { repoRootDir } from '../paths';
 import { sleep } from '../timing';
 import { ensureCliDistSnapshotNodeModules } from './cliDistSnapshotNodeModules';
 import { yarnCommand } from './commands';
+import { assertE2eNodeModulesIsolation } from './nodeModulesIsolationPreflight';
 import { runLoggedCommand } from './spawnProcess';
 
 const ensureDistPromisesByRepoRoot = new Map<string, Promise<string>>();
@@ -666,6 +667,8 @@ export async function ensureCliSharedDepsBuilt(
   mkdirSync(params.testDir, { recursive: true });
 
   const rootDir = options.repoRoot ?? repoRootDir();
+  await assertE2eNodeModulesIsolation({ rootDir, scope: 'cli' });
+
   const skipSourceFreshnessCheck = options.skipSourceFreshnessCheck ?? false;
   const maxBuildAttempts = Math.max(1, options.maxBuildAttempts ?? 2);
   const existing = ensureSharedPromisesByRepoRoot.get(rootDir);

@@ -14,6 +14,7 @@ import { readPositiveEnvInt, resolveUiWebEntryProbeTimeoutMs } from './uiWebEnv'
 import { resolveScriptUrlsFromHtml, selectPrimaryAppScriptUrl } from './uiWebHtml';
 import { spawnLoggedProcess } from './spawnProcess';
 import type { StartedUiWeb } from './uiWebTypes';
+import { assertE2eNodeModulesIsolation } from './nodeModulesIsolationPreflight';
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
@@ -247,6 +248,8 @@ export async function startUiWebMetro(params: {
   env: NodeJS.ProcessEnv;
   port?: number;
 }): Promise<StartedUiWeb> {
+  await assertE2eNodeModulesIsolation({ scope: 'ui' });
+
   const currentOwnerInspection = inspectOwnedProcess(process.pid);
   if (currentOwnerInspection.ok) {
     await sweepProcessOwnershipLeases({
