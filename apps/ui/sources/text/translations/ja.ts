@@ -5100,6 +5100,14 @@ localTailscale: {
         screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} シミュレーター画面`,
         ownerLabel: ({ owner }: { owner: string }) => `所有者: ${owner}`,
         requestControl: "操作",
+        releaseControl: "Release",
+        controls: {
+          back: "Back",
+          home: "Home",
+          enter: "Enter",
+          textPlaceholder: "Text input",
+          sendText: "Send",
+        },
         owner: {
           ai: "AI",
           user: "ユーザー",

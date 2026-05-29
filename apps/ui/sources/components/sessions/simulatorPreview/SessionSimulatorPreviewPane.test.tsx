@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 
 import { renderScreen } from '@/dev/testkit';
 
@@ -155,5 +156,56 @@ describe('SessionSimulatorPreviewPane', () => {
 
         const viewport = screen.findByProps({ testID: 'session.simulatorPreview.screenViewport' });
         expect(viewport.props.onPress).toBeUndefined();
+    });
+
+    it('sends basic key and text input from the manual control bar', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+        const onSendInput = vi.fn();
+        const onReleaseControl = vi.fn();
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="android"
+                deviceName="Android SDK"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+                mode="user_control"
+                owner="user"
+                controlLease={{
+                    leaseId: 'lease_user_1',
+                    generation: 1,
+                    owner: 'user',
+                }}
+                onSendInput={onSendInput}
+                onReleaseControl={onReleaseControl}
+            />,
+        );
+
+        screen.findByProps({ testID: 'session.simulatorPreview.key.back' }).props.onPress();
+        screen.findByProps({ testID: 'session.simulatorPreview.key.home' }).props.onPress();
+        screen.findByProps({ testID: 'session.simulatorPreview.key.enter' }).props.onPress();
+
+        const textInput = screen.findByProps({ testID: 'session.simulatorPreview.textInput' });
+        await act(async () => {
+            textInput.props.onChangeText('hello world');
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'session.simulatorPreview.textSend' }).props.onPress();
+        });
+        screen.findByProps({ testID: 'session.simulatorPreview.releaseControl' }).props.onPress();
+
+        expect(onSendInput).toHaveBeenCalledWith(expect.objectContaining({
+            input: { type: 'keyevent', key: 'back' },
+        }));
+        expect(onSendInput).toHaveBeenCalledWith(expect.objectContaining({
+            input: { type: 'keyevent', key: 'home' },
+        }));
+        expect(onSendInput).toHaveBeenCalledWith(expect.objectContaining({
+            input: { type: 'keyevent', key: 'enter' },
+        }));
+        expect(onSendInput).toHaveBeenCalledWith(expect.objectContaining({
+            input: { type: 'text', text: 'hello world' },
+        }));
+        expect(onReleaseControl).toHaveBeenCalledTimes(1);
     });
 });

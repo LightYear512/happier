@@ -253,6 +253,76 @@ describe('createActionExecutor (session control)', () => {
         y: 0.25,
       },
     });
+
+    await executor.execute(
+      'session.simulatorPreview.input.send' as any,
+      {
+        simulatorSessionId: 'sim_android_1',
+        leaseId: 'lease_1',
+        generation: 1,
+        owner: 'user',
+        input: {
+          type: 'swipe',
+          x1: 0.1,
+          y1: 0.2,
+          x2: 0.9,
+          y2: 0.8,
+          durationMs: 250,
+        },
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+    await executor.execute(
+      'session.simulatorPreview.input.send' as any,
+      {
+        simulatorSessionId: 'sim_android_1',
+        leaseId: 'lease_1',
+        generation: 1,
+        owner: 'user',
+        input: {
+          type: 'text',
+          text: 'hello world',
+        },
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+    await executor.execute(
+      'session.simulatorPreview.input.send' as any,
+      {
+        simulatorSessionId: 'sim_android_1',
+        leaseId: 'lease_1',
+        generation: 1,
+        owner: 'user',
+        input: {
+          type: 'keyevent',
+          key: 'back',
+        },
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(sessionSimulatorPreviewInputSend).toHaveBeenCalledWith(expect.objectContaining({
+      input: {
+        type: 'swipe',
+        x1: 0.1,
+        y1: 0.2,
+        x2: 0.9,
+        y2: 0.8,
+        durationMs: 250,
+      },
+    }));
+    expect(sessionSimulatorPreviewInputSend).toHaveBeenCalledWith(expect.objectContaining({
+      input: {
+        type: 'text',
+        text: 'hello world',
+      },
+    }));
+    expect(sessionSimulatorPreviewInputSend).toHaveBeenCalledWith(expect.objectContaining({
+      input: {
+        type: 'keyevent',
+        key: 'back',
+      },
+    }));
   });
 
   it('executes session.stop via deps.sessionStop', async () => {

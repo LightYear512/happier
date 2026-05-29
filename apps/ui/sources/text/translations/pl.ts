@@ -4829,6 +4829,14 @@ export const pl: TranslationStructure = {
         screenAlt: ({ deviceName }: { deviceName: string }) => `Ekran symulatora ${deviceName}`,
         ownerLabel: ({ owner }: { owner: string }) => `Właściciel: ${owner}`,
         requestControl: "Steruj",
+        releaseControl: "Release",
+        controls: {
+          back: "Back",
+          home: "Home",
+          enter: "Enter",
+          textPlaceholder: "Text input",
+          sendText: "Send",
+        },
         owner: {
           ai: "AI",
           user: "użytkownik",

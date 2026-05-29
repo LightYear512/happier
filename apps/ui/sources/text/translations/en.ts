@@ -4512,6 +4512,14 @@ export const en = {
             screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} simulator screen`,
             ownerLabel: ({ owner }: { owner: string }) => `Owner: ${owner}`,
             requestControl: 'Control',
+            releaseControl: 'Release',
+            controls: {
+              back: 'Back',
+              home: 'Home',
+              enter: 'Enter',
+              textPlaceholder: 'Text input',
+              sendText: 'Send',
+            },
             owner: {
                 ai: 'AI',
                 user: 'user',
