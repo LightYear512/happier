@@ -81,6 +81,7 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.devPreview.register',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
+  'session.simulatorPreview.ios.start',
   'session.simulatorPreview.control.acquire',
   'session.simulatorPreview.control.release',
   'session.simulatorPreview.input.send',
@@ -652,6 +653,32 @@ describe('Action Spec Registry', () => {
       pollMs: 500,
       deviceName: 'Android SDK API 34',
       appName: 'Example Android App',
+    });
+    expect(() => spec.inputSchema.parse({ port: 70000 })).toThrow();
+  });
+
+  it('registers the iOS simulator preview start action as a feature-gated session-agent tool', () => {
+    const spec = getActionSpec('session.simulatorPreview.ios.start' as any);
+
+    expect(spec.requiredFeatureId).toBe('sessions.devPreview');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.surfaces.mcp).toBe(false);
+    expect(spec.surfaces.cli).toBe(false);
+    expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_ios_start');
+    expect(spec.inputSchema.parse({
+      deviceId: 'A1B2-C3D4',
+      port: 9814,
+      pollMs: 500,
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example iOS App',
+      wdaUrl: 'http://127.0.0.1:8100',
+    })).toEqual({
+      deviceId: 'A1B2-C3D4',
+      port: 9814,
+      pollMs: 500,
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example iOS App',
+      wdaUrl: 'http://127.0.0.1:8100',
     });
     expect(() => spec.inputSchema.parse({ port: 70000 })).toThrow();
   });

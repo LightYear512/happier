@@ -170,6 +170,35 @@ describe('createActionExecutor (session control)', () => {
     });
   });
 
+  it('executes session.simulatorPreview.ios.start via deps.sessionSimulatorPreviewIosStart', async () => {
+    const sessionSimulatorPreviewIosStart = vi.fn(async () => ({ ok: true, simulatorSessionId: 'sim_ios_1' }));
+    const executor = createExecutor({ sessionSimulatorPreviewIosStart } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.ios.start' as any,
+      {
+        deviceId: 'A1B2-C3D4',
+        port: 9814,
+        pollMs: 500,
+        deviceName: 'iPhone 15 Pro',
+        appName: 'Example iOS App',
+        wdaUrl: 'http://127.0.0.1:8100',
+      },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true, simulatorSessionId: 'sim_ios_1' } });
+    expect(sessionSimulatorPreviewIosStart).toHaveBeenCalledWith({
+      sessionId: 's1',
+      deviceId: 'A1B2-C3D4',
+      port: 9814,
+      pollMs: 500,
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example iOS App',
+      wdaUrl: 'http://127.0.0.1:8100',
+    });
+  });
+
   it('executes session.simulatorPreview.control.acquire via deps.sessionSimulatorPreviewControlAcquire', async () => {
     const sessionSimulatorPreviewControlAcquire = vi.fn(async () => ({ ok: true, leaseId: 'lease_1', generation: 1 }));
     const executor = createExecutor({ sessionSimulatorPreviewControlAcquire } as Partial<ActionExecutorDeps>);
