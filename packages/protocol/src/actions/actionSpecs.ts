@@ -413,6 +413,18 @@ const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
   devServices: SimulatorPreviewDevServicesSchema.optional(),
 }).passthrough();
 
+const SessionSimulatorPreviewIosStartInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  deviceId: z.string().trim().min(1).max(200).optional(),
+  wdaUrl: z.string().trim().url().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  pollMs: z.number().int().min(50).max(60_000).optional(),
+  deviceName: z.string().trim().min(1).max(200).default('iOS Simulator'),
+  appName: z.string().trim().min(1).max(200).optional(),
+  nativeDevSessionId: z.string().trim().min(1).max(200).optional(),
+  devServices: SimulatorPreviewDevServicesSchema.optional(),
+}).passthrough();
+
 const SessionSimulatorPreviewLeaseOwnerSchema = z.enum(['ai', 'user']);
 
 const SessionSimulatorPreviewControlAcquireInputSchema = z.object({
@@ -1651,6 +1663,44 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: SessionSimulatorPreviewAndroidStartInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.ios.start',
+    title: 'Start iOS simulator preview',
+    description: 'Start an iOS Simulator screenshot stream on the current session machine and register it as a simulator preview for the user.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_ios_start' },
+    examples: {
+      mcp: {
+        argsExample: '{"deviceId":"A1B2-C3D4","port":9814,"pollMs":500,"deviceName":"iPhone 15 Pro","appName":"Example iOS App"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Start iOS simulator preview',
+      description: 'Use when the user asks to open or preview an iOS Simulator from the current session.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'deviceId', title: 'Simulator UDID', widget: 'text' },
+        { path: 'wdaUrl', title: 'WebDriverAgent URL', widget: 'text' },
+        { path: 'port', title: 'Local stream port', widget: 'text' },
+        { path: 'pollMs', title: 'Screenshot poll interval ms', widget: 'text' },
+        { path: 'deviceName', title: 'Device name', widget: 'text' },
+        { path: 'appName', title: 'App name', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewIosStartInputSchema,
   },
   {
     id: 'session.simulatorPreview.control.acquire',

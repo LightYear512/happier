@@ -13,6 +13,7 @@ export const ACTION_IDS = [
   'session.devPreview.register',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
+  'session.simulatorPreview.ios.start',
   'session.simulatorPreview.control.acquire',
   'session.simulatorPreview.control.release',
   'session.simulatorPreview.input.send',

@@ -9,14 +9,9 @@ async function readSomeBytes(url: string): Promise<Buffer> {
   expect(response.ok).toBe(true);
   const reader = response.body?.getReader();
   if (!reader) throw new Error('missing response body');
-  const chunks: Buffer[] = [];
-  while (Buffer.concat(chunks).length < 96) {
-    const next = await reader.read();
-    if (next.done) break;
-    chunks.push(Buffer.from(next.value));
-  }
+  const next = await reader.read();
   await reader.cancel();
-  return Buffer.concat(chunks);
+  return next.done ? Buffer.alloc(0) : Buffer.from(next.value);
 }
 
 describe('startAndroidScreenshotMjpegStream', () => {
@@ -33,7 +28,7 @@ describe('startAndroidScreenshotMjpegStream', () => {
     const stream = await startAndroidScreenshotMjpegStream({
       host: '127.0.0.1',
       port: 0,
-      pollIntervalMs: 10,
+      pollIntervalMs: 60_000,
       captureFrame,
     });
     openStreams.push(stream);

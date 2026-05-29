@@ -1,14 +1,5 @@
-export type AndroidScreenshotFrame = Readonly<{
-  body: Buffer;
-  contentType: 'image/jpeg' | 'image/png';
-}>;
+import { normalizeSimulatorScreenshotFrame, type SimulatorScreenshotFrame } from './simulatorScreenshotFrame';
 
-export function normalizeAndroidScreenshotFrame(frame: Buffer | AndroidScreenshotFrame): AndroidScreenshotFrame {
-  if (Buffer.isBuffer(frame)) {
-    return {
-      body: frame,
-      contentType: 'image/jpeg',
-    };
-  }
-  return frame;
-}
+export type AndroidScreenshotFrame = SimulatorScreenshotFrame;
+
+export const normalizeAndroidScreenshotFrame = normalizeSimulatorScreenshotFrame;

@@ -124,6 +124,8 @@ describe('createHappierMcpServer', () => {
     expect(enabled.toolNames).toContain('happier_simulator_preview_register');
     expect(disabled.toolNames).not.toContain('happier_simulator_preview_android_start');
     expect(enabled.toolNames).toContain('happier_simulator_preview_android_start');
+    expect(disabled.toolNames).not.toContain('happier_simulator_preview_ios_start');
+    expect(enabled.toolNames).toContain('happier_simulator_preview_ios_start');
   });
 
   it('emits a simulator preview structured message from the in-session action bridge', async () => {
@@ -317,6 +319,204 @@ describe('createHappierMcpServer', () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it('starts an iOS simulator stream and emits a preview message from the in-session action bridge', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const sendClaudeSessionMessage = vi.fn();
+    const daemonDevPreviewRegister = vi.fn(async () => ({
+      success: true,
+      preview: {
+        sessionId: 'sess_simulator_preview_ios_start_1',
+        machineId: 'machine_ios_1',
+        port: 9814,
+        resourceId: 'preview_ios_stream_1',
+        origin: 'http://127.0.0.1:9814',
+        name: 'iPhone 15 Pro simulator',
+        source: 'mcp_tool',
+        registeredAtMs: 1,
+        health: { status: 'ready' },
+        preview: {
+          rewriteUrls: false,
+          supportsWebSocket: false,
+          routeKey: 'route_ios_stream_1',
+          initialPath: '/stream.mjpeg',
+        },
+      },
+    }));
+    const close = vi.fn(async () => {});
+    const { mcp } = createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_ios_start_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage,
+      updateMetadata: () => {},
+      getMetadataSnapshot: () => ({ machineId: 'machine_ios_1' }),
+    } as any, {
+      daemonDevPreviewRegister,
+      startIosSimulatorPreviewStream: vi.fn(async () => ({
+        host: '127.0.0.1',
+        port: 9814,
+        frameUrl: 'http://127.0.0.1:9814/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9814/stream.mjpeg',
+        close,
+      })),
+    } as any);
+
+    expect(captured.deps).toBeDefined();
+    const result = await captured.deps.sessionSimulatorPreviewIosStart({
+      sessionId: 'sess_simulator_preview_ios_start_1',
+      deviceId: 'A1B2-C3D4',
+      port: 9814,
+      pollMs: 500,
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example iOS App',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      sessionId: 'sess_simulator_preview_ios_start_1',
+      platform: 'ios',
+      deviceName: 'iPhone 15 Pro',
+      appName: 'Example iOS App',
+      streamUrl: 'http://127.0.0.1:9814/stream.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'relay',
+      relay: {
+        machineId: 'machine_ios_1',
+        routeKey: 'route_ios_stream_1',
+        streamPath: '/stream.mjpeg',
+      },
+    }));
+    expect(daemonDevPreviewRegister).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_ios_start_1',
+      expectedMachineId: 'machine_ios_1',
+      port: 9814,
+      name: 'iPhone 15 Pro simulator',
+      healthPath: '/frame.jpg',
+      rewriteUrls: false,
+    });
+    expect(sendClaudeSessionMessage).toHaveBeenCalledWith(
+      {
+        type: 'user',
+        message: {
+          content: 'iPhone 15 Pro simulator preview',
+        },
+      },
+      {
+        happier: {
+          kind: 'simulator_preview.v1',
+          payload: expect.objectContaining({
+            sessionId: 'sess_simulator_preview_ios_start_1',
+            platform: 'ios',
+            deviceName: 'iPhone 15 Pro',
+            streamUrl: 'http://127.0.0.1:9814/stream.mjpeg',
+            connectionPath: 'relay',
+            relay: {
+              machineId: 'machine_ios_1',
+              routeKey: 'route_ios_stream_1',
+              streamPath: '/stream.mjpeg',
+            },
+          }),
+        },
+      },
+    );
+
+    expect(close).not.toHaveBeenCalled();
+    await mcp.close();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('routes iOS simulator preview control and input through the shared iOS control registry', async () => {
+    const capturedDeps: any[] = [];
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          capturedDeps.push(deps);
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const iosSimulatorPreviewControlRegistry = {
+      registerIosPreview: vi.fn(),
+      acquire: vi.fn(async () => ({ ok: true as const, leaseId: 'lease_ios_1', generation: 1 })),
+      release: vi.fn(async () => ({ ok: true as const, generation: 2, mode: 'idle' as const })),
+      sendInput: vi.fn(async () => ({ ok: true as const })),
+      reloadApp: vi.fn(async () => ({ ok: false as const, errorCode: 'unsupported_ios_operation' as const, error: 'unsupported_ios_operation' as const })),
+      reconnectDevServices: vi.fn(async () => ({ ok: true as const, reconnectedPorts: [] as number[] })),
+    };
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_ios_control_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any, {
+      daemonDevPreviewRegister: null,
+      startIosSimulatorPreviewStream: vi.fn(async () => ({
+        host: '127.0.0.1',
+        port: 9814,
+        frameUrl: 'http://127.0.0.1:9814/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9814/stream.mjpeg',
+        close: vi.fn(async () => {}),
+      })),
+      iosSimulatorPreviewControlRegistry,
+    } as any);
+
+    const preview = await capturedDeps[0].sessionSimulatorPreviewIosStart({
+      sessionId: 'sess_simulator_preview_ios_control_1',
+      deviceId: 'A1B2-C3D4',
+      wdaUrl: 'http://127.0.0.1:8100',
+      deviceName: 'iPhone 15 Pro',
+    });
+    await capturedDeps[0].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_ios_control_1',
+      simulatorSessionId: preview.simulatorSessionId,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+    await capturedDeps[0].sessionSimulatorPreviewInputSend({
+      sessionId: 'sess_simulator_preview_ios_control_1',
+      simulatorSessionId: preview.simulatorSessionId,
+      leaseId: 'lease_ios_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    });
+
+    expect(iosSimulatorPreviewControlRegistry.registerIosPreview).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_ios_control_1',
+      simulatorSessionId: preview.simulatorSessionId,
+      deviceId: 'A1B2-C3D4',
+      wdaUrl: 'http://127.0.0.1:8100',
+    });
+    expect(iosSimulatorPreviewControlRegistry.acquire).toHaveBeenCalledWith(expect.objectContaining({
+      simulatorSessionId: preview.simulatorSessionId,
+      owner: 'user',
+    }));
+    expect(iosSimulatorPreviewControlRegistry.sendInput).toHaveBeenCalledWith(expect.objectContaining({
+      simulatorSessionId: preview.simulatorSessionId,
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    }));
+  });
+
   it('replaces Android simulator streams through a shared registry across per-request MCP servers', async () => {
     const capturedDeps: any[] = [];
 
@@ -380,6 +580,71 @@ describe('createHappierMcpServer', () => {
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(secondClose).not.toHaveBeenCalled();
     expect(androidSimulatorPreviewStreams.get('sess_simulator_preview_android_replace_1')?.port).toBe(9813);
+  });
+
+  it('replaces iOS simulator streams through a shared registry across per-request MCP servers', async () => {
+    const capturedDeps: any[] = [];
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          capturedDeps.push(deps);
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const firstClose = vi.fn(async () => {});
+    const secondClose = vi.fn(async () => {});
+    const startIosSimulatorPreviewStream = vi
+      .fn()
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        port: 9814,
+        frameUrl: 'http://127.0.0.1:9814/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9814/stream.mjpeg',
+        close: firstClose,
+      })
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        port: 9815,
+        frameUrl: 'http://127.0.0.1:9815/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9815/stream.mjpeg',
+        close: secondClose,
+      });
+    const iosSimulatorPreviewStreams = new Map();
+    const fakeClient = {
+      sessionId: 'sess_simulator_preview_ios_replace_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any;
+
+    createHappierMcpServer(fakeClient, {
+      startIosSimulatorPreviewStream,
+      iosSimulatorPreviewStreams,
+    } as any);
+    createHappierMcpServer(fakeClient, {
+      startIosSimulatorPreviewStream,
+      iosSimulatorPreviewStreams,
+    } as any);
+
+    await capturedDeps[0].sessionSimulatorPreviewIosStart({
+      sessionId: 'sess_simulator_preview_ios_replace_1',
+      deviceName: 'iPhone 15 Pro',
+    });
+    await capturedDeps[1].sessionSimulatorPreviewIosStart({
+      sessionId: 'sess_simulator_preview_ios_replace_1',
+      deviceName: 'iPhone 15 Pro',
+    });
+
+    expect(firstClose).toHaveBeenCalledTimes(1);
+    expect(secondClose).not.toHaveBeenCalled();
+    expect(iosSimulatorPreviewStreams.get('sess_simulator_preview_ios_replace_1')?.port).toBe(9815);
   });
 
   it('routes simulator preview control and input through a shared Android control registry', async () => {

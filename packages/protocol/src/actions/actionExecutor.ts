@@ -93,6 +93,17 @@ type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
   devServices?: unknown;
 }>;
 
+type SessionSimulatorPreviewIosStartActionInput = Readonly<{
+  deviceId?: unknown;
+  wdaUrl?: unknown;
+  deviceName?: unknown;
+  appName?: unknown;
+  port?: unknown;
+  pollMs?: unknown;
+  nativeDevSessionId?: unknown;
+  devServices?: unknown;
+}>;
+
 type SessionSimulatorPreviewControlAcquireActionInput = Readonly<{
   simulatorSessionId?: unknown;
   owner?: unknown;
@@ -177,6 +188,17 @@ export type ActionExecutorDeps = Readonly<{
   sessionSimulatorPreviewAndroidStart?: (args: Readonly<{
     sessionId: string;
     deviceId?: string;
+    port?: number;
+    pollMs?: number;
+    deviceName: string;
+    appName?: string;
+    nativeDevSessionId?: string;
+    devServices?: SimulatorPreviewDevServices;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewIosStart?: (args: Readonly<{
+    sessionId: string;
+    deviceId?: string;
+    wdaUrl?: string;
     port?: number;
     pollMs?: number;
     deviceName: string;
@@ -1404,6 +1426,34 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const res = await deps.sessionSimulatorPreviewAndroidStart({
             sessionId,
             ...(deviceId ? { deviceId } : {}),
+            ...(typeof port === 'number' ? { port } : {}),
+            ...(typeof pollMs === 'number' ? { pollMs } : {}),
+            deviceName,
+            ...(appName ? { appName } : {}),
+            ...(nativeDevSessionId ? { nativeDevSessionId } : {}),
+            ...(input.devServices ? { devServices: input.devServices as SimulatorPreviewDevServices } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.ios.start') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewIosStart) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.ios.start' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewIosStartActionInput;
+          const deviceId = normalizeId(input.deviceId);
+          const wdaUrl = normalizeId(input.wdaUrl);
+          const deviceName = normalizeId(input.deviceName) || 'iOS Simulator';
+          const appName = normalizeId(input.appName);
+          const nativeDevSessionId = normalizeId(input.nativeDevSessionId);
+          const port = input.port;
+          const pollMs = input.pollMs;
+          const res = await deps.sessionSimulatorPreviewIosStart({
+            sessionId,
+            ...(deviceId ? { deviceId } : {}),
+            ...(wdaUrl ? { wdaUrl } : {}),
             ...(typeof port === 'number' ? { port } : {}),
             ...(typeof pollMs === 'number' ? { pollMs } : {}),
             deviceName,
