@@ -14,6 +14,7 @@ import { ExecutionRunStartRequestSchema } from '../executionRunStartRequest.js';
 import { SessionRollbackTargetSchema } from '../sessionRollback.js';
 import {
   SimulatorPreviewConnectionPathSchema,
+  SimulatorPreviewDevServicesSchema,
   SimulatorPreviewModeSchema,
   SimulatorPreviewOwnerSchema,
   SimulatorPreviewPlatformSchema,
@@ -416,6 +417,8 @@ const SessionSimulatorPreviewRegisterInputSchema = z.object({
   mode: SimulatorPreviewModeSchema.optional(),
   owner: SimulatorPreviewOwnerSchema.optional(),
   connectionPath: SimulatorPreviewConnectionPathSchema.optional(),
+  nativeDevSessionId: z.string().trim().min(1).max(200).optional(),
+  devServices: SimulatorPreviewDevServicesSchema.optional(),
 }).passthrough();
 
 const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
@@ -425,6 +428,8 @@ const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
   pollMs: z.number().int().min(50).max(60_000).optional(),
   deviceName: z.string().trim().min(1).max(200).default('Android Emulator'),
   appName: z.string().trim().min(1).max(200).optional(),
+  nativeDevSessionId: z.string().trim().min(1).max(200).optional(),
+  devServices: SimulatorPreviewDevServicesSchema.optional(),
 }).passthrough();
 
 const SessionSimulatorPreviewLeaseOwnerSchema = z.enum(['ai', 'user']);
@@ -482,6 +487,15 @@ const SessionSimulatorPreviewInputSendInputSchema = z.object({
     SessionSimulatorPreviewTextInputSchema,
     SessionSimulatorPreviewKeyeventInputSchema,
   ]),
+}).passthrough();
+
+const SessionSimulatorPreviewLeaseScopedOperationInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  simulatorSessionId: z.string().trim().min(1).max(200),
+  leaseId: z.string().trim().min(1).max(200),
+  generation: z.number().int().min(0),
+  owner: SessionSimulatorPreviewLeaseOwnerSchema,
+  holderId: z.string().trim().min(1).max(200).optional(),
 }).passthrough();
 
 const IntentStartCommonSchema = z.object({
@@ -1773,6 +1787,86 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: SessionSimulatorPreviewInputSendInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.app.reload',
+    title: 'Reload simulator preview app',
+    description: 'Reload the app running in a simulator preview using a valid control lease.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_app_reload' },
+    examples: {
+      mcp: {
+        argsExample: '{"simulatorSessionId":"sim_android_1","leaseId":"lease_1","generation":1,"owner":"user","holderId":"browser_tab_1"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Reload simulator app',
+      description: 'Use with a current simulator control lease.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'simulatorSessionId', title: 'Simulator session id', widget: 'text' },
+        { path: 'leaseId', title: 'Lease id', widget: 'text' },
+        { path: 'generation', title: 'Generation', widget: 'text' },
+        { path: 'owner', title: 'Owner', widget: 'select', options: [
+          { value: 'user', label: 'User' },
+          { value: 'ai', label: 'AI' },
+        ] },
+        { path: 'holderId', title: 'Holder id', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewLeaseScopedOperationInputSchema,
+  },
+  {
+    id: 'session.simulatorPreview.devServices.reconnect',
+    title: 'Reconnect simulator preview dev services',
+    description: 'Reconnect simulator preview development services using a valid control lease.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_dev_services_reconnect' },
+    examples: {
+      mcp: {
+        argsExample: '{"simulatorSessionId":"sim_android_1","leaseId":"lease_1","generation":1,"owner":"user","holderId":"browser_tab_1"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Reconnect simulator dev services',
+      description: 'Use with a current simulator control lease.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'simulatorSessionId', title: 'Simulator session id', widget: 'text' },
+        { path: 'leaseId', title: 'Lease id', widget: 'text' },
+        { path: 'generation', title: 'Generation', widget: 'text' },
+        { path: 'owner', title: 'Owner', widget: 'select', options: [
+          { value: 'user', label: 'User' },
+          { value: 'ai', label: 'AI' },
+        ] },
+        { path: 'holderId', title: 'Holder id', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewLeaseScopedOperationInputSchema,
   },
   {
     id: 'session.spawn_new',

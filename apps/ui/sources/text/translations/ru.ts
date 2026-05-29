@@ -5261,6 +5261,23 @@ export const ru: TranslationStructure = {
           enter: "Enter",
           textPlaceholder: "Text input",
           sendText: "Send",
+          reloadApp: "Reload",
+          reconnectDevServices: "Reconnect",
+        },
+        devServices: {
+          title: "Native dev services",
+          metro: "Metro",
+          api: "API",
+          hmr: "HMR",
+          status: {
+            unknown: "Unknown",
+            starting: "Starting",
+            connected: "Connected",
+            healthy: "Healthy",
+            ready: "Ready",
+            degraded: "Degraded",
+            error: "Error",
+          },
         },
         owner: {
           ai: "ИИ",

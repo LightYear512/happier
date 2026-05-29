@@ -46,6 +46,8 @@ export async function registerSessionSimulatorPreviewForCli(params: Readonly<{
   mode?: SimulatorPreviewV1['mode'];
   owner?: SimulatorPreviewV1['owner'];
   connectionPath?: SimulatorPreviewV1['connectionPath'];
+  nativeDevSessionId?: SimulatorPreviewV1['nativeDevSessionId'];
+  devServices?: SimulatorPreviewV1['devServices'];
   env?: NodeJS.ProcessEnv;
 }>): Promise<RegisterSessionSimulatorPreviewForCliResult> {
   const decision = resolveCliFeatureDecision({
@@ -83,6 +85,8 @@ export async function registerSessionSimulatorPreviewForCli(params: Readonly<{
     mode: params.mode ?? 'ai_control',
     ...(params.owner ? { owner: params.owner } : {}),
     connectionPath: params.connectionPath ?? 'direct',
+    ...(params.nativeDevSessionId ? { nativeDevSessionId: params.nativeDevSessionId } : {}),
+    ...(params.devServices ? { devServices: params.devServices } : {}),
     registeredAtMs: Date.now(),
   };
   const messageContent = buildSimulatorPreviewMessageContent(preview);

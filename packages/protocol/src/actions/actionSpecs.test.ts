@@ -81,6 +81,8 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.simulatorPreview.control.acquire',
   'session.simulatorPreview.control.release',
   'session.simulatorPreview.input.send',
+  'session.simulatorPreview.app.reload',
+  'session.simulatorPreview.devServices.reconnect',
   'session.spawn_new',
   'session.spawn_picker',
   'session.message.send',
@@ -743,6 +745,34 @@ describe('Action Spec Registry', () => {
         key: 'volume_up',
       },
     })).toThrow();
+  });
+
+  it('registers simulator preview app reload and dev service reconnect as lease-scoped tools', () => {
+    const reload = getActionSpec('session.simulatorPreview.app.reload' as any);
+    const reconnect = getActionSpec('session.simulatorPreview.devServices.reconnect' as any);
+    const payload = {
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    };
+
+    expect(reload.requiredFeatureId).toBe('sessions.devPreview');
+    expect(reload.surfaces.session_agent).toBe(true);
+    expect(reload.bindings?.mcpToolName).toBe('happier_simulator_preview_app_reload');
+    expect(reload.inputSchema.parse(payload)).toEqual(payload);
+    expect(() => reload.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'system',
+    })).toThrow();
+
+    expect(reconnect.requiredFeatureId).toBe('sessions.devPreview');
+    expect(reconnect.surfaces.session_agent).toBe(true);
+    expect(reconnect.bindings?.mcpToolName).toBe('happier_simulator_preview_dev_services_reconnect');
+    expect(reconnect.inputSchema.parse(payload)).toEqual(payload);
   });
 
   it('does not expose legacy voice_mediator intent in ExecutionRunIntentSchema', () => {

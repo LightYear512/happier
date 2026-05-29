@@ -190,6 +190,8 @@ export const SESSION_RPC_METHODS = {
   SIMULATOR_PREVIEW_CONTROL_ACQUIRE: 'session.simulatorPreview.control.acquire',
   SIMULATOR_PREVIEW_CONTROL_RELEASE: 'session.simulatorPreview.control.release',
   SIMULATOR_PREVIEW_INPUT_SEND: 'session.simulatorPreview.input.send',
+  SIMULATOR_PREVIEW_APP_RELOAD: 'session.simulatorPreview.app.reload',
+  SIMULATOR_PREVIEW_DEV_SERVICES_RECONNECT: 'session.simulatorPreview.devServices.reconnect',
   SESSION_ROLLBACK: 'session.rollback',
   EPHEMERAL_TASK_RUN: 'ephemeral.task.run',
 } as const;

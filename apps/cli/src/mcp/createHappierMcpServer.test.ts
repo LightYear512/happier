@@ -407,6 +407,8 @@ describe('createHappierMcpServer', () => {
       acquire: vi.fn(async () => ({ ok: true, leaseId: 'lease_user_1', generation: 1 })),
       release: vi.fn(async () => ({ ok: true, generation: 2 })),
       sendInput: vi.fn(async () => ({ ok: true })),
+      reloadApp: vi.fn(async () => ({ ok: true })),
+      reconnectDevServices: vi.fn(async () => ({ ok: true, reconnectedPorts: [] })),
     };
     const fakeClient = {
       sessionId: 'sess_simulator_preview_control_1',
@@ -441,6 +443,22 @@ describe('createHappierMcpServer', () => {
       owner: 'user',
       holderId: 'browser_tab_1',
     })).resolves.toEqual({ ok: true, generation: 2 });
+    await expect(capturedDeps[0].sessionSimulatorPreviewAppReload({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toEqual({ ok: true });
+    await expect(capturedDeps[0].sessionSimulatorPreviewDevServicesReconnect({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toEqual({ ok: true, reconnectedPorts: [] });
 
     expect(androidSimulatorPreviewControlRegistry.acquire).toHaveBeenCalledWith({
       sessionId: 'sess_simulator_preview_control_1',
@@ -461,6 +479,22 @@ describe('createHappierMcpServer', () => {
       sessionId: 'sess_simulator_preview_control_1',
       simulatorSessionId: 'sim_android_1',
       leaseId: 'lease_user_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+    expect(androidSimulatorPreviewControlRegistry.reloadApp).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+    expect(androidSimulatorPreviewControlRegistry.reconnectDevServices).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_control_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
       owner: 'user',
       holderId: 'browser_tab_1',
     });

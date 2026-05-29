@@ -8,8 +8,10 @@ type ControlLease = NonNullable<SessionSimulatorPreviewPaneProps['controlLease']
 type SimulatorInput = Parameters<NonNullable<SessionSimulatorPreviewPaneProps['onSendInput']>>[0];
 
 const SIMULATOR_PREVIEW_SESSION_RPC_METHODS = {
+    APP_RELOAD: 'session.simulatorPreview.app.reload',
     CONTROL_ACQUIRE: 'session.simulatorPreview.control.acquire',
     CONTROL_RELEASE: 'session.simulatorPreview.control.release',
+    DEV_SERVICES_RECONNECT: 'session.simulatorPreview.devServices.reconnect',
     INPUT_SEND: 'session.simulatorPreview.input.send',
 } as const;
 
@@ -82,10 +84,42 @@ export function useSessionSimulatorPreviewControl(params: Readonly<{
         return result;
     }, [controlLease, params.sessionId, params.simulatorSessionId]);
 
+    const reloadApp = React.useCallback(async () => {
+        if (!controlLease) return null;
+        return await sessionRpcWithServerScope<unknown, unknown>({
+            sessionId: params.sessionId,
+            method: SIMULATOR_PREVIEW_SESSION_RPC_METHODS.APP_RELOAD,
+            payload: {
+                simulatorSessionId: params.simulatorSessionId,
+                leaseId: controlLease.leaseId,
+                generation: controlLease.generation,
+                owner: controlLease.owner,
+                holderId: 'happier-ui',
+            },
+        });
+    }, [controlLease, params.sessionId, params.simulatorSessionId]);
+
+    const reconnectDevServices = React.useCallback(async () => {
+        if (!controlLease) return null;
+        return await sessionRpcWithServerScope<unknown, unknown>({
+            sessionId: params.sessionId,
+            method: SIMULATOR_PREVIEW_SESSION_RPC_METHODS.DEV_SERVICES_RECONNECT,
+            payload: {
+                simulatorSessionId: params.simulatorSessionId,
+                leaseId: controlLease.leaseId,
+                generation: controlLease.generation,
+                owner: controlLease.owner,
+                holderId: 'happier-ui',
+            },
+        });
+    }, [controlLease, params.sessionId, params.simulatorSessionId]);
+
     return {
         controlLease,
+        reconnectDevServices,
         requestControl,
         releaseControl,
+        reloadApp,
         sendInput,
     };
 }

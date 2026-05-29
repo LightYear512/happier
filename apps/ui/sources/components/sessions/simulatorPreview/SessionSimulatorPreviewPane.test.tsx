@@ -208,4 +208,53 @@ describe('SessionSimulatorPreviewPane', () => {
         }));
         expect(onReleaseControl).toHaveBeenCalledTimes(1);
     });
+
+    it('renders native development service health when attached', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="android"
+                deviceName="Android SDK"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+                nativeDevSessionId="native_dev_1"
+                devServices={{
+                    metro: { status: 'connected', url: 'http://127.0.0.1:8081' },
+                    api: { status: 'healthy' },
+                    hmr: { status: 'ready' },
+                }}
+            />,
+        );
+
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.nativeDev.status' })).toBeTruthy();
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.devService.metro' }).props.children.props.children).toContain('Metro');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.devService.api' }).props.children.props.children).toContain('API');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.devService.hmr' }).props.children.props.children).toContain('HMR');
+    });
+
+    it('exposes reload and reconnect controls from the native dev status bar', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+        const onReloadApp = vi.fn();
+        const onReconnectDevServices = vi.fn();
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="android"
+                deviceName="Android SDK"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+                nativeDevSessionId="native_dev_1"
+                devServices={{ metro: { status: 'connected' } }}
+                onReloadApp={onReloadApp}
+                onReconnectDevServices={onReconnectDevServices}
+            />,
+        );
+
+        screen.findByProps({ testID: 'session.simulatorPreview.reloadApp' }).props.onPress();
+        screen.findByProps({ testID: 'session.simulatorPreview.reconnectDevServices' }).props.onPress();
+
+        expect(onReloadApp).toHaveBeenCalledTimes(1);
+        expect(onReconnectDevServices).toHaveBeenCalledTimes(1);
+    });
 });

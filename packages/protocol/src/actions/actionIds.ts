@@ -16,6 +16,8 @@ export const ACTION_IDS = [
   'session.simulatorPreview.control.acquire',
   'session.simulatorPreview.control.release',
   'session.simulatorPreview.input.send',
+  'session.simulatorPreview.app.reload',
+  'session.simulatorPreview.devServices.reconnect',
   'session.spawn_new',
   'session.spawn_picker',
   // Local inventory + discovery (voice)

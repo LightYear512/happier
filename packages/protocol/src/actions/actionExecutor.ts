@@ -24,6 +24,7 @@ import {
 } from '../sessionControl/handoff/handoffSchemas.js';
 import { SessionControlErrorCodeSchema } from '../sessionControl/contract.js';
 import type { ReviewStartInput } from '../reviews/reviewStart.js';
+import type { SimulatorPreviewDevServices } from '../structuredMessages/simulatorPreviewV1.js';
 
 export type ActionExecuteResult =
   | Readonly<{ ok: true; result: unknown }>
@@ -79,6 +80,8 @@ type SessionSimulatorPreviewRegisterActionInput = Readonly<{
   mode?: unknown;
   owner?: unknown;
   connectionPath?: unknown;
+  nativeDevSessionId?: unknown;
+  devServices?: unknown;
 }>;
 
 type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
@@ -87,6 +90,8 @@ type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
   appName?: unknown;
   port?: unknown;
   pollMs?: unknown;
+  nativeDevSessionId?: unknown;
+  devServices?: unknown;
 }>;
 
 type SessionSimulatorPreviewControlAcquireActionInput = Readonly<{
@@ -108,7 +113,16 @@ type SessionSimulatorPreviewInputSendActionInput = Readonly<{
   leaseId?: unknown;
   generation?: unknown;
   owner?: unknown;
+  holderId?: unknown;
   input?: unknown;
+}>;
+
+type SessionSimulatorPreviewLeaseScopedOperationActionInput = Readonly<{
+  simulatorSessionId?: unknown;
+  leaseId?: unknown;
+  generation?: unknown;
+  owner?: unknown;
+  holderId?: unknown;
 }>;
 
 type SessionSimulatorPreviewInputPayload = Readonly<
@@ -166,6 +180,8 @@ export type ActionExecutorDeps = Readonly<{
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
     owner?: 'ai' | 'user' | 'system';
     connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+    nativeDevSessionId?: string;
+    devServices?: SimulatorPreviewDevServices;
   }>) => Promise<unknown>;
   sessionSimulatorPreviewAndroidStart?: (args: Readonly<{
     sessionId: string;
@@ -174,6 +190,8 @@ export type ActionExecutorDeps = Readonly<{
     pollMs?: number;
     deviceName: string;
     appName?: string;
+    nativeDevSessionId?: string;
+    devServices?: SimulatorPreviewDevServices;
   }>) => Promise<unknown>;
   sessionSimulatorPreviewControlAcquire?: (args: Readonly<{
     sessionId: string;
@@ -195,7 +213,24 @@ export type ActionExecutorDeps = Readonly<{
     leaseId: string;
     generation: number;
     owner: 'ai' | 'user';
+    holderId?: string;
     input: SessionSimulatorPreviewInputPayload;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewAppReload?: (args: Readonly<{
+    sessionId: string;
+    simulatorSessionId: string;
+    leaseId: string;
+    generation: number;
+    owner: 'ai' | 'user';
+    holderId?: string;
+  }>) => Promise<unknown>;
+  sessionSimulatorPreviewDevServicesReconnect?: (args: Readonly<{
+    sessionId: string;
+    simulatorSessionId: string;
+    leaseId: string;
+    generation: number;
+    owner: 'ai' | 'user';
+    holderId?: string;
   }>) => Promise<unknown>;
   sessionSpawnNew: (args: Readonly<{
     tag?: string;
@@ -1432,6 +1467,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const deviceName = normalizeId(input.deviceName);
           const appName = normalizeId(input.appName);
           const streamUrl = normalizeId(input.streamUrl);
+          const nativeDevSessionId = normalizeId(input.nativeDevSessionId);
           if (!deviceName || !streamUrl) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
@@ -1445,6 +1481,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(input.mode === 'idle' || input.mode === 'ai_control' || input.mode === 'user_control' || input.mode === 'system_locked' || input.mode === 'ended' ? { mode: input.mode } : {}),
             ...(input.owner === 'ai' || input.owner === 'user' || input.owner === 'system' ? { owner: input.owner } : {}),
             ...(input.connectionPath === 'relay' || input.connectionPath === 'direct' || input.connectionPath === 'adb_reverse' ? { connectionPath: input.connectionPath } : {}),
+            ...(nativeDevSessionId ? { nativeDevSessionId } : {}),
+            ...(input.devServices ? { devServices: input.devServices as SimulatorPreviewDevServices } : {}),
           });
           return { ok: true, result: res };
         }
@@ -1459,6 +1497,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const deviceId = normalizeId(input.deviceId);
           const deviceName = normalizeId(input.deviceName) || 'Android Emulator';
           const appName = normalizeId(input.appName);
+          const nativeDevSessionId = normalizeId(input.nativeDevSessionId);
           const port = input.port;
           const pollMs = input.pollMs;
           const res = await deps.sessionSimulatorPreviewAndroidStart({
@@ -1468,6 +1507,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(typeof pollMs === 'number' ? { pollMs } : {}),
             deviceName,
             ...(appName ? { appName } : {}),
+            ...(nativeDevSessionId ? { nativeDevSessionId } : {}),
+            ...(input.devServices ? { devServices: input.devServices as SimulatorPreviewDevServices } : {}),
           });
           return { ok: true, result: res };
         }
@@ -1529,6 +1570,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const simulatorSessionId = normalizeId(input.simulatorSessionId);
           const leaseId = normalizeId(input.leaseId);
           const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
+          const holderId = normalizeId(input.holderId);
           const payload = input.input as SessionSimulatorPreviewInputPayload | null;
           if (!simulatorSessionId || !leaseId || !owner || typeof input.generation !== 'number' || !payload) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
@@ -1539,7 +1581,58 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             leaseId,
             generation: input.generation,
             owner,
+            ...(holderId ? { holderId } : {}),
             input: payload,
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.app.reload') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewAppReload) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.app.reload' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewLeaseScopedOperationActionInput;
+          const simulatorSessionId = normalizeId(input.simulatorSessionId);
+          const leaseId = normalizeId(input.leaseId);
+          const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
+          const holderId = normalizeId(input.holderId);
+          if (!simulatorSessionId || !leaseId || !owner || typeof input.generation !== 'number') {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionSimulatorPreviewAppReload({
+            sessionId,
+            simulatorSessionId,
+            leaseId,
+            generation: input.generation,
+            owner,
+            ...(holderId ? { holderId } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.simulatorPreview.devServices.reconnect') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewDevServicesReconnect) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.devServices.reconnect' };
+          }
+          const input = parsed.data as SessionSimulatorPreviewLeaseScopedOperationActionInput;
+          const simulatorSessionId = normalizeId(input.simulatorSessionId);
+          const leaseId = normalizeId(input.leaseId);
+          const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
+          const holderId = normalizeId(input.holderId);
+          if (!simulatorSessionId || !leaseId || !owner || typeof input.generation !== 'number') {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionSimulatorPreviewDevServicesReconnect({
+            sessionId,
+            simulatorSessionId,
+            leaseId,
+            generation: input.generation,
+            owner,
+            ...(holderId ? { holderId } : {}),
           });
           return { ok: true, result: res };
         }

@@ -4633,6 +4633,23 @@ export const zhHans: TranslationStructure = {
         enter: "回车",
         textPlaceholder: "输入文本",
         sendText: "发送",
+        reloadApp: "重载",
+        reconnectDevServices: "重连",
+      },
+      devServices: {
+        title: "原生开发服务",
+        metro: "Metro",
+        api: "API",
+        hmr: "HMR",
+        status: {
+          unknown: "未知",
+          starting: "启动中",
+          connected: "已连接",
+          healthy: "健康",
+          ready: "就绪",
+          degraded: "降级",
+          error: "错误",
+        },
       },
       owner: {
         ai: "AI",
