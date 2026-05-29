@@ -280,6 +280,12 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
     owner?: 'ai' | 'user' | 'system';
     connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+    nativeDevSessionId?: string;
+    devServices?: Readonly<{
+        metro?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
+        api?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
+        hmr?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
+    }>;
     relay?: Readonly<{
         machineId: string;
         routeKey: string;
@@ -292,6 +298,7 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
     const mode = maybe.mode;
     const owner = maybe.owner;
     const connectionPath = maybe.connectionPath;
+    const devServices = maybe.devServices;
     return maybe.kind === 'simulatorPreview'
         && typeof maybe.simulatorSessionId === 'string'
         && (platform === 'android' || platform === 'ios')
@@ -301,6 +308,8 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
         && (mode === undefined || mode === 'idle' || mode === 'ai_control' || mode === 'user_control' || mode === 'system_locked' || mode === 'ended')
         && (owner === undefined || owner === 'ai' || owner === 'user' || owner === 'system')
         && (connectionPath === undefined || connectionPath === 'relay' || connectionPath === 'direct' || connectionPath === 'adb_reverse')
+        && (maybe.nativeDevSessionId === undefined || typeof maybe.nativeDevSessionId === 'string')
+        && (devServices === undefined || Boolean(devServices) && typeof devServices === 'object')
         && (
             maybe.relay === undefined
             || (
@@ -325,6 +334,12 @@ function SessionSimulatorPreviewDetailsPane(props: Readonly<{
         mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
         owner?: 'ai' | 'user' | 'system';
         connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+        nativeDevSessionId?: string;
+        devServices?: Readonly<{
+            metro?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
+            api?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
+            hmr?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
+        }>;
         relay?: Readonly<{
             machineId: string;
             routeKey: string;
@@ -351,9 +366,13 @@ function SessionSimulatorPreviewDetailsPane(props: Readonly<{
             mode={control.controlLease ? 'user_control' : props.resource.mode}
             owner={control.controlLease ? 'user' : props.resource.owner}
             connectionPath={props.resource.connectionPath}
+            nativeDevSessionId={props.resource.nativeDevSessionId}
+            devServices={props.resource.devServices}
             controlLease={control.controlLease ?? undefined}
             onRequestControl={control.requestControl}
             onReleaseControl={control.releaseControl}
+            onReloadApp={control.reloadApp}
+            onReconnectDevServices={control.reconnectDevServices}
             onSendInput={control.sendInput}
         />
     );

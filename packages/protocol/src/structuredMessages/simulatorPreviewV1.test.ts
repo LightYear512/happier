@@ -45,6 +45,34 @@ describe('SimulatorPreviewV1Schema', () => {
     });
   });
 
+  it('parses native dev session composition metadata', () => {
+    const parsed = SimulatorPreviewV1Schema.parse({
+      simulatorSessionId: 'sim_1',
+      sessionId: 's1',
+      platform: 'android',
+      deviceName: 'Pixel 8',
+      appName: 'Happier',
+      streamUrl: 'https://relay.example.test/simulator/sim_1/stream.mjpeg',
+      mode: 'user_control',
+      owner: 'user',
+      connectionPath: 'relay',
+      nativeDevSessionId: 'native_dev_1',
+      devServices: {
+        metro: { status: 'connected', url: 'http://127.0.0.1:8081' },
+        api: { status: 'healthy', url: 'http://127.0.0.1:3000/health' },
+        hmr: { status: 'ready' },
+      },
+      registeredAtMs: 1,
+    });
+
+    expect(parsed.nativeDevSessionId).toBe('native_dev_1');
+    expect(parsed.devServices).toEqual({
+      metro: { status: 'connected', url: 'http://127.0.0.1:8081' },
+      api: { status: 'healthy', url: 'http://127.0.0.1:3000/health' },
+      hmr: { status: 'ready' },
+    });
+  });
+
   it('rejects non-http simulator stream URLs', () => {
     expect(() => SimulatorPreviewV1Schema.parse({
       simulatorSessionId: 'sim_1',

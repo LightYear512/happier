@@ -8,8 +8,10 @@ import type {
 } from './createAndroidSimulatorPreviewControlRegistry';
 
 export const SIMULATOR_PREVIEW_SESSION_RPC_METHODS = {
+  APP_RELOAD: 'session.simulatorPreview.app.reload',
   CONTROL_ACQUIRE: 'session.simulatorPreview.control.acquire',
   CONTROL_RELEASE: 'session.simulatorPreview.control.release',
+  DEV_SERVICES_RECONNECT: 'session.simulatorPreview.devServices.reconnect',
   INPUT_SEND: 'session.simulatorPreview.input.send',
 } as const;
 
@@ -42,10 +44,34 @@ function readInputSendPayload(raw: unknown): SimulatorPreviewInputSendRpcPayload
   return parsed.data as SimulatorPreviewInputSendRpcPayload;
 }
 
+type SimulatorPreviewLeaseScopedOperationPayload = Readonly<{
+  simulatorSessionId: string;
+  leaseId: string;
+  generation: number;
+  owner: SimulatorPreviewControlOwner;
+  holderId?: string;
+}>;
+
+function readLeaseScopedOperation(raw: unknown): SimulatorPreviewLeaseScopedOperationPayload | null {
+  const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  const simulatorSessionId = normalizeId(input?.simulatorSessionId);
+  const leaseId = normalizeId(input?.leaseId);
+  const owner = readOwner(input?.owner);
+  const holderId = normalizeId(input?.holderId);
+  if (!simulatorSessionId || !leaseId || !owner || typeof input?.generation !== 'number') return null;
+  return {
+    simulatorSessionId,
+    leaseId,
+    generation: input.generation,
+    owner,
+    ...(holderId ? { holderId } : {}),
+  };
+}
+
 export function registerSimulatorPreviewSessionRpcHandlers(params: Readonly<{
   sessionId: string;
   rpcHandlerManager: RpcHandlerRegistrar;
-  registry: Pick<AndroidSimulatorPreviewControlRegistry, 'acquire' | 'release' | 'sendInput'>;
+  registry: Pick<AndroidSimulatorPreviewControlRegistry, 'acquire' | 'release' | 'sendInput' | 'reloadApp' | 'reconnectDevServices'>;
 }>): void {
   params.rpcHandlerManager.registerHandler(SIMULATOR_PREVIEW_SESSION_RPC_METHODS.CONTROL_ACQUIRE, async (raw: unknown) => {
     const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
@@ -91,6 +117,24 @@ export function registerSimulatorPreviewSessionRpcHandlers(params: Readonly<{
       owner: input.owner,
       ...(holderId ? { holderId } : {}),
       input: input.input,
+    });
+  });
+
+  params.rpcHandlerManager.registerHandler(SIMULATOR_PREVIEW_SESSION_RPC_METHODS.APP_RELOAD, async (raw: unknown) => {
+    const input = readLeaseScopedOperation(raw);
+    if (!input) return invalidInput();
+    return await params.registry.reloadApp({
+      sessionId: params.sessionId,
+      ...input,
+    });
+  });
+
+  params.rpcHandlerManager.registerHandler(SIMULATOR_PREVIEW_SESSION_RPC_METHODS.DEV_SERVICES_RECONNECT, async (raw: unknown) => {
+    const input = readLeaseScopedOperation(raw);
+    if (!input) return invalidInput();
+    return await params.registry.reconnectDevServices({
+      sessionId: params.sessionId,
+      ...input,
     });
   });
 }

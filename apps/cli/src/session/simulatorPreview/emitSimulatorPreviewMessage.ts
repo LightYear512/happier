@@ -15,6 +15,8 @@ export type SimulatorPreviewRegistrationInput = Readonly<{
   owner?: SimulatorPreviewV1['owner'];
   connectionPath?: SimulatorPreviewV1['connectionPath'];
   relay?: SimulatorPreviewV1['relay'];
+  nativeDevSessionId?: SimulatorPreviewV1['nativeDevSessionId'];
+  devServices?: SimulatorPreviewV1['devServices'];
 }>;
 
 export function buildSimulatorPreviewPayload(input: SimulatorPreviewRegistrationInput): SimulatorPreviewV1 {
@@ -29,6 +31,8 @@ export function buildSimulatorPreviewPayload(input: SimulatorPreviewRegistration
     ...(input.owner ? { owner: input.owner } : {}),
     connectionPath: input.connectionPath ?? 'relay',
     ...(input.relay ? { relay: input.relay } : {}),
+    ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
+    ...(input.devServices ? { devServices: input.devServices } : {}),
     registeredAtMs: Date.now(),
   };
 }

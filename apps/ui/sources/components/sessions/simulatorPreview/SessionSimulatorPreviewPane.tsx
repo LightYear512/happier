@@ -14,6 +14,12 @@ export type SessionSimulatorPreviewPaneProps = Readonly<{
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended' | undefined;
     owner?: 'ai' | 'user' | 'system' | undefined;
     connectionPath?: 'relay' | 'direct' | 'adb_reverse' | undefined;
+    nativeDevSessionId?: string | undefined;
+    devServices?: Readonly<{
+        metro?: SimulatorPreviewDevService | undefined;
+        api?: SimulatorPreviewDevService | undefined;
+        hmr?: SimulatorPreviewDevService | undefined;
+    }> | undefined;
     controlLease?: Readonly<{
         leaseId: string;
         generation: number;
@@ -33,6 +39,13 @@ export type SessionSimulatorPreviewPaneProps = Readonly<{
     }>) => void) | undefined;
     onRequestControl?: (() => void | Promise<unknown>) | undefined;
     onReleaseControl?: (() => void | Promise<unknown>) | undefined;
+    onReloadApp?: (() => void | Promise<unknown>) | undefined;
+    onReconnectDevServices?: (() => void | Promise<unknown>) | undefined;
+}>;
+
+type SimulatorPreviewDevService = Readonly<{
+    status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error';
+    url?: string | undefined;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -90,6 +103,55 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderBottomColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.base,
         gap: 8,
+    },
+    devStatusBar: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.inset,
+        gap: 8,
+    },
+    devStatusTitle: {
+        color: theme.colors.text.secondary,
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    devStatusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        flexWrap: 'wrap',
+    },
+    devStatusPills: {
+        flex: 1,
+        minWidth: 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+    },
+    devStatusActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+    },
+    devStatusPill: {
+        minHeight: 28,
+        justifyContent: 'center',
+        paddingHorizontal: 9,
+        paddingVertical: 5,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.base,
+    },
+    devStatusText: {
+        color: theme.colors.text.primary,
+        fontSize: 11,
+        fontWeight: '600',
     },
     controlRow: {
         flexDirection: 'row',
@@ -217,6 +279,25 @@ function formatOwner(owner: NonNullable<SessionSimulatorPreviewPaneProps['owner'
         case 'system':
             return t('session.simulatorPreview.owner.system');
     }
+}
+
+function formatDevServiceStatus(status: SimulatorPreviewDevService['status']): string {
+    if (status === 'connected') return t('session.simulatorPreview.devServices.status.connected');
+    if (status === 'healthy') return t('session.simulatorPreview.devServices.status.healthy');
+    if (status === 'ready') return t('session.simulatorPreview.devServices.status.ready');
+    if (status === 'starting') return t('session.simulatorPreview.devServices.status.starting');
+    if (status === 'degraded') return t('session.simulatorPreview.devServices.status.degraded');
+    if (status === 'error') return t('session.simulatorPreview.devServices.status.error');
+    return t('session.simulatorPreview.devServices.status.unknown');
+}
+
+function renderDevService(label: string, service: SimulatorPreviewDevService | undefined, testID: string) {
+    if (!service) return null;
+    return (
+        <View style={stylesheet.devStatusPill} testID={testID}>
+            <Text style={stylesheet.devStatusText}>{`${label}: ${formatDevServiceStatus(service.status)}`}</Text>
+        </View>
+    );
 }
 
 export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPaneProps) {
@@ -369,6 +450,44 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                             >
                                 <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.sendText')}</Text>
                             </Pressable>
+                        </View>
+                    </View>
+                )
+                : null}
+            {props.nativeDevSessionId || props.devServices
+                ? (
+                    <View style={stylesheet.devStatusBar} testID="session.simulatorPreview.nativeDev.status">
+                        <Text style={stylesheet.devStatusTitle}>{t('session.simulatorPreview.devServices.title')}</Text>
+                        <View style={stylesheet.devStatusRow}>
+                            <View style={stylesheet.devStatusPills}>
+                                {renderDevService(t('session.simulatorPreview.devServices.metro'), props.devServices?.metro, 'session.simulatorPreview.devService.metro')}
+                                {renderDevService(t('session.simulatorPreview.devServices.api'), props.devServices?.api, 'session.simulatorPreview.devService.api')}
+                                {renderDevService(t('session.simulatorPreview.devServices.hmr'), props.devServices?.hmr, 'session.simulatorPreview.devService.hmr')}
+                            </View>
+                            <View style={stylesheet.devStatusActions}>
+                                {props.onReloadApp
+                                    ? (
+                                        <Pressable
+                                            onPress={props.onReloadApp}
+                                            style={stylesheet.keyButton}
+                                            testID="session.simulatorPreview.reloadApp"
+                                        >
+                                            <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.reloadApp')}</Text>
+                                        </Pressable>
+                                    )
+                                    : null}
+                                {props.onReconnectDevServices
+                                    ? (
+                                        <Pressable
+                                            onPress={props.onReconnectDevServices}
+                                            style={stylesheet.keyButton}
+                                            testID="session.simulatorPreview.reconnectDevServices"
+                                        >
+                                            <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.reconnectDevServices')}</Text>
+                                        </Pressable>
+                                    )
+                                    : null}
+                            </View>
                         </View>
                     </View>
                 )

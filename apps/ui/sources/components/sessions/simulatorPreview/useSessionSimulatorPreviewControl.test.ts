@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderHook } from '@/dev/testkit';
@@ -10,6 +10,10 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', (
 }));
 
 describe('useSessionSimulatorPreviewControl', () => {
+    beforeEach(() => {
+        sessionRpcWithServerScope.mockReset();
+    });
+
     it('acquires a user lease and forwards simulator input through session RPC', async () => {
         sessionRpcWithServerScope
             .mockResolvedValueOnce({
@@ -19,6 +23,8 @@ describe('useSessionSimulatorPreviewControl', () => {
                 owner: 'user',
                 expiresAtMs: 31_000,
             })
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ ok: true });
@@ -46,6 +52,8 @@ describe('useSessionSimulatorPreviewControl', () => {
             owner: 'user',
             input: { type: 'text', text: 'hello world' },
         });
+        await hook.getCurrent().reloadApp();
+        await hook.getCurrent().reconnectDevServices();
         await act(async () => {
             await hook.getCurrent().releaseControl();
         });
@@ -83,6 +91,28 @@ describe('useSessionSimulatorPreviewControl', () => {
             },
         });
         expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(4, {
+            sessionId: 'sess_1',
+            method: 'session.simulatorPreview.app.reload',
+            payload: {
+                simulatorSessionId: 'sim_android_1',
+                leaseId: 'lease_user_1',
+                generation: 1,
+                owner: 'user',
+                holderId: 'happier-ui',
+            },
+        });
+        expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(5, {
+            sessionId: 'sess_1',
+            method: 'session.simulatorPreview.devServices.reconnect',
+            payload: {
+                simulatorSessionId: 'sim_android_1',
+                leaseId: 'lease_user_1',
+                generation: 1,
+                owner: 'user',
+                holderId: 'happier-ui',
+            },
+        });
+        expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(6, {
             sessionId: 'sess_1',
             method: 'session.simulatorPreview.control.release',
             payload: {

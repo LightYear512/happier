@@ -39,6 +39,31 @@ export const SimulatorPreviewRelaySchema = z.object({
 }).passthrough();
 export type SimulatorPreviewRelay = z.infer<typeof SimulatorPreviewRelaySchema>;
 
+export const SimulatorPreviewDevServiceStatusSchema = z.enum([
+  'unknown',
+  'starting',
+  'connected',
+  'healthy',
+  'ready',
+  'degraded',
+  'error',
+]);
+export type SimulatorPreviewDevServiceStatus = z.infer<typeof SimulatorPreviewDevServiceStatusSchema>;
+
+export const SimulatorPreviewDevServiceHealthSchema = z.object({
+  status: SimulatorPreviewDevServiceStatusSchema,
+  url: z.string().trim().min(1).max(2000).optional(),
+  checkedAtMs: z.number().int().optional(),
+}).passthrough();
+export type SimulatorPreviewDevServiceHealth = z.infer<typeof SimulatorPreviewDevServiceHealthSchema>;
+
+export const SimulatorPreviewDevServicesSchema = z.object({
+  metro: SimulatorPreviewDevServiceHealthSchema.optional(),
+  api: SimulatorPreviewDevServiceHealthSchema.optional(),
+  hmr: SimulatorPreviewDevServiceHealthSchema.optional(),
+}).passthrough();
+export type SimulatorPreviewDevServices = z.infer<typeof SimulatorPreviewDevServicesSchema>;
+
 export const SimulatorPreviewV1Schema = z.object({
   simulatorSessionId: z.string().min(1),
   sessionId: z.string().min(1),
@@ -50,6 +75,8 @@ export const SimulatorPreviewV1Schema = z.object({
   owner: SimulatorPreviewOwnerSchema.optional(),
   connectionPath: SimulatorPreviewConnectionPathSchema,
   relay: SimulatorPreviewRelaySchema.optional(),
+  nativeDevSessionId: z.string().trim().min(1).max(200).optional(),
+  devServices: SimulatorPreviewDevServicesSchema.optional(),
   registeredAtMs: z.number().int(),
 }).passthrough();
 export type SimulatorPreviewV1 = z.infer<typeof SimulatorPreviewV1Schema>;

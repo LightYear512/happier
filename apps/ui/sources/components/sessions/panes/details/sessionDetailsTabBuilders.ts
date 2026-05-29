@@ -110,6 +110,8 @@ export function createSessionSimulatorPreviewDetailsTab(payload: SimulatorPrevie
             mode: payload.mode,
             ...(payload.owner ? { owner: payload.owner } : {}),
             connectionPath: payload.connectionPath,
+            ...(payload.nativeDevSessionId ? { nativeDevSessionId: payload.nativeDevSessionId } : {}),
+            ...(payload.devServices ? { devServices: payload.devServices } : {}),
         },
     };
 }
