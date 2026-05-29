@@ -18,6 +18,8 @@ describe('registerSimulatorPreviewSessionRpcHandlers', () => {
       })),
       release: vi.fn(async () => ({ ok: true as const, generation: 2, mode: 'idle' as const })),
       sendInput: vi.fn(async () => ({ ok: true as const })),
+      reloadApp: vi.fn(async () => ({ ok: true as const })),
+      reconnectDevServices: vi.fn(async () => ({ ok: true as const, reconnectedPorts: [] })),
     };
     const rpcHandlerManager = {
       registerHandler: <TRequest, TResponse>(
@@ -81,6 +83,20 @@ describe('registerSimulatorPreviewSessionRpcHandlers', () => {
       owner: 'user',
       holderId: 'browser_tab_1',
     })).resolves.toEqual({ ok: true, generation: 2, mode: 'idle' });
+    await expect(registered.get('session.simulatorPreview.app.reload')?.({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toEqual({ ok: true });
+    await expect(registered.get('session.simulatorPreview.devServices.reconnect')?.({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toEqual({ ok: true, reconnectedPorts: [] });
 
     expect(registry.acquire).toHaveBeenCalledWith({
       sessionId: 'sess_1',
@@ -113,6 +129,22 @@ describe('registerSimulatorPreviewSessionRpcHandlers', () => {
       owner: 'user',
       holderId: 'browser_tab_1',
     });
+    expect(registry.reloadApp).toHaveBeenCalledWith({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+    expect(registry.reconnectDevServices).toHaveBeenCalledWith({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
   });
 
   it('rejects simulator input payloads that do not satisfy the protocol action schema', async () => {
@@ -132,6 +164,8 @@ describe('registerSimulatorPreviewSessionRpcHandlers', () => {
         mode: 'idle' as const,
       })),
       sendInput: vi.fn(async () => ({ ok: true as const })),
+      reloadApp: vi.fn(async () => ({ ok: true as const })),
+      reconnectDevServices: vi.fn(async () => ({ ok: true as const, reconnectedPorts: [] })),
     };
     const rpcHandlerManager = {
       registerHandler: <TRequest, TResponse>(

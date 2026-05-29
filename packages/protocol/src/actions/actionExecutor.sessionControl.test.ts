@@ -325,6 +325,42 @@ describe('createActionExecutor (session control)', () => {
     }));
   });
 
+  it('executes simulator preview app reload and dev service reconnect through protocol deps', async () => {
+    const sessionSimulatorPreviewAppReload = vi.fn(async () => ({ ok: true }));
+    const sessionSimulatorPreviewDevServicesReconnect = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({
+      sessionSimulatorPreviewAppReload,
+      sessionSimulatorPreviewDevServicesReconnect,
+    } as Partial<ActionExecutorDeps>);
+    const payload = {
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    };
+
+    await expect(executor.execute(
+      'session.simulatorPreview.app.reload' as any,
+      payload,
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+    await expect(executor.execute(
+      'session.simulatorPreview.devServices.reconnect' as any,
+      payload,
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+
+    expect(sessionSimulatorPreviewAppReload).toHaveBeenCalledWith({
+      sessionId: 's1',
+      ...payload,
+    });
+    expect(sessionSimulatorPreviewDevServicesReconnect).toHaveBeenCalledWith({
+      sessionId: 's1',
+      ...payload,
+    });
+  });
+
   it('executes session.stop via deps.sessionStop', async () => {
     const sessionStop = vi.fn(async () => ({ ok: true, stopped: true }));
     const executor = createExecutor({

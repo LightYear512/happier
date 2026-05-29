@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
+import type { SimulatorPreviewV1 } from '@happier-dev/protocol';
+
 export type SimulatorPreviewControlOwner = 'ai' | 'user';
 
 export type SimulatorPreviewTapInput = Readonly<{
@@ -35,6 +37,11 @@ export type SimulatorPreviewNormalizedInput =
   | SimulatorPreviewKeyeventInput;
 
 type SimulatorPreviewDeviceInput = SimulatorPreviewNormalizedInput;
+type SimulatorPreviewDeviceKeyeventInput = Readonly<{
+  type: 'keyevent';
+  key: SimulatorPreviewKeyeventInput['key'] | 'reload_app';
+}>;
+type AndroidAdbInput = Exclude<SimulatorPreviewDeviceInput, SimulatorPreviewKeyeventInput> | SimulatorPreviewDeviceKeyeventInput;
 
 type SimulatorPreviewInputErrorCode =
   | 'lease_not_found'
@@ -63,6 +70,7 @@ type AndroidPreviewRegistration = Readonly<{
   deviceId?: string;
   deviceWidth: number;
   deviceHeight: number;
+  devServices?: SimulatorPreviewV1['devServices'];
 }>;
 
 type ControlLease = Readonly<{
@@ -82,13 +90,20 @@ type RegistryEntry = Readonly<{
 
 type RunAdbInputRequest = Readonly<{
   deviceId?: string;
-  input: SimulatorPreviewDeviceInput;
+  input: AndroidAdbInput;
+}>;
+
+type RunAdbReverseRequest = Readonly<{
+  deviceId?: string;
+  devicePort: number;
+  hostPort: number;
 }>;
 
 export type AndroidSimulatorPreviewControlRegistryOptions = Readonly<{
   nowMs?: () => number;
   randomId?: () => string;
   runAdbInput?: (request: RunAdbInputRequest) => Promise<void>;
+  runAdbReverse?: (request: RunAdbReverseRequest) => Promise<void>;
 }>;
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
@@ -118,13 +133,14 @@ function escapeAdbInputText(text: string): string {
   return escaped;
 }
 
-function mapKeyevent(key: SimulatorPreviewKeyeventInput['key']): string {
+function mapKeyevent(key: SimulatorPreviewDeviceKeyeventInput['key']): string {
   if (key === 'back') return 'KEYCODE_BACK';
   if (key === 'home') return 'KEYCODE_HOME';
+  if (key === 'reload_app') return 'KEYCODE_R';
   return 'KEYCODE_ENTER';
 }
 
-function buildAdbInputArgs(input: SimulatorPreviewDeviceInput): string[] {
+function buildAdbInputArgs(input: AndroidAdbInput): string[] {
   if (input.type === 'tap') return ['tap', String(input.x), String(input.y)];
   if (input.type === 'swipe') {
     return [
@@ -163,6 +179,29 @@ async function runAndroidAdbInput(request: RunAdbInputRequest): Promise<void> {
   });
 }
 
+async function runAndroidAdbReverse(request: RunAdbReverseRequest): Promise<void> {
+  const args = [
+    ...(request.deviceId ? ['-s', request.deviceId] : []),
+    'reverse',
+    `tcp:${request.devicePort}`,
+    `tcp:${request.hostPort}`,
+  ];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('adb', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const stderr: Buffer[] = [];
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const message = Buffer.concat(stderr).toString('utf8').trim();
+      reject(new Error(message || `adb reverse exited with ${code ?? 'unknown status'}`));
+    });
+  });
+}
+
 export function createAndroidSimulatorPreviewControlRegistry(
   options: AndroidSimulatorPreviewControlRegistryOptions = {},
 ) {
@@ -170,6 +209,7 @@ export function createAndroidSimulatorPreviewControlRegistry(
   const nowMs = options.nowMs ?? (() => Date.now());
   const randomId = options.randomId ?? (() => randomUUID());
   const runAdbInput = options.runAdbInput ?? runAndroidAdbInput;
+  const runAdbReverse = options.runAdbReverse ?? runAndroidAdbReverse;
 
   return {
     registerAndroidPreview(registration: AndroidPreviewRegistration): void {
@@ -296,6 +336,32 @@ export function createAndroidSimulatorPreviewControlRegistry(
       return { ok: true as const };
     },
 
+    async reloadApp(input: SimulatorPreviewLeaseScopedOperationInput) {
+      const validation = validateLeaseScopedOperation(entries, input, nowMs());
+      if (!validation.ok) return validation.result;
+      const request = {
+        ...(validation.entry.registration.deviceId ? { deviceId: validation.entry.registration.deviceId } : {}),
+        input: { type: 'keyevent' as const, key: 'reload_app' as const },
+      };
+      await runAdbInput(request);
+      await runAdbInput(request);
+      return { ok: true as const };
+    },
+
+    async reconnectDevServices(input: SimulatorPreviewLeaseScopedOperationInput) {
+      const validation = validateLeaseScopedOperation(entries, input, nowMs());
+      if (!validation.ok) return validation.result;
+      const ports = extractLoopbackDevServicePorts(validation.entry.registration.devServices);
+      for (const port of ports) {
+        await runAdbReverse({
+          ...(validation.entry.registration.deviceId ? { deviceId: validation.entry.registration.deviceId } : {}),
+          devicePort: port,
+          hostPort: port,
+        });
+      }
+      return { ok: true as const, reconnectedPorts: ports };
+    },
+
     listInputTimeline(input: Readonly<{
       sessionId: string;
       simulatorSessionId: string;
@@ -303,6 +369,69 @@ export function createAndroidSimulatorPreviewControlRegistry(
       return [...(entries.get(keyFor(input.sessionId, input.simulatorSessionId))?.inputTimeline ?? [])];
     },
   };
+}
+
+type SimulatorPreviewLeaseScopedOperationInput = Readonly<{
+  sessionId: string;
+  simulatorSessionId: string;
+  leaseId: string;
+  generation: number;
+  owner: SimulatorPreviewControlOwner;
+  holderId?: string;
+}>;
+
+function validateLeaseScopedOperation(
+  entries: Map<string, RegistryEntry>,
+  input: SimulatorPreviewLeaseScopedOperationInput,
+  nowMs: number,
+): Readonly<
+  | { ok: true; entry: RegistryEntry }
+  | {
+      ok: false;
+      result: Readonly<{
+        ok: false;
+        errorCode: SimulatorPreviewInputErrorCode;
+        error: SimulatorPreviewInputErrorCode;
+      }>;
+    }
+> {
+  const entry = entries.get(keyFor(input.sessionId, input.simulatorSessionId));
+  if (!entry?.lease) {
+    return {
+      ok: false,
+      result: { ok: false, errorCode: 'lease_not_found', error: 'lease_not_found' },
+    };
+  }
+  if (input.generation !== entry.generation) {
+    return {
+      ok: false,
+      result: { ok: false, errorCode: 'stale_generation', error: 'stale_generation' },
+    };
+  }
+  const leaseError = validateLease(entry.lease, input, nowMs);
+  if (leaseError) {
+    return { ok: false, result: leaseError };
+  }
+  return { ok: true, entry };
+}
+
+function extractLoopbackDevServicePorts(devServices: SimulatorPreviewV1['devServices'] | undefined): readonly number[] {
+  const ports = new Set<number>();
+  for (const service of [devServices?.metro, devServices?.api, devServices?.hmr]) {
+    const rawUrl = service?.url?.trim();
+    if (!rawUrl) continue;
+    try {
+      const parsed = new URL(rawUrl);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') continue;
+      const port = Number(parsed.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+      ports.add(port);
+    } catch {
+      continue;
+    }
+  }
+  return [...ports].sort((a, b) => a - b);
 }
 
 function toDeviceInput(

@@ -3686,6 +3686,23 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
                 enter: 'Enter',
                 textPlaceholder: '輸入文字',
                 sendText: '傳送',
+                reloadApp: '重載',
+                reconnectDevServices: '重新連線',
+              },
+              devServices: {
+                  title: '原生開發服務',
+                  metro: 'Metro',
+                  api: 'API',
+                  hmr: 'HMR',
+                  status: {
+                      unknown: '未知',
+                      starting: '啟動中',
+                      connected: '已連線',
+                      healthy: '健康',
+                      ready: '就緒',
+                      degraded: '降級',
+                      error: '錯誤',
+                  },
               },
               owner: {
                   ai: 'AI',

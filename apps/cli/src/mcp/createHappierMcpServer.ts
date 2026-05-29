@@ -320,6 +320,8 @@ export function createHappierMcpServer(
           owner: 'ai',
           connectionPath: relay ? 'relay' : 'direct',
           ...(relay ? { relay } : {}),
+          ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
+          ...(input.devServices ? { devServices: input.devServices } : {}),
         });
         emitSimulatorPreviewMessage({
           preview,
@@ -331,6 +333,7 @@ export function createHappierMcpServer(
           ...(input.deviceId ? { deviceId: input.deviceId } : {}),
           deviceWidth: geometry.deviceWidth,
           deviceHeight: geometry.deviceHeight,
+          ...(input.devServices ? { devServices: input.devServices } : {}),
         });
         return preview;
       },
@@ -351,6 +354,18 @@ export function createHappierMcpServer(
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
         return await androidSimulatorPreviewControlRegistry.sendInput(input);
+      },
+      sessionSimulatorPreviewAppReload: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        return await androidSimulatorPreviewControlRegistry.reloadApp(input);
+      },
+      sessionSimulatorPreviewDevServicesReconnect: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        return await androidSimulatorPreviewControlRegistry.reconnectDevServices(input);
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),
       executionRunList: async (_sessionId, request) => await executionRuns.list(request),
