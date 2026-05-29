@@ -83,4 +83,67 @@ describe('fake Claude CLI fixture', () => {
       }),
     ]));
   });
+
+  it('emits an iOS simulator MCP tool call in the simulator preview scenario', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'fake-claude-simulator-ios-mcp-'));
+    const logPath = join(tempDir, 'fake-claude.jsonl');
+    const child = execFile(
+      process.execPath,
+      [
+        fakeClaudeFixturePath(),
+        '--output-format',
+        'stream-json',
+        '--input-format',
+        'stream-json',
+      ],
+      {
+        timeout: 5_000,
+        env: {
+          ...process.env,
+          HAPPIER_E2E_FAKE_CLAUDE_LOG: logPath,
+          HAPPIER_E2E_FAKE_CLAUDE_SCENARIO: 'simulator-preview-ios-mcp-start',
+          HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_ID: 'A1B2-C3D4',
+          HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_WDA_URL: 'http://127.0.0.1:8100',
+          HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_PORT: '9814',
+          HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_POLL_MS: '500',
+          HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_NAME: 'iPhone 15 Pro',
+          HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_APP_NAME: 'iOS Preview Fixture',
+        },
+      },
+    );
+
+    child.stdin?.end(`${JSON.stringify({ type: 'user', message: { role: 'user', content: 'start iOS preview' } })}\n`);
+    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr?.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on('error', reject);
+      child.on('exit', (code, signal) => {
+        if (code === 0) {
+          resolve({ stdout, stderr });
+          return;
+        }
+        reject(new Error(`fake Claude exited with ${signal ?? code}: ${stderr}`));
+      });
+    });
+
+    expect(result.stdout).toContain('"name":"mcp__happier__happier_simulator_preview_ios_start"');
+    expect(result.stdout).toContain('"tool_use_id":"tool_simulator_preview_ios_start_1"');
+    expect(result.stdout).toContain('Missing MCP server config');
+    const logRows = (await readFile(logPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(logRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'mcp_tool_call_failed',
+        toolName: 'happier_simulator_preview_ios_start',
+      }),
+    ]));
+  });
 });
