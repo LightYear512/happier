@@ -585,6 +585,82 @@ describe('Action Spec Registry', () => {
         y: 0.75,
       },
     })).toThrow();
+
+    expect(spec.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'swipe',
+        x1: 0.1,
+        y1: 0.2,
+        x2: 0.8,
+        y2: 0.9,
+        durationMs: 350,
+      },
+    })).toEqual({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'swipe',
+        x1: 0.1,
+        y1: 0.2,
+        x2: 0.8,
+        y2: 0.9,
+        durationMs: 350,
+      },
+    });
+    expect(spec.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'text',
+        text: 'hello world',
+      },
+    })).toEqual({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'text',
+        text: 'hello world',
+      },
+    });
+    expect(spec.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'keyevent',
+        key: 'back',
+      },
+    })).toEqual({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'keyevent',
+        key: 'back',
+      },
+    });
+    expect(() => spec.inputSchema.parse({
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_1',
+      generation: 2,
+      owner: 'user',
+      input: {
+        type: 'keyevent',
+        key: 'volume_up',
+      },
+    })).toThrow();
   });
 
   it('does not expose legacy voice_mediator intent in ExecutionRunIntentSchema', () => {

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Image, Platform, Pressable, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
+import { Image, Platform, Pressable, TextInput, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -24,13 +24,15 @@ export type SessionSimulatorPreviewPaneProps = Readonly<{
         leaseId: string;
         generation: number;
         owner: 'ai' | 'user';
-        input: Readonly<{
-            type: 'tap';
-            x: number;
-            y: number;
-        }>;
+        input: Readonly<
+            | { type: 'tap'; x: number; y: number }
+            | { type: 'swipe'; x1: number; y1: number; x2: number; y2: number; durationMs?: number }
+            | { type: 'text'; text: string }
+            | { type: 'keyevent'; key: 'back' | 'home' | 'enter' }
+        >;
     }>) => void) | undefined;
     onRequestControl?: (() => void | Promise<unknown>) | undefined;
+    onReleaseControl?: (() => void | Promise<unknown>) | undefined;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -80,6 +82,45 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         fontSize: 11,
         fontWeight: '600',
+    },
+    controlBar: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.base,
+        gap: 8,
+    },
+    controlRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+    },
+    keyButton: {
+        minWidth: 52,
+        minHeight: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.elevated,
+    },
+    textInput: {
+        flex: 1,
+        minWidth: 140,
+        minHeight: 32,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        color: theme.colors.text.primary,
+        backgroundColor: theme.colors.surface.inset,
+        fontSize: 12,
     },
     surface: {
         flex: 1,
@@ -180,6 +221,7 @@ function formatOwner(owner: NonNullable<SessionSimulatorPreviewPaneProps['owner'
 
 export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPaneProps) {
     const viewportSizeRef = React.useRef<Readonly<{ width: number; height: number }> | null>(null);
+    const [textInputValue, setTextInputValue] = React.useState('');
     const title = props.appName && props.appName.trim().length > 0
         ? `${props.deviceName} · ${props.appName.trim()}`
         : props.deviceName;
@@ -215,6 +257,24 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
             },
         });
     }, [hasUserControl, props.controlLease, props.onSendInput, props.simulatorSessionId]);
+    const sendLeaseInput = React.useCallback((input: Parameters<NonNullable<SessionSimulatorPreviewPaneProps['onSendInput']>>[0]['input']) => {
+        if (!hasUserControl || !props.controlLease || !props.onSendInput) return;
+        props.onSendInput({
+            simulatorSessionId: props.simulatorSessionId,
+            leaseId: props.controlLease.leaseId,
+            generation: props.controlLease.generation,
+            owner: props.controlLease.owner,
+            input,
+        });
+    }, [hasUserControl, props.controlLease, props.onSendInput, props.simulatorSessionId]);
+    const sendKeyevent = React.useCallback((key: 'back' | 'home' | 'enter') => {
+        sendLeaseInput({ type: 'keyevent', key });
+    }, [sendLeaseInput]);
+    const sendText = React.useCallback(() => {
+        if (textInputValue.length <= 0) return;
+        sendLeaseInput({ type: 'text', text: textInputValue });
+        setTextInputValue('');
+    }, [sendLeaseInput, textInputValue]);
     const frame = Platform.OS === 'web'
         ? React.createElement('img', {
             'data-testid': 'session.simulatorPreview.frame',
@@ -257,6 +317,62 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                         : null}
                 </View>
             </View>
+            {hasUserControl
+                ? (
+                    <View style={stylesheet.controlBar} testID="session.simulatorPreview.controlBar">
+                        <View style={stylesheet.controlRow}>
+                            <Pressable
+                                onPress={() => sendKeyevent('back')}
+                                style={stylesheet.keyButton}
+                                testID="session.simulatorPreview.key.back"
+                            >
+                                <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.back')}</Text>
+                            </Pressable>
+                            <Pressable
+                                onPress={() => sendKeyevent('home')}
+                                style={stylesheet.keyButton}
+                                testID="session.simulatorPreview.key.home"
+                            >
+                                <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.home')}</Text>
+                            </Pressable>
+                            <Pressable
+                                onPress={() => sendKeyevent('enter')}
+                                style={stylesheet.keyButton}
+                                testID="session.simulatorPreview.key.enter"
+                            >
+                                <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.enter')}</Text>
+                            </Pressable>
+                            {props.onReleaseControl
+                                ? (
+                                    <Pressable
+                                        onPress={props.onReleaseControl}
+                                        style={stylesheet.keyButton}
+                                        testID="session.simulatorPreview.releaseControl"
+                                    >
+                                        <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.releaseControl')}</Text>
+                                    </Pressable>
+                                )
+                                : null}
+                        </View>
+                        <View style={stylesheet.controlRow}>
+                            <TextInput
+                                onChangeText={setTextInputValue}
+                                placeholder={t('session.simulatorPreview.controls.textPlaceholder')}
+                                style={stylesheet.textInput}
+                                testID="session.simulatorPreview.textInput"
+                                value={textInputValue}
+                            />
+                            <Pressable
+                                onPress={sendText}
+                                style={stylesheet.keyButton}
+                                testID="session.simulatorPreview.textSend"
+                            >
+                                <Text style={stylesheet.controlButtonText}>{t('session.simulatorPreview.controls.sendText')}</Text>
+                            </Pressable>
+                        </View>
+                    </View>
+                )
+                : null}
             <View style={stylesheet.surface} testID="session.simulatorPreview.surface">
                 <View style={stylesheet.deviceChrome} testID="session.simulatorPreview.deviceChrome">
                     <View style={stylesheet.deviceSpeaker} testID="session.simulatorPreview.deviceSpeaker" />

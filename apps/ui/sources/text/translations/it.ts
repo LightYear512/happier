@@ -4705,6 +4705,14 @@ export const it: TranslationStructure = {
           screenAlt: ({ deviceName }: { deviceName: string }) => `Schermo del simulatore ${deviceName}`,
           ownerLabel: ({ owner }: { owner: string }) => `Proprietario: ${owner}`,
           requestControl: "Controlla",
+          releaseControl: "Release",
+          controls: {
+            back: "Back",
+            home: "Home",
+            enter: "Enter",
+            textPlaceholder: "Text input",
+            sendText: "Send",
+          },
           owner: {
             ai: "IA",
             user: "utente",

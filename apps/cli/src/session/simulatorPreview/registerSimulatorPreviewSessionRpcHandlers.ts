@@ -1,8 +1,10 @@
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
+import { getActionSpec } from '@happier-dev/protocol';
 
 import type {
   AndroidSimulatorPreviewControlRegistry,
   SimulatorPreviewControlOwner,
+  SimulatorPreviewNormalizedInput,
 } from './createAndroidSimulatorPreviewControlRegistry';
 
 export const SIMULATOR_PREVIEW_SESSION_RPC_METHODS = {
@@ -21,6 +23,23 @@ function readOwner(raw: unknown): SimulatorPreviewControlOwner | null {
 
 function invalidInput(): Readonly<{ ok: false; errorCode: 'invalid_parameters'; error: 'invalid_parameters' }> {
   return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+}
+
+type SimulatorPreviewInputSendRpcPayload = Readonly<{
+  simulatorSessionId: string;
+  leaseId: string;
+  generation: number;
+  owner: SimulatorPreviewControlOwner;
+  holderId?: string;
+  input: SimulatorPreviewNormalizedInput;
+}>;
+
+const SimulatorPreviewInputSendSchema = getActionSpec('session.simulatorPreview.input.send').inputSchema;
+
+function readInputSendPayload(raw: unknown): SimulatorPreviewInputSendRpcPayload | null {
+  const parsed = SimulatorPreviewInputSendSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  return parsed.data as SimulatorPreviewInputSendRpcPayload;
 }
 
 export function registerSimulatorPreviewSessionRpcHandlers(params: Readonly<{
@@ -61,33 +80,17 @@ export function registerSimulatorPreviewSessionRpcHandlers(params: Readonly<{
   });
 
   params.rpcHandlerManager.registerHandler(SIMULATOR_PREVIEW_SESSION_RPC_METHODS.INPUT_SEND, async (raw: unknown) => {
-    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
-    const simulatorSessionId = normalizeId(input?.simulatorSessionId);
-    const leaseId = normalizeId(input?.leaseId);
-    const owner = readOwner(input?.owner);
-    const event = input?.input && typeof input.input === 'object' ? input.input as Record<string, unknown> : null;
-    if (
-      !simulatorSessionId
-      || !leaseId
-      || !owner
-      || typeof input?.generation !== 'number'
-      || event?.type !== 'tap'
-      || typeof event.x !== 'number'
-      || typeof event.y !== 'number'
-    ) {
-      return invalidInput();
-    }
+    const input = readInputSendPayload(raw);
+    if (!input) return invalidInput();
+    const holderId = normalizeId(input.holderId);
     return await params.registry.sendInput({
       sessionId: params.sessionId,
-      simulatorSessionId,
-      leaseId,
+      simulatorSessionId: input.simulatorSessionId,
+      leaseId: input.leaseId,
       generation: input.generation,
-      owner,
-      input: {
-        type: 'tap',
-        x: event.x,
-        y: event.y,
-      },
+      owner: input.owner,
+      ...(holderId ? { holderId } : {}),
+      input: input.input,
     });
   });
 }

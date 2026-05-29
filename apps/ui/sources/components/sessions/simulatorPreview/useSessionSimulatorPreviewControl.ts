@@ -9,6 +9,7 @@ type SimulatorInput = Parameters<NonNullable<SessionSimulatorPreviewPaneProps['o
 
 const SIMULATOR_PREVIEW_SESSION_RPC_METHODS = {
     CONTROL_ACQUIRE: 'session.simulatorPreview.control.acquire',
+    CONTROL_RELEASE: 'session.simulatorPreview.control.release',
     INPUT_SEND: 'session.simulatorPreview.input.send',
 } as const;
 
@@ -18,6 +19,18 @@ function isControlLease(value: unknown): value is ControlLease {
     return typeof maybe.leaseId === 'string'
         && typeof maybe.generation === 'number'
         && maybe.owner === 'user';
+}
+
+function shouldClearLeaseAfterReleaseResult(value: unknown): boolean {
+    if (!value || typeof value !== 'object') return false;
+    const maybe = value as Record<string, unknown>;
+    if (maybe.ok === true) return true;
+    return maybe.ok === false
+        && (
+            maybe.errorCode === 'lease_not_found'
+            || maybe.errorCode === 'invalid_lease'
+            || maybe.errorCode === 'lease_expired'
+        );
 }
 
 export function useSessionSimulatorPreviewControl(params: Readonly<{
@@ -51,9 +64,28 @@ export function useSessionSimulatorPreviewControl(params: Readonly<{
         });
     }, [params.sessionId]);
 
+    const releaseControl = React.useCallback(async () => {
+        if (!controlLease) return null;
+        const result = await sessionRpcWithServerScope<unknown, unknown>({
+            sessionId: params.sessionId,
+            method: SIMULATOR_PREVIEW_SESSION_RPC_METHODS.CONTROL_RELEASE,
+            payload: {
+                simulatorSessionId: params.simulatorSessionId,
+                leaseId: controlLease.leaseId,
+                owner: controlLease.owner,
+                holderId: 'happier-ui',
+            },
+        });
+        if (shouldClearLeaseAfterReleaseResult(result)) {
+            setControlLease(null);
+        }
+        return result;
+    }, [controlLease, params.sessionId, params.simulatorSessionId]);
+
     return {
         controlLease,
         requestControl,
+        releaseControl,
         sendInput,
     };
 }

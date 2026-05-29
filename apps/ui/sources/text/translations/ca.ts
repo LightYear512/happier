@@ -4064,6 +4064,14 @@ deps: {
                   screenAlt: ({ deviceName }: { deviceName: string }) => `Pantalla del simulador ${deviceName}`,
                   ownerLabel: ({ owner }: { owner: string }) => `Propietari: ${owner}`,
                   requestControl: 'Controla',
+                  releaseControl: 'Release',
+                  controls: {
+                    back: 'Back',
+                    home: 'Home',
+                    enter: 'Enter',
+                    textPlaceholder: 'Text input',
+                    sendText: 'Send',
+                  },
                   owner: {
                       ai: 'IA',
                       user: 'usuari',

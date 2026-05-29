@@ -4462,6 +4462,14 @@ export const pt: TranslationStructure = {
         screenAlt: ({ deviceName }: { deviceName: string }) => `Tela do simulador ${deviceName}`,
         ownerLabel: ({ owner }: { owner: string }) => `Proprietário: ${owner}`,
         requestControl: "Controlar",
+        releaseControl: "Release",
+        controls: {
+          back: "Back",
+          home: "Home",
+          enter: "Enter",
+          textPlaceholder: "Text input",
+          sendText: "Send",
+        },
         owner: {
           ai: "IA",
           user: "usuário",

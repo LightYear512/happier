@@ -432,6 +432,25 @@ const SessionSimulatorPreviewTapInputSchema = z.object({
   y: z.number().min(0).max(1),
 });
 
+const SessionSimulatorPreviewSwipeInputSchema = z.object({
+  type: z.literal('swipe'),
+  x1: z.number().min(0).max(1),
+  y1: z.number().min(0).max(1),
+  x2: z.number().min(0).max(1),
+  y2: z.number().min(0).max(1),
+  durationMs: z.number().int().min(1).max(60_000).optional(),
+});
+
+const SessionSimulatorPreviewTextInputSchema = z.object({
+  type: z.literal('text'),
+  text: z.string().min(1).max(2_000),
+});
+
+const SessionSimulatorPreviewKeyeventInputSchema = z.object({
+  type: z.literal('keyevent'),
+  key: z.enum(['back', 'home', 'enter']),
+});
+
 const SessionSimulatorPreviewInputSendInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   simulatorSessionId: z.string().trim().min(1).max(200),
@@ -440,6 +459,9 @@ const SessionSimulatorPreviewInputSendInputSchema = z.object({
   owner: SessionSimulatorPreviewLeaseOwnerSchema,
   input: z.discriminatedUnion('type', [
     SessionSimulatorPreviewTapInputSchema,
+    SessionSimulatorPreviewSwipeInputSchema,
+    SessionSimulatorPreviewTextInputSchema,
+    SessionSimulatorPreviewKeyeventInputSchema,
   ]),
 }).passthrough();
 

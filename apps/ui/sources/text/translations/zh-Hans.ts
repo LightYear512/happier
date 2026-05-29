@@ -4168,6 +4168,14 @@ export const zhHans: TranslationStructure = {
       screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} 模拟器屏幕`,
       ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
       requestControl: "控制",
+      releaseControl: "释放",
+      controls: {
+        back: "返回",
+        home: "主页",
+        enter: "回车",
+        textPlaceholder: "输入文本",
+        sendText: "发送",
+      },
       owner: {
         ai: "AI",
         user: "用户",

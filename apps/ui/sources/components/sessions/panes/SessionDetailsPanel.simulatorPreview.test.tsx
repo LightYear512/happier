@@ -134,7 +134,8 @@ describe('SessionDetailsPanel (simulator preview)', () => {
                 owner: 'user',
                 expiresAtMs: 31_000,
             })
-            .mockResolvedValueOnce({ ok: true });
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ ok: true, generation: 2, mode: 'idle' });
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
 
@@ -183,6 +184,19 @@ describe('SessionDetailsPanel (simulator preview)', () => {
                     x: 0.5,
                     y: 0.5,
                 },
+            },
+        });
+
+        await screen.pressByTestIdAsync('session.simulatorPreview.releaseControl');
+
+        expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(3, {
+            sessionId: 's1',
+            method: 'session.simulatorPreview.control.release',
+            payload: {
+                simulatorSessionId: 'sim_1',
+                leaseId: 'lease_user_1',
+                owner: 'user',
+                holderId: 'happier-ui',
             },
         });
     });

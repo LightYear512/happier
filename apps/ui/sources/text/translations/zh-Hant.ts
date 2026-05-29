@@ -3679,6 +3679,14 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
               screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} 模擬器畫面`,
               ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
               requestControl: '控制',
+              releaseControl: '釋放',
+              controls: {
+                back: '返回',
+                home: '主畫面',
+                enter: 'Enter',
+                textPlaceholder: '輸入文字',
+                sendText: '傳送',
+              },
               owner: {
                   ai: 'AI',
                   user: '使用者',
