@@ -46,6 +46,10 @@
       "types": "./dist/process/index.d.ts",
       "default": "./dist/process/index.js"
     },
+    "./nodeModulesIsolation": {
+      "types": "./dist/nodeModulesIsolation/index.d.ts",
+      "default": "./dist/nodeModulesIsolation/index.js"
+    },
     "./componentArtifacts": {
       "types": "./dist/componentArtifacts/index.d.ts",
       "default": "./dist/componentArtifacts/index.js"

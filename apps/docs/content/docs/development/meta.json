@@ -5,6 +5,7 @@
     "app-env",
     "bootstrap-qa",
     "testing",
+    "worktree-dependency-isolation-plan",
     "devcontainers",
     "release-artifacts"
   ]

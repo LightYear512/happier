@@ -34,7 +34,7 @@ import { ensureEnvLocalUpdated } from './utils/env/env_local.mjs';
 import { ensureEnvFilePruned, ensureEnvFileUpdated } from './utils/env/env_file.mjs';
 import { isSandboxed } from './utils/env/sandbox.mjs';
 import { applyStackCacheEnv } from './utils/proc/pm.mjs';
-import { seedNodeModulesFromBase } from './utils/worktrees/seed_node_modules.mjs';
+import { setupInstalledWorktreeDependencies } from './utils/worktrees/dependency_setup.mjs';
 import { shouldRunYarnInstall } from './utils/worktrees/yarn_install_guard.mjs';
 import { existsSync } from 'node:fs';
 import { getHomeEnvLocalPath, getHomeEnvPath, resolveUserConfigEnvPath } from './utils/env/config.mjs';
@@ -376,7 +376,7 @@ async function linkNodeModules({ fromDir, toDir }) {
   return { linked: true, reason: null };
 }
 
-async function installDependencies({ dir }) {
+async function installDependencies({ dir, force = false }) {
   const pm = await detectPackageManager(dir);
   if (!pm.kind) {
     return { installed: false, reason: 'no package manager detected (no package.json)' };
@@ -386,7 +386,7 @@ async function installDependencies({ dir }) {
 
   // Yarn-only, monorepo-friendly: avoid redundant installs when nothing changed.
   // This keeps `wt pr --update` fast for the common case where PR code changed but deps did not.
-  if (pm.kind === 'yarn') {
+  if (pm.kind === 'yarn' && !force) {
     const needs = await shouldRunYarnInstall({ installDir: dir, componentDir: dir });
     if (!needs) {
       return { installed: false, reason: 'up-to-date' };
@@ -461,10 +461,18 @@ async function maybeSetupDeps({ repoRoot, baseDir, worktreeDir, depsMode, compon
   // Install path (also used for link-or-install fallthrough).
   // In sandbox contexts, try to seed node_modules from the base checkout first (copy-on-write reflink)
   // to make first-time PR worktrees much faster while keeping them fully isolated (no symlinks).
-  await seedNodeModulesFromBase({ baseDir: linkFrom, worktreeDir });
+  const inst = await setupInstalledWorktreeDependencies({
+    baseDir: linkFrom,
+    worktreeDir,
+    installDependencies,
+  });
 
-  const inst = await installDependencies({ dir: worktreeDir });
-  return { mode: depsMode, linked: false, installed: Boolean(inst.installed), message: inst.reason };
+  return {
+    mode: depsMode,
+    linked: false,
+    installed: Boolean(inst.installed),
+    message: inst.message,
+  };
 }
 
 async function normalizeRemoteName(repoRoot, remoteName) {
