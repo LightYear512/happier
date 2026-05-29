@@ -894,6 +894,68 @@ async function runSdkStreamUntilEof() {
       continue;
     }
 
+    if (scenario === 'simulator-preview-ios-mcp-start') {
+      const toolUseId = `tool_simulator_preview_ios_start_${turn}`;
+      const toolName = 'mcp__happier__happier_simulator_preview_ios_start';
+      const portRaw = String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_PORT || '').trim();
+      const pollMsRaw = String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_POLL_MS || '').trim();
+      const toolInput = {
+        ...(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_ID
+          ? { deviceId: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_ID) }
+          : {}),
+        ...(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_WDA_URL
+          ? { wdaUrl: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_WDA_URL) }
+          : {}),
+        ...(portRaw ? { port: Number(portRaw) } : {}),
+        ...(pollMsRaw ? { pollMs: Number(pollMsRaw) } : {}),
+        deviceName: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_DEVICE_NAME || 'iOS Simulator'),
+        ...(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_APP_NAME
+          ? { appName: String(process.env.HAPPIER_E2E_FAKE_CLAUDE_SIMULATOR_APP_NAME) }
+          : {}),
+      };
+
+      emitSdk(createAssistantMessage([
+        {
+          type: 'tool_use',
+          id: toolUseId,
+          name: toolName,
+          input: toolInput,
+        },
+      ]));
+
+      try {
+        const result = await callMcpServerTool({
+          serverConfig: mergedMcpServers.happier,
+          toolName: 'happier_simulator_preview_ios_start',
+          toolArgs: toolInput,
+          logPath,
+          invocationId,
+        });
+        emitSdk(createUserMessage([
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: formatMcpToolResultContent(result),
+            is_error: Boolean(result?.isError),
+          },
+        ]));
+        emitSdk(createAssistantMessage([{ type: 'text', text: `FAKE_SIMULATOR_PREVIEW_IOS_STARTED_${turn}` }]));
+        emitSdk(createResultSuccess());
+      } catch (error) {
+        emitSdk(createUserMessage([
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: error instanceof Error ? error.message : String(error),
+            is_error: true,
+          },
+        ]));
+        emitSdk(createAssistantMessage([{ type: 'text', text: `FAKE_SIMULATOR_PREVIEW_IOS_FAILED_${turn}` }]));
+        emitSdk(createResultSuccess());
+      }
+      continue;
+    }
+
     if (scenario === 'voice-actions-send-session-message') {
       const assistant = createAssistantMessage([
         {

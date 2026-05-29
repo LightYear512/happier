@@ -2761,6 +2761,59 @@ await server.connect(new StdioServerTransport());
     };
   },
 
+  simulator_preview_ios_start: (provider) => {
+    assertProviderId(provider, 'codex');
+    return {
+      id: 'simulator_preview_ios_start',
+      title: 'simulator preview: start iOS preview via Happier MCP server',
+      tier: 'extended',
+      yolo: true,
+      assertPendingDrain: false,
+      traceProtocols: ['codex'],
+      cliEnv: {
+        HAPPIER_CODEX_BACKEND_MODE: 'appServer',
+      },
+      accountSettings: {
+        codexBackendMode: 'appServer',
+        experiments: true,
+        featureToggles: {
+          'sessions.devPreview': true,
+        },
+      },
+      waitMs: 240_000,
+      inactivityTimeoutMs: 120_000,
+      prompt: () =>
+        [
+          'Run exactly one tool call:',
+          '- Use the happier_simulator_preview_ios_start tool.',
+          '- Set deviceId to "A1B2-C3D4".',
+          '- Set wdaUrl to "http://127.0.0.1:8100".',
+          '- Set deviceName to "iPhone 15 Pro".',
+          '- Set appName to "Happier iOS Preview Proof".',
+          '- Set pollMs to 500.',
+          '- Do not use shell, execute, or file tools.',
+          '- Then reply DONE.',
+        ].join('\n'),
+      requiredTraceSubstrings: [
+        'happier_simulator_preview_ios_start',
+        'iPhone 15 Pro',
+        'stream.mjpeg',
+      ],
+      postSatisfy: {
+        timeoutMs: 300_000,
+        run: async ({ workspaceDir, baseUrl, token, sessionId, secret }) => {
+          await captureSimulatorPreviewWebProof({
+            workspaceDir,
+            baseUrl,
+            token,
+            sessionId,
+            secret,
+          });
+        },
+      },
+    };
+  },
+
   glob_tool_list_files: (provider) => {
     assertProviderId(provider, 'kilo');
     const pid = acpProviderId(provider);
