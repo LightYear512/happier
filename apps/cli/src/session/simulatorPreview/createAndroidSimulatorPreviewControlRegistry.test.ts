@@ -50,6 +50,133 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
     });
   });
 
+  it('sends normalized swipe, text, and keyevent input through adb input', async () => {
+    const runAdbInput = vi.fn(async () => {});
+    const registry = createAndroidSimulatorPreviewControlRegistry({
+      nowMs: () => 1_000,
+      randomId: () => 'lease_user_1',
+      runAdbInput,
+    });
+
+    registry.registerAndroidPreview({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      deviceId: 'emulator-5554',
+      deviceWidth: 1080,
+      deviceHeight: 1920,
+    });
+    await registry.acquire({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 30_000,
+    });
+
+    await expect(registry.sendInput({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      input: { type: 'swipe', x1: 0.1, y1: 0.2, x2: 0.8, y2: 0.9, durationMs: 350 },
+    })).resolves.toEqual({ ok: true });
+    await expect(registry.sendInput({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      input: { type: 'text', text: 'hello world' },
+    })).resolves.toEqual({ ok: true });
+    await expect(registry.sendInput({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      input: { type: 'keyevent', key: 'back' },
+    })).resolves.toEqual({ ok: true });
+
+    expect(runAdbInput).toHaveBeenNthCalledWith(1, {
+      deviceId: 'emulator-5554',
+      input: { type: 'swipe', x1: 108, y1: 384, x2: 864, y2: 1728, durationMs: 350 },
+    });
+    expect(runAdbInput).toHaveBeenNthCalledWith(2, {
+      deviceId: 'emulator-5554',
+      input: { type: 'text', text: 'hello world' },
+    });
+    expect(runAdbInput).toHaveBeenNthCalledWith(3, {
+      deviceId: 'emulator-5554',
+      input: { type: 'keyevent', key: 'back' },
+    });
+  });
+
+  it('records accepted and rejected input events in the audit timeline', async () => {
+    let nowMs = 1_000;
+    const registry = createAndroidSimulatorPreviewControlRegistry({
+      nowMs: () => nowMs,
+      randomId: () => 'lease_user_1',
+      runAdbInput: vi.fn(async () => {}),
+    });
+
+    registry.registerAndroidPreview({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      deviceWidth: 1080,
+      deviceHeight: 1920,
+    });
+    await registry.acquire({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      leaseTtlMs: 1_000,
+    });
+    await registry.sendInput({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    });
+    nowMs = 2_001;
+    await registry.sendInput({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+      input: { type: 'keyevent', key: 'back' },
+    });
+
+    expect(registry.listInputTimeline({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+    })).toEqual([
+      {
+        atMs: 1_000,
+        accepted: true,
+        owner: 'user',
+        holderId: 'browser_tab_1',
+        generation: 1,
+        input: { type: 'tap', x: 0.5, y: 0.25 },
+      },
+      {
+        atMs: 2_001,
+        accepted: false,
+        errorCode: 'lease_expired',
+        owner: 'user',
+        holderId: 'browser_tab_1',
+        generation: 1,
+        input: { type: 'keyevent', key: 'back' },
+      },
+    ]);
+  });
+
   it('rejects stale generations before adb input is sent', async () => {
     const runAdbInput = vi.fn(async () => {});
     const registry = createAndroidSimulatorPreviewControlRegistry({
@@ -84,6 +211,13 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
       error: 'stale_generation',
     });
     expect(runAdbInput).not.toHaveBeenCalled();
+    expect(registry.listInputTimeline({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+    })[0]).toEqual(expect.objectContaining({
+      accepted: false,
+      errorCode: 'stale_generation',
+    }));
   });
 
   it('rejects expired leases before adb input is sent', async () => {

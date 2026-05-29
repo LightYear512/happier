@@ -353,6 +353,7 @@ function SessionSimulatorPreviewDetailsPane(props: Readonly<{
             connectionPath={props.resource.connectionPath}
             controlLease={control.controlLease ?? undefined}
             onRequestControl={control.requestControl}
+            onReleaseControl={control.releaseControl}
             onSendInput={control.sendInput}
         />
     );

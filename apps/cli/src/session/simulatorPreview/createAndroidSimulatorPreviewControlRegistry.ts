@@ -9,10 +9,50 @@ export type SimulatorPreviewTapInput = Readonly<{
   y: number;
 }>;
 
-export type SimulatorPreviewNormalizedInput = Readonly<{
-  type: 'tap';
-  x: number;
-  y: number;
+export type SimulatorPreviewSwipeInput = Readonly<{
+  type: 'swipe';
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  durationMs?: number;
+}>;
+
+export type SimulatorPreviewTextInput = Readonly<{
+  type: 'text';
+  text: string;
+}>;
+
+export type SimulatorPreviewKeyeventInput = Readonly<{
+  type: 'keyevent';
+  key: 'back' | 'home' | 'enter';
+}>;
+
+export type SimulatorPreviewNormalizedInput =
+  | SimulatorPreviewTapInput
+  | SimulatorPreviewSwipeInput
+  | SimulatorPreviewTextInput
+  | SimulatorPreviewKeyeventInput;
+
+type SimulatorPreviewDeviceInput = SimulatorPreviewNormalizedInput;
+
+type SimulatorPreviewInputErrorCode =
+  | 'lease_not_found'
+  | 'stale_generation'
+  | 'invalid_lease'
+  | 'lease_owner_mismatch'
+  | 'lease_holder_mismatch'
+  | 'lease_expired'
+  | 'adb_input_failed';
+
+export type SimulatorPreviewInputTimelineEntry = Readonly<{
+  atMs: number;
+  accepted: boolean;
+  owner: SimulatorPreviewControlOwner;
+  holderId?: string;
+  generation: number;
+  input: SimulatorPreviewNormalizedInput;
+  errorCode?: SimulatorPreviewInputErrorCode;
 }>;
 
 export type AndroidSimulatorPreviewControlRegistry = ReturnType<typeof createAndroidSimulatorPreviewControlRegistry>;
@@ -37,11 +77,12 @@ type RegistryEntry = Readonly<{
   registration: AndroidPreviewRegistration;
   generation: number;
   lease: ControlLease | null;
+  inputTimeline: readonly SimulatorPreviewInputTimelineEntry[];
 }>;
 
 type RunAdbInputRequest = Readonly<{
   deviceId?: string;
-  input: SimulatorPreviewTapInput;
+  input: SimulatorPreviewDeviceInput;
 }>;
 
 export type AndroidSimulatorPreviewControlRegistryOptions = Readonly<{
@@ -61,14 +102,50 @@ function clampNormalized(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function escapeAdbInputText(text: string): string {
+  let escaped = '';
+  for (const char of text) {
+    if (/\s/u.test(char)) {
+      escaped += '%s';
+    } else if (char === '%') {
+      escaped += '%25';
+    } else if (/["'\\&|;<>()$`*?\[\]{}~!#]/u.test(char)) {
+      escaped += `\\${char}`;
+    } else {
+      escaped += char;
+    }
+  }
+  return escaped;
+}
+
+function mapKeyevent(key: SimulatorPreviewKeyeventInput['key']): string {
+  if (key === 'back') return 'KEYCODE_BACK';
+  if (key === 'home') return 'KEYCODE_HOME';
+  return 'KEYCODE_ENTER';
+}
+
+function buildAdbInputArgs(input: SimulatorPreviewDeviceInput): string[] {
+  if (input.type === 'tap') return ['tap', String(input.x), String(input.y)];
+  if (input.type === 'swipe') {
+    return [
+      'swipe',
+      String(input.x1),
+      String(input.y1),
+      String(input.x2),
+      String(input.y2),
+      ...(typeof input.durationMs === 'number' ? [String(input.durationMs)] : []),
+    ];
+  }
+  if (input.type === 'text') return ['text', escapeAdbInputText(input.text)];
+  return ['keyevent', mapKeyevent(input.key)];
+}
+
 async function runAndroidAdbInput(request: RunAdbInputRequest): Promise<void> {
   const args = [
     ...(request.deviceId ? ['-s', request.deviceId] : []),
     'shell',
     'input',
-    'tap',
-    String(request.input.x),
-    String(request.input.y),
+    ...buildAdbInputArgs(request.input),
   ];
   await new Promise<void>((resolve, reject) => {
     const child = spawn('adb', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -102,6 +179,7 @@ export function createAndroidSimulatorPreviewControlRegistry(
         registration,
         generation: existing?.generation ?? 0,
         lease: existing?.lease ?? null,
+        inputTimeline: existing?.inputTimeline ?? [],
       });
     },
 
@@ -141,6 +219,7 @@ export function createAndroidSimulatorPreviewControlRegistry(
         ...entry,
         generation,
         lease,
+        inputTimeline: entry.inputTimeline,
       });
       return {
         ok: true as const,
@@ -172,6 +251,7 @@ export function createAndroidSimulatorPreviewControlRegistry(
         ...entry,
         generation,
         lease: null,
+        inputTimeline: entry.inputTimeline,
       });
       return { ok: true as const, generation, mode: 'idle' as const };
     },
@@ -188,26 +268,96 @@ export function createAndroidSimulatorPreviewControlRegistry(
       const key = keyFor(input.sessionId, input.simulatorSessionId);
       const entry = entries.get(key);
       if (!entry?.lease) {
+        if (entry) {
+          recordInputTimeline(entries, key, entry, input, nowMs(), false, 'lease_not_found');
+        }
         return { ok: false as const, errorCode: 'lease_not_found' as const, error: 'lease_not_found' as const };
       }
       if (input.generation !== entry.generation) {
+        recordInputTimeline(entries, key, entry, input, nowMs(), false, 'stale_generation');
         return { ok: false as const, errorCode: 'stale_generation' as const, error: 'stale_generation' as const };
       }
       const leaseError = validateLease(entry.lease, input, nowMs());
-      if (leaseError) return leaseError;
+      if (leaseError) {
+        recordInputTimeline(entries, key, entry, input, nowMs(), false, leaseError.errorCode);
+        return leaseError;
+      }
 
-      const pixelInput: SimulatorPreviewTapInput = {
-        type: 'tap',
-        x: Math.round(clampNormalized(input.input.x) * entry.registration.deviceWidth),
-        y: Math.round(clampNormalized(input.input.y) * entry.registration.deviceHeight),
-      };
-      await runAdbInput({
-        ...(entry.registration.deviceId ? { deviceId: entry.registration.deviceId } : {}),
-        input: pixelInput,
-      });
+      try {
+        await runAdbInput({
+          ...(entry.registration.deviceId ? { deviceId: entry.registration.deviceId } : {}),
+          input: toDeviceInput(input.input, entry.registration),
+        });
+      } catch (error) {
+        recordInputTimeline(entries, key, entry, input, nowMs(), false, 'adb_input_failed');
+        throw error;
+      }
+      recordInputTimeline(entries, key, entry, input, nowMs(), true);
       return { ok: true as const };
     },
+
+    listInputTimeline(input: Readonly<{
+      sessionId: string;
+      simulatorSessionId: string;
+    }>): readonly SimulatorPreviewInputTimelineEntry[] {
+      return [...(entries.get(keyFor(input.sessionId, input.simulatorSessionId))?.inputTimeline ?? [])];
+    },
   };
+}
+
+function toDeviceInput(
+  input: SimulatorPreviewNormalizedInput,
+  registration: AndroidPreviewRegistration,
+): SimulatorPreviewDeviceInput {
+  if (input.type === 'tap') {
+    return {
+      type: 'tap',
+      x: Math.round(clampNormalized(input.x) * registration.deviceWidth),
+      y: Math.round(clampNormalized(input.y) * registration.deviceHeight),
+    };
+  }
+  if (input.type === 'swipe') {
+    return {
+      type: 'swipe',
+      x1: Math.round(clampNormalized(input.x1) * registration.deviceWidth),
+      y1: Math.round(clampNormalized(input.y1) * registration.deviceHeight),
+      x2: Math.round(clampNormalized(input.x2) * registration.deviceWidth),
+      y2: Math.round(clampNormalized(input.y2) * registration.deviceHeight),
+      ...(typeof input.durationMs === 'number' ? { durationMs: input.durationMs } : {}),
+    };
+  }
+  return input;
+}
+
+function recordInputTimeline(
+  entries: Map<string, RegistryEntry>,
+  key: string,
+  entry: RegistryEntry,
+  request: Readonly<{
+    generation: number;
+    owner: SimulatorPreviewControlOwner;
+    holderId?: string;
+    input: SimulatorPreviewNormalizedInput;
+  }>,
+  atMs: number,
+  accepted: boolean,
+  errorCode?: SimulatorPreviewInputErrorCode,
+): void {
+  entries.set(key, {
+    ...entry,
+    inputTimeline: [
+      ...entry.inputTimeline,
+      {
+        atMs,
+        accepted,
+        owner: request.owner,
+        ...(request.holderId ? { holderId: request.holderId } : {}),
+        generation: request.generation,
+        input: request.input,
+        ...(errorCode ? { errorCode } : {}),
+      },
+    ],
+  });
 }
 
 function validateLease(

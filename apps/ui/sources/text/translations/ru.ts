@@ -5647,6 +5647,14 @@ export const ru: TranslationStructure = {
         screenAlt: ({ deviceName }: { deviceName: string }) => `Экран симулятора ${deviceName}`,
         ownerLabel: ({ owner }: { owner: string }) => `Владелец: ${owner}`,
         requestControl: "Управлять",
+        releaseControl: "Release",
+        controls: {
+          back: "Back",
+          home: "Home",
+          enter: "Enter",
+          textPlaceholder: "Text input",
+          sendText: "Send",
+        },
         owner: {
           ai: "ИИ",
           user: "пользователь",

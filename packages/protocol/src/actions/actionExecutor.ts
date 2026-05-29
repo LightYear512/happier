@@ -114,6 +114,13 @@ type SessionSimulatorPreviewInputSendActionInput = Readonly<{
   input?: unknown;
 }>;
 
+type SessionSimulatorPreviewInputPayload = Readonly<
+  | { type: 'tap'; x: number; y: number }
+  | { type: 'swipe'; x1: number; y1: number; x2: number; y2: number; durationMs?: number }
+  | { type: 'text'; text: string }
+  | { type: 'keyevent'; key: 'back' | 'home' | 'enter' }
+>;
+
 export type ActionExecutorDeps = Readonly<{
   // Execution runs (session-scoped RPC)
   executionRunStart: (sessionId: string, request: any, opts?: Readonly<{ serverId?: string | null }>) => Promise<unknown>;
@@ -191,7 +198,7 @@ export type ActionExecutorDeps = Readonly<{
     leaseId: string;
     generation: number;
     owner: 'ai' | 'user';
-    input: Readonly<{ type: 'tap'; x: number; y: number }>;
+    input: SessionSimulatorPreviewInputPayload;
   }>) => Promise<unknown>;
   sessionSpawnNew: (args: Readonly<{
     tag?: string;
@@ -1551,8 +1558,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const simulatorSessionId = normalizeId(input.simulatorSessionId);
           const leaseId = normalizeId(input.leaseId);
           const owner = input.owner === 'ai' ? 'ai' : input.owner === 'user' ? 'user' : null;
-          const payload = input.input as { type?: unknown; x?: unknown; y?: unknown } | null;
-          if (!simulatorSessionId || !leaseId || !owner || typeof input.generation !== 'number' || payload?.type !== 'tap' || typeof payload.x !== 'number' || typeof payload.y !== 'number') {
+          const payload = input.input as SessionSimulatorPreviewInputPayload | null;
+          if (!simulatorSessionId || !leaseId || !owner || typeof input.generation !== 'number' || !payload) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
           const res = await deps.sessionSimulatorPreviewInputSend({
@@ -1561,11 +1568,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             leaseId,
             generation: input.generation,
             owner,
-            input: {
-              type: 'tap',
-              x: payload.x,
-              y: payload.y,
-            },
+            input: payload,
           });
           return { ok: true, result: res };
         }

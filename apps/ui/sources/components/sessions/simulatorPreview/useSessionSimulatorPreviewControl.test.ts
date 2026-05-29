@@ -19,6 +19,8 @@ describe('useSessionSimulatorPreviewControl', () => {
                 owner: 'user',
                 expiresAtMs: 31_000,
             })
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ ok: true });
         const { useSessionSimulatorPreviewControl } = await import('./useSessionSimulatorPreviewControl');
 
@@ -36,6 +38,16 @@ describe('useSessionSimulatorPreviewControl', () => {
             generation: 1,
             owner: 'user',
             input: { type: 'tap', x: 0.5, y: 0.25 },
+        });
+        await hook.getCurrent().sendInput({
+            simulatorSessionId: 'sim_android_1',
+            leaseId: 'lease_user_1',
+            generation: 1,
+            owner: 'user',
+            input: { type: 'text', text: 'hello world' },
+        });
+        await act(async () => {
+            await hook.getCurrent().releaseControl();
         });
 
         expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(1, {
@@ -59,5 +71,62 @@ describe('useSessionSimulatorPreviewControl', () => {
                 input: { type: 'tap', x: 0.5, y: 0.25 },
             },
         });
+        expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(3, {
+            sessionId: 'sess_1',
+            method: 'session.simulatorPreview.input.send',
+            payload: {
+                simulatorSessionId: 'sim_android_1',
+                leaseId: 'lease_user_1',
+                generation: 1,
+                owner: 'user',
+                input: { type: 'text', text: 'hello world' },
+            },
+        });
+        expect(sessionRpcWithServerScope).toHaveBeenNthCalledWith(4, {
+            sessionId: 'sess_1',
+            method: 'session.simulatorPreview.control.release',
+            payload: {
+                simulatorSessionId: 'sim_android_1',
+                leaseId: 'lease_user_1',
+                owner: 'user',
+                holderId: 'happier-ui',
+            },
+        });
+        expect(hook.getCurrent().controlLease).toBeNull();
+    });
+
+    it('keeps the active lease when release is rejected', async () => {
+        sessionRpcWithServerScope
+            .mockResolvedValueOnce({
+                ok: true,
+                leaseId: 'lease_user_1',
+                generation: 1,
+                owner: 'user',
+                expiresAtMs: 31_000,
+            })
+            .mockResolvedValueOnce({
+                ok: false,
+                errorCode: 'lease_owner_mismatch',
+                error: 'lease_owner_mismatch',
+            });
+        const { useSessionSimulatorPreviewControl } = await import('./useSessionSimulatorPreviewControl');
+
+        const hook = await renderHook(() => useSessionSimulatorPreviewControl({
+            sessionId: 'sess_1',
+            simulatorSessionId: 'sim_android_1',
+        }));
+
+        await act(async () => {
+            await hook.getCurrent().requestControl();
+        });
+        await act(async () => {
+            await hook.getCurrent().releaseControl();
+        });
+
+        expect(hook.getCurrent().controlLease).toEqual(expect.objectContaining({
+            leaseId: 'lease_user_1',
+            generation: 1,
+            owner: 'user',
+        }));
     });
 });
