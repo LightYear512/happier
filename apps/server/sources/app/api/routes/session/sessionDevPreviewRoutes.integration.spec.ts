@@ -1,11 +1,18 @@
 import Fastify from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { auth } from '@/app/auth/auth';
 import { db } from '@/storage/db';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
+import { enableErrorHandlers } from '@/app/api/utils/enableErrorHandlers';
+import { enableServeUi } from '@/app/api/utils/enableServeUi';
+import { buildHostNamespacePreviewHost } from '@/app/devPreview/previewHostNamespace';
+import { createSessionDevPreviewToken } from '@/app/api/devPreview/sessionDevPreviewToken';
 
 import { sessionRoutes } from './sessionRoutes';
 
@@ -97,6 +104,10 @@ describe('session dev preview routes (integration)', () => {
   type DevPreviewRouteTestApp = ReturnType<typeof createTestApp>;
 
   async function mintPreviewToken(app: DevPreviewRouteTestApp, fixture: DevPreviewRouteFixture): Promise<string> {
+      harness.resetEnv({
+        NODE_ENV: 'development',
+        HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
+      });
       const mint = await app.inject({
         method: 'POST',
         url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
@@ -214,6 +225,7 @@ describe('session dev preview routes (integration)', () => {
   it('uses a host-based preview origin when the server has a preview host base domain configured', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HANDY_MASTER_SECRET: 'preview-host-secret',
     });
     const fixture = await createFixture();
     const forwardRpcForUser = vi.fn(async ({ method, params }: { method: string; params: any }) => {
@@ -257,6 +269,7 @@ describe('session dev preview routes (integration)', () => {
 
     const app = createTestApp(forwardRpcForUser);
     sessionRoutes(app as any);
+    enableErrorHandlers(app as any);
     await app.ready();
 
     try {
@@ -276,7 +289,7 @@ describe('session dev preview routes (integration)', () => {
       expect(tokenPayload.namespaceStrategy).toBe('host');
       const previewUrl = new URL(tokenPayload.previewUrl);
       expect(previewUrl.protocol).toBe('https:');
-      expect(previewUrl.hostname.endsWith('.preview.example.test')).toBe(true);
+      expect(previewUrl.hostname).toMatch(/^hp-[a-z2-7]{26}\.preview\.example\.test$/);
       expect(previewUrl.port).toBe('43210');
       expect(previewUrl.pathname).toBe('/');
       expect(previewUrl.searchParams.get('previewToken')).toBe(tokenPayload.token);
@@ -334,7 +347,190 @@ describe('session dev preview routes (integration)', () => {
     }
   });
 
-  it('falls back to the path namespace when the configured preview host base domain is invalid', async () => {
+  it('serves host preview relay when UI is mounted at root', async () => {
+    harness.resetEnv({
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HANDY_MASTER_SECRET: 'preview-host-secret',
+      HAPPIER_SERVER_UI_DIR: '/tmp/ui',
+      HAPPIER_SERVER_UI_PREFIX: '/',
+    });
+    const fixture = await createFixture();
+    const dir = await mkdtemp(join(tmpdir(), 'happier-preview-ui-root-'));
+    const forwardRpcForUser = vi.fn(async ({ method, params }: { method: string; params: any }) => {
+      if (method === `${fixture.machineId}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}` && params.path === '/dashboard') {
+        return {
+          ok: true as const,
+          result: {
+            ok: true,
+            status: 200,
+            headers: {
+              'content-type': 'text/plain; charset=utf-8',
+            },
+            bodyBase64: Buffer.from('host preview wins over ui root', 'utf8').toString('base64'),
+          },
+        };
+      }
+      throw new Error(`unexpected preview request ${method} ${params?.path ?? ''}`);
+    });
+    const app = createTestApp(forwardRpcForUser);
+
+    try {
+      await writeFile(join(dir, 'index.html'), '<!doctype html><html><body>ui-root</body></html>\n', 'utf8');
+      enableServeUi(app as any, { dir, prefix: '/', mountRoot: true, required: false });
+      sessionRoutes(app as any);
+      enableErrorHandlers(app as any);
+      await app.ready();
+
+      const deepLink = await app.inject({
+        method: 'GET',
+        url: '/terminal/connect',
+        headers: {
+          host: 'app.example.test',
+        },
+      });
+
+      expect(deepLink.statusCode).toBe(200);
+      expect(deepLink.body).toContain('ui-root');
+
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': 'stack.example.test:43210',
+          'x-forwarded-proto': 'https',
+        },
+      });
+
+      expect(mint.statusCode).toBe(200);
+      const tokenPayload = mint.json() as { token: string; previewUrl: string };
+      const previewUrl = new URL(tokenPayload.previewUrl);
+      const previewRedirect = await app.inject({
+        method: 'GET',
+        url: `/dashboard?previewToken=${encodeURIComponent(tokenPayload.token)}`,
+        headers: {
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': previewUrl.host,
+        },
+      });
+
+      expect(previewRedirect.statusCode).toBe(302);
+      const preview = await app.inject({
+        method: 'GET',
+        url: String(previewRedirect.headers.location ?? ''),
+        headers: {
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': previewUrl.host,
+          cookie: String(previewRedirect.headers['set-cookie']).split(';')[0] ?? '',
+        },
+      });
+
+      expect(preview.statusCode).toBe(200);
+      expect(preview.body).toBe('host preview wins over ui root');
+      expect(preview.body).not.toContain('ui-root');
+      expect(forwardRpcForUser).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: expect.objectContaining({
+            sessionId: fixture.sessionId,
+            machineId: fixture.machineId,
+            routeKey: 'route_1',
+            path: '/dashboard',
+          }),
+        }),
+      );
+
+      const explodingRedirect = await app.inject({
+        method: 'GET',
+        url: `/explode?previewToken=${encodeURIComponent(tokenPayload.token)}`,
+        headers: {
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': previewUrl.host,
+        },
+      });
+      expect(explodingRedirect.statusCode).toBe(302);
+
+      const exploding = await app.inject({
+        method: 'GET',
+        url: String(explodingRedirect.headers.location ?? ''),
+        headers: {
+          host: 'internal.example.test:43210',
+          'x-forwarded-host': previewUrl.host,
+          cookie: String(explodingRedirect.headers['set-cookie']).split(';')[0] ?? '',
+        },
+      });
+
+      expect(exploding.statusCode).toBe(500);
+      expect(exploding.body).not.toContain('ui-root');
+      expect(exploding.body).not.toContain('Not found');
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps host preview unavailable when server feature policy disables the relay', async () => {
+    harness.resetEnv({
+      HAPPIER_BUILD_FEATURES_DENY: 'sessions.devPreview.relay',
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HANDY_MASTER_SECRET: 'preview-host-secret',
+    });
+    const fixture = await createFixture();
+    const dir = await mkdtemp(join(tmpdir(), 'happier-preview-policy-ui-root-'));
+    const forwardRpcForUser = vi.fn(async () => {
+      throw new Error('forwardRpcForUser should not be called when relay is disabled by policy');
+    });
+    const app = createTestApp(forwardRpcForUser);
+    await writeFile(join(dir, 'index.html'), '<!doctype html><html><body>ui-root</body></html>\n', 'utf8');
+    enableServeUi(app as any, { dir, prefix: '/', mountRoot: true, required: false });
+    sessionRoutes(app as any);
+    enableErrorHandlers(app as any);
+    await app.ready();
+
+    try {
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: 'stack.example.test',
+          'x-forwarded-proto': 'https',
+        },
+      });
+
+      expect(mint.statusCode).toBe(404);
+
+      const token = await createSessionDevPreviewToken({
+        userId: fixture.accountId,
+        sessionId: fixture.sessionId,
+        machineId: fixture.machineId,
+        routeKey: 'route_1',
+      });
+      const previewHost = buildHostNamespacePreviewHost({
+        sessionId: fixture.sessionId,
+        machineId: fixture.machineId,
+        routeKey: 'route_1',
+      }, process.env);
+      expect(previewHost).toBeTruthy();
+
+      const preview = await app.inject({
+        method: 'GET',
+        url: `/?previewToken=${encodeURIComponent(token)}`,
+        headers: {
+          host: String(previewHost),
+        },
+      });
+
+      expect(preview.statusCode).toBe(404);
+      expect(preview.body).not.toContain('ui-root');
+      expect(forwardRpcForUser).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back to the path namespace when the configured preview host base domain is invalid', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'https://preview.example.test',
     });
@@ -358,12 +554,85 @@ describe('session dev preview routes (integration)', () => {
         },
       });
 
-      expect(mint.statusCode).toBe(200);
-      const tokenPayload = mint.json() as { token: string; previewUrl: string; namespaceStrategy: string };
-      expect(tokenPayload.namespaceStrategy).toBe('path');
-      expect(tokenPayload.previewUrl).toBe(
-        `https://stack.example.test/preview/${fixture.sessionId}/${fixture.machineId}/route_1/?previewToken=${encodeURIComponent(tokenPayload.token)}`,
-      );
+      expect(mint.statusCode).toBe(503);
+      expect(forwardRpcForUser).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps path namespace unavailable in production even when explicitly configured', async () => {
+    harness.resetEnv({
+      NODE_ENV: 'production',
+      HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
+    });
+    const fixture = await createFixture();
+    const forwardRpcForUser = vi.fn(async () => {
+      throw new Error('forwardRpcForUser should not be called for production path mode');
+    });
+
+    const app = createTestApp(forwardRpcForUser);
+    sessionRoutes(app as any);
+    await app.ready();
+
+    try {
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+        },
+      });
+
+      expect(mint.statusCode).toBe(503);
+
+      const preview = await app.inject({
+        method: 'GET',
+        url: `/preview/${fixture.sessionId}/${fixture.machineId}/route_1/?previewToken=token`,
+      });
+      expect(preview.statusCode).toBe(404);
+      expect(forwardRpcForUser).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects preview host requests with a mismatched host id without falling back to UI', async () => {
+    harness.resetEnv({
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HANDY_MASTER_SECRET: 'preview-host-secret',
+    });
+    const fixture = await createFixture();
+    const forwardRpcForUser = vi.fn(async () => {
+      throw new Error('forwardRpcForUser should not be called for mismatched host id');
+    });
+    const app = createTestApp(forwardRpcForUser);
+    sessionRoutes(app as any);
+    enableErrorHandlers(app as any);
+    await app.ready();
+
+    try {
+      const mint = await app.inject({
+        method: 'POST',
+        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          host: 'stack.example.test',
+          'x-forwarded-proto': 'https',
+        },
+      });
+      const tokenPayload = mint.json() as { token: string };
+      const preview = await app.inject({
+        method: 'GET',
+        url: `/?previewToken=${encodeURIComponent(tokenPayload.token)}`,
+        headers: {
+          host: 'hp-abcdefghijklmnopqrstuvwxyz.preview.example.test',
+        },
+      });
+
+      expect(preview.statusCode).toBe(403);
+      expect(preview.headers['content-type']).toMatch(/application\/json/i);
+      expect(preview.body).toContain('preview-host-scope-mismatch');
       expect(forwardRpcForUser).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -371,6 +640,10 @@ describe('session dev preview routes (integration)', () => {
   });
 
   it('scrubs preview tokens from GET URLs before opening the daemon relay', async () => {
+    harness.resetEnv({
+      NODE_ENV: 'development',
+      HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
+    });
     const fixture = await createFixture();
     const forwardRpcForUser = vi.fn(async () => {
       throw new Error('forwardRpcForUser should not be called before the token is moved into a preview cookie');
@@ -674,6 +947,10 @@ describe('session dev preview routes (integration)', () => {
   });
 
   it('rejects a preview token when the routeKey in the URL does not match the token scope', async () => {
+    harness.resetEnv({
+      NODE_ENV: 'development',
+      HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
+    });
     const fixture = await createFixture();
     const forwardRpcForUser = vi.fn(async () => {
       throw new Error('forwardRpcForUser should not be called for mismatched routeKey');

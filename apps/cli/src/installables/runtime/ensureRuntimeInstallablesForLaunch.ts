@@ -4,8 +4,10 @@ import { resolveInstallablePolicy } from '@happier-dev/protocol/installablesPoli
 import {
   getRuntimeInstallableAdapter,
   type RuntimeInstallableAdapter,
+  type RuntimeInstallableInstallResult,
 } from './runtimeInstallablesRegistry';
 import { startBackgroundRuntimeInstallableUpdate } from './startBackgroundRuntimeInstallableUpdate';
+import { configuration } from '@/configuration';
 
 type Deps = Readonly<{
   getRuntimeInstallableAdapter: (installableKey: InstallableKey) => Promise<RuntimeInstallableAdapter>;
@@ -22,6 +24,7 @@ export async function ensureRuntimeInstallablesForLaunch(
     settings: AccountSettings | null | undefined;
     machineId: string;
     env?: NodeJS.ProcessEnv;
+    installTimeoutMs?: number;
   }>,
   depsOverrides: Partial<Deps> = {},
 ): Promise<EnsureRuntimeInstallablesForLaunchResult> {
@@ -51,7 +54,11 @@ export async function ensureRuntimeInstallablesForLaunch(
     let installedThisLaunch = false;
 
     if (!resolution.availability.ok && resolution.canAutoInstall && policy.autoInstallWhenNeeded) {
-      const installResult = await adapter.installOrUpgrade();
+      const installResult = await runInstallOrUpgradeWithTimeout({
+        installableKey,
+        install: adapter.installOrUpgrade,
+        timeoutMs: params.installTimeoutMs ?? configuration.installablesLaunchAutoInstallTimeoutMs,
+      });
       if (!installResult.ok) {
         return {
           ok: false,
@@ -84,4 +91,28 @@ export async function ensureRuntimeInstallablesForLaunch(
   }
 
   return { ok: true, installedKeys };
+}
+
+async function runInstallOrUpgradeWithTimeout(params: Readonly<{
+  installableKey: InstallableKey;
+  install: () => Promise<RuntimeInstallableInstallResult>;
+  timeoutMs: number;
+}>): Promise<RuntimeInstallableInstallResult> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      params.install(),
+      new Promise<RuntimeInstallableInstallResult>((resolve) => {
+        timeout = setTimeout(() => {
+          resolve({
+            ok: false,
+            errorMessage: `Timed out after ${params.timeoutMs}ms while installing ${params.installableKey}`,
+            logPath: null,
+          });
+        }, params.timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }

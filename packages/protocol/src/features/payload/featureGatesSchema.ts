@@ -5,6 +5,18 @@ import { FeatureGateSchema, type FeatureGate } from './featureGate.js';
 const DEFAULT_GATE_DISABLED: FeatureGate = { enabled: false };
 const DEFAULT_GATE_ENABLED: FeatureGate = { enabled: true };
 
+const DevPreviewRelayHostSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  baseDomain: z.string().nullable().default(null),
+  suggestedBaseDomain: z.string().nullable().default(null),
+  reason: z.string().optional(),
+});
+
+const DevPreviewRelayPathSchema = z.object({
+  enabled: z.boolean(),
+});
+
 const VoiceGateSchema = z.object({
   enabled: z.boolean(),
   happierVoice: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
@@ -107,12 +119,40 @@ export const FeatureGatesSchema = z.object({
           relay: z
             .object({
               enabled: z.boolean(),
+              host: DevPreviewRelayHostSchema.optional().default({
+                enabled: false,
+                configured: false,
+                baseDomain: null,
+                suggestedBaseDomain: null,
+              }),
+              path: DevPreviewRelayPathSchema.optional().default({ enabled: false }),
             })
             .optional()
-            .default({ enabled: false }),
+            .default({
+              enabled: false,
+              host: {
+                enabled: false,
+                configured: false,
+                baseDomain: null,
+                suggestedBaseDomain: null,
+              },
+              path: { enabled: false },
+            }),
         })
         .optional()
-        .default({ enabled: false, relay: { enabled: false } }),
+        .default({
+          enabled: false,
+          relay: {
+            enabled: false,
+            host: {
+              enabled: false,
+              configured: false,
+              baseDomain: null,
+              suggestedBaseDomain: null,
+            },
+            path: { enabled: false },
+          },
+        }),
       handoff: z
         .object({
           enabled: z.boolean(),
@@ -125,7 +165,19 @@ export const FeatureGatesSchema = z.object({
       enabled: false,
       folders: DEFAULT_GATE_DISABLED,
       usageLimitRecovery: DEFAULT_GATE_DISABLED,
-      devPreview: { enabled: false, relay: { enabled: false } },
+      devPreview: {
+        enabled: false,
+        relay: {
+          enabled: false,
+          host: {
+            enabled: false,
+            configured: false,
+            baseDomain: null,
+            suggestedBaseDomain: null,
+          },
+          path: { enabled: false },
+        },
+      },
       handoff: { enabled: false },
     }),
   machines: z

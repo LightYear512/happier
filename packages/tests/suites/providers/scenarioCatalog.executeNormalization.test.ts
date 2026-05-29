@@ -35,6 +35,7 @@ describe('scenarioCatalog: execute normalization', () => {
   it('allows codex execute_trace_ok to include optional pre-execute helper tool calls', () => {
     const scenario = scenarioCatalog.execute_trace_ok(acpProvider('codex'));
     expect(scenario.maxTraceEvents).toEqual({ toolCalls: 3, toolResults: 3 });
+    expect(scenario.inactivityTimeoutMs).toBe(240_000);
   });
 
   it('accepts opencode execute traces when rawToolName is bash', async () => {

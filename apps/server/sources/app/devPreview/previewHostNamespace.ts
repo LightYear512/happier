@@ -1,11 +1,18 @@
-import { Buffer } from 'node:buffer';
+import { createHmac } from 'node:crypto';
+import { createRequire } from 'node:module';
 import type { IncomingHttpHeaders } from 'node:http';
 
 import type { PreviewRouteContext } from './previewRoutePaths';
 
+const require = createRequire(import.meta.url);
+const psl = require('psl') as {
+  parse(hostname: string): { domain: string | null; error?: never } | { error: unknown; domain?: never };
+};
+
 const HOST_LABEL_PREFIX = 'hp';
 const MAX_DNS_LABEL_LENGTH = 63;
 const MAX_DNS_HOSTNAME_LENGTH = 253;
+const PREVIEW_HOST_ID_LENGTH = 26;
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -35,8 +42,7 @@ function isValidBaseDomain(value: string): boolean {
   return true;
 }
 
-function encodeLabel(value: string): string | null {
-  const bytes = Buffer.from(value, 'utf8');
+function encodeBase32(bytes: Uint8Array): string {
   let encoded = '';
   let buffer = 0;
   let bits = 0;
@@ -51,34 +57,7 @@ function encodeLabel(value: string): string | null {
   if (bits > 0) {
     encoded += BASE32_ALPHABET[(buffer << (5 - bits)) & 31];
   }
-  const label = `${HOST_LABEL_PREFIX}-${encoded}`;
-  return label.length <= MAX_DNS_LABEL_LENGTH ? label : null;
-}
-
-function decodeLabel(value: string): string | null {
-  if (!value.startsWith(`${HOST_LABEL_PREFIX}-`)) {
-    return null;
-  }
-  try {
-    let buffer = 0;
-    let bits = 0;
-    const bytes: number[] = [];
-    for (const char of value.slice(HOST_LABEL_PREFIX.length + 1)) {
-      const index = BASE32_ALPHABET.indexOf(char);
-      if (index < 0) {
-        return null;
-      }
-      buffer = (buffer << 5) | index;
-      bits += 5;
-      if (bits >= 8) {
-        bytes.push((buffer >> (bits - 8)) & 255);
-        bits -= 8;
-      }
-    }
-    return Buffer.from(bytes).toString('utf8');
-  } catch {
-    return null;
-  }
+  return encoded;
 }
 
 function normalizeHostHeader(host: string): string {
@@ -98,8 +77,58 @@ export function resolvePreviewHostBaseDomain(env: NodeJS.ProcessEnv = process.en
   return readBaseDomain(env);
 }
 
+export function resolveSuggestedPreviewHostBaseDomain(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = (env.HAPPIER_PUBLIC_SERVER_URL ?? '').trim();
+  if (!raw) {
+    return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:') {
+    return null;
+  }
+  const hostname = parsed.hostname.trim().toLowerCase();
+  if (!hostname || hostname === 'localhost' || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')) {
+    return null;
+  }
+  const parsedDomain = psl.parse(hostname);
+  if ('error' in parsedDomain || !parsedDomain.domain) {
+    return null;
+  }
+  const suggestion = `preview.${parsedDomain.domain}`;
+  return isValidBaseDomain(suggestion) ? suggestion : null;
+}
+
 export function resolvePreviewHostHeader(headers: IncomingHttpHeaders | Record<string, unknown> | undefined): string | undefined {
   return firstHeaderValue(headers?.['x-forwarded-host']) ?? firstHeaderValue(headers?.host);
+}
+
+function requirePreviewHostSecret(env: NodeJS.ProcessEnv): string | null {
+  const secret = (env.HANDY_MASTER_SECRET ?? '').trim();
+  return secret ? secret : null;
+}
+
+export function buildPreviewHostId(
+  context: PreviewRouteContext,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const secret = requirePreviewHostSecret(env);
+  if (!secret) {
+    return null;
+  }
+  const hmac = createHmac('sha256', secret);
+  hmac.update('preview-host-v1');
+  hmac.update('\0');
+  hmac.update(context.sessionId);
+  hmac.update('\0');
+  hmac.update(context.machineId);
+  hmac.update('\0');
+  hmac.update(context.routeKey);
+  return encodeBase32(hmac.digest()).slice(0, PREVIEW_HOST_ID_LENGTH);
 }
 
 export function buildHostNamespacePreviewHost(
@@ -110,19 +139,18 @@ export function buildHostNamespacePreviewHost(
   if (!baseDomain) {
     return null;
   }
-  const sessionLabel = encodeLabel(context.sessionId);
-  const machineLabel = encodeLabel(context.machineId);
-  const routeLabel = encodeLabel(context.routeKey);
-  if (!sessionLabel || !machineLabel || !routeLabel) {
+  const hostId = buildPreviewHostId(context, env);
+  if (!hostId) {
     return null;
   }
-  return `${routeLabel}.${machineLabel}.${sessionLabel}.${baseDomain}`;
+  const label = `${HOST_LABEL_PREFIX}-${hostId}`;
+  return label.length <= MAX_DNS_LABEL_LENGTH ? `${label}.${baseDomain}` : null;
 }
 
-export function parseHostNamespacePreviewContext(
+export function parseHostNamespacePreviewHost(
   hostHeader: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-): PreviewRouteContext | null {
+): { hostId: string; baseDomain: string } | null {
   const baseDomain = readBaseDomain(env);
   if (!baseDomain || typeof hostHeader !== 'string') {
     return null;
@@ -135,16 +163,21 @@ export function parseHostNamespacePreviewContext(
   }
 
   const labels = host.slice(0, -suffix.length).split('.').filter(Boolean);
-  if (labels.length !== 3) {
+  if (labels.length !== 1) {
     return null;
   }
+  const [label] = labels;
+  const prefix = `${HOST_LABEL_PREFIX}-`;
+  if (!label?.startsWith(prefix)) {
+    return null;
+  }
+  const hostId = label.slice(prefix.length);
+  return /^[a-z2-7]{26}$/.test(hostId) ? { hostId, baseDomain } : null;
+}
 
-  const [routeLabel, machineLabel, sessionLabel] = labels;
-  const routeKey = decodeLabel(routeLabel);
-  const machineId = decodeLabel(machineLabel);
-  const sessionId = decodeLabel(sessionLabel);
-  if (!routeKey || !machineId || !sessionId) {
-    return null;
-  }
-  return { sessionId, machineId, routeKey };
+export function parseHostNamespacePreviewContext(
+  hostHeader: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): PreviewRouteContext | null {
+  return null;
 }
