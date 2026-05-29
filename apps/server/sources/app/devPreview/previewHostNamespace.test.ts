@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildHostNamespacePreviewHost,
+  buildPreviewHostId,
   parseHostNamespacePreviewContext,
+  parseHostNamespacePreviewHost,
   resolvePreviewHostBaseDomain,
   resolvePreviewHostHeader,
+  resolveSuggestedPreviewHostBaseDomain,
 } from './previewHostNamespace';
 
 const routeContext = {
@@ -17,12 +20,17 @@ describe('previewHostNamespace', () => {
   it('round trips a preview route context through a host namespace', () => {
     const env = {
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: '.Preview.Example.Test.',
+      HANDY_MASTER_SECRET: 'preview-host-secret',
     };
 
     const host = buildHostNamespacePreviewHost(routeContext, env);
 
-    expect(host).toMatch(/\.preview\.example\.test$/);
-    expect(parseHostNamespacePreviewContext(`${host}:443`, env)).toEqual(routeContext);
+    expect(host).toMatch(/^hp-[a-z2-7]{26}\.preview\.example\.test$/);
+    expect(parseHostNamespacePreviewHost(`${host}:443`, env)).toEqual({
+      hostId: buildPreviewHostId(routeContext, env),
+      baseDomain: 'preview.example.test',
+    });
+    expect(parseHostNamespacePreviewContext(`${host}:443`, env)).toBeNull();
   });
 
   it('rejects invalid base domains so callers can fall back to path namespaces', () => {
@@ -38,8 +46,27 @@ describe('previewHostNamespace', () => {
 
       expect(resolvePreviewHostBaseDomain(env)).toBeNull();
       expect(buildHostNamespacePreviewHost(routeContext, env)).toBeNull();
+      expect(parseHostNamespacePreviewHost('hp-abcdefghijklmnopqrstuvwxyz.preview.example.test', env)).toBeNull();
       expect(parseHostNamespacePreviewContext('anything.example.test', env)).toBeNull();
     }
+  });
+
+  it('suggests a preview base domain from the public server registrable domain', () => {
+    expect(resolveSuggestedPreviewHostBaseDomain({
+      HAPPIER_PUBLIC_SERVER_URL: 'https://app.example.com',
+    })).toBe('preview.example.com');
+    expect(resolveSuggestedPreviewHostBaseDomain({
+      HAPPIER_PUBLIC_SERVER_URL: 'https://app.example.co.uk',
+    })).toBe('preview.example.co.uk');
+  });
+
+  it('does not suggest a preview base domain for local or IP server URLs', () => {
+    expect(resolveSuggestedPreviewHostBaseDomain({
+      HAPPIER_PUBLIC_SERVER_URL: 'http://localhost:3005',
+    })).toBeNull();
+    expect(resolveSuggestedPreviewHostBaseDomain({
+      HAPPIER_PUBLIC_SERVER_URL: 'http://49.235.44.141:3005',
+    })).toBeNull();
   });
 
   it('resolves proxied host headers before direct host headers', () => {

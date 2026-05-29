@@ -185,6 +185,8 @@ class Configuration {
   public readonly daemonStopSessionWaitForExitPollIntervalMs: number
   // Managed runtime installable auto-update background check interval.
   public readonly installablesRuntimeAutoUpdateCheckIntervalMs: number
+  // Managed runtime installable launch auto-install timeout.
+  public readonly installablesLaunchAutoInstallTimeoutMs: number
   // File system RPC limits (Files tab + transfers).
   public readonly filesReadMaxBytes: number
   // Prompt transfer payload limits (prompt assets + prompt registry items).
@@ -414,6 +416,10 @@ class Configuration {
     this.installablesRuntimeAutoUpdateCheckIntervalMs = resolveIntEnvWithBounds(
       'HAPPIER_INSTALLABLES_AUTO_UPDATE_CHECK_INTERVAL_MS',
       { min: 60_000, default: 6 * 60 * 60_000 },
+    );
+    this.installablesLaunchAutoInstallTimeoutMs = resolveIntEnvWithBounds(
+      'HAPPIER_INSTALLABLES_LAUNCH_AUTO_INSTALL_TIMEOUT_MS',
+      { min: 1_000, max: MAX_SAFE_NODE_TIMEOUT_MS, default: 60_000 },
     );
 
     // Default: 2.5MB. Defensive minimum: 1 byte.

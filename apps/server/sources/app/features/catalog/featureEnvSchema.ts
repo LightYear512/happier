@@ -34,6 +34,7 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   petsSyncEncryptedCustomPetSyncPolicy: 'HAPPIER_FEATURE_PETS_SYNC__ENCRYPTED_CUSTOM_PET_SYNC_POLICY',
 
   sessionsDevPreviewRelayEnabled: 'HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED',
+  sessionsDevPreviewRelayPathModeEnabled: 'HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED',
   sessionsHandoffEnabled: 'HAPPIER_FEATURE_SESSIONS_HANDOFF__ENABLED',
   sessionsUsageLimitRecoveryEnabled: 'HAPPIER_FEATURE_SESSIONS_USAGE_LIMIT_RECOVERY__ENABLED',
   sessionsFoldersEnabled: 'HAPPIER_FEATURE_SESSIONS_FOLDERS__ENABLED',

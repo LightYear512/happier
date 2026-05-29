@@ -97,6 +97,15 @@ describe('FeatureGatesSchema', () => {
             enabled: true,
             relay: {
               enabled: true,
+              host: {
+                enabled: true,
+                configured: true,
+                baseDomain: 'preview.example.com',
+                suggestedBaseDomain: null,
+              },
+              path: {
+                enabled: false,
+              },
             },
           },
         },
@@ -107,6 +116,8 @@ describe('FeatureGatesSchema', () => {
     expect(readServerEnabledBit(parsed, 'sessions')).toBe(true);
     expect(readServerEnabledBit(parsed, 'sessions.devPreview')).toBe(true);
     expect(readServerEnabledBit(parsed, 'sessions.devPreview.relay')).toBe(true);
+    expect(parsed.features.sessions.devPreview.relay.host.baseDomain).toBe('preview.example.com');
+    expect(parsed.features.sessions.devPreview.relay.path.enabled).toBe(false);
   });
 
   it('defaults missing usage-limit, account-group, and dev-preview gates to disabled', () => {

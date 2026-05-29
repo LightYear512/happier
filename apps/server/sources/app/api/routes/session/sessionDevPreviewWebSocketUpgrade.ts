@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
-import { parseHostNamespacePreviewContext, resolvePreviewHostHeader } from '@/app/devPreview/previewHostNamespace';
+import { parseHostNamespacePreviewHost, resolvePreviewHostHeader } from '@/app/devPreview/previewHostNamespace';
 
 const require = createRequire(import.meta.url);
 
@@ -74,6 +74,7 @@ export function matchPreviewRouteRequest(rawUrl: string): null | Readonly<{
   routeKey: string;
   path: string;
   search: string;
+  hostId?: string;
 }> {
   const parsed = new URL(rawUrl, 'http://127.0.0.1');
   const segments = parsed.pathname.split('/').filter(Boolean);
@@ -101,6 +102,7 @@ export function matchPreviewRouteRequest(rawUrl: string): null | Readonly<{
     sessionId,
     machineId,
     routeKey,
+    hostId: undefined,
     path: rest.length > 0 ? `/${rest.join('/')}` : '/',
     search: parsed.search,
   };
@@ -115,14 +117,18 @@ export function matchHostNamespacePreviewRequest(
   routeKey: string;
   path: string;
   search: string;
+  hostId?: string;
 }> {
-  const context = parseHostNamespacePreviewContext(resolvePreviewHostHeader(request.headers), env);
-  if (!context) {
+  const parsedHost = parseHostNamespacePreviewHost(resolvePreviewHostHeader(request.headers), env);
+  if (!parsedHost) {
     return null;
   }
   const parsed = new URL(request.url ?? '/', 'http://127.0.0.1');
   return {
-    ...context,
+    sessionId: '',
+    machineId: '',
+    routeKey: '',
+    hostId: parsedHost.hostId,
     path: parsed.pathname || '/',
     search: parsed.search,
   };

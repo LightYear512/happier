@@ -112,6 +112,10 @@ describe('session dev preview websocket relay (integration)', () => {
   }
 
   it('relays websocket preview frames through the machine-scoped socket and preserves the accepted subprotocol', async () => {
+    harness.resetEnv({
+      NODE_ENV: 'development',
+      HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
+    });
     const fixture = await createFixture();
     const upstream = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: () => 'vite-hmr' });
     await new Promise<void>((resolve) => {
