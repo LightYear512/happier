@@ -155,6 +155,36 @@ describe('ensureRuntimeInstallablesForLaunch', () => {
     });
   });
 
+  it('times out launch auto-install when the install process does not finish', async () => {
+    const adapter = createAdapter({
+      detectLaunchResolution: vi.fn(async () => ({
+        availability: { ok: false as const, errorMessage: 'codex-acp is not available on PATH' },
+        canAutoInstall: true,
+        canBackgroundAutoUpdate: false,
+      })),
+      installOrUpgrade: vi.fn(() => new Promise<never>(() => {})),
+    });
+
+    await expect(
+      ensureRuntimeInstallablesForLaunch(
+        {
+          installableKeys: [INSTALLABLE_KEYS.CODEX_ACP],
+          settings: accountSettingsParse({}),
+          machineId: 'machine-1',
+          installTimeoutMs: 10,
+        },
+        {
+          getRuntimeInstallableAdapter: async () => adapter,
+        },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      installableKey: INSTALLABLE_KEYS.CODEX_ACP,
+      errorMessage: 'Timed out after 10ms while installing codex-acp',
+      logPath: null,
+    });
+  });
+
   it('starts background auto-update checks for managed installables with auto-update enabled', async () => {
     const adapter = createAdapter({
       detectLaunchResolution: vi.fn(async () => ({

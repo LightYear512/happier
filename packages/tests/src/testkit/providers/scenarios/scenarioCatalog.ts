@@ -2237,6 +2237,7 @@ await server.connect(new StdioServerTransport());
       title: 'execute: echo CODEX_TRACE_OK',
       tier: 'smoke',
       yolo: true,
+      inactivityTimeoutMs: 240_000,
       // Codex ACP can emit up to two pre-execute helper calls before the terminal execute/Bash call.
       // Keep this bounded to preserve drift signal while avoiding stale one-call assumptions.
       maxTraceEvents: { toolCalls: 3, toolResults: 3 },

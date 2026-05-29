@@ -12,6 +12,16 @@ export function resolveSessionDevPreviewFeature(env: NodeJS.ProcessEnv): Feature
                     enabled: true,
                     relay: {
                         enabled: featureConfig.relayEnabled,
+                        host: {
+                            enabled: featureConfig.hostEnabled,
+                            configured: featureConfig.hostConfigured,
+                            baseDomain: featureConfig.hostBaseDomain,
+                            suggestedBaseDomain: featureConfig.suggestedHostBaseDomain,
+                            ...(featureConfig.disabledReason ? { reason: featureConfig.disabledReason } : {}),
+                        },
+                        path: {
+                            enabled: featureConfig.pathEnabled,
+                        },
                     },
                 },
             },

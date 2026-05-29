@@ -5,9 +5,11 @@ import type { Duplex } from 'node:stream';
 import { type SessionDevPreviewSocketRelayBridgeMessage } from '@/app/devPreview/sessionDevPreviewSocketRelayBridge';
 import { hasOwnerPreviewAccess, parsePreviewTokenFromRequest } from '@/app/devPreview/sessionDevPreviewRequestAuth';
 import { isServerFeatureEnabledForRequest } from '@/app/features/catalog/serverFeatureGate';
+import { readSessionDevPreviewFeatureEnv } from '@/app/features/catalog/readFeatureEnv';
 import { type Fastify } from '@/app/api/types';
 import { SessionDevPreviewSocketServerToMachineMessageSchema } from '@happier-dev/protocol';
-import { verifySessionDevPreviewToken } from './sessionDevPreviewToken';
+import { verifySessionDevPreviewToken } from '@/app/api/devPreview/sessionDevPreviewToken';
+import { buildPreviewHostId } from '@/app/devPreview/previewHostNamespace';
 import {
   createPreviewRelayWebSocketServer,
   matchHostNamespacePreviewRequest,
@@ -188,6 +190,11 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
       writeUpgradeRejection(socket, 404, 'not_found');
       return;
     }
+    const previewFeature = readSessionDevPreviewFeatureEnv(process.env);
+    if (!matched.hostId && !previewFeature.pathEnabled) {
+      writeUpgradeRejection(socket, 404, 'not_found');
+      return;
+    }
 
     if (!ensureBridgeListener()) {
       writeUpgradeRejection(socket, 503, 'preview-relay-unavailable');
@@ -213,10 +220,27 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
       writeUpgradeRejection(socket, 401, 'invalid-preview-token');
       return;
     }
-    if (
-      verifiedToken.sessionId !== matched.sessionId
-      || verifiedToken.machineId !== matched.machineId
-      || verifiedToken.routeKey !== matched.routeKey
+    const matchedContext = matched.hostId
+      ? {
+        sessionId: verifiedToken.sessionId,
+        machineId: verifiedToken.machineId,
+        routeKey: verifiedToken.routeKey,
+      }
+      : {
+        sessionId: matched.sessionId,
+        machineId: matched.machineId,
+        routeKey: matched.routeKey,
+      };
+    if (matched.hostId) {
+      const expectedHostId = buildPreviewHostId(matchedContext, process.env);
+      if (!expectedHostId || expectedHostId !== matched.hostId) {
+        writeUpgradeRejection(socket, 403, 'preview-host-scope-mismatch');
+        return;
+      }
+    } else if (
+      verifiedToken.sessionId !== matchedContext.sessionId
+      || verifiedToken.machineId !== matchedContext.machineId
+      || verifiedToken.routeKey !== matchedContext.routeKey
     ) {
       writeUpgradeRejection(socket, 403, 'preview-token-scope-mismatch');
       return;
@@ -224,8 +248,8 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
 
     const hasAccess = await hasOwnerPreviewAccess({
       userId: verifiedToken.userId,
-      sessionId: matched.sessionId,
-      machineId: matched.machineId,
+      sessionId: matchedContext.sessionId,
+      machineId: matchedContext.machineId,
     });
     if (!hasAccess) {
       writeUpgradeRejection(socket, 404, 'not_found');
@@ -238,9 +262,9 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
       envelope: {
         tunnelId,
         kind: 'open',
-        sessionId: matched.sessionId,
-        machineId: matched.machineId,
-        routeKey: matched.routeKey,
+        sessionId: matchedContext.sessionId,
+        machineId: matchedContext.machineId,
+        routeKey: matchedContext.routeKey,
         path: matched.path,
         search: tokenContext.forwardedSearch,
         ...(requestedSubprotocols.length > 0 ? { requestedSubprotocols } : {}),
@@ -258,7 +282,7 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
     const pendingTunnel: PendingTunnel = {
       tunnelId,
       userId: verifiedToken.userId,
-      machineId: matched.machineId,
+      machineId: matchedContext.machineId,
       requestedSubprotocols,
       request: request as PreviewRelayUpgradeRequest,
       socket,
@@ -288,7 +312,7 @@ export function registerSessionDevPreviewWebSocketRelay(app: Fastify): void {
 
     bridge.sendToMachine({
       userId: verifiedToken.userId,
-      machineId: matched.machineId,
+      machineId: matchedContext.machineId,
       payload: openPayload,
     });
   });

@@ -8,6 +8,7 @@ import {
 } from '@happier-dev/protocol';
 import { FEATURE_ENV_KEYS } from './featureEnvSchema';
 import { resolveEffectiveWebappBaseUrl } from '../../serverUrls/effectiveServerUrls';
+import { resolvePreviewHostBaseDomain, resolveSuggestedPreviewHostBaseDomain } from '../../devPreview/previewHostNamespace';
 
 export type AutomationsFeatureEnv = Readonly<{
   enabled: boolean;
@@ -66,7 +67,14 @@ export type SessionFoldersFeatureEnv = Readonly<{
 }>;
 
 export type SessionDevPreviewFeatureEnv = Readonly<{
+  featureToggleEnabled: boolean;
   relayEnabled: boolean;
+  hostEnabled: boolean;
+  hostConfigured: boolean;
+  hostBaseDomain: string | null;
+  suggestedHostBaseDomain: string | null;
+  pathEnabled: boolean;
+  disabledReason?: string;
 }>;
 
 export type MachineTransferFeatureEnv = Readonly<{
@@ -309,8 +317,21 @@ export function readSessionFoldersFeatureEnv(env: NodeJS.ProcessEnv): SessionFol
 }
 
 export function readSessionDevPreviewFeatureEnv(env: NodeJS.ProcessEnv): SessionDevPreviewFeatureEnv {
+  const featureToggleEnabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayEnabled], true);
+  const hostBaseDomain = resolvePreviewHostBaseDomain(env);
+  const pathEnabled = env.NODE_ENV === 'development'
+    && parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayPathModeEnabled], false);
+  const hostEnabled = Boolean(hostBaseDomain);
+  const relayEnabled = featureToggleEnabled && (hostEnabled || pathEnabled);
   return {
-    relayEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayEnabled], true),
+    featureToggleEnabled,
+    relayEnabled,
+    hostEnabled: featureToggleEnabled && hostEnabled,
+    hostConfigured: Boolean(hostBaseDomain),
+    hostBaseDomain,
+    suggestedHostBaseDomain: hostBaseDomain ? null : resolveSuggestedPreviewHostBaseDomain(env),
+    pathEnabled: featureToggleEnabled && pathEnabled,
+    disabledReason: relayEnabled ? undefined : 'missing_env',
   };
 }
 

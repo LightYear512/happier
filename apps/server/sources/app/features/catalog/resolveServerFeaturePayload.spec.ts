@@ -165,12 +165,69 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.sessions.folders.enabled).toBe(false);
     });
 
-    it("enables session dev preview relay support bits by default", () => {
-        const payload = resolveServerFeaturePayload({} as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+    it("disables session dev preview relay by default when no host base or dev path mode is configured", () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_PUBLIC_SERVER_URL: "https://app.example.com",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(false);
+        expect(payload.features.sessions.devPreview.relay.host).toEqual({
+            enabled: false,
+            configured: false,
+            baseDomain: null,
+            suggestedBaseDomain: "preview.example.com",
+            reason: "missing_env",
+        });
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
+    });
+
+    it("enables session dev preview relay when a valid host base is configured", () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: "preview.example.com",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
 
         expect(payload.features.sessions.enabled).toBe(true);
         expect(payload.features.sessions.devPreview.enabled).toBe(true);
         expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.host.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.host.baseDomain).toBe("preview.example.com");
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
+    });
+
+    it("enables path dev preview relay only in development when explicitly configured", () => {
+        const payload = resolveServerFeaturePayload({
+            NODE_ENV: "development",
+            HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: "1",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(true);
+    });
+
+    it("keeps path dev preview relay disabled outside development even when explicitly configured", () => {
+        const payload = resolveServerFeaturePayload({
+            NODE_ENV: "test",
+            HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: "1",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(false);
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
+    });
+
+    it("keeps path dev preview relay disabled in production even when explicitly configured", () => {
+        const payload = resolveServerFeaturePayload({} as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        const productionPayload = resolveServerFeaturePayload({
+            NODE_ENV: "production",
+            HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: "1",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.enabled).toBe(true);
+        expect(productionPayload.features.sessions.devPreview.relay.enabled).toBe(false);
+        expect(productionPayload.features.sessions.devPreview.relay.path.enabled).toBe(false);
     });
 
     it("disables only session dev preview relay when the env toggle is off", () => {
@@ -188,7 +245,9 @@ describe("resolveServerFeaturePayload", () => {
 
     it("deep-merges session subfeatures across multiple resolvers", () => {
         const payload = resolveServerFeaturePayload(
-            {} as NodeJS.ProcessEnv,
+            {
+                HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: "preview.example.com",
+            } as NodeJS.ProcessEnv,
             [resolveSessionDevPreviewFeature, resolveSessionHandoffFeature],
         );
 

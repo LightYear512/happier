@@ -13,12 +13,13 @@ function expectedAgentLabel(agentId: string): string {
   return AGENT_LABEL_BY_ID[agentId] ?? agentId;
 }
 
-function buildAgentOptionTestIds(agentId: string): string[] {
+export function buildAgentOptionTestIds(agentId: string): string[] {
   const dropdownSafeAgentId = agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
   return [
     `dropdown-option-${dropdownSafeAgentId}`,
     `new-session-agent:${agentId}`,
     `agent-input-chip-picker.option:${agentId}`,
+    `agent-input-chip-picker.option:agent:${agentId}`,
     `agent-input-chip-picker.option:engine:${agentId}`,
   ];
 }

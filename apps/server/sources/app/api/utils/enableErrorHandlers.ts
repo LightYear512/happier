@@ -5,6 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { resolveUiConfig } from "@/app/api/uiConfig";
 import { captureFastifyExceptionForSentry } from "@/app/monitoring/sentry";
+import { handleSessionDevPreviewHostFallback } from "../devPreview/sessionDevPreviewHttpRelay";
 
 export function enableErrorHandlers(app: Fastify) {
     // Global error handler
@@ -87,6 +88,10 @@ export function enableErrorHandlers(app: Fastify) {
     // Otherwise keep strict 404 with extra logging.
     app.setNotFoundHandler(async (request, reply) => {
         const url = request.url || '';
+
+        if (await handleSessionDevPreviewHostFallback(app, request, reply)) {
+            return;
+        }
 
         if (uiDirRaw && uiMountedAtRoot && request.method === 'GET') {
             // Don't SPA-fallback for API and asset paths.
