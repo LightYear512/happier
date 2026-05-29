@@ -22,6 +22,10 @@ import {
   type AndroidScreenshotMjpegStream,
 } from '@/session/simulatorPreview/startAndroidScreenshotMjpegStream';
 import {
+  startIosScreenshotMjpegStream,
+  type IosScreenshotMjpegStream,
+} from '@/session/simulatorPreview/startIosScreenshotMjpegStream';
+import {
   resolveAndroidSimulatorPreviewGeometry,
   type AndroidSimulatorPreviewGeometry,
 } from '@/session/simulatorPreview/resolveAndroidSimulatorPreviewGeometry';
@@ -29,6 +33,10 @@ import {
   createAndroidSimulatorPreviewControlRegistry,
   type AndroidSimulatorPreviewControlRegistry,
 } from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
+import {
+  createIosSimulatorPreviewControlRegistry,
+  type IosSimulatorPreviewControlRegistry,
+} from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -48,6 +56,7 @@ import {
 } from '@/daemon/controlClient';
 
 export type AndroidSimulatorPreviewStreamRegistry = Map<string, AndroidScreenshotMjpegStream>;
+export type IosSimulatorPreviewStreamRegistry = Map<string, IosScreenshotMjpegStream>;
 
 export function createHappierMcpServer(
   client: HappyMcpSessionClient,
@@ -57,9 +66,12 @@ export function createHappierMcpServer(
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
     daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
     startAndroidSimulatorPreviewStream?: typeof startAndroidScreenshotMjpegStream;
+    startIosSimulatorPreviewStream?: typeof startIosScreenshotMjpegStream;
     resolveAndroidSimulatorPreviewGeometry?: typeof resolveAndroidSimulatorPreviewGeometry;
     androidSimulatorPreviewStreams?: AndroidSimulatorPreviewStreamRegistry;
+    iosSimulatorPreviewStreams?: IosSimulatorPreviewStreamRegistry;
     androidSimulatorPreviewControlRegistry?: AndroidSimulatorPreviewControlRegistry;
+    iosSimulatorPreviewControlRegistry?: IosSimulatorPreviewControlRegistry;
   }>,
 ): { mcp: McpServer; toolNames: string[] } {
   // This server is the per-session MCP bridge that a running session agent uses.
@@ -71,10 +83,15 @@ export function createHappierMcpServer(
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
   const startAndroidSimulatorPreviewStream = opts?.startAndroidSimulatorPreviewStream ?? startAndroidScreenshotMjpegStream;
+  const startIosSimulatorPreviewStream = opts?.startIosSimulatorPreviewStream ?? startIosScreenshotMjpegStream;
   const resolveAndroidGeometry = opts?.resolveAndroidSimulatorPreviewGeometry ?? resolveAndroidSimulatorPreviewGeometry;
   const activeAndroidStreams = opts?.androidSimulatorPreviewStreams ?? new Map<string, AndroidScreenshotMjpegStream>();
+  const activeIosStreams = opts?.iosSimulatorPreviewStreams ?? new Map<string, IosScreenshotMjpegStream>();
   const androidSimulatorPreviewControlRegistry = opts?.androidSimulatorPreviewControlRegistry
     ?? createAndroidSimulatorPreviewControlRegistry();
+  const iosSimulatorPreviewControlRegistry = opts?.iosSimulatorPreviewControlRegistry
+    ?? createIosSimulatorPreviewControlRegistry();
+  const simulatorPreviewControlPlatforms = new Map<string, 'android' | 'ios'>();
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -336,37 +353,137 @@ export function createHappierMcpServer(
           deviceHeight: geometry.deviceHeight,
           ...(input.devServices ? { devServices: input.devServices } : {}),
         });
+        simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'android');
+        return preview;
+      },
+      sessionSimulatorPreviewIosStart: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        const previous = activeIosStreams.get(input.sessionId);
+        if (previous) {
+          activeIosStreams.delete(input.sessionId);
+          await previous.close().catch((error) => {
+            logger.debug('[mcp] Failed to close previous iOS simulator preview stream', {
+              sessionId: input.sessionId,
+              error,
+            });
+          });
+        }
+
+        const stream = await startIosSimulatorPreviewStream({
+          host: '127.0.0.1',
+          ...(typeof input.port === 'number' ? { port: input.port } : {}),
+          ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
+          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+        });
+        activeIosStreams.set(input.sessionId, stream);
+
+        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+        let relay: { machineId: string; routeKey: string; streamPath: string } | undefined;
+        if (machineId && daemonDevPreviewRegister) {
+          try {
+            const daemonResult = await daemonDevPreviewRegister({
+              sessionId: input.sessionId,
+              expectedMachineId: machineId,
+              port: stream.port,
+              name: `${input.deviceName} simulator`,
+              healthPath: '/frame.jpg',
+              rewriteUrls: false,
+            });
+            if ('success' in daemonResult && daemonResult.success === true) {
+              relay = {
+                machineId: daemonResult.preview.machineId,
+                routeKey: daemonResult.preview.preview.routeKey,
+                streamPath: '/stream.mjpeg',
+              };
+            } else {
+              logger.debug('[mcp] Failed to register iOS simulator preview stream with daemon registry', {
+                sessionId: input.sessionId,
+                machineId,
+                result: daemonResult,
+              });
+            }
+          } catch (error) {
+            logger.debug('[mcp] Failed to register iOS simulator preview stream with daemon registry', {
+              sessionId: input.sessionId,
+              machineId,
+              error,
+            });
+          }
+        }
+
+        const preview = buildSimulatorPreviewPayload({
+          sessionId: input.sessionId,
+          platform: 'ios',
+          deviceName: input.deviceName,
+          ...(input.appName ? { appName: input.appName } : {}),
+          streamUrl: stream.streamUrl,
+          mode: 'ai_control',
+          owner: 'ai',
+          connectionPath: relay ? 'relay' : 'direct',
+          ...(relay ? { relay } : {}),
+          ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
+          ...(input.devServices ? { devServices: input.devServices } : {}),
+        });
+        emitSimulatorPreviewMessage({
+          preview,
+          sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
+        });
+        iosSimulatorPreviewControlRegistry.registerIosPreview({
+          sessionId: input.sessionId,
+          simulatorSessionId: preview.simulatorSessionId,
+          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          ...(input.wdaUrl ? { wdaUrl: input.wdaUrl } : {}),
+        });
+        simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'ios');
         return preview;
       },
       sessionSimulatorPreviewControlAcquire: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
-        return await androidSimulatorPreviewControlRegistry.acquire(input);
+        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
+        return platform === 'ios'
+          ? await iosSimulatorPreviewControlRegistry.acquire(input)
+          : await androidSimulatorPreviewControlRegistry.acquire(input);
       },
       sessionSimulatorPreviewControlRelease: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
-        return await androidSimulatorPreviewControlRegistry.release(input);
+        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
+        return platform === 'ios'
+          ? await iosSimulatorPreviewControlRegistry.release(input)
+          : await androidSimulatorPreviewControlRegistry.release(input);
       },
       sessionSimulatorPreviewInputSend: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
-        return await androidSimulatorPreviewControlRegistry.sendInput(input);
+        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
+        return platform === 'ios'
+          ? await iosSimulatorPreviewControlRegistry.sendInput(input)
+          : await androidSimulatorPreviewControlRegistry.sendInput(input);
       },
       sessionSimulatorPreviewAppReload: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
-        return await androidSimulatorPreviewControlRegistry.reloadApp(input);
+        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
+        return platform === 'ios'
+          ? await iosSimulatorPreviewControlRegistry.reloadApp(input)
+          : await androidSimulatorPreviewControlRegistry.reloadApp(input);
       },
       sessionSimulatorPreviewDevServicesReconnect: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
-        return await androidSimulatorPreviewControlRegistry.reconnectDevServices(input);
+        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
+        return platform === 'ios'
+          ? await iosSimulatorPreviewControlRegistry.reconnectDevServices(input)
+          : await androidSimulatorPreviewControlRegistry.reconnectDevServices(input);
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),
       executionRunList: async (_sessionId, request) => await executionRuns.list(request),
