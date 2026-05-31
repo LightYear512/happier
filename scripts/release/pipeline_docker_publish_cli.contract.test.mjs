@@ -57,7 +57,12 @@ test('pipeline CLI docker-publish forwards --registries to include GHCR tags', a
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        GHCR_NAMESPACE: '',
+        GITHUB_REPOSITORY: 'LightYear512/happier',
+        GITHUB_REPOSITORY_OWNER: '',
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
@@ -66,5 +71,5 @@ test('pipeline CLI docker-publish forwards --registries to include GHCR tags', a
 
   assert.match(out, /\[pipeline\] docker publish: channel=stable/);
   assert.match(out, /--tag happierdev\/relay-server:stable\b/);
-  assert.match(out, /--tag ghcr\.io\/happier-dev\/relay-server:stable\b/);
+  assert.match(out, /--tag ghcr\.io\/lightyear512\/relay-server:stable\b/);
 });
