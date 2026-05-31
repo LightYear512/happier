@@ -66,6 +66,71 @@ function splitCsvLower(raw) {
 }
 
 /**
+ * @param {string} raw
+ * @returns {string}
+ */
+function normalizeGhcrNamespace(raw) {
+  return String(raw ?? '').trim().replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * @param {string} raw
+ * @returns {string}
+ */
+function ownerFromRepository(raw) {
+  const [owner] = String(raw ?? '').trim().split('/');
+  return owner ? owner.trim() : '';
+}
+
+/**
+ * @param {string} raw
+ * @returns {string}
+ */
+function ownerFromGitRemoteUrl(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value) return '';
+
+  const sshMatch = value.match(/(?:^|:)github\.com[:/]([^/]+)\/[^/]+?(?:\.git)?$/i);
+  if (sshMatch?.[1]) return sshMatch[1];
+
+  const scpMatch = value.match(/^[^@]+@github\.com:([^/]+)\/[^/]+?(?:\.git)?$/i);
+  if (scpMatch?.[1]) return scpMatch[1];
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.hostname.toLowerCase() !== 'github.com') return '';
+    const [, owner] = parsed.pathname.split('/');
+    return owner ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * @returns {string}
+ */
+function resolveDefaultGhcrNamespace() {
+  const explicit = normalizeGhcrNamespace(process.env.GHCR_NAMESPACE ?? '');
+  if (explicit) return explicit;
+
+  const ownerFromEnv =
+    String(process.env.GITHUB_REPOSITORY_OWNER ?? '').trim() ||
+    ownerFromRepository(process.env.GITHUB_REPOSITORY ?? '');
+  if (ownerFromEnv) return `ghcr.io/${ownerFromEnv.toLowerCase()}`;
+
+  let remoteUrl = '';
+  try {
+    remoteUrl = run('git', ['remote', 'get-url', 'origin'], { dryRun: false, stdio: 'pipe' }).trim();
+  } catch {
+    remoteUrl = '';
+  }
+  const ownerFromRemote = ownerFromGitRemoteUrl(remoteUrl);
+  if (ownerFromRemote) return `ghcr.io/${ownerFromRemote.toLowerCase()}`;
+
+  fail('GHCR namespace could not be resolved; set GHCR_NAMESPACE or run from a GitHub repository checkout.');
+}
+
+/**
  * @param {string} cmd
  * @param {string[]} args
  * @param {{ dryRun?: boolean; stdio?: 'inherit' | 'pipe'; timeoutMs?: number }} [opts]
@@ -512,8 +577,7 @@ async function main() {
   const sha = shaRaw || run('git', ['rev-parse', 'HEAD'], { dryRun: false, stdio: 'pipe' }).trim();
   const shortSha = sha.slice(0, 12);
 
-  const ghcrNamespaceRaw = String(process.env.GHCR_NAMESPACE ?? 'ghcr.io/happier-dev').trim();
-  const ghcrNamespace = ghcrNamespaceRaw.endsWith('/') ? ghcrNamespaceRaw.slice(0, -1) : ghcrNamespaceRaw;
+  const ghcrNamespace = resolveDefaultGhcrNamespace();
 
   /** @type {Partial<Record<'dockerhub' | 'ghcr', Readonly<{ relayBase: string; devBase: string }>>>} */
   const basesByRegistry = {};
