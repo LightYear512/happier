@@ -37,3 +37,65 @@ test('pipeline npm release script supports pack-only mode (no publish) in dry-ru
   assert.doesNotMatch(out, /publish-tarball\.mjs/);
 });
 
+test('pipeline npm release script can rewrite the published npm package name in dry-run', async () => {
+  const out = execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, 'scripts', 'pipeline', 'npm', 'release-packages.mjs'),
+      '--channel',
+      'preview',
+      '--publish-cli',
+      'true',
+      '--publish-stack',
+      'false',
+      '--publish-server',
+      'false',
+      '--mode',
+      'pack',
+      '--npm-package-name',
+      '@lightyear512/happier-cli',
+      '--dry-run',
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  );
+
+  assert.match(out, /\[dry-run\] patch apps\/cli\/package\.json name -> @lightyear512\/happier-cli/);
+});
+
+test('pipeline npm release script rejects package name rewrite for multi-package publishes', async () => {
+  assert.throws(
+    () => execFileSync(
+      process.execPath,
+      [
+        resolve(repoRoot, 'scripts', 'pipeline', 'npm', 'release-packages.mjs'),
+        '--channel',
+        'preview',
+        '--publish-cli',
+        'true',
+        '--publish-stack',
+        'true',
+        '--publish-server',
+        'false',
+        '--mode',
+        'pack',
+        '--npm-package-name',
+        '@lightyear512/happier-cli',
+        '--dry-run',
+      ],
+      {
+        cwd: repoRoot,
+        env: { ...process.env },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30_000,
+      },
+    ),
+    /--npm-package-name can only be used when publishing the CLI package by itself/,
+  );
+});
