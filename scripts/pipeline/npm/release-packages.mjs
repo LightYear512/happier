@@ -85,7 +85,7 @@ function normalizeNpmPackageName(packageName) {
 
 /**
  * @param {string} pkgJsonPath
- * @param {{ name?: string; version?: string; repositoryUrl?: string }} fields
+ * @param {{ name?: string; version?: string; repositoryUrl?: string; homepageUrl?: string; bugsUrl?: string }} fields
  * @returns {() => void}
  */
 function patchPackageManifestFields(pkgJsonPath, fields) {
@@ -99,9 +99,31 @@ function patchPackageManifestFields(pkgJsonPath, fields) {
       url: fields.repositoryUrl,
     };
   }
+  if (fields.homepageUrl) parsed.homepage = fields.homepageUrl;
+  if (fields.bugsUrl) {
+    parsed.bugs = {
+      url: fields.bugsUrl,
+    };
+  }
   fs.writeFileSync(pkgJsonPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
   return () => {
     fs.writeFileSync(pkgJsonPath, raw, 'utf8');
+  };
+}
+
+/**
+ * @param {string} readmePath
+ * @param {{ packageName: string; repositoryUrl: string }} fields
+ * @returns {() => void}
+ */
+function patchCliReadmeForForkPackage(readmePath, fields) {
+  const raw = fs.readFileSync(readmePath, 'utf8');
+  const next = raw
+    .replaceAll('@happier-dev/cli', fields.packageName)
+    .replaceAll('https://github.com/happier-dev/happier', fields.repositoryUrl);
+  fs.writeFileSync(readmePath, next, 'utf8');
+  return () => {
+    fs.writeFileSync(readmePath, raw, 'utf8');
   };
 }
 
@@ -405,14 +427,19 @@ async function main() {
 
       /** @type {null | (() => void)} */
       let restore = null;
+      /** @type {null | (() => void)} */
+      let restoreReadme = null;
       try {
         const parsedPackageJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
         const originalPackageName = String(parsedPackageJson.name ?? '').trim();
         const nextPackageName = npmPackageName || originalPackageName;
+        const forkBugsUrl = forkRepositoryUrl ? `${forkRepositoryUrl}/issues` : '';
         const manifestPatch = {
           name: nextPackageName !== originalPackageName ? nextPackageName : '',
           version: channelId !== 'stable' ? nextVersion : '',
           repositoryUrl: forkRepositoryUrl,
+          homepageUrl: forkRepositoryUrl,
+          bugsUrl: forkBugsUrl,
         };
         if (manifestPatch.name) {
           const prefix = dryRun ? '[dry-run] ' : '';
@@ -422,13 +449,32 @@ async function main() {
           const prefix = dryRun ? '[dry-run] ' : '';
           console.log(`${prefix}patch ${path.relative(repoRoot, pkgJsonPath)} repository -> ${manifestPatch.repositoryUrl}`);
         }
+        if (manifestPatch.homepageUrl) {
+          const prefix = dryRun ? '[dry-run] ' : '';
+          console.log(`${prefix}patch ${path.relative(repoRoot, pkgJsonPath)} homepage -> ${manifestPatch.homepageUrl}`);
+        }
+        if (manifestPatch.bugsUrl) {
+          const prefix = dryRun ? '[dry-run] ' : '';
+          console.log(`${prefix}patch ${path.relative(repoRoot, pkgJsonPath)} bugs -> ${manifestPatch.bugsUrl}`);
+        }
         if (channelId !== 'stable') {
           if (dryRun) {
             console.log(`[dry-run] patch ${path.relative(repoRoot, pkgJsonPath)} version -> ${nextVersion}`);
           }
         }
-        if (!dryRun && (manifestPatch.name || manifestPatch.version || manifestPatch.repositoryUrl)) {
+        if (!dryRun && (manifestPatch.name || manifestPatch.version || manifestPatch.repositoryUrl || manifestPatch.homepageUrl || manifestPatch.bugsUrl)) {
           restore = patchPackageManifestFields(pkgJsonPath, manifestPatch);
+        }
+        if (pkg.key === 'cli' && npmPackageName && forkRepositoryUrl) {
+          const readmePath = withinRepo(repoRoot, path.join(pkg.dir, 'README.md'));
+          const prefix = dryRun ? '[dry-run] ' : '';
+          console.log(`${prefix}patch ${path.relative(repoRoot, readmePath)} package references -> ${npmPackageName}`);
+          if (!dryRun) {
+            restoreReadme = patchCliReadmeForForkPackage(readmePath, {
+              packageName: npmPackageName,
+              repositoryUrl: forkRepositoryUrl,
+            });
+          }
         }
 
         pkg.prepare();
@@ -439,6 +485,9 @@ async function main() {
           publishTarball(repoRoot, channel, tarballPath, opts);
         }
       } finally {
+        if (restoreReadme) {
+          restoreReadme();
+        }
         if (restore) {
           restore();
         }
