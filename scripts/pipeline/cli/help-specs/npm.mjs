@@ -24,6 +24,7 @@ export const COMMAND_HELP_NPM = {
       '--server-runner-dir <dir>         (default: packages/relay-server).',
       '--run-tests <auto|true|false>     (default: auto).',
       '--mode <pack|pack+publish>        (default: pack+publish).',
+      '--npm-package-name <name>         Optional full package-name rewrite for published tarballs (for forks).',
       '--allow-dirty <bool>              true|false (default: false).',
       '--dry-run',
       '--secrets-source <auto|env|keychain>',
