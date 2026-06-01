@@ -72,6 +72,41 @@ test('pipeline CLI forwards npm package name overrides to npm-release', async ()
   assert.match(out, /\[dry-run\] patch apps\/cli\/package\.json name -> @lightyear512\/happier-cli/);
 });
 
+test('pipeline CLI forwards npm package name overrides to preview version allocation', async () => {
+  const out = execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, 'scripts', 'pipeline', 'run.mjs'),
+      'npm-set-preview-versions',
+      '--publish-cli',
+      'true',
+      '--publish-stack',
+      'false',
+      '--publish-server',
+      'false',
+      '--npm-package-name',
+      '@lightyear512/happier-cli',
+      '--write',
+      'false',
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
+          github: { cli: ['cli-v0.2.7-preview.3'] },
+          npm: { '@happier-dev/cli': ['0.2.7-preview.3'] },
+        }),
+      },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  );
+
+  assert.deepEqual(JSON.parse(out), { cli: '0.2.7-preview.3' });
+});
+
 test('npm-release local preview suffix starts at the first unpublished rolling version when no versions exist', async () => {
   const out = execFileSync(
     process.execPath,

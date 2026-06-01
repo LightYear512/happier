@@ -1290,6 +1290,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
         'cli-version': { type: 'string', default: '' },
         'stack-version': { type: 'string', default: '' },
         'server-version': { type: 'string', default: '' },
+        'npm-package-name': { type: 'string', default: '' },
         write: { type: 'string', default: 'true' },
       },
       allowPositionals: false,
@@ -1303,6 +1304,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
     const cliVersion = String(values['cli-version'] ?? '').trim();
     const stackVersion = String(values['stack-version'] ?? '').trim();
     const serverVersion = String(values['server-version'] ?? '').trim();
+    const npmPackageName = String(values['npm-package-name'] ?? '').trim();
     const write = String(values.write ?? '').trim() || 'true';
 
     runNpmSetPreviewVersions({
@@ -1319,6 +1321,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
         publishServer,
         '--server-runner-dir',
         serverRunnerDir,
+        ...(npmPackageName ? ['--npm-package-name', npmPackageName] : []),
         ...(cliVersion ? ['--cli-version', cliVersion] : []),
         ...(stackVersion ? ['--stack-version', stackVersion] : []),
         ...(serverVersion ? ['--server-version', serverVersion] : []),
