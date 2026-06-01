@@ -190,6 +190,26 @@ test('release-npm is compatible with npm trusted publishing (OIDC)', async () =>
   assert.doesNotMatch(raw, /NPM_TOKEN is required for npm publish\./);
 });
 
+test('release-npm can run in forks without release bot app credentials', async () => {
+  const raw = await loadWorkflow('release-npm.yml');
+
+  assert.match(
+    raw,
+    /RELEASE_BOT_APP_ID:\s*\$\{\{\s*secrets\.RELEASE_BOT_APP_ID\s*\}\}[\s\S]*?RELEASE_BOT_PRIVATE_KEY:\s*\$\{\{\s*secrets\.RELEASE_BOT_PRIVATE_KEY\s*\}\}/,
+    'release-npm should expose release bot secrets through job env for conditional app-token checkout',
+  );
+  assert.match(
+    raw,
+    /Create GitHub App token[\s\S]*?if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/,
+    'release-npm should skip app-token creation when fork credentials are not configured',
+  );
+  assert.match(
+    raw,
+    /token:\s*\$\{\{\s*steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token \|\| github\.token\s*\}\}/,
+    'release-npm should fall back to GITHUB_TOKEN for checkout in forks',
+  );
+});
+
 test('release-npm installs Sapling before cli integration tests', async () => {
   const raw = await loadWorkflow('release-npm.yml');
 
@@ -214,6 +234,21 @@ test('release-npm installs Sapling before cli integration tests', async () => {
     'release-npm should install Sapling in the cli test lane before running sapling integration tests',
   );
   assert.match(raw, /- name: Run cli tests[\s\S]*?yarn --cwd apps\/cli test:integration/);
+});
+
+test('release-npm gates pre-publish checks behind run_tests', async () => {
+  const raw = await loadWorkflow('release-npm.yml');
+
+  assert.match(
+    raw,
+    /- name: Run release contract tests[\s\S]*?if:\s*inputs\.run_tests[\s\S]*?yarn -s test:release:contracts/,
+    'release-npm should skip release contracts when run_tests=false',
+  );
+  assert.match(
+    raw,
+    /- name: Verify installer assets are synced[\s\S]*?if:\s*inputs\.run_tests[\s\S]*?node scripts\/pipeline\/run\.mjs release-sync-installers --check/,
+    'release-npm should skip installer sync checks when run_tests=false',
+  );
 });
 
 test('release-npm derives unique preview prerelease versions from base versions', async () => {
