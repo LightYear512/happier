@@ -243,6 +243,7 @@ function getProductSource(productId) {
  *   baseVersion: string;
  *   explicitVersion?: string;
  *   publishSurface?: 'github' | 'npm' | 'all';
+ *   npmPackage?: string;
  *   env?: Record<string, string | undefined>;
  *   dryRun?: boolean;
  * }} opts
@@ -260,6 +261,7 @@ export async function resolveRollingPublishVersion(opts) {
   }
 
   const product = getProductSource(opts.productId);
+  const npmPackage = String(opts.npmPackage ?? '').trim() || product.npmPackage;
   const channelSuffix = resolveRollingReleaseTagSuffix(opts.channel);
   const explicitVersion = String(opts.explicitVersion ?? '').trim();
   const publishSurface = opts.publishSurface ?? 'all';
@@ -281,7 +283,7 @@ export async function resolveRollingPublishVersion(opts) {
     ])) {
       publishedVersions.push({ version, surface: 'github' });
     }
-    for (const version of collectFromFixtureSection(fixture.npm, [product.npmPackage])) {
+    for (const version of collectFromFixtureSection(fixture.npm, [npmPackage])) {
       publishedVersions.push({ version, surface: 'npm' });
     }
   } else {
@@ -298,7 +300,7 @@ export async function resolveRollingPublishVersion(opts) {
       }
     }
 
-    const npm = collectNpmVersions(product.npmPackage, { cwd: opts.repoRoot, env });
+    const npm = collectNpmVersions(npmPackage, { cwd: opts.repoRoot, env });
     if (npm.ok) {
       sourceAvailable = true;
       sourceLabels.push('npm');
@@ -332,7 +334,7 @@ export async function resolveRollingPublishVersion(opts) {
         `[release] --version must match ${baseVersion}-${channelSuffix}.<number> for ${opts.productId} ${channelSuffix} releases (got: ${explicitVersion})`,
       );
     }
-    const comparisonBuild = previousForSurface ?? previous;
+    const comparisonBuild = previousForSurface ?? (publishSurface === 'all' ? previous : null);
     const isOlderThanOverall = previous && compareBuildOrder(explicitBuild, previous) < 0;
     const isAlreadyPublishedForTarget =
       comparisonBuild &&

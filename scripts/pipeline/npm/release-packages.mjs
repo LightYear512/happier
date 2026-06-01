@@ -380,6 +380,7 @@ async function main() {
                 baseVersion: base,
                 explicitVersion: explicitVersions[pkg.key],
                 publishSurface: 'npm',
+                ...(pkg.key === 'cli' && npmPackageName ? { npmPackage: npmPackageName } : {}),
                 dryRun,
                 env: process.env,
               })
