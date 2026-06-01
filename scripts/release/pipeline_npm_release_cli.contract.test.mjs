@@ -39,6 +39,39 @@ test('pipeline CLI can npm-release in dry-run using env-only secrets', async () 
   assert.match(out, /apps\/cli/);
 });
 
+test('pipeline CLI forwards npm package name overrides to npm-release', async () => {
+  const out = execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, 'scripts', 'pipeline', 'run.mjs'),
+      'npm-release',
+      '--channel',
+      'preview',
+      '--publish-cli',
+      'true',
+      '--publish-stack',
+      'false',
+      '--publish-server',
+      'false',
+      '--npm-package-name',
+      '@lightyear512/happier-cli',
+      '--dry-run',
+      '--secrets-source',
+      'env',
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, NPM_TOKEN: 'npm-token' },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  );
+
+  assert.match(out, /"--npm-package-name" "@lightyear512\/happier-cli"/);
+  assert.match(out, /\[dry-run\] patch apps\/cli\/package\.json name -> @lightyear512\/happier-cli/);
+});
+
 test('npm-release local preview suffix starts at the first unpublished rolling version when no versions exist', async () => {
   const out = execFileSync(
     process.execPath,

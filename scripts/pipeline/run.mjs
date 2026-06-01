@@ -1418,6 +1418,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           'cli-version': { type: 'string', default: '' },
           'stack-version': { type: 'string', default: '' },
           'server-version': { type: 'string', default: '' },
+          'npm-package-name': { type: 'string', default: '' },
           'allow-dirty': { type: 'string', default: 'false' },
           'dry-run': { type: 'boolean', default: false },
           'secrets-source': { type: 'string', default: 'auto' },
@@ -1464,6 +1465,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
     const cliVersion = String(values['cli-version'] ?? '').trim();
     const stackVersion = String(values['stack-version'] ?? '').trim();
     const serverVersion = String(values['server-version'] ?? '').trim();
+    const npmPackageName = String(values['npm-package-name'] ?? '').trim();
     const runnerDir = String(values['server-runner-dir'] ?? '').trim();
     const runTests = String(values['run-tests'] ?? '').trim();
     const mode = String(values.mode ?? '').trim();
@@ -1486,6 +1488,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
         ...(cliVersion ? ['--cli-version', cliVersion] : []),
         ...(stackVersion ? ['--stack-version', stackVersion] : []),
         ...(serverVersion ? ['--server-version', serverVersion] : []),
+        ...(npmPackageName ? ['--npm-package-name', npmPackageName] : []),
         ...(runnerDir ? ['--server-runner-dir', runnerDir] : []),
         ...(runTests ? ['--run-tests', runTests] : []),
         ...(mode ? ['--mode', mode] : []),

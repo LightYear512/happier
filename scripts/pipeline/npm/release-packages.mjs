@@ -61,27 +61,38 @@ function normalizeBase(version) {
 
 /**
  * @param {string} pkgJsonPath
- * @param {string} nextVersion
  * @returns {() => void}
  */
-function patchPackageVersion(pkgJsonPath, nextVersion) {
+function snapshotPackageManifest(pkgJsonPath) {
   const raw = fs.readFileSync(pkgJsonPath, 'utf8');
-  const parsed = JSON.parse(raw);
-  const prevVersion = String(parsed.version ?? '').trim();
-  if (!prevVersion) fail(`package.json missing version: ${pkgJsonPath}`);
-  parsed.version = nextVersion;
-  fs.writeFileSync(pkgJsonPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
   return () => {
     fs.writeFileSync(pkgJsonPath, raw, 'utf8');
   };
 }
 
 /**
+ * @param {string} packageName
+ */
+function normalizeNpmPackageName(packageName) {
+  const value = String(packageName ?? '').trim();
+  if (!value) return '';
+  if (!/^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._~-]*$/.test(value)) {
+    fail(`--npm-package-name must be a lowercase scoped npm package name like '@lightyear512/happier-cli' (got: ${packageName})`);
+  }
+  return value;
+}
+
+/**
  * @param {string} pkgJsonPath
+ * @param {{ name?: string; version?: string }} fields
  * @returns {() => void}
  */
-function snapshotPackageManifest(pkgJsonPath) {
+function patchPackageManifestFields(pkgJsonPath, fields) {
   const raw = fs.readFileSync(pkgJsonPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (fields.name) parsed.name = fields.name;
+  if (fields.version) parsed.version = fields.version;
+  fs.writeFileSync(pkgJsonPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
   return () => {
     fs.writeFileSync(pkgJsonPath, raw, 'utf8');
   };
@@ -262,6 +273,7 @@ async function main() {
       'cli-version': { type: 'string', default: '' },
       'stack-version': { type: 'string', default: '' },
       'server-version': { type: 'string', default: '' },
+      'npm-package-name': { type: 'string', default: '' },
       'dry-run': { type: 'boolean', default: false },
     },
     allowPositionals: false,
@@ -289,6 +301,7 @@ async function main() {
     stack: String(values['stack-version'] ?? '').trim(),
     server: String(values['server-version'] ?? '').trim(),
   };
+  const npmPackageName = normalizeNpmPackageName(String(values['npm-package-name'] ?? '').trim());
 
   const opts = { dryRun };
   if (mode !== 'pack' && mode !== 'pack+publish') {
@@ -340,6 +353,9 @@ async function main() {
   if (packages.length === 0) {
     fail('At least one of --publish-cli/--publish-stack/--publish-server must be true');
   }
+  if (npmPackageName && (packages.length !== 1 || packages[0]?.key !== 'cli')) {
+    fail('--npm-package-name can only be used when publishing the CLI package by itself');
+  }
 
   /** @type {Array<() => void>} */
   const restorePackageManifests = [];
@@ -375,12 +391,24 @@ async function main() {
       /** @type {null | (() => void)} */
       let restore = null;
       try {
+        const parsedPackageJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+        const originalPackageName = String(parsedPackageJson.name ?? '').trim();
+        const nextPackageName = npmPackageName || originalPackageName;
+        const manifestPatch = {
+          name: nextPackageName !== originalPackageName ? nextPackageName : '',
+          version: channelId !== 'stable' ? nextVersion : '',
+        };
+        if (manifestPatch.name) {
+          const prefix = dryRun ? '[dry-run] ' : '';
+          console.log(`${prefix}patch ${path.relative(repoRoot, pkgJsonPath)} name -> ${manifestPatch.name}`);
+        }
         if (channelId !== 'stable') {
           if (dryRun) {
             console.log(`[dry-run] patch ${path.relative(repoRoot, pkgJsonPath)} version -> ${nextVersion}`);
-          } else {
-            restore = patchPackageVersion(pkgJsonPath, nextVersion);
           }
+        }
+        if (!dryRun && (manifestPatch.name || manifestPatch.version)) {
+          restore = patchPackageManifestFields(pkgJsonPath, manifestPatch);
         }
 
         pkg.prepare();

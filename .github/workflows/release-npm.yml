@@ -33,6 +33,11 @@ on:
         options:
           - latest
           - next
+      npm_package_name:
+        description: "Publish — Optional package-name rewrite for fork packages (example: @lightyear512/happier-cli)"
+        required: false
+        default: ""
+        type: string
       publish_stack:
         description: "Compatibility (Stack) — Publish hstack dev-helper package to npm (not release signoff)"
         required: true
@@ -73,6 +78,11 @@ on:
         description: "Publish (CLI) — npm dist-tag (production: latest, preview: next)"
         required: false
         default: latest
+        type: string
+      npm_package_name:
+        description: "Publish — Optional package-name rewrite for fork packages (example: @lightyear512/happier-cli)"
+        required: false
+        default: ""
         type: string
       publish_stack:
         description: "Compatibility (Stack) — Publish hstack dev-helper package to npm (not release signoff)"
@@ -378,6 +388,7 @@ jobs:
             --cli-version "${{ steps.meta.outputs.cli_version }}" \
             --stack-version "${{ steps.meta.outputs.stack_version }}" \
             --server-version "${{ steps.meta.outputs.server_version }}" \
+            --npm-package-name "${{ inputs.npm_package_name }}" \
             --run-tests "${{ inputs.run_tests }}" \
             --mode pack
 
