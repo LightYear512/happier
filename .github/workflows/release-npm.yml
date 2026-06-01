@@ -321,6 +321,7 @@ jobs:
               --publish-stack "${INPUT_PUBLISH_STACK}" \
               --publish-server "${INPUT_PUBLISH_SERVER}" \
               --server-runner-dir "${SERVER_RUNNER_DIR}" \
+              --npm-package-name "${{ inputs.npm_package_name }}" \
               --write false)"
           fi
 

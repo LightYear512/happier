@@ -120,6 +120,31 @@ test('explicit single-sequence rolling versions are accepted', async () => {
   assert.equal(result.version, '0.2.6-dev.127');
 });
 
+test('explicit npm rolling version can catch up to an existing GitHub rolling version for a fork package', async () => {
+  const { resolveRollingPublishVersion } = await import('../pipeline/release/lib/rolling-version-allocation.mjs');
+
+  const result = await resolveRollingPublishVersion({
+    repoRoot,
+    productId: 'cli',
+    channel: 'preview',
+    baseVersion: '0.2.7',
+    explicitVersion: '0.2.7-preview.3',
+    publishSurface: 'npm',
+    npmPackage: '@lightyear512/happier-cli',
+    env: {
+      ...process.env,
+      HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
+        github: { cli: ['cli-v0.2.7-preview.3'] },
+        npm: {
+          '@happier-dev/cli': ['0.2.7-preview.3'],
+        },
+      }),
+    },
+  });
+
+  assert.equal(result.version, '0.2.7-preview.3');
+});
+
 test('stable version allocation ignores an empty explicit version override', async () => {
   const { resolveRollingPublishVersion } = await import('../pipeline/release/lib/rolling-version-allocation.mjs');
 
