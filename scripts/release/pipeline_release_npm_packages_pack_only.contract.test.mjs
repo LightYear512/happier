@@ -58,7 +58,7 @@ test('pipeline npm release script can rewrite the published npm package name in 
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env },
+      env: { ...process.env, GITHUB_REPOSITORY: 'LightYear512/happier' },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
@@ -66,6 +66,10 @@ test('pipeline npm release script can rewrite the published npm package name in 
   );
 
   assert.match(out, /\[dry-run\] patch apps\/cli\/package\.json name -> @lightyear512\/happier-cli/);
+  assert.match(
+    out,
+    /\[dry-run\] patch apps\/cli\/package\.json repository -> https:\/\/github\.com\/LightYear512\/happier/,
+  );
 });
 
 test('pipeline npm release script rejects package name rewrite for multi-package publishes', async () => {

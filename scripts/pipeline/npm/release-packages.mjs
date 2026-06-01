@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { resolveWindowsCommandInvocation } from '../lib/windows/resolveWindowsCommandInvocation.mjs';
+import { resolveGitHubRepoSlug } from '../github/resolve-github-repo-slug.mjs';
 import { resolvePackedTarball } from './resolvePackedTarball.mjs';
 import {
   formatPublicReleaseChannel,
@@ -84,7 +85,7 @@ function normalizeNpmPackageName(packageName) {
 
 /**
  * @param {string} pkgJsonPath
- * @param {{ name?: string; version?: string }} fields
+ * @param {{ name?: string; version?: string; repositoryUrl?: string }} fields
  * @returns {() => void}
  */
 function patchPackageManifestFields(pkgJsonPath, fields) {
@@ -92,6 +93,12 @@ function patchPackageManifestFields(pkgJsonPath, fields) {
   const parsed = JSON.parse(raw);
   if (fields.name) parsed.name = fields.name;
   if (fields.version) parsed.version = fields.version;
+  if (fields.repositoryUrl) {
+    parsed.repository = {
+      type: 'git',
+      url: fields.repositoryUrl,
+    };
+  }
   fs.writeFileSync(pkgJsonPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
   return () => {
     fs.writeFileSync(pkgJsonPath, raw, 'utf8');
@@ -356,6 +363,13 @@ async function main() {
   if (npmPackageName && (packages.length !== 1 || packages[0]?.key !== 'cli')) {
     fail('--npm-package-name can only be used when publishing the CLI package by itself');
   }
+  const forkRepositoryUrl =
+    npmPackageName
+      ? (() => {
+          const repoSlug = resolveGitHubRepoSlug({ repoRoot, env: process.env });
+          return repoSlug ? `https://github.com/${repoSlug}` : '';
+        })()
+      : '';
 
   /** @type {Array<() => void>} */
   const restorePackageManifests = [];
@@ -398,17 +412,22 @@ async function main() {
         const manifestPatch = {
           name: nextPackageName !== originalPackageName ? nextPackageName : '',
           version: channelId !== 'stable' ? nextVersion : '',
+          repositoryUrl: forkRepositoryUrl,
         };
         if (manifestPatch.name) {
           const prefix = dryRun ? '[dry-run] ' : '';
           console.log(`${prefix}patch ${path.relative(repoRoot, pkgJsonPath)} name -> ${manifestPatch.name}`);
+        }
+        if (manifestPatch.repositoryUrl) {
+          const prefix = dryRun ? '[dry-run] ' : '';
+          console.log(`${prefix}patch ${path.relative(repoRoot, pkgJsonPath)} repository -> ${manifestPatch.repositoryUrl}`);
         }
         if (channelId !== 'stable') {
           if (dryRun) {
             console.log(`[dry-run] patch ${path.relative(repoRoot, pkgJsonPath)} version -> ${nextVersion}`);
           }
         }
-        if (!dryRun && (manifestPatch.name || manifestPatch.version)) {
+        if (!dryRun && (manifestPatch.name || manifestPatch.version || manifestPatch.repositoryUrl)) {
           restore = patchPackageManifestFields(pkgJsonPath, manifestPatch);
         }
 
