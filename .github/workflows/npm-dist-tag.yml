@@ -1,0 +1,69 @@
+name: MAINTAIN — npm dist-tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Scoped npm package name"
+        required: true
+        type: string
+      version:
+        description: "Published package version"
+        required: true
+        type: string
+      tag:
+        description: "npm dist-tag to assign"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  npm_dist_tag:
+    name: npm dist-tag
+    runs-on: ubuntu-latest
+    environment: release-shared
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+
+      - name: Assign dist-tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          case "${INPUT_PACKAGE}" in
+            @lightyear512/*) ;;
+            *)
+              echo "Refusing package outside @lightyear512 scope: ${INPUT_PACKAGE}" >&2
+              exit 1
+              ;;
+          esac
+
+          case "${INPUT_TAG}" in
+            latest|next|dev) ;;
+            *)
+              echo "Refusing unsupported npm dist-tag: ${INPUT_TAG}" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "NPM_TOKEN is required." >&2
+            exit 1
+          fi
+
+          npmrc="${RUNNER_TEMP}/npm-dist-tag.npmrc"
+          printf '%s\n' "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "${npmrc}"
+          export NPM_CONFIG_USERCONFIG="${npmrc}"
+
+          npm --registry=https://registry.npmjs.org dist-tag add "${INPUT_PACKAGE}@${INPUT_VERSION}" "${INPUT_TAG}"
+          npm --registry=https://registry.npmjs.org view "${INPUT_PACKAGE}" dist-tags --json
