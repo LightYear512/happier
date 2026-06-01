@@ -258,7 +258,11 @@ test('release-npm derives unique preview prerelease versions from base versions'
   assert.doesNotMatch(raw, /version_bump_cli/);
   assert.doesNotMatch(raw, /version_bump_stack/);
   assert.doesNotMatch(raw, /function bumpBase\(base, bump\)/);
-  assert.match(raw, /node scripts\/pipeline\/run\.mjs npm-set-preview-versions/);
+  assert.match(
+    raw,
+    /node scripts\/pipeline\/run\.mjs npm-set-preview-versions[\s\S]*?--npm-package-name "\$\{\{ inputs\.npm_package_name \}\}"/,
+    'release-npm should compute preview versions against the overridden fork npm package when provided',
+  );
   assert.doesNotMatch(raw, /function setPreviewVersion\(pkgPath\)/);
   assert.doesNotMatch(raw, /\$\{base\}-preview\.\$\{run\}\.\$\{attempt\}/);
   assert.match(raw, /publish_server/, 'release-npm should expose publish_server for server runner publishing');

@@ -75,6 +75,7 @@ async function main() {
       'cli-version': { type: 'string', default: '' },
       'stack-version': { type: 'string', default: '' },
       'server-version': { type: 'string', default: '' },
+      'npm-package-name': { type: 'string', default: '' },
       write: { type: 'string', default: 'true' },
     },
     allowPositionals: false,
@@ -91,6 +92,7 @@ async function main() {
     stack: String(values['stack-version'] ?? '').trim(),
     server: String(values['server-version'] ?? '').trim(),
   };
+  const npmPackageName = String(values['npm-package-name'] ?? '').trim();
 
   /** @type {Record<string, string>} */
   const versions = {};
@@ -105,6 +107,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.cli,
         publishSurface: 'npm',
+        ...(npmPackageName ? { npmPackage: npmPackageName } : {}),
         env: process.env,
       })
     ).version;
