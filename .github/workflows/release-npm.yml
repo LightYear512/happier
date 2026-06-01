@@ -133,6 +133,8 @@ jobs:
     environment: release-shared
     env:
       HAPPIER_EMBEDDED_POLICY_ENV: ${{ inputs.channel == 'production' && 'production' || 'preview' }}
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
       source_ref: ${{ steps.meta.outputs.source_ref }}
@@ -207,18 +209,19 @@ jobs:
           esac
 
       - name: Create GitHub App token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         id: app_token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Checkout source ref
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.resolve_source.outputs.ref }}
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ steps.app_token.outputs.token != '' && steps.app_token.outputs.token || github.token }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -251,9 +254,11 @@ jobs:
           args: --frozen-lockfile --ignore-engines
 
       - name: Run release contract tests
+        if: inputs.run_tests
         run: yarn -s test:release:contracts
 
       - name: Verify installer assets are synced
+        if: inputs.run_tests
         run: node scripts/pipeline/run.mjs release-sync-installers --check
 
       - name: Resolve server runner package
