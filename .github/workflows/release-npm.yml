@@ -481,7 +481,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: npm-pack-cli
-          path: .
+          path: ${{ runner.temp }}/npm-pack-cli
 
       - name: Setup Node (npm publish)
         uses: actions/setup-node@v4
@@ -496,8 +496,7 @@ jobs:
           set -euo pipefail
           node scripts/pipeline/run.mjs npm-publish \
             --channel "${{ inputs.channel }}" \
-            --tarball-dir "dist/release-assets/cli" \
-            --allow-dirty true
+            --tarball-dir "${RUNNER_TEMP}/npm-pack-cli"
 
   publish-stack:
     name: npm publish (stack)
@@ -516,7 +515,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: npm-pack-stack
-          path: .
+          path: ${{ runner.temp }}/npm-pack-stack
 
       - name: Setup Node (npm publish)
         uses: actions/setup-node@v4
@@ -531,8 +530,7 @@ jobs:
           set -euo pipefail
           node scripts/pipeline/run.mjs npm-publish \
             --channel "${{ inputs.channel }}" \
-            --tarball-dir "dist/release-assets/stack" \
-            --allow-dirty true
+            --tarball-dir "${RUNNER_TEMP}/npm-pack-stack"
 
   publish-server-runner:
     name: npm publish (server runner)
@@ -551,7 +549,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: npm-pack-server
-          path: .
+          path: ${{ runner.temp }}/npm-pack-server
 
       - name: Setup Node (npm publish)
         uses: actions/setup-node@v4
@@ -566,8 +564,7 @@ jobs:
           set -euo pipefail
           node scripts/pipeline/run.mjs npm-publish \
             --channel "${{ inputs.channel }}" \
-            --tarball-dir "dist/release-assets/server" \
-            --allow-dirty true
+            --tarball-dir "${RUNNER_TEMP}/npm-pack-server"
 
   mirror-cli-stable:
     if: ${{ needs.release.outputs.channel == 'production' && needs.release.outputs.cli_version != 'SKIP' }}
