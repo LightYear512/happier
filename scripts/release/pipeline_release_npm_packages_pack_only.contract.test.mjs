@@ -70,6 +70,9 @@ test('pipeline npm release script can rewrite the published npm package name in 
     out,
     /\[dry-run\] patch apps\/cli\/package\.json repository -> https:\/\/github\.com\/LightYear512\/happier/,
   );
+  assert.match(out, /\[dry-run\] patch apps\/cli\/package\.json homepage -> https:\/\/github\.com\/LightYear512\/happier/);
+  assert.match(out, /\[dry-run\] patch apps\/cli\/package\.json bugs -> https:\/\/github\.com\/LightYear512\/happier\/issues/);
+  assert.match(out, /\[dry-run\] patch apps\/cli\/README\.md package references -> @lightyear512\/happier-cli/);
 });
 
 test('pipeline npm release script rejects package name rewrite for multi-package publishes', async () => {
