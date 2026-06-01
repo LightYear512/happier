@@ -185,6 +185,11 @@ test('release-npm is compatible with npm trusted publishing (OIDC)', async () =>
   const raw = await loadWorkflow('release-npm.yml');
 
   assert.match(raw, /node scripts\/pipeline\/run\.mjs npm-publish/, 'release-npm should delegate npm publishing to the pipeline command');
+  assert.match(
+    raw,
+    /node scripts\/pipeline\/run\.mjs npm-publish[\s\S]*?--tarball-dir "dist\/release-assets\/cli"[\s\S]*?--allow-dirty true/,
+    'release-npm publish jobs should allow downloaded pack artifacts in the checkout worktree',
+  );
   assert.match(raw, /node scripts\/pipeline\/run\.mjs npm-release/, 'release-npm should delegate npm pack preparation to the pipeline command');
   assert.doesNotMatch(raw, /npm pack --ignore-scripts --json/, 'release-npm should not embed npm pack json parsing boilerplate (use release-packages.mjs)');
   assert.doesNotMatch(raw, /npm install --global npm@11/, 'release-npm should avoid global npm installs (use pinned npm via npx inside the pipeline)');

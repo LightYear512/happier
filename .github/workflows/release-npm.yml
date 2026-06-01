@@ -496,7 +496,8 @@ jobs:
           set -euo pipefail
           node scripts/pipeline/run.mjs npm-publish \
             --channel "${{ inputs.channel }}" \
-            --tarball-dir "dist/release-assets/cli"
+            --tarball-dir "dist/release-assets/cli" \
+            --allow-dirty true
 
   publish-stack:
     name: npm publish (stack)
@@ -530,7 +531,8 @@ jobs:
           set -euo pipefail
           node scripts/pipeline/run.mjs npm-publish \
             --channel "${{ inputs.channel }}" \
-            --tarball-dir "dist/release-assets/stack"
+            --tarball-dir "dist/release-assets/stack" \
+            --allow-dirty true
 
   publish-server-runner:
     name: npm publish (server runner)
@@ -564,7 +566,8 @@ jobs:
           set -euo pipefail
           node scripts/pipeline/run.mjs npm-publish \
             --channel "${{ inputs.channel }}" \
-            --tarball-dir "dist/release-assets/server"
+            --tarball-dir "dist/release-assets/server" \
+            --allow-dirty true
 
   mirror-cli-stable:
     if: ${{ needs.release.outputs.channel == 'production' && needs.release.outputs.cli_version != 'SKIP' }}
