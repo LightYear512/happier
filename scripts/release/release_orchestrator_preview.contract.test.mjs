@@ -156,6 +156,7 @@ test('release workflows do not embed invalid JS escaping in node -p/-e snippets'
 
   // These sequences produce broken JavaScript (backslashes are passed literally to Node).
   for (const raw of [release, releaseNpm, promoteServer]) {
+    assert.doesNotMatch(raw, /\\\"/, 'do not use backslash-escaped double quotes inside workflow shell JavaScript snippets');
     assert.doesNotMatch(raw, /require\(\\"/, 'do not use require(\\") style escaping in workflows');
     assert.doesNotMatch(raw, /require\(\\"node:fs\\"/, 'do not escape quotes inside node -e single-quoted strings');
   }
