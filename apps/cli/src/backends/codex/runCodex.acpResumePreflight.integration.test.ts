@@ -475,6 +475,7 @@ describe('runCodex CodexACP resume behavior', () => {
 
     const credentials = { token: 'test' } as Credentials;
     const settingsSecretsReadKeys = [new Uint8Array(32).fill(6)];
+    const settings = { codexBackendMode: 'acp', mcpServers: { shouldNotLoadOnResume: true } };
     const outcome = await runCodex({
       credentials,
       startedBy: 'terminal',
@@ -482,7 +483,7 @@ describe('runCodex CodexACP resume behavior', () => {
       resume: 'resume-123',
       accountSettingsContext: {
         source: 'network',
-        settings: { codexBackendMode: 'acp', mcpServers: { shouldNotLoadOnResume: true } },
+        settings,
         settingsVersion: 1,
         loadedAtMs: 1,
         settingsSecretsReadKeys,
@@ -496,7 +497,8 @@ describe('runCodex CodexACP resume behavior', () => {
 
     expect(probeCodexAcpLoadSessionSupportSpy).not.toHaveBeenCalled();
     expect(resolveRunnerMcpServersSpy.mock.calls[0]?.[0]).toMatchObject({
-      accountSettings: null,
+      accountSettings: settings,
+      includeConfiguredMcpServers: false,
     });
     expect(createCodexPermissionHandler).toHaveBeenCalledWith(expect.objectContaining({
       getAccountSettingsSecretsReadKeys: expect.any(Function),

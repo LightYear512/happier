@@ -156,7 +156,14 @@ export const UI_FEATURE_REGISTRY = {
         },
     },
     'sessions.devPreview': {
-        settingsToggle: undefined,
+        settingsToggle: {
+            showInSettings: true,
+            isExperimental: true,
+            defaultEnabled: false,
+            titleKey: 'settingsFeatures.expSessionsDevPreview',
+            subtitleKey: 'settingsFeatures.expSessionsDevPreviewSubtitle',
+            icon: { ioniconName: 'desktop-outline', color: '#007AFF' },
+        },
     },
     'sessions.devPreview.relay': {
         settingsToggle: undefined,
