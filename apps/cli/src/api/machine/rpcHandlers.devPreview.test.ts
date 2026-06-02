@@ -59,7 +59,7 @@ describe('rpcHandlers.devPreview', () => {
         accept: 'text/plain',
         authorization: 'Bearer secret',
         cookie: 'session=main-app',
-        'x-forwarded-host': 'app.happier.dev',
+        'x-forwarded-host': 'proxyapi.layaair.com',
       },
     }) as any;
 

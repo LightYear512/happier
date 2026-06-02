@@ -33,7 +33,7 @@ describe('SystemTaskSpecSchema', () => {
         retries: 2,
         steps: ['install', 'pair'],
         metadata: {
-          relayUrl: 'https://api.happier.dev',
+          relayUrl: 'https://proxyapi.layaair.com',
         },
       },
     });

@@ -353,12 +353,12 @@ describe('happier server add guided flow', () => {
         '--name',
         'CloudCopy',
         '--server-url',
-        'https://api.happier.dev',
+        'https://proxyapi.layaair.com',
       ]);
 
       const settings = await readSettings();
-      expect(settings.servers?.CloudCopy?.serverUrl).toBe('https://api.happier.dev');
-      expect(settings.servers?.CloudCopy?.webappUrl).toBe('https://app.happier.dev');
+      expect(settings.servers?.CloudCopy?.serverUrl).toBe('https://proxyapi.layaair.com');
+      expect(settings.servers?.CloudCopy?.webappUrl).toBe('https://proxyapi.layaair.com');
     } finally {
       restoreTty();
       if (prevHome === undefined) delete process.env.HAPPIER_HOME_DIR;

@@ -11,7 +11,7 @@ const setPendingMock = vi.fn((_pending: { publicKeyB64Url: string; serverUrl: st
 const upsertActivateAndSwitchServerMock = vi.fn(async (_params: { serverUrl: string; source: string; scope: string; refreshAuth?: unknown }) => true);
 const getCredentialsMock = vi.fn(async () => null as null | { token: string; secret: string });
 const refreshFromActiveServerMock = vi.fn(async () => {});
-let activeServerUrl = 'https://api.happier.dev';
+let activeServerUrl = 'https://proxyapi.layaair.com';
 
 installTerminalRouteCommonModuleMocks({
     router: async () =>
@@ -71,7 +71,7 @@ describe('TerminalConnectScreen unauthenticated redirect', () => {
         getCredentialsMock.mockReset();
         getCredentialsMock.mockResolvedValue(null);
         refreshFromActiveServerMock.mockClear();
-        activeServerUrl = 'https://api.happier.dev';
+        activeServerUrl = 'https://proxyapi.layaair.com';
         (globalThis as any).window = {
             location: {
                 hash: '#key=abc123&server=https%3A%2F%2Fcompany.example.test',

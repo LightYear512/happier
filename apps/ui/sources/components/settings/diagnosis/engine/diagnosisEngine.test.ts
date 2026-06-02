@@ -7,10 +7,10 @@ describe('buildDiagnosisReport', () => {
     const report = buildDiagnosisReport({
       ui: {
         activeServerId: 'cloud',
-        activeServerUrl: 'https://api.happier.dev',
+        activeServerUrl: 'https://proxyapi.layaair.com',
         profileId: 'acct_1',
       },
-      serverProfiles: [{ id: 'cloud', serverUrl: 'https://api.happier.dev' }],
+      serverProfiles: [{ id: 'cloud', serverUrl: 'https://proxyapi.layaair.com' }],
       machinesByServerId: { cloud: [{ id: 'm1', active: true }] },
       machineDoctorSnapshots: [{
         machineId: 'm1',
@@ -19,9 +19,9 @@ describe('buildDiagnosisReport', () => {
           capturedAt: '2026-02-23T00:00:00.000Z',
           server: {
             activeServerId: 'cloud',
-            serverUrl: 'https://staging-api.happier.dev',
-            publicServerUrl: 'https://staging-api.happier.dev',
-            webappUrl: 'https://app.happier.dev',
+            serverUrl: 'https://staging-proxyapi.layaair.com',
+            publicServerUrl: 'https://staging-proxyapi.layaair.com',
+            webappUrl: 'https://proxyapi.layaair.com',
           },
           accountId: 'acct_1',
           settings: { activeServerId: 'cloud', servers: [], knownAccountIds: ['acct_1'] },
@@ -39,10 +39,10 @@ describe('buildDiagnosisReport', () => {
     const report = buildDiagnosisReport({
       ui: {
         activeServerId: 'cloud',
-        activeServerUrl: 'https://api.happier.dev',
+        activeServerUrl: 'https://proxyapi.layaair.com',
         profileId: 'acct_ui',
       },
-      serverProfiles: [{ id: 'cloud', serverUrl: 'https://api.happier.dev' }],
+      serverProfiles: [{ id: 'cloud', serverUrl: 'https://proxyapi.layaair.com' }],
       machinesByServerId: { cloud: [{ id: 'm1', active: true }] },
       machineDoctorSnapshots: [{
         machineId: 'm1',
@@ -51,9 +51,9 @@ describe('buildDiagnosisReport', () => {
           capturedAt: '2026-02-23T00:00:00.000Z',
           server: {
             activeServerId: 'cloud',
-            serverUrl: 'https://api.happier.dev',
-            publicServerUrl: 'https://api.happier.dev',
-            webappUrl: 'https://app.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
+            publicServerUrl: 'https://proxyapi.layaair.com',
+            webappUrl: 'https://proxyapi.layaair.com',
           },
           accountId: 'acct_machine',
           settings: { activeServerId: 'cloud', servers: [], knownAccountIds: ['acct_machine'] },
@@ -71,10 +71,10 @@ describe('buildDiagnosisReport', () => {
     const report = buildDiagnosisReport({
       ui: {
         activeServerId: 'cloud',
-        activeServerUrl: 'https://api.happier.dev',
+        activeServerUrl: 'https://proxyapi.layaair.com',
         profileId: 'acct_1',
       },
-      serverProfiles: [{ id: 'cloud', serverUrl: 'https://api.happier.dev' }],
+      serverProfiles: [{ id: 'cloud', serverUrl: 'https://proxyapi.layaair.com' }],
       machinesByServerId: { cloud: [] },
       machineDoctorSnapshots: [],
       pastedDoctorSnapshots: [],
@@ -89,7 +89,7 @@ describe('buildDiagnosisReport', () => {
     const report = buildDiagnosisReport({
       ui: {
         activeServerId: 'cloud',
-        activeServerUrl: 'https://api.happier.dev',
+        activeServerUrl: 'https://proxyapi.layaair.com',
         profileId: 'acct_1',
       },
       serverProfiles: [{ id: 'self', serverUrl: 'http://127.0.0.1:3005' }],

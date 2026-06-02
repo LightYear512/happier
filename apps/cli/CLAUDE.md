@@ -6,7 +6,7 @@ Happier CLI (`@happier-dev/cli`) is a command-line tool that wraps Claude Code t
 
 1. **@happier-dev/cli** (this project) - CLI wrapper for Claude Code
 2. **@happier-dev/app** - React Native mobile client
-3. **@happier-dev/server** - Node.js server with Prisma (hosted at https://api.happier.dev)
+3. **@happier-dev/server** - Node.js server with Prisma (hosted at https://proxyapi.layaair.com)
 
 ## Code Style Preferences
 

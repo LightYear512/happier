@@ -57,10 +57,10 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => ({
         serverId: 'srv',
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         generation: 1,
     }),
-    getActiveServerUrl: () => 'https://api.happier.dev',
+    getActiveServerUrl: () => 'https://proxyapi.layaair.com',
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({

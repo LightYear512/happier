@@ -4,14 +4,14 @@ import assert from 'node:assert/strict';
 import { buildTerminalConnectLinks, buildConfigureServerLinks } from '../dist/links/index.js';
 
 test('buildTerminalConnectLinks adds server param to web + mobile links', () => {
-  const webappUrl = 'https://app.happier.dev';
+  const webappUrl = 'https://proxyapi.layaair.com';
   const serverUrl = 'https://stack.example.test';
   const publicKeyB64Url = 'abcDEF_123-zzz';
 
   const out = buildTerminalConnectLinks({ webappUrl, serverUrl, publicKeyB64Url });
   assert.equal(
     out.webUrl,
-    'https://app.happier.dev/terminal/connect#key=abcDEF_123-zzz&server=https%3A%2F%2Fstack.example.test',
+    'https://proxyapi.layaair.com/terminal/connect#key=abcDEF_123-zzz&server=https%3A%2F%2Fstack.example.test',
   );
   assert.equal(
     out.mobileUrl,
@@ -20,13 +20,13 @@ test('buildTerminalConnectLinks adds server param to web + mobile links', () => 
 });
 
 test('buildConfigureServerLinks encodes server URL', () => {
-  const webappUrl = 'https://app.happier.dev';
+  const webappUrl = 'https://proxyapi.layaair.com';
   const serverUrl = 'https://stack.example.test';
 
   const out = buildConfigureServerLinks({ webappUrl, serverUrl });
   assert.equal(
     out.webUrl,
-    'https://app.happier.dev/?server=https%3A%2F%2Fstack.example.test',
+    'https://proxyapi.layaair.com/?server=https%3A%2F%2Fstack.example.test',
   );
   assert.equal(
     out.mobileUrl,
@@ -35,14 +35,14 @@ test('buildConfigureServerLinks encodes server URL', () => {
 });
 
 test('buildTerminalConnectLinks omits loopback server URL from shareable links', () => {
-  const webappUrl = 'https://app.happier.dev';
+  const webappUrl = 'https://proxyapi.layaair.com';
   const serverUrl = 'http://localhost:3010';
   const publicKeyB64Url = 'abcDEF_123-zzz';
 
   const out = buildTerminalConnectLinks({ webappUrl, serverUrl, publicKeyB64Url });
   assert.equal(
     out.webUrl,
-    'https://app.happier.dev/terminal/connect#key=abcDEF_123-zzz',
+    'https://proxyapi.layaair.com/terminal/connect#key=abcDEF_123-zzz',
   );
   assert.equal(
     out.mobileUrl,
@@ -67,11 +67,11 @@ test('buildTerminalConnectLinks keeps loopback server URL for local web auth lin
 });
 
 test('buildConfigureServerLinks omits loopback server URL from shareable links', () => {
-  const webappUrl = 'https://app.happier.dev';
+  const webappUrl = 'https://proxyapi.layaair.com';
   const serverUrl = 'http://127.0.0.1:3010';
 
   const out = buildConfigureServerLinks({ webappUrl, serverUrl });
-  assert.equal(out.webUrl, 'https://app.happier.dev');
+  assert.equal(out.webUrl, 'https://proxyapi.layaair.com');
   assert.equal(out.mobileUrl, 'happier://server');
 });
 

@@ -16,7 +16,7 @@ const detailsTabState = vi.hoisted(() => ({
     value: {} as Record<string, unknown>,
 }));
 const activeServerSnapshotState = vi.hoisted(() => ({
-    serverUrl: 'https://app.happier.dev',
+    serverUrl: 'https://proxyapi.layaair.com',
     serverId: 'server_1',
     generation: 1,
 }));
@@ -136,7 +136,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         delete (globalThis as { window?: unknown }).window;
         relayFeatureState.enabled = false;
         detailsTabState.value = {};
-        activeServerSnapshotState.serverUrl = 'https://app.happier.dev';
+        activeServerSnapshotState.serverUrl = 'https://proxyapi.layaair.com';
         setDetailsTabStateSpy.mockReset();
         serverFetchSpy.mockReset();
         serverFetchSpy.mockResolvedValue({
@@ -214,7 +214,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     });
 
     it('renders a server-routed iframe preview for host-namespaced remote web origins when relay is enabled', async () => {
-        installWindow('https://app.happier.dev/session/s1');
+        installWindow('https://proxyapi.layaair.com/session/s1');
         relayFeatureState.enabled = true;
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
 
@@ -244,7 +244,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     });
 
     it('shows the resolved relay preview URL in the preview tab subtitle when available', async () => {
-        installWindow('https://app.happier.dev/session/s1');
+        installWindow('https://proxyapi.layaair.com/session/s1');
         relayFeatureState.enabled = true;
         detailsTabState.value = {
             'localServicePreview:preview_1': {
@@ -262,7 +262,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     });
 
     it('does not repeatedly write preview tab state when the parent rerenders after resolving the relay URL', async () => {
-        installWindow('https://app.happier.dev/session/s1');
+        installWindow('https://proxyapi.layaair.com/session/s1');
         relayFeatureState.enabled = true;
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
 
@@ -283,14 +283,14 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     });
 
     it('keeps path-namespaced remote previews in an opaque iframe sandbox', async () => {
-        installWindow('https://app.happier.dev/session/s1');
+        installWindow('https://proxyapi.layaair.com/session/s1');
         relayFeatureState.enabled = true;
         serverFetchSpy.mockResolvedValue({
             ok: true,
             status: 200,
             json: async () => ({
                 token: 'preview_token_1',
-                previewUrl: 'https://app.happier.dev/preview/s1/machine-1/route_1/?previewToken=preview_token_1',
+                previewUrl: 'https://proxyapi.layaair.com/preview/s1/machine-1/route_1/?previewToken=preview_token_1',
                 namespaceStrategy: 'path',
             }),
         });
@@ -300,13 +300,13 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         await flushHookEffects({ cycles: 1, turns: 2 });
 
         const iframe = screen.findByType('iframe');
-        expect(String(iframe.props.src)).toBe('https://app.happier.dev/preview/s1/machine-1/route_1/dashboard?previewToken=preview_token_1');
+        expect(String(iframe.props.src)).toBe('https://proxyapi.layaair.com/preview/s1/machine-1/route_1/dashboard?previewToken=preview_token_1');
         expect(iframe.props.sandbox).toContain('allow-scripts');
         expect(iframe.props.sandbox).not.toContain('allow-same-origin');
     });
 
     it('uses the server-provided preview URL without requiring an app-derived relay base URL', async () => {
-        installWindow('https://app.happier.dev/session/s1');
+        installWindow('https://proxyapi.layaair.com/session/s1');
         relayFeatureState.enabled = true;
         activeServerSnapshotState.serverUrl = 'not a url';
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
@@ -323,7 +323,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
     });
 
     it('keeps remote web origins in the unavailable state when relay is disabled', async () => {
-        installWindow('https://app.happier.dev/session/s1');
+        installWindow('https://proxyapi.layaair.com/session/s1');
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
 
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);

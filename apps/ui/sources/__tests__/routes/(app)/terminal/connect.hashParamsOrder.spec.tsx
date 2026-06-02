@@ -27,10 +27,10 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerUrl: () => 'https://api.happier.dev',
+    getActiveServerUrl: () => 'https://proxyapi.layaair.com',
     getActiveServerSnapshot: () => ({
         serverId: 'active-server',
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         activeShareableServerUrl: null,
         activeLocalRelayUrl: null,
         generation: 1,

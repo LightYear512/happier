@@ -18,13 +18,13 @@ describe('configuration apiServerUrl', () => {
   it('treats HAPPIER_PUBLIC_SERVER_URL as canonical serverUrl and uses HAPPIER_SERVER_URL for apiServerUrl when they differ', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://127.0.0.1:3005';
     process.env.HAPPIER_PUBLIC_SERVER_URL = 'https://my-stack.example.test';
-    process.env.HAPPIER_WEBAPP_URL = 'https://app.happier.dev';
+    process.env.HAPPIER_WEBAPP_URL = 'https://proxyapi.layaair.com';
 
     vi.resetModules();
     const { configuration } = await import('./configuration');
     expect(configuration.serverUrl).toBe('https://my-stack.example.test');
     expect((configuration as any).apiServerUrl).toBe('http://127.0.0.1:3005');
-    expect(configuration.webappUrl).toBe('https://app.happier.dev');
+    expect(configuration.webappUrl).toBe('https://proxyapi.layaair.com');
   });
 
   it('ignores a stale HAPPIER_LOCAL_SERVER_URL when HAPPIER_SERVER_URL already points at a local stack', async () => {

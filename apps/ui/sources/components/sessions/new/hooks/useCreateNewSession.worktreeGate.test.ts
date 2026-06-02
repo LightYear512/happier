@@ -706,7 +706,7 @@ describe('useCreateNewSession (worktree gating)', () => {
         expect(detachWorkspaceLocationMock).not.toHaveBeenCalled();
         expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
         expect(clearNewSessionDraftMock).toHaveBeenCalledTimes(1);
-        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=api.happier.dev', expect.anything());
+        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=proxyapi.layaair.com', expect.anything());
         expect(setIsCreating).not.toHaveBeenCalledWith(false);
     });
 
@@ -1325,7 +1325,7 @@ describe('useCreateNewSession (worktree gating)', () => {
         expect(updateSessionDraftMock).not.toHaveBeenCalled();
         expect(ensureSessionVisibleForMessageRouteMock).toHaveBeenCalledWith('session-created', {
             forceRefresh: true,
-            serverId: 'api.happier.dev',
+            serverId: 'proxyapi.layaair.com',
         });
         expect(routerReplace).not.toHaveBeenCalled();
         expect(disableDraftPersistence).not.toHaveBeenCalled();
@@ -1452,7 +1452,7 @@ describe('useCreateNewSession (worktree gating)', () => {
         expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
         expect(clearNewSessionDraftMock).toHaveBeenCalledTimes(1);
         expect(routerReplace).toHaveBeenCalledWith(
-            '/session/session-created?serverId=api.happier.dev&recoveryDataId=temp-recovery-1',
+            '/session/session-created?serverId=proxyapi.layaair.com&recoveryDataId=temp-recovery-1',
             expect.anything(),
         );
         expect(vi.mocked(Modal.alert)).toHaveBeenCalledWith('common.error', expect.any(String));

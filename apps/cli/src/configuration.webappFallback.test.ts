@@ -57,15 +57,15 @@ describe('configuration env url fallback', () => {
     const homeDir = createTempDirSync('happier-cli-config-');
     tempDirs.push(homeDir);
     process.env.HAPPIER_HOME_DIR = homeDir;
-    process.env.HAPPIER_SERVER_URL = 'https://api.happier.dev';
+    process.env.HAPPIER_SERVER_URL = 'https://proxyapi.layaair.com';
     delete process.env.HAPPIER_WEBAPP_URL;
 
     const output = captureConsoleText();
     try {
       const configMod = await import('./configuration');
       configMod.reloadConfiguration();
-      expect(configMod.configuration.serverUrl).toBe('https://api.happier.dev');
-      expect(configMod.configuration.webappUrl).toBe('https://app.happier.dev');
+      expect(configMod.configuration.serverUrl).toBe('https://proxyapi.layaair.com');
+      expect(configMod.configuration.webappUrl).toBe('https://proxyapi.layaair.com');
     } finally {
       output.restore();
     }
@@ -168,8 +168,8 @@ describe('configuration env url fallback', () => {
             },
             cloud: {
               id: 'cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
             },
           },
         },
@@ -238,8 +238,8 @@ describe('configuration env url fallback', () => {
           servers: {
             cloud: {
               id: 'cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
             },
             'custom-2': {
               id: 'custom-2',

@@ -6,8 +6,8 @@
     "active": {
       "id": "cloud",
       "name": "Happier Cloud",
-      "serverUrl": "https://api.happier.dev",
-      "webappUrl": "https://app.happier.dev",
+      "serverUrl": "https://proxyapi.layaair.com",
+      "webappUrl": "https://proxyapi.layaair.com",
       "lastUsedAt": 1700000000000
     }
   }

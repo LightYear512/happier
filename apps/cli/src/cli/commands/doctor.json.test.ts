@@ -7,9 +7,9 @@ const { runDoctorCommandMock, buildDoctorSnapshotMock } = vi.hoisted(() => ({
     capturedAt: '2026-02-23T00:00:00.000Z',
     server: {
       activeServerId: 'cloud',
-      serverUrl: 'https://api.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
     },
     accountId: 'acct_123',
     settings: {
@@ -18,8 +18,8 @@ const { runDoctorCommandMock, buildDoctorSnapshotMock } = vi.hoisted(() => ({
         {
           id: 'cloud',
           name: 'Happier Cloud',
-          serverUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
           createdAt: 0,
           updatedAt: 0,
           lastUsedAt: 0,
@@ -55,7 +55,7 @@ describe('happier doctor --json', () => {
       expect(output.logs).toHaveLength(1);
       const parsed = output.json();
       expect(parsed.accountId).toBe('acct_123');
-      expect(parsed.server?.serverUrl).toBe('https://api.happier.dev');
+      expect(parsed.server?.serverUrl).toBe('https://proxyapi.layaair.com');
     } finally {
       output.restore();
     }

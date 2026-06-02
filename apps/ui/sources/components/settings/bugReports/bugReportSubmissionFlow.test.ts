@@ -26,7 +26,7 @@ const baseInput = {
     appVersion: '1.2.3',
     platform: 'ios',
     deploymentType: 'cloud' as const,
-    serverUrl: 'https://api.happier.dev',
+    serverUrl: 'https://proxyapi.layaair.com',
   },
   includeDiagnostics: true,
   acceptedPrivacyNotice: true,

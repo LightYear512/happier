@@ -23,7 +23,7 @@ let authCredentials: any = null;
 let storedCredentialsOverride: any | undefined = undefined;
 let contentPrivateKey = new Uint8Array([7, 7, 7]);
 let contentPublicKey = new Uint8Array([9, 9, 9]);
-let activeServerUrl = 'https://api.happier.dev';
+let activeServerUrl = 'https://proxyapi.layaair.com';
 let activeShareableServerUrl: string | null = null;
 
 installSessionHooksCommonModuleMocks({
@@ -128,7 +128,7 @@ vi.mock('@/sync/domains/state/storageStore', () => {
 
 function buildTerminalConnectUrl(params: Readonly<{ terminalPublicKey: Uint8Array; serverUrl?: string }>): string {
     const publicKeyB64Url = Buffer.from(params.terminalPublicKey).toString('base64url');
-    const server = encodeURIComponent(params.serverUrl ?? 'https://api.happier.dev');
+    const server = encodeURIComponent(params.serverUrl ?? 'https://proxyapi.layaair.com');
     return `happier://terminal?key=${publicKeyB64Url}&server=${server}`;
 }
 
@@ -172,13 +172,13 @@ describe('useConnectTerminal unauthenticated flow', () => {
 
         let result = true;
         await act(async () => {
-            result = await hookApi!.processAuthUrl('happier://terminal?key=abc123&server=https%3A%2F%2Fapi.happier.dev');
+            result = await hookApi!.processAuthUrl('happier://terminal?key=abc123&server=https%3A%2F%2Fproxyapi.layaair.com');
         });
 
         expect(result).toBe(false);
         expect(setPendingTerminalConnectSpy).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
         });
         expect(modalAlertSpy).toHaveBeenCalledWith('terminal.connectTerminal', 'modals.pleaseSignInFirst', [
             { text: 'common.continue' },
@@ -192,7 +192,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         modalAlertSpy.mockClear();
         modalConfirmSpy.mockClear();
         upsertActivateAndSwitchServerSpy.mockClear();
-        activeServerUrl = 'https://api.happier.dev';
+        activeServerUrl = 'https://proxyapi.layaair.com';
 
         const { useConnectTerminal } = await import('./useConnectTerminal');
 
@@ -368,7 +368,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         authApproveSpy.mockResolvedValue('approved');
         modalAlertSpy.mockClear();
         upsertActivateAndSwitchServerSpy.mockClear();
-        activeServerUrl = 'https://api.happier.dev';
+        activeServerUrl = 'https://proxyapi.layaair.com';
 
         const staleCredentials = createDataKeyCredentials({ token: 'token-old', machineKeyByte: 7 });
         const refreshedCredentials = createDataKeyCredentials({ token: 'token-new', machineKeyByte: 11 });

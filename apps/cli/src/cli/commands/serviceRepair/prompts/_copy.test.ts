@@ -21,7 +21,7 @@ function makeEntry(
     ringId: 'preview',
     mode: 'user',
     targetMode: 'pinned',
-    relayUrl: 'https://api.happier.dev',
+    relayUrl: 'https://proxyapi.layaair.com',
     running: true,
     configuredCliVersion: '0.2.6-preview.1.1',
     runningCliVersion: '0.2.6-preview.1.1',

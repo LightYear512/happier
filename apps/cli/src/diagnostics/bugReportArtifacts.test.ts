@@ -16,8 +16,8 @@ const {
       cloud: {
         id: 'cloud',
         name: 'Happier Cloud',
-        serverUrl: 'https://api.happier.dev?token=abc',
-        webappUrl: 'https://app.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com?token=abc',
+        webappUrl: 'https://proxyapi.layaair.com',
         createdAt: 0,
         updatedAt: 0,
         lastUsedAt: 0,
@@ -70,9 +70,9 @@ const {
 vi.mock('@/configuration', () => ({
   configuration: {
     activeServerId: 'cloud',
-    serverUrl: 'https://api.happier.dev',
-    publicServerUrl: 'https://api.happier.dev',
-    webappUrl: 'https://app.happier.dev',
+    serverUrl: 'https://proxyapi.layaair.com',
+    publicServerUrl: 'https://proxyapi.layaair.com',
+    webappUrl: 'https://proxyapi.layaair.com',
     logsDir: '/path/that/does/not/exist',
   },
 }));
@@ -102,7 +102,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
       includeDiagnostics: true,
       acceptedKinds: ['cli', 'daemon', 'stack-service'],
       maxArtifactBytes: 256_000,
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       activeServerId: 'main',
       rawArgs: [
         '--title',
@@ -159,7 +159,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
         includeDiagnostics: true,
         acceptedKinds: ['cli'],
         maxArtifactBytes: 256_000,
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         activeServerId: 'main',
         rawArgs: ['--title', 'bug'],
       });
@@ -167,7 +167,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
       expect(result.artifacts.every((artifact) => artifact.sourceKind === 'cli')).toBe(true);
       expect(collectBugReportMachineDiagnosticsSnapshotMock).not.toHaveBeenCalled();
       const fetchUrls = fetchSpy.mock.calls.map((call) => String(call[0]));
-      expect(fetchUrls.some((url) => url.startsWith('https://api.happier.dev'))).toBe(false);
+      expect(fetchUrls.some((url) => url.startsWith('https://proxyapi.layaair.com'))).toBe(false);
     } finally {
       fetchSpy.mockRestore();
     }
@@ -178,7 +178,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
       includeDiagnostics: true,
       acceptedKinds: ['cli'],
       maxArtifactBytes: 256_000,
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       activeServerId: 'main',
       rawArgs: [
         '--title=bug',
@@ -227,7 +227,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
       includeDiagnostics: true,
       acceptedKinds: ['stack-service'],
       maxArtifactBytes: 256_000,
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       activeServerId: 'main',
       rawArgs: ['--title', 'bug'],
     });
@@ -246,7 +246,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
       includeDiagnostics: true,
       acceptedKinds: ['cli', 'daemon'],
       maxArtifactBytes: 256_000,
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       activeServerId: 'main',
       rawArgs: ['--title', 'bug'],
     });
@@ -275,7 +275,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
         acceptedKinds: ['server'],
         maxArtifactBytes: 256_000,
         contextWindowMs: 45_000,
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         activeServerId: 'main',
         rawArgs: ['--title', 'bug'],
       });
@@ -298,7 +298,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
         acceptedKinds: ['server', 'cli'],
         maxArtifactBytes: 256_000,
         contextWindowMs: 45_000,
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         activeServerId: 'main',
         rawArgs: ['--title', 'bug'],
       });

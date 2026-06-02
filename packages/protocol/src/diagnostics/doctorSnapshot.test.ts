@@ -8,9 +8,9 @@ describe('DoctorSnapshotSchema', () => {
       capturedAt: '2026-02-23T00:00:00.000Z',
       server: {
         activeServerId: 'cloud',
-        serverUrl: 'https://admin:secret@api.happier.dev/path?token=abc#frag',
-        publicServerUrl: 'https://api.happier.dev/path?token=abc',
-        webappUrl: 'https://app.happier.dev/?token=abc',
+        serverUrl: 'https://admin:secret@proxyapi.layaair.com/path?token=abc#frag',
+        publicServerUrl: 'https://proxyapi.layaair.com/path?token=abc',
+        webappUrl: 'https://proxyapi.layaair.com/?token=abc',
       },
       accountId: 'acct_123',
       settings: {
@@ -19,8 +19,8 @@ describe('DoctorSnapshotSchema', () => {
           {
             id: 'cloud',
             name: 'Happier Cloud',
-            serverUrl: 'https://admin:secret@api.happier.dev/path?token=abc',
-            webappUrl: 'https://app.happier.dev/?token=abc',
+            serverUrl: 'https://admin:secret@proxyapi.layaair.com/path?token=abc',
+            webappUrl: 'https://proxyapi.layaair.com/?token=abc',
             createdAt: 0,
             updatedAt: 0,
             lastUsedAt: 0,
@@ -70,7 +70,7 @@ describe('DoctorSnapshotSchema', () => {
               scope: 'user',
               definitionPath: '/Users/test/Library/LaunchAgents/com.happier.cli.daemon.default.plist',
               executablePath: null,
-              serverUrl: 'https://api.happier.dev/path?token=abc',
+              serverUrl: 'https://proxyapi.layaair.com/path?token=abc',
               publicServerUrl: 'https://relay.happier.dev/path?token=abc',
               installed: true,
               running: true,
@@ -109,11 +109,11 @@ describe('DoctorSnapshotSchema', () => {
       daemonStatus: {
         server: {
           activeServerId: 'cloud',
-          serverUrl: 'https://admin:secret@api.happier.dev/path?token=abc#frag',
+          serverUrl: 'https://admin:secret@proxyapi.layaair.com/path?token=abc#frag',
           localServerUrl: 'http://127.0.0.1:3005/?token=abc',
-          publicServerUrl: 'https://api.happier.dev/path?token=abc',
-          webappUrl: 'https://app.happier.dev/?token=abc',
-          comparableKey: 'https://api.happier.dev',
+          publicServerUrl: 'https://proxyapi.layaair.com/path?token=abc',
+          webappUrl: 'https://proxyapi.layaair.com/?token=abc',
+          comparableKey: 'https://proxyapi.layaair.com',
         },
         daemon: {
           running: true,

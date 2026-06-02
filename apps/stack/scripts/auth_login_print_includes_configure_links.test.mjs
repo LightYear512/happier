@@ -124,7 +124,7 @@ test('hstack auth login --print --json webapp precedence variants', async (t) =>
     {
       name: '--webapp=public overrides stack-env hosted webapp',
       prefix: 'hstack-auth-webapp-public-',
-      stackEnvLines: [...BASE_ENV_LINES, 'HAPPIER_WEBAPP_URL=https://app.happier.dev'],
+      stackEnvLines: [...BASE_ENV_LINES, 'HAPPIER_WEBAPP_URL=https://proxyapi.layaair.com'],
       args: ['--webapp=public'],
       assertParsed(parsed) {
         assert.equal(parsed.webappUrl, 'http://localhost:4102');
@@ -134,10 +134,10 @@ test('hstack auth login --print --json webapp precedence variants', async (t) =>
       name: 'main stack ignores global HAPPIER_WEBAPP_URL when stack env does not define it',
       prefix: 'hstack-auth-main-webapp-',
       stackEnvLines: ['HAPPIER_STACK_STACK=main', 'HAPPIER_STACK_TAILSCALE_PREFER_PUBLIC_URL=0', 'HAPPIER_STACK_TAILSCALE_SERVE=0'],
-      extraEnv: { HAPPIER_WEBAPP_URL: 'https://app.happier.dev' },
+      extraEnv: { HAPPIER_WEBAPP_URL: 'https://proxyapi.layaair.com' },
       assertParsed(parsed) {
         assert.ok(parsed.webappUrl, 'expected webappUrl in output');
-        assert.notEqual(parsed.webappUrl, 'https://app.happier.dev');
+        assert.notEqual(parsed.webappUrl, 'https://proxyapi.layaair.com');
       },
     },
     {

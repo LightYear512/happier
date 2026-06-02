@@ -36,8 +36,8 @@ describe('multiDaemon release ring scoping', () => {
       HAPPIER_HOME_DIR: homeDir,
       HAPPIER_RELEASE_RING: 'dev',
       HAPPIER_ACTIVE_SERVER_ID: 'cloud',
-      HAPPIER_SERVER_URL: 'https://api.happier.dev',
-      HAPPIER_WEBAPP_URL: 'https://app.happier.dev',
+      HAPPIER_SERVER_URL: 'https://proxyapi.layaair.com',
+      HAPPIER_WEBAPP_URL: 'https://proxyapi.layaair.com',
     });
 
     // Seed a minimal settings file with a cloud server profile so the list is deterministic.
@@ -50,8 +50,8 @@ describe('multiDaemon release ring scoping', () => {
             cloud: {
               id: 'cloud',
               name: 'Cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
             },
           },
         },
@@ -92,8 +92,8 @@ describe('multiDaemon release ring scoping', () => {
       HAPPIER_HOME_DIR: homeDir,
       HAPPIER_RELEASE_RING: 'dev',
       HAPPIER_ACTIVE_SERVER_ID: 'cloud',
-      HAPPIER_SERVER_URL: 'https://api.happier.dev',
-      HAPPIER_WEBAPP_URL: 'https://app.happier.dev',
+      HAPPIER_SERVER_URL: 'https://proxyapi.layaair.com',
+      HAPPIER_WEBAPP_URL: 'https://proxyapi.layaair.com',
     });
 
     mkdirSync(homeDir, { recursive: true });
@@ -105,8 +105,8 @@ describe('multiDaemon release ring scoping', () => {
             cloud: {
               id: 'cloud',
               name: 'Cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
             },
           },
         },
@@ -150,8 +150,8 @@ describe('multiDaemon release ring scoping', () => {
       HAPPIER_HOME_DIR: homeDir,
       HAPPIER_RELEASE_RING: 'dev',
       HAPPIER_ACTIVE_SERVER_ID: 'cloud',
-      HAPPIER_SERVER_URL: 'https://api.happier.dev',
-      HAPPIER_WEBAPP_URL: 'https://app.happier.dev',
+      HAPPIER_SERVER_URL: 'https://proxyapi.layaair.com',
+      HAPPIER_WEBAPP_URL: 'https://proxyapi.layaair.com',
     });
 
     mkdirSync(homeDir, { recursive: true });
@@ -163,8 +163,8 @@ describe('multiDaemon release ring scoping', () => {
             cloud: {
               id: 'cloud',
               name: 'Cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
             },
           },
         },

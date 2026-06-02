@@ -338,7 +338,7 @@ export type CliSelfUpdateAvailable = RepairFindingBase & Readonly<{
  */
 export type StackArchetype =
   | 'cli-only'                    // only the CLI (no daemon, no relay)
-  | 'cli-daemon-hosted'           // CLI + daemon + hosted cloud (api.happier.dev) — no local relay
+  | 'cli-daemon-hosted'           // CLI + daemon + hosted cloud (proxyapi.layaair.com) — no local relay
   | 'cli-daemon-local-relay'      // CLI + daemon + local relay (installed by us)
   | 'cli-daemon-self-hosted'      // CLI + daemon + relay running elsewhere (Docker, self-hosted server)
   | 'unknown';
