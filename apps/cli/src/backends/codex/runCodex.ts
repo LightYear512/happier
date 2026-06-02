@@ -341,12 +341,13 @@ export async function runCodex(opts: {
 
     const explicitPermissionMode = opts.permissionMode;
     const hasResumeArg = typeof opts.resume === 'string' && opts.resume.trim().length > 0;
-    const accountSettings = hasResumeArg ? null : (opts.accountSettingsContext?.settings ?? null);
+    const accountSettings = opts.accountSettingsContext?.settings ?? null;
+    const accountSettingsForAgentDefaults = hasResumeArg ? null : accountSettings;
     const pendingQueueDrainMaxPopPerWake = resolveSessionPendingQueueMaxPopPerWake(opts.accountSettingsContext?.settings ?? null);
     const permissionModeSeed = resolvePermissionModeSeedForAgentStart({
         agentId: 'codex',
         explicitPermissionMode: opts.permissionMode,
-        accountSettings,
+        accountSettings: accountSettingsForAgentDefaults,
     });
     let initialPermissionMode = permissionModeSeed.mode;
     let initialPermissionModeUpdatedAt =
@@ -1335,6 +1336,7 @@ export async function runCodex(opts: {
         directory,
         sessionMetadata: session.getMetadataSnapshot(),
         commandMode: 'current-process',
+        includeConfiguredMcpServers: !hasResumeArg,
     });
     happierMcpServer = happierBridge.happierMcpServer;
     mcpServers = happierBridge.mcpServers;

@@ -4419,6 +4419,8 @@ export const es: TranslationStructure = {
         "Habilitar pantallas y ajustes de búsqueda de memoria local",
     expSessionsDirect: "Sesiones directas",
     expSessionsDirectSubtitle: "Muestra y abre en la barra lateral sesiones directas respaldadas por el proveedor",
+    expSessionsDevPreview: "Vistas previas locales de desarrollo",
+    expSessionsDevPreviewSubtitle: "Permite que los agentes de sesión registren apps web locales para previsualizarlas en la app",
     expSessionsFolders: "Carpetas de sesiones",
     expSessionsFoldersSubtitle: "Organiza las sesiones Happier de la barra lateral en carpetas de espacio de trabajo",
     expPetsCompanion: "Mascotas",
