@@ -37,6 +37,11 @@ import {
   createIosSimulatorPreviewControlRegistry,
   type IosSimulatorPreviewControlRegistry,
 } from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
+import {
+  resolveIosSimulatorPreviewDevice,
+  type IosSimulatorPreviewDevice,
+} from '@/session/simulatorPreview/resolveIosSimulatorPreviewDevice';
+import { resolveIosWebDriverAgentUrl } from '@/session/simulatorPreview/resolveIosWebDriverAgentUrl';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -72,6 +77,9 @@ export function createHappierMcpServer(
     iosSimulatorPreviewStreams?: IosSimulatorPreviewStreamRegistry;
     androidSimulatorPreviewControlRegistry?: AndroidSimulatorPreviewControlRegistry;
     iosSimulatorPreviewControlRegistry?: IosSimulatorPreviewControlRegistry;
+    simulatorPreviewControlPlatforms?: Map<string, 'android' | 'ios'>;
+    resolveIosSimulatorPreviewDevice?: typeof resolveIosSimulatorPreviewDevice;
+    resolveIosWebDriverAgentUrl?: typeof resolveIosWebDriverAgentUrl;
   }>,
 ): { mcp: McpServer; toolNames: string[] } {
   // This server is the per-session MCP bridge that a running session agent uses.
@@ -85,13 +93,16 @@ export function createHappierMcpServer(
   const startAndroidSimulatorPreviewStream = opts?.startAndroidSimulatorPreviewStream ?? startAndroidScreenshotMjpegStream;
   const startIosSimulatorPreviewStream = opts?.startIosSimulatorPreviewStream ?? startIosScreenshotMjpegStream;
   const resolveAndroidGeometry = opts?.resolveAndroidSimulatorPreviewGeometry ?? resolveAndroidSimulatorPreviewGeometry;
+  const resolveIosDevice = opts?.resolveIosSimulatorPreviewDevice ?? resolveIosSimulatorPreviewDevice;
+  const resolveIosWdaUrl = opts?.resolveIosWebDriverAgentUrl ?? resolveIosWebDriverAgentUrl;
   const activeAndroidStreams = opts?.androidSimulatorPreviewStreams ?? new Map<string, AndroidScreenshotMjpegStream>();
   const activeIosStreams = opts?.iosSimulatorPreviewStreams ?? new Map<string, IosScreenshotMjpegStream>();
   const androidSimulatorPreviewControlRegistry = opts?.androidSimulatorPreviewControlRegistry
     ?? createAndroidSimulatorPreviewControlRegistry();
   const iosSimulatorPreviewControlRegistry = opts?.iosSimulatorPreviewControlRegistry
     ?? createIosSimulatorPreviewControlRegistry();
-  const simulatorPreviewControlPlatforms = new Map<string, 'android' | 'ios'>();
+  const simulatorPreviewControlPlatforms = opts?.simulatorPreviewControlPlatforms
+    ?? new Map<string, 'android' | 'ios'>();
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -360,6 +371,15 @@ export function createHappierMcpServer(
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        let resolvedDevice: IosSimulatorPreviewDevice | null = null;
+        if (!input.deviceId) {
+          resolvedDevice = await resolveIosDevice();
+        }
+        const deviceId = input.deviceId || resolvedDevice?.deviceId;
+        const deviceName = input.deviceName !== 'iOS Simulator'
+          ? input.deviceName
+          : resolvedDevice?.deviceName ?? input.deviceName;
+        const wdaUrl = input.wdaUrl || await resolveIosWdaUrl();
         const previous = activeIosStreams.get(input.sessionId);
         if (previous) {
           activeIosStreams.delete(input.sessionId);
@@ -375,7 +395,7 @@ export function createHappierMcpServer(
           host: '127.0.0.1',
           ...(typeof input.port === 'number' ? { port: input.port } : {}),
           ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
-          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          ...(deviceId ? { deviceId } : {}),
         });
         activeIosStreams.set(input.sessionId, stream);
 
@@ -388,7 +408,7 @@ export function createHappierMcpServer(
               sessionId: input.sessionId,
               expectedMachineId: machineId,
               port: stream.port,
-              name: `${input.deviceName} simulator`,
+              name: `${deviceName} simulator`,
               healthPath: '/frame.jpg',
               rewriteUrls: false,
             });
@@ -417,7 +437,7 @@ export function createHappierMcpServer(
         const preview = buildSimulatorPreviewPayload({
           sessionId: input.sessionId,
           platform: 'ios',
-          deviceName: input.deviceName,
+          deviceName,
           ...(input.appName ? { appName: input.appName } : {}),
           streamUrl: stream.streamUrl,
           mode: 'ai_control',
@@ -434,8 +454,8 @@ export function createHappierMcpServer(
         iosSimulatorPreviewControlRegistry.registerIosPreview({
           sessionId: input.sessionId,
           simulatorSessionId: preview.simulatorSessionId,
-          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
-          ...(input.wdaUrl ? { wdaUrl: input.wdaUrl } : {}),
+          ...(deviceId ? { deviceId } : {}),
+          wdaUrl,
         });
         simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'ios');
         return preview;

@@ -10,6 +10,7 @@ export type IosWebDriverAgentInputBridgeOptions = Readonly<{
 }>;
 
 export type SendIosWebDriverAgentInputRequest = Readonly<{
+  deviceId?: string;
   wdaUrl?: string;
   input: SimulatorPreviewNormalizedInput;
 }>;
@@ -62,6 +63,17 @@ function jsonRequest(body: unknown): RequestInit {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  };
+}
+
+function buildSessionCapabilities(deviceId?: string): Record<string, unknown> {
+  const udid = deviceId?.trim();
+  if (!udid) return {};
+  return {
+    platformName: 'iOS',
+    'appium:automationName': 'XCUITest',
+    'appium:udid': udid,
+    'appium:wdaLaunchTimeout': 180_000,
   };
 }
 
@@ -119,19 +131,20 @@ export function createIosWebDriverAgentInputBridge(options: IosWebDriverAgentInp
     return await readJson(response);
   };
 
-  const getSession = async (baseUrl: string): Promise<WdaSessionState> => {
-    const existing = sessions.get(baseUrl);
+  const getSession = async (baseUrl: string, deviceId?: string): Promise<WdaSessionState> => {
+    const sessionKey = `${baseUrl}\u0000${deviceId?.trim() ?? ''}`;
+    const existing = sessions.get(sessionKey);
     if (existing) return existing;
     const payload = await request(`${baseUrl}/session`, jsonRequest({
       capabilities: {
-        alwaysMatch: {},
+        alwaysMatch: buildSessionCapabilities(deviceId),
         firstMatch: [{}],
       },
     }));
     const sessionId = extractSessionId(payload);
     if (!sessionId) throw new Error('wda_session_missing');
     const session = { sessionId };
-    sessions.set(baseUrl, session);
+    sessions.set(sessionKey, session);
     return session;
   };
 
@@ -143,7 +156,7 @@ export function createIosWebDriverAgentInputBridge(options: IosWebDriverAgentInp
   return {
     async sendInput(requestInput: SendIosWebDriverAgentInputRequest) {
       const baseUrl = resolveBaseUrl(requestInput.wdaUrl ?? defaultWdaUrl);
-      const session = await getSession(baseUrl);
+      const session = await getSession(baseUrl, requestInput.deviceId);
       if (requestInput.input.type === 'tap' || requestInput.input.type === 'swipe') {
         const size = await getWindowSize(baseUrl, session.sessionId);
         await request(

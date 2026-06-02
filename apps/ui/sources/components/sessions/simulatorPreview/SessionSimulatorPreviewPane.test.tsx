@@ -6,6 +6,19 @@ import { renderScreen } from '@/dev/testkit';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+function flattenStyle(style: unknown): Record<string, unknown> {
+    if (Array.isArray(style)) {
+        return style.reduce<Record<string, unknown>>((acc, entry) => ({
+            ...acc,
+            ...flattenStyle(entry),
+        }), {});
+    }
+    if (style && typeof style === 'object') {
+        return style as Record<string, unknown>;
+    }
+    return {};
+}
+
 const platformState = vi.hoisted(() => ({
     os: 'web' as 'web' | 'ios',
 }));
@@ -28,6 +41,7 @@ vi.mock('@/components/ui/text/Text', () => ({
 
 describe('SessionSimulatorPreviewPane', () => {
     beforeEach(() => {
+        vi.useRealTimers();
         platformState.os = 'web';
     });
 
@@ -49,7 +63,31 @@ describe('SessionSimulatorPreviewPane', () => {
         expect(frame.props.src).toBe('http://127.0.0.1:9812/stream.mjpeg');
     });
 
-    it('wraps the simulator screen in phone chrome', async () => {
+    it('falls back to polling the latest JPEG frame when the web MJPEG image does not load', async () => {
+        vi.useFakeTimers();
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        expect(screen.findByProps({ 'data-testid': 'session.simulatorPreview.frame' }).props.src)
+            .toBe('http://127.0.0.1:9812/stream.mjpeg');
+
+        await act(async () => {
+            vi.advanceTimersByTime(1_500);
+        });
+
+        const frame = screen.findByProps({ 'data-testid': 'session.simulatorPreview.frame' });
+        expect(frame.props.src).toBe('http://127.0.0.1:9812/frame.jpg?happier_frame=1');
+    });
+
+    it('renders the simulator screen without a fake phone shell', async () => {
         const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
 
         const screen = await renderScreen(
@@ -61,9 +99,193 @@ describe('SessionSimulatorPreviewPane', () => {
             />,
         );
 
-        expect(screen.findByProps({ testID: 'session.simulatorPreview.deviceChrome' })).toBeTruthy();
-        expect(screen.findByProps({ testID: 'session.simulatorPreview.deviceSpeaker' })).toBeTruthy();
-        expect(screen.findByProps({ testID: 'session.simulatorPreview.deviceHomeIndicator' })).toBeTruthy();
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.screenViewport' })).toBeTruthy();
+        expect(() => screen.findByProps({ testID: 'session.simulatorPreview.deviceChrome' })).toThrow();
+        expect(() => screen.findByProps({ testID: 'session.simulatorPreview.deviceSpeaker' })).toThrow();
+        expect(() => screen.findByProps({ testID: 'session.simulatorPreview.deviceHomeIndicator' })).toThrow();
+    });
+
+    it('fits the web viewport to the loaded frame without changing the real aspect ratio', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        const previewArea = screen.findByProps({ testID: 'session.simulatorPreview.previewAreaLayout' });
+        await act(async () => {
+            previewArea.props.onLayout({
+                nativeEvent: {
+                    layout: {
+                        x: 0,
+                        y: 0,
+                        width: 560,
+                        height: 940,
+                    },
+                },
+            });
+        });
+
+        const frame = screen.findByProps({ 'data-testid': 'session.simulatorPreview.frame' });
+        await act(async () => {
+            frame.props.onLoad({
+                currentTarget: {
+                    naturalWidth: 1206,
+                    naturalHeight: 2622,
+                },
+            });
+        });
+
+        const screenFrame = screen.findByProps({ testID: 'session.simulatorPreview.screenFrame' });
+        const screenFrameStyle = flattenStyle(screenFrame.props.style);
+        expect(screenFrameStyle.width).toBeCloseTo(432.36, 2);
+        expect(screenFrameStyle.height).toBe(940);
+        expect(Number(screenFrameStyle.width) / Number(screenFrameStyle.height)).toBeCloseTo(1206 / 2622, 5);
+        expect(frame.props.style.objectFit).toBe('contain');
+    });
+
+    it('shows the current fit scale and exposes a fit action', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        await act(async () => {
+            screen.findByProps({ testID: 'session.simulatorPreview.previewAreaLayout' }).props.onLayout({
+                nativeEvent: {
+                    layout: {
+                        x: 0,
+                        y: 0,
+                        width: 560,
+                        height: 940,
+                    },
+                },
+            });
+            screen.findByProps({ 'data-testid': 'session.simulatorPreview.frame' }).props.onLoad({
+                currentTarget: {
+                    naturalWidth: 1206,
+                    naturalHeight: 2622,
+                },
+            });
+        });
+
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomScale' }).props.children).toBe('36%');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.fit' })).toBeTruthy();
+    });
+
+    it('places zoom controls vertically at the lower right outside of the simulator image area', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        const toolbarStyle = flattenStyle(screen.findByProps({ testID: 'session.simulatorPreview.fitToolbar' }).props.style);
+        expect(toolbarStyle.position).toBeUndefined();
+        expect(toolbarStyle.flexDirection).toBe('column');
+        expect(toolbarStyle.alignSelf).toBe('flex-end');
+        expect(toolbarStyle.justifyContent).toBe('flex-end');
+    });
+
+    it('renders zoom rail actions with icon components instead of text symbols', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomOutIcon' }).props.name).toBe('remove');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomInIcon' }).props.name).toBe('add');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.fitIcon' }).props.name).toBe('resize-outline');
+    });
+
+    it('lets users zoom beyond fit and reset back to fit', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        await act(async () => {
+            screen.findByProps({ testID: 'session.simulatorPreview.previewAreaLayout' }).props.onLayout({
+                nativeEvent: {
+                    layout: {
+                        x: 0,
+                        y: 0,
+                        width: 560,
+                        height: 940,
+                    },
+                },
+            });
+            screen.findByProps({ 'data-testid': 'session.simulatorPreview.frame' }).props.onLoad({
+                currentTarget: {
+                    naturalWidth: 1206,
+                    naturalHeight: 2622,
+                },
+            });
+        });
+
+        const fitFrame = flattenStyle(screen.findByProps({ testID: 'session.simulatorPreview.screenFrame' }).props.style);
+        await act(async () => {
+            screen.findByProps({ testID: 'session.simulatorPreview.zoomIn' }).props.onPress();
+        });
+
+        const zoomedFrame = flattenStyle(screen.findByProps({ testID: 'session.simulatorPreview.screenFrame' }).props.style);
+        expect(Number(zoomedFrame.width)).toBeGreaterThan(Number(fitFrame.width));
+        expect(Number(zoomedFrame.width) / Number(zoomedFrame.height)).toBeCloseTo(1206 / 2622, 5);
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomScale' }).props.children).toBe('43%');
+
+        await act(async () => {
+            screen.findByProps({ testID: 'session.simulatorPreview.fit' }).props.onPress();
+        });
+
+        const resetFrame = flattenStyle(screen.findByProps({ testID: 'session.simulatorPreview.screenFrame' }).props.style);
+        expect(resetFrame.width).toBe(fitFrame.width);
+        expect(resetFrame.height).toBe(fitFrame.height);
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomScale' }).props.children).toBe('36%');
+    });
+
+    it('uses a scrollable web preview area when manual zoom exceeds fit', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="ios"
+                deviceName="iPhone 17 Pro"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+            />,
+        );
+
+        const previewArea = screen.findByProps({ 'data-testid': 'session.simulatorPreview.previewArea' });
+        expect(previewArea.type).toBe('div');
+        expect(previewArea.props.style.overflow).toBe('auto');
     });
 
     it('keeps React Native Image rendering on native platforms', async () => {
