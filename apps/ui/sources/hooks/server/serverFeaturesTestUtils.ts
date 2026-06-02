@@ -108,6 +108,13 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                     enabled: false,
                     relay: {
                         enabled: false,
+                        host: {
+                            enabled: false,
+                            configured: false,
+                            baseDomain: null,
+                            suggestedBaseDomain: null,
+                        },
+                        path: { enabled: false },
                     },
                 },
                 handoff: {
