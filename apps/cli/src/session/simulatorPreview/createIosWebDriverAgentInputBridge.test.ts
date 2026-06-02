@@ -43,4 +43,34 @@ describe('createIosWebDriverAgentInputBridge', () => {
       ],
     });
   });
+
+  it('includes iOS Appium capabilities when a simulator device id is provided', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: { sessionId: 'wda_session_1' } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: { width: 390, height: 844 } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: null }), { status: 200 }));
+    const bridge = createIosWebDriverAgentInputBridge({
+      fetch: fetchImpl,
+      wdaUrl: 'http://127.0.0.1:8100',
+    });
+
+    await expect(bridge.sendInput({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    })).resolves.toEqual({ ok: true });
+
+    const sessionRequest = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(sessionRequest.body))).toEqual({
+      capabilities: {
+        alwaysMatch: {
+          platformName: 'iOS',
+          'appium:automationName': 'XCUITest',
+          'appium:udid': 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+          'appium:wdaLaunchTimeout': 180_000,
+        },
+        firstMatch: [{}],
+      },
+    });
+  });
 });

@@ -135,12 +135,12 @@ export async function captureSimulatorPreviewWebProof(params: Readonly<{
       persistedServerState: serverState,
     });
 
-    await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/session/${params.sessionId}?happier_hmr=0`, 180_000);
+    await navigateToSimulatorPreviewProofSession(page, uiBaseUrl, params.sessionId);
     try {
       await page.getByTestId('transcript-chat-list').waitFor({ state: 'visible', timeout: 120_000 });
       await page.getByTestId('simulator-preview-card').first().waitFor({ state: 'visible', timeout: 120_000 });
       await page.getByTestId('simulator-preview-card').first().click();
-      await page.getByTestId('session.simulatorPreview.deviceChrome').waitFor({ state: 'visible', timeout: 120_000 });
+      await page.getByTestId('session.simulatorPreview.screenFrame').waitFor({ state: 'visible', timeout: 120_000 });
       await page.getByTestId('session.simulatorPreview.frame').waitFor({ state: 'visible', timeout: 120_000 });
       await page.waitForFunction(() => {
         const frame = document.querySelector('[data-testid="session.simulatorPreview.frame"]');
@@ -179,6 +179,18 @@ export async function captureSimulatorPreviewWebProof(params: Readonly<{
     await browser.close().catch(() => {});
     await ui?.stop().catch(() => {});
   }
+}
+
+export async function navigateToSimulatorPreviewProofSession(
+  page: Page,
+  uiBaseUrl: string,
+  sessionId: string,
+): Promise<void> {
+  await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
+  await page.evaluate((path) => {
+    window.history.pushState({}, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, `/session/${sessionId}?happier_hmr=0`);
 }
 
 async function captureSimulatorPreviewUserControlProof(page: Page): Promise<void> {

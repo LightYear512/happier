@@ -1,6 +1,17 @@
 import * as React from 'react';
-import { Image, Platform, Pressable, TextInput, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { Ionicons } from '@expo/vector-icons';
+import {
+    Image,
+    Platform,
+    Pressable,
+    TextInput,
+    View,
+    type GestureResponderEvent,
+    type LayoutChangeEvent,
+    type StyleProp,
+    type ViewStyle,
+} from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -47,6 +58,21 @@ type SimulatorPreviewDevService = Readonly<{
     status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error';
     url?: string | undefined;
 }>;
+
+const WEB_MJPEG_FRAME_LOAD_TIMEOUT_MS = 1_500;
+const WEB_FRAME_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_SCREEN_ASPECT_RATIO = 9 / 19.5;
+const MAX_FIT_WIDTH = 520;
+const ZOOM_STEP = 1.2;
+const MIN_MANUAL_ZOOM = 0.5;
+const MAX_MANUAL_ZOOM = 4;
+
+type Size = Readonly<{
+    width: number;
+    height: number;
+}>;
+
+type ZoomRailIconName = React.ComponentProps<typeof Ionicons>['name'];
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -188,52 +214,88 @@ const stylesheet = StyleSheet.create((theme) => ({
         flex: 1,
         minHeight: 0,
         minWidth: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
         paddingHorizontal: 18,
         paddingVertical: 14,
         backgroundColor: theme.colors.surface.base,
     },
-    deviceChrome: {
-        width: '100%',
-        height: '100%',
-        maxWidth: 430,
-        maxHeight: 880,
-        aspectRatio: 9 / 19.5,
-        paddingHorizontal: 12,
-        paddingTop: 16,
-        paddingBottom: 12,
-        borderRadius: 34,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.text.primary,
-        shadowColor: theme.colors.shadow.color,
-        shadowOpacity: 0.18,
-        shadowRadius: 22,
-        shadowOffset: { width: 0, height: 12 },
+    previewLayout: {
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        alignSelf: 'stretch',
+        flexDirection: 'row',
+        alignItems: 'stretch',
         gap: 10,
     },
-    deviceSpeaker: {
-        alignSelf: 'center',
-        width: 64,
-        height: 5,
+    fitToolbar: {
+        flexShrink: 0,
+        alignSelf: 'flex-end',
+        width: 36,
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        gap: 6,
+        padding: 0,
+    },
+    scalePill: {
+        width: 46,
+        height: 22,
+        alignItems: 'center',
+        justifyContent: 'center',
         borderRadius: 999,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.inset,
+    },
+    scaleText: {
+        color: theme.colors.text.secondary,
+        fontSize: 11,
+        fontVariant: ['tabular-nums'],
+        fontWeight: '700',
+        lineHeight: 14,
+        textAlign: 'center',
+    },
+    fitButton: {
+        width: 32,
+        height: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 0,
+        paddingVertical: 0,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.elevated,
+    },
+    previewArea: {
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        alignSelf: 'stretch',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+    },
+    screenFrame: {
+        aspectRatio: DEFAULT_SCREEN_ASPECT_RATIO,
+        flexShrink: 1,
+        padding: 0,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.background.canvas,
+        shadowColor: theme.colors.shadow.color,
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
     },
     screenViewport: {
         flex: 1,
         minHeight: 0,
         minWidth: 0,
         overflow: 'hidden',
-        borderRadius: 22,
+        borderRadius: 8,
         backgroundColor: theme.colors.background.canvas,
-    },
-    deviceHomeIndicator: {
-        alignSelf: 'center',
-        width: 96,
-        height: 4,
-        borderRadius: 999,
-        backgroundColor: theme.colors.surface.elevated,
     },
     frame: {
         width: '100%',
@@ -241,6 +303,27 @@ const stylesheet = StyleSheet.create((theme) => ({
         resizeMode: 'contain',
     },
 }));
+
+function fitFrameToAvailableArea(params: Readonly<{
+    frameSize: Size;
+    availableSize: Size;
+}>): Size | null {
+    const availableWidth = Math.max(0, params.availableSize.width);
+    const availableHeight = Math.max(0, params.availableSize.height);
+    if (availableWidth <= 0 || availableHeight <= 0 || params.frameSize.width <= 0 || params.frameSize.height <= 0) {
+        return null;
+    }
+
+    const frameAspectRatio = params.frameSize.width / params.frameSize.height;
+    const boundedWidth = Math.min(availableWidth, MAX_FIT_WIDTH);
+    let width = boundedWidth;
+    let height = width / frameAspectRatio;
+    if (height > availableHeight) {
+        height = availableHeight;
+        width = height * frameAspectRatio;
+    }
+    return { width, height };
+}
 
 function formatMode(mode: SessionSimulatorPreviewPaneProps['mode']): string {
     switch (mode) {
@@ -300,9 +383,55 @@ function renderDevService(label: string, service: SimulatorPreviewDevService | u
     );
 }
 
+function buildPolledFrameUrl(streamUrl: string, revision: number): string {
+    try {
+        const url = new URL(streamUrl);
+        url.pathname = url.pathname.replace(/\/stream\.mjpeg$/u, '/frame.jpg');
+        url.searchParams.set('happier_frame', String(revision));
+        return url.toString();
+    } catch {
+        const frameUrl = streamUrl.replace(/\/stream\.mjpeg(?:[?#].*)?$/u, '/frame.jpg');
+        const separator = frameUrl.includes('?') ? '&' : '?';
+        return `${frameUrl}${separator}happier_frame=${revision}`;
+    }
+}
+
+function renderZoomRailButton(params: Readonly<{
+    iconName: ZoomRailIconName;
+    iconTestID: string;
+    label: string;
+    onPress: () => void;
+    testID: string;
+    color: string;
+}>) {
+    return (
+        <Pressable
+            accessibilityLabel={params.label}
+            accessibilityRole="button"
+            hitSlop={6}
+            onPress={params.onPress}
+            style={stylesheet.fitButton}
+            testID={params.testID}
+        >
+            <Ionicons
+                color={params.color}
+                name={params.iconName}
+                size={15}
+                testID={params.iconTestID}
+            />
+        </Pressable>
+    );
+}
+
 export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPaneProps) {
+    const { theme } = useUnistyles();
     const viewportSizeRef = React.useRef<Readonly<{ width: number; height: number }> | null>(null);
+    const webFrameLoadedRef = React.useRef(false);
     const [textInputValue, setTextInputValue] = React.useState('');
+    const [webFrameFallbackRevision, setWebFrameFallbackRevision] = React.useState(0);
+    const [frameSize, setFrameSize] = React.useState<Size | null>(null);
+    const [previewAreaSize, setPreviewAreaSize] = React.useState<Size | null>(null);
+    const [manualZoom, setManualZoom] = React.useState(1);
     const title = props.appName && props.appName.trim().length > 0
         ? `${props.deviceName} · ${props.appName.trim()}`
         : props.deviceName;
@@ -320,6 +449,10 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
     const handleLayout = React.useCallback((event: LayoutChangeEvent) => {
         const { width, height } = event.nativeEvent.layout;
         viewportSizeRef.current = { width, height };
+    }, []);
+    const handlePreviewAreaLayout = React.useCallback((event: LayoutChangeEvent) => {
+        const { width, height } = event.nativeEvent.layout;
+        setPreviewAreaSize({ width, height });
     }, []);
     const handlePress = React.useCallback((event: GestureResponderEvent) => {
         const viewportSize = viewportSizeRef.current;
@@ -356,11 +489,51 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
         sendLeaseInput({ type: 'text', text: textInputValue });
         setTextInputValue('');
     }, [sendLeaseInput, textInputValue]);
+    React.useEffect(() => {
+        if (Platform.OS !== 'web') return undefined;
+        webFrameLoadedRef.current = false;
+        setWebFrameFallbackRevision(0);
+        const timeout = setTimeout(() => {
+            if (!webFrameLoadedRef.current) {
+                setWebFrameFallbackRevision(1);
+            }
+        }, WEB_MJPEG_FRAME_LOAD_TIMEOUT_MS);
+        return () => {
+            clearTimeout(timeout);
+        };
+    }, [props.streamUrl]);
+    React.useEffect(() => {
+        if (Platform.OS !== 'web' || webFrameFallbackRevision <= 0) return undefined;
+        const interval = setInterval(() => {
+            setWebFrameFallbackRevision((revision) => revision > 0 ? revision + 1 : revision);
+        }, WEB_FRAME_POLL_INTERVAL_MS);
+        return () => {
+            clearInterval(interval);
+        };
+    }, [webFrameFallbackRevision > 0]);
+    const webFrameSrc = webFrameFallbackRevision > 0
+        ? buildPolledFrameUrl(props.streamUrl, webFrameFallbackRevision)
+        : props.streamUrl;
+    const handleWebFrameLoad = React.useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+        const image = event.currentTarget;
+        if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+            webFrameLoadedRef.current = true;
+            setFrameSize({
+                width: image.naturalWidth,
+                height: image.naturalHeight,
+            });
+        }
+    }, []);
+    const handleWebFrameError = React.useCallback(() => {
+        setWebFrameFallbackRevision((revision) => revision > 0 ? revision : 1);
+    }, []);
     const frame = Platform.OS === 'web'
         ? React.createElement('img', {
             'data-testid': 'session.simulatorPreview.frame',
             alt: t('session.simulatorPreview.screenAlt', { deviceName: props.deviceName }),
-            src: props.streamUrl,
+            onError: handleWebFrameError,
+            onLoad: handleWebFrameLoad,
+            src: webFrameSrc,
             style: {
                 width: '100%',
                 height: '100%',
@@ -375,6 +548,81 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                 source={{ uri: props.streamUrl }}
                 style={stylesheet.frame}
             />
+        );
+    const fittedFrameSize = frameSize && previewAreaSize
+        ? fitFrameToAvailableArea({ frameSize, availableSize: previewAreaSize })
+        : null;
+    const renderedFrameSize = fittedFrameSize
+        ? {
+            width: fittedFrameSize.width * manualZoom,
+            height: fittedFrameSize.height * manualZoom,
+        }
+        : null;
+    const scalePercent = fittedFrameSize && frameSize
+        ? Math.max(1, Math.round(((fittedFrameSize.width * manualZoom) / frameSize.width) * 100))
+        : 100;
+    const screenFrameStyle: StyleProp<ViewStyle> = fittedFrameSize
+        ? [stylesheet.screenFrame, renderedFrameSize]
+        : [stylesheet.screenFrame, { width: '100%', maxWidth: MAX_FIT_WIDTH, maxHeight: '100%' as const }];
+    const setNextManualZoom = React.useCallback((nextZoom: number) => {
+        setManualZoom(Math.max(MIN_MANUAL_ZOOM, Math.min(MAX_MANUAL_ZOOM, nextZoom)));
+    }, []);
+    const previewArea = Platform.OS === 'web'
+        ? (
+            <View onLayout={handlePreviewAreaLayout} style={stylesheet.previewArea} testID="session.simulatorPreview.previewAreaLayout">
+                {React.createElement('div', {
+                    'data-testid': 'session.simulatorPreview.previewArea',
+                    style: {
+                        width: '100%',
+                        height: '100%',
+                        overflow: 'auto',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                    },
+                }, (
+                    <View style={screenFrameStyle} testID="session.simulatorPreview.screenFrame">
+                        {hasUserControl
+                            ? (
+                                <Pressable
+                                    onLayout={handleLayout}
+                                    onPress={handlePress}
+                                    style={stylesheet.screenViewport}
+                                    testID="session.simulatorPreview.screenViewport"
+                                >
+                                    {frame}
+                                </Pressable>
+                            )
+                            : (
+                                <View style={stylesheet.screenViewport} testID="session.simulatorPreview.screenViewport">
+                                    {frame}
+                                </View>
+                            )}
+                    </View>
+                ))}
+            </View>
+        )
+        : (
+            <View onLayout={handlePreviewAreaLayout} style={stylesheet.previewArea} testID="session.simulatorPreview.previewAreaLayout">
+                <View style={screenFrameStyle} testID="session.simulatorPreview.screenFrame">
+                    {hasUserControl
+                        ? (
+                            <Pressable
+                                onLayout={handleLayout}
+                                onPress={handlePress}
+                                style={stylesheet.screenViewport}
+                                testID="session.simulatorPreview.screenViewport"
+                            >
+                                {frame}
+                            </Pressable>
+                        )
+                        : (
+                            <View style={stylesheet.screenViewport} testID="session.simulatorPreview.screenViewport">
+                                {frame}
+                            </View>
+                        )}
+                </View>
+            </View>
         );
 
     return (
@@ -493,25 +741,45 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                 )
                 : null}
             <View style={stylesheet.surface} testID="session.simulatorPreview.surface">
-                <View style={stylesheet.deviceChrome} testID="session.simulatorPreview.deviceChrome">
-                    <View style={stylesheet.deviceSpeaker} testID="session.simulatorPreview.deviceSpeaker" />
-                    {hasUserControl
-                        ? (
-                            <Pressable
-                                onLayout={handleLayout}
-                                onPress={handlePress}
-                                style={stylesheet.screenViewport}
-                                testID="session.simulatorPreview.screenViewport"
-                            >
-                                {frame}
-                            </Pressable>
-                        )
-                        : (
-                            <View style={stylesheet.screenViewport} testID="session.simulatorPreview.screenViewport">
-                                {frame}
-                            </View>
-                        )}
-                    <View style={stylesheet.deviceHomeIndicator} testID="session.simulatorPreview.deviceHomeIndicator" />
+                <View style={stylesheet.previewLayout} testID="session.simulatorPreview.previewLayout">
+                    {previewArea}
+                    <View style={stylesheet.fitToolbar} testID="session.simulatorPreview.fitToolbar">
+                        {renderZoomRailButton({
+                            color: theme.colors.text.secondary,
+                            iconName: 'remove',
+                            iconTestID: 'session.simulatorPreview.zoomOutIcon',
+                            label: t('session.simulatorPreview.controls.zoomOut'),
+                            onPress: () => setNextManualZoom(manualZoom / ZOOM_STEP),
+                            testID: 'session.simulatorPreview.zoomOut',
+                        })}
+                        <View style={stylesheet.scalePill} testID="session.simulatorPreview.zoomScalePill">
+                            <Text style={stylesheet.scaleText} testID="session.simulatorPreview.zoomScale">{`${scalePercent}%`}</Text>
+                        </View>
+                        {renderZoomRailButton({
+                            color: theme.colors.text.secondary,
+                            iconName: 'add',
+                            iconTestID: 'session.simulatorPreview.zoomInIcon',
+                            label: t('session.simulatorPreview.controls.zoomIn'),
+                            onPress: () => setNextManualZoom(manualZoom * ZOOM_STEP),
+                            testID: 'session.simulatorPreview.zoomIn',
+                        })}
+                        {renderZoomRailButton({
+                            color: theme.colors.text.secondary,
+                            iconName: 'resize-outline',
+                            iconTestID: 'session.simulatorPreview.fitIcon',
+                            label: t('session.simulatorPreview.controls.fit'),
+                            onPress: () => {
+                                setManualZoom(1);
+                                if (frameSize && previewAreaSize) {
+                                    const nextSize = fitFrameToAvailableArea({ frameSize, availableSize: previewAreaSize });
+                                    if (nextSize) {
+                                        viewportSizeRef.current = nextSize;
+                                    }
+                                }
+                            },
+                            testID: 'session.simulatorPreview.fit',
+                        })}
+                    </View>
                 </View>
             </View>
         </View>

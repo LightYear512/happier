@@ -517,6 +517,75 @@ describe('createHappierMcpServer', () => {
     }));
   });
 
+  it('resolves a booted iOS simulator when the iOS preview tool is called without device details', async () => {
+    const capturedDeps: any[] = [];
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          capturedDeps.push(deps);
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const resolveIosSimulatorPreviewDevice = vi.fn(async () => ({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+      deviceName: 'iPhone 17 Pro',
+    }));
+    const resolveIosWebDriverAgentUrl = vi.fn(async () => 'http://127.0.0.1:4723');
+    const startIosSimulatorPreviewStream = vi.fn(async () => ({
+      host: '127.0.0.1',
+      port: 9814,
+      frameUrl: 'http://127.0.0.1:9814/frame.jpg',
+      streamUrl: 'http://127.0.0.1:9814/stream.mjpeg',
+      close: vi.fn(async () => {}),
+    }));
+    const iosSimulatorPreviewControlRegistry = {
+      registerIosPreview: vi.fn(),
+      acquire: vi.fn(),
+      release: vi.fn(),
+      sendInput: vi.fn(),
+      reloadApp: vi.fn(),
+      reconnectDevServices: vi.fn(),
+    };
+
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_ios_auto_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any, {
+      daemonDevPreviewRegister: null,
+      resolveIosSimulatorPreviewDevice,
+      resolveIosWebDriverAgentUrl,
+      startIosSimulatorPreviewStream,
+      iosSimulatorPreviewControlRegistry,
+    } as any);
+
+    const preview = await capturedDeps[0].sessionSimulatorPreviewIosStart({
+      sessionId: 'sess_simulator_preview_ios_auto_1',
+      deviceName: 'iOS Simulator',
+    });
+
+    expect(resolveIosSimulatorPreviewDevice).toHaveBeenCalledTimes(1);
+    expect(startIosSimulatorPreviewStream).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+    }));
+    expect(preview).toEqual(expect.objectContaining({
+      platform: 'ios',
+      deviceName: 'iPhone 17 Pro',
+    }));
+    expect(iosSimulatorPreviewControlRegistry.registerIosPreview).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+      wdaUrl: 'http://127.0.0.1:4723',
+    }));
+  });
+
   it('replaces Android simulator streams through a shared registry across per-request MCP servers', async () => {
     const capturedDeps: any[] = [];
 
@@ -635,11 +704,15 @@ describe('createHappierMcpServer', () => {
 
     await capturedDeps[0].sessionSimulatorPreviewIosStart({
       sessionId: 'sess_simulator_preview_ios_replace_1',
+      deviceId: 'ios-device-1',
       deviceName: 'iPhone 15 Pro',
+      wdaUrl: 'http://127.0.0.1:8100',
     });
     await capturedDeps[1].sessionSimulatorPreviewIosStart({
       sessionId: 'sess_simulator_preview_ios_replace_1',
+      deviceId: 'ios-device-1',
       deviceName: 'iPhone 15 Pro',
+      wdaUrl: 'http://127.0.0.1:8100',
     });
 
     expect(firstClose).toHaveBeenCalledTimes(1);

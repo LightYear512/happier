@@ -2774,17 +2774,14 @@ await server.connect(new StdioServerTransport());
         [
           'Run exactly one tool call:',
           '- Use the happier_simulator_preview_ios_start tool.',
-          '- Set deviceId to "A1B2-C3D4".',
-          '- Set wdaUrl to "http://127.0.0.1:8100".',
-          '- Set deviceName to "iPhone 15 Pro".',
           '- Set appName to "Happier iOS Preview Proof".',
           '- Set pollMs to 500.',
+          '- Let the tool use the default local iOS simulator and WebDriverAgent/Appium endpoint.',
           '- Do not use shell, execute, or file tools.',
           '- Then reply DONE.',
         ].join('\n'),
       requiredTraceSubstrings: [
         'happier_simulator_preview_ios_start',
-        'iPhone 15 Pro',
         'stream.mjpeg',
       ],
       postSatisfy: {

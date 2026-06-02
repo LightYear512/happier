@@ -32,8 +32,19 @@ describe('scenarioCatalog simulator preview scenarios', () => {
     expect(scenario.prompt({ workspaceDir: '/tmp/workspace' })).toContain('happier_simulator_preview_ios_start');
     expect(scenario.requiredTraceSubstrings).toEqual(expect.arrayContaining([
       'happier_simulator_preview_ios_start',
-      'iPhone 15 Pro',
       'stream.mjpeg',
     ]));
+  });
+
+  it('keeps simulator identity details out of the iOS preview prompt', () => {
+    const scenario = scenarioCatalog.simulator_preview_ios_start(codexProvider);
+
+    if (!scenario.prompt) {
+      throw new Error('expected iOS simulator preview scenario prompt');
+    }
+    const prompt = scenario.prompt({ workspaceDir: '/tmp/workspace' });
+    expect(prompt).not.toContain('deviceId');
+    expect(prompt).not.toContain('wdaUrl');
+    expect(prompt).not.toContain('iPhone 17 Pro');
   });
 });
