@@ -3557,6 +3557,8 @@ export const zhHans: TranslationStructure = {
     expMemorySearchSubtitle: "启用本地记忆搜索页面与设置",
     expSessionsDirect: "直连会话",
     expSessionsDirectSubtitle: "在侧边栏中列出并打开由提供方支撑的直连会话",
+    expSessionsDevPreview: "本地开发预览",
+    expSessionsDevPreviewSubtitle: "允许会话代理注册本地 Web 应用以便在 app 内预览",
     expSessionsFolders: "会话文件夹",
     expSessionsFoldersSubtitle: "用工作区文件夹整理已同步的侧边栏会话",
     expPetsCompanion: "宠物",

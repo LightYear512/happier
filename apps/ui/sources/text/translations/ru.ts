@@ -3648,6 +3648,8 @@ export const ru: TranslationStructure = {
     expMemorySearchSubtitle: "Включить экраны и настройки локального поиска по памяти",
     expSessionsDirect: "Прямые сессии",
     expSessionsDirectSubtitle: "Показывать и открывать в боковой панели прямые сессии провайдера",
+    expSessionsDevPreview: "Локальные предпросмотры разработки",
+    expSessionsDevPreviewSubtitle: "Разрешить агентам сессий регистрировать локальные веб-приложения для предпросмотра в приложении",
     expSessionsFolders: "Папки сессий",
     expSessionsFoldersSubtitle: "Организуйте синхронизированные сессии боковой панели по папкам рабочих пространств",
     expPetsCompanion: "Питомцы",

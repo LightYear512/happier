@@ -3715,6 +3715,8 @@ export const pl: TranslationStructure = {
         "Włącz ekrany i ustawienia lokalnego wyszukiwania pamięci",
     expSessionsDirect: "Sesje bezpośrednie",
     expSessionsDirectSubtitle: "Wyświetlaj i otwieraj na pasku bocznym bezpośrednie sesje dostawcy",
+    expSessionsDevPreview: "Lokalne podglądy deweloperskie",
+    expSessionsDevPreviewSubtitle: "Pozwól agentom sesji rejestrować lokalne aplikacje webowe do podglądu w aplikacji",
     expSessionsFolders: "Foldery sesji",
     expSessionsFoldersSubtitle: "Porządkuj zsynchronizowane sesje paska bocznego w folderach obszaru roboczego",
     expPetsCompanion: "Zwierzaki",

@@ -4046,6 +4046,8 @@ export const it: TranslationStructure = {
         "Abilita schermate e impostazioni di ricerca memoria locale",
     expSessionsDirect: "Sessioni dirette",
     expSessionsDirectSubtitle: "Mostra e apri nella barra laterale le sessioni dirette basate sul provider",
+    expSessionsDevPreview: "Anteprime locali di sviluppo",
+    expSessionsDevPreviewSubtitle: "Consenti agli agenti di sessione di registrare app web locali per l’anteprima nell’app",
     expSessionsFolders: "Cartelle sessioni",
     expSessionsFoldersSubtitle: "Organizza le sessioni sincronizzate della barra laterale in cartelle workspace",
     expPetsCompanion: "Mascotte",

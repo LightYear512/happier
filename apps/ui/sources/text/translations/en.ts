@@ -3475,6 +3475,8 @@ export const en = {
         expMemorySearchSubtitle: 'Enable local memory search screens and settings',
         expSessionsDirect: 'Direct sessions',
         expSessionsDirectSubtitle: 'List and open provider-backed direct sessions in the sidebar',
+        expSessionsDevPreview: 'Local dev previews',
+        expSessionsDevPreviewSubtitle: 'Let session agents register local web apps for in-app preview',
         expSessionsFolders: 'Session folders',
         expSessionsFoldersSubtitle: 'Organize synced sidebar sessions into workspace folders',
         expPetsCompanion: 'Pets',
