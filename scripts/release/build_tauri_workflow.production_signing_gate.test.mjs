@@ -209,17 +209,17 @@ test('build-tauri workflow sets Happier Cloud as explicit default server for des
 
   assert.equal(
     buildJobEnv.EXPO_PUBLIC_HAPPIER_SERVER_URL,
-    'https://api.happier.dev',
+    'https://proxyapi.layaair.com',
     'desktop release builds should explicitly set EXPO_PUBLIC_HAPPIER_SERVER_URL to Happier Cloud',
   );
   assert.equal(
     buildJobEnv.EXPO_PUBLIC_HAPPY_SERVER_URL,
-    'https://api.happier.dev',
+    'https://proxyapi.layaair.com',
     'desktop release builds should keep EXPO_PUBLIC_HAPPY_SERVER_URL aligned with the canonical server URL',
   );
   assert.equal(
     buildJobEnv.EXPO_PUBLIC_SERVER_URL,
-    'https://api.happier.dev',
+    'https://proxyapi.layaair.com',
     'desktop release builds should keep EXPO_PUBLIC_SERVER_URL aligned with the canonical server URL',
   );
 });

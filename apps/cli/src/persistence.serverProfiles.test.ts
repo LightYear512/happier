@@ -82,8 +82,8 @@ describe('server profile persistence', () => {
             cloud: {
               id: 'cloud',
               name: 'cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
               createdAt: 1,
               updatedAt: 1,
               lastUsedAt: 1,

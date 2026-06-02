@@ -56,8 +56,8 @@ function deriveProfileNameFromServerUrl(serverUrl: string): string {
 }
 
 function deriveDefaultWebappUrl(serverUrl: string): string {
-  if (serverUrl.replace(/\/+$/, '') === 'https://api.happier.dev') {
-    return 'https://app.happier.dev';
+  if (serverUrl.replace(/\/+$/, '') === 'https://proxyapi.layaair.com') {
+    return 'https://proxyapi.layaair.com';
   }
   return new URL(serverUrl).origin;
 }

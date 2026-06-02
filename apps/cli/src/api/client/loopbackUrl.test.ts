@@ -19,7 +19,7 @@ describe('resolveLoopbackHttpUrl', () => {
 
   it('does not rewrite non-localhost urls', () => {
     expect(resolveLoopbackHttpUrl('http://127.0.0.1:3005')).toBe('http://127.0.0.1:3005');
-    expect(resolveLoopbackHttpUrl('https://api.happier.dev')).toBe('https://api.happier.dev');
+    expect(resolveLoopbackHttpUrl('https://proxyapi.layaair.com')).toBe('https://proxyapi.layaair.com');
   });
 
   it('returns the original string for invalid URLs', () => {

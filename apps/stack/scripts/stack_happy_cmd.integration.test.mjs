@@ -151,8 +151,8 @@ test('hstack stack happier <name> ignores stale cloud settings defaults and keep
         cloud: {
           id: 'cloud',
           name: 'Happier Cloud',
-          serverUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
           createdAt: 0,
           updatedAt: 0,
           lastUsedAt: 0,
@@ -188,8 +188,8 @@ test('hstack stack happier <name> seeds stack server profile in CLI settings for
         cloud: {
           id: 'cloud',
           name: 'Happier Cloud',
-          serverUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
           createdAt: 0,
           updatedAt: 0,
           lastUsedAt: 0,

@@ -45,7 +45,7 @@ describe('configuration server selection (persisted settings)', () => {
                 name: 'Selfhost',
                 serverUrl: 'http://public.example.test',
                 publicServerUrl: 'https://public.example.test',
-                webappUrl: 'https://app.happier.dev',
+                webappUrl: 'https://proxyapi.layaair.com',
                 createdAt: 1,
                 updatedAt: 1,
                 lastUsedAt: 1,

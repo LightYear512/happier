@@ -35,7 +35,7 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverConfig', () => ({
-    getServerUrl: () => 'https://api.happier.dev',
+    getServerUrl: () => 'https://proxyapi.layaair.com',
 }));
 
 vi.mock('@/hooks/session/useConnectTerminal', () => ({

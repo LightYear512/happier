@@ -66,7 +66,7 @@ describe('readDaemonState', () => {
           schemaVersion: 5,
           activeServerId: 'cloud',
           servers: {
-            cloud: { id: 'cloud', serverUrl: 'https://api.happier.dev', webappUrl: 'https://app.happier.dev' },
+            cloud: { id: 'cloud', serverUrl: 'https://proxyapi.layaair.com', webappUrl: 'https://proxyapi.layaair.com' },
           },
         },
         null,

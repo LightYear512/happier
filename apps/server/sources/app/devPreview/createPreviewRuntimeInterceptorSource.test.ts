@@ -44,7 +44,7 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     }
 
     const windowTarget = {
-      location: new URL('https://app.happier.dev/preview/session_1/machine_1/route_1/index.html'),
+      location: new URL('https://proxyapi.layaair.com/preview/session_1/machine_1/route_1/index.html'),
       fetch: vi.fn(async (input: unknown) => {
         fetchCalls.push(input);
         return { ok: true };
@@ -81,7 +81,7 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     ]);
     expect(webSocketCalls).toEqual([
       {
-        url: 'wss://app.happier.dev/preview/session_1/machine_1/route_1/hmr',
+        url: 'wss://proxyapi.layaair.com/preview/session_1/machine_1/route_1/hmr',
         protocols: ['vite-hmr'],
       },
     ]);
@@ -91,7 +91,7 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     const fetchCalls: unknown[] = [];
 
     const windowTarget = {
-      location: new URL('https://app.happier.dev/preview/session_1/machine_1/route_1/index.html'),
+      location: new URL('https://proxyapi.layaair.com/preview/session_1/machine_1/route_1/index.html'),
       fetch: vi.fn(async (input: unknown) => {
         fetchCalls.push(input);
         return { ok: true };
@@ -131,7 +131,7 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     }
 
     const windowTarget = {
-      location: new URL('https://app.happier.dev/preview/session_1/machine_1/route_1/ai-console/develop/?previewToken=token_1'),
+      location: new URL('https://proxyapi.layaair.com/preview/session_1/machine_1/route_1/ai-console/develop/?previewToken=token_1'),
       fetch: vi.fn(async (input: unknown) => {
         fetchCalls.push(input);
         return { ok: true };
@@ -155,14 +155,14 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     });
 
     await windowTarget.fetch('api/state');
-    new windowTarget.WebSocket('wss://app.happier.dev/preview/session_1/machine_1/route_1/ai-console/develop/hmr', ['vite-hmr']);
+    new windowTarget.WebSocket('wss://proxyapi.layaair.com/preview/session_1/machine_1/route_1/ai-console/develop/hmr', ['vite-hmr']);
 
     expect(fetchCalls).toEqual([
       '/preview/session_1/machine_1/route_1/ai-console/develop/api/state?previewToken=token_1',
     ]);
     expect(webSocketCalls).toEqual([
       {
-        url: 'wss://app.happier.dev/preview/session_1/machine_1/route_1/ai-console/develop/hmr?previewToken=token_1',
+        url: 'wss://proxyapi.layaair.com/preview/session_1/machine_1/route_1/ai-console/develop/hmr?previewToken=token_1',
         protocols: ['vite-hmr'],
       },
     ]);
@@ -180,7 +180,7 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     }
 
     const windowTarget = {
-      location: new URL('https://app.happier.dev/preview/session_1/machine_1/route_1/index.html?previewToken=token_1'),
+      location: new URL('https://proxyapi.layaair.com/preview/session_1/machine_1/route_1/index.html?previewToken=token_1'),
       fetch: vi.fn(async (input: unknown) => {
         fetchCalls.push(input);
         return { ok: true };
@@ -213,7 +213,7 @@ describe('createPreviewRuntimeInterceptorSource', () => {
     ]);
     expect(webSocketCalls).toEqual([
       {
-        url: 'wss://app.happier.dev/preview/session_1/machine_1/route_1/hmr?previewToken=token_1',
+        url: 'wss://proxyapi.layaair.com/preview/session_1/machine_1/route_1/hmr?previewToken=token_1',
         protocols: ['vite-hmr'],
       },
     ]);

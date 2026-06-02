@@ -51,7 +51,7 @@ vi.mock('@/components/sessions/guidance/SessionGettingStartedGuidance', () => ({
             targetLabel: 'Test server',
             serverId,
             serverName: 'Test',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
             showServerSetup: false,
         };
     },
@@ -72,14 +72,14 @@ vi.mock('@/sync/store/hooks', () => ({
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({
         serverId: mockState.serverId,
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         generation: 1,
     }),
     subscribeActiveServer: (listener: (snapshot: { serverId: string; serverUrl: string; generation: number }) => void) => {
         mockState.serverListeners.add(() => {
             listener({
                 serverId: mockState.serverId,
-                serverUrl: 'https://api.happier.dev',
+                serverUrl: 'https://proxyapi.layaair.com',
                 generation: 1,
             });
         });

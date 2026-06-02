@@ -304,7 +304,7 @@ describe('ServerConfigScreen', () => {
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
         process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS = JSON.stringify([
-            { name: 'Cloud Embedded', url: 'https://api.happier.dev' },
+            { name: 'Cloud Embedded', url: 'https://proxyapi.layaair.com' },
         ]);
         vi.resetModules();
 

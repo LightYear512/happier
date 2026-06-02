@@ -67,8 +67,8 @@ test('hstack happier defaults to hosted cloud when no CLI settings exist', async
   const res = await runNodeCapture([hstackBinPath(rootDir), 'happier'], { cwd: rootDir, env });
   assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
   const parsed = JSON.parse(res.stdout.trim());
-  assert.equal(parsed.serverUrl, 'https://api.happier.dev');
-  assert.equal(parsed.webappUrl, 'https://app.happier.dev');
+  assert.equal(parsed.serverUrl, 'https://proxyapi.layaair.com');
+  assert.equal(parsed.webappUrl, 'https://proxyapi.layaair.com');
   assert.equal(parsed.publicServerUrl, null);
   assert.equal(parsed.localServerUrl, null);
   assert.equal(parsed.activeServerId, null);
@@ -140,8 +140,8 @@ test('hstack happier prefers existing CLI settings over stack defaults even when
         cloud: {
           id: 'cloud',
           name: 'cloud',
-          serverUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
           createdAt: 1,
           updatedAt: 1,
           lastUsedAt: 1,
@@ -168,8 +168,8 @@ test('hstack happier prefers existing CLI settings over stack defaults even when
   const res = await runNodeCapture([hstackBinPath(rootDir), 'happier'], { cwd: rootDir, env });
   assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
   const parsed = JSON.parse(res.stdout.trim());
-  assert.equal(parsed.serverUrl, 'https://api.happier.dev');
-  assert.equal(parsed.webappUrl, 'https://app.happier.dev');
+  assert.equal(parsed.serverUrl, 'https://proxyapi.layaair.com');
+  assert.equal(parsed.webappUrl, 'https://proxyapi.layaair.com');
   assert.equal(parsed.activeServerId, null);
   assert.equal(parsed.homeDir, homeDir);
 });

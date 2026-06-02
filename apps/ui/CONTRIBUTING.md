@@ -241,7 +241,7 @@ Advanced:
 
 Only **production** variant has deep linking configured:
 
-- **Production**: `https://app.happier.dev/*`
+- **Production**: `https://proxyapi.layaair.com/*`
 - **Development**: No deep linking
 - **Preview**: No deep linking
 

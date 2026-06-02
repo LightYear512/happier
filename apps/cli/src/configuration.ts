@@ -1013,8 +1013,8 @@ function resolveServerSelection(params: Readonly<{
   persisted: PersistedServerSettings | null;
   serversDir: string;
 }>): Readonly<{ activeServerId: string; serverUrl: string; apiServerUrl: string; webappUrl: string }> {
-  const DEFAULT_SERVER_URL = 'https://api.happier.dev';
-  const DEFAULT_WEBAPP_URL = 'https://app.happier.dev';
+  const DEFAULT_SERVER_URL = 'https://proxyapi.layaair.com';
+  const DEFAULT_WEBAPP_URL = 'https://proxyapi.layaair.com';
   const resolveActiveServerId = (fallbackId: string): string =>
     sanitizeServerIdForFilesystem(params.envActiveServerId ?? fallbackId, 'cloud');
 

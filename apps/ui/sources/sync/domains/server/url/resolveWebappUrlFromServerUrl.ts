@@ -8,12 +8,11 @@ export function resolveWebappUrlFromServerUrl(serverUrl: string): string {
             return normalized;
         }
         const origin = parsed.origin.replace(/\/+$/, '');
-        if (origin === 'https://api.happier.dev') {
-            return 'https://app.happier.dev';
+        if (origin === 'https://proxyapi.layaair.com') {
+            return 'https://proxyapi.layaair.com';
         }
         return origin;
     } catch {
         return normalized;
     }
 }
-

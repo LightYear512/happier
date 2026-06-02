@@ -15,7 +15,7 @@ describe('serverUrlCanonical', () => {
     });
 
     it('accepts remote hostnames without a scheme and defaults to https', () => {
-        expect(canonicalizeServerUrl('api.happier.dev')).toBe('https://api.happier.dev');
+        expect(canonicalizeServerUrl('proxyapi.layaair.com')).toBe('https://proxyapi.layaair.com');
         expect(canonicalizeServerUrl('example.com:8443/path')).toBe('https://example.com:8443/path');
     });
 

@@ -183,8 +183,8 @@ const defaultSettings: Settings = {
     cloud: {
       id: 'cloud',
       name: 'Happier Cloud',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
       createdAt: 0,
       updatedAt: 0,
       lastUsedAt: 0,
@@ -222,8 +222,8 @@ function migrateSettings(raw: any, fromVersion: number): any {
 
   // Migration from v4 to v5 (server profiles + per-server state)
   if (fromVersion < 5) {
-    const DEFAULT_SERVER_URL = 'https://api.happier.dev';
-    const DEFAULT_WEBAPP_URL = 'https://app.happier.dev';
+    const DEFAULT_SERVER_URL = 'https://proxyapi.layaair.com';
+    const DEFAULT_WEBAPP_URL = 'https://proxyapi.layaair.com';
     const now = Date.now();
 
     const cloudId = 'cloud';

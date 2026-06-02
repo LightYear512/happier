@@ -64,10 +64,10 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         saveLastRegisteredExpoPushToken('ExponentPushToken[old]');
 
         mocks.listServerProfiles.mockReturnValue([
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
             { id: 'server-2', serverUrl: 'https://company.example.test' },
         ]);
-        mocks.getActiveServerSnapshot.mockReturnValue({ serverId: 'server-1', serverUrl: 'https://api.happier.dev', generation: 1 });
+        mocks.getActiveServerSnapshot.mockReturnValue({ serverId: 'server-1', serverUrl: 'https://proxyapi.layaair.com', generation: 1 });
         mocks.getCredentialsForServerUrl.mockImplementation(async (url: string) => ({ token: `t:${url}`, secret: 's' }));
         mocks.registerPushToken.mockResolvedValue(undefined);
         mocks.deletePushToken.mockResolvedValue(undefined);
@@ -80,7 +80,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
 
         expect(loadLastRegisteredExpoPushToken()).toBe('ExponentPushToken[new]');
 
-        expect(mocks.deletePushToken).toHaveBeenCalledWith({ token: 't:https://api.happier.dev', secret: 's' }, 'ExponentPushToken[old]', { apiEndpoint: 'https://api.happier.dev' });
+        expect(mocks.deletePushToken).toHaveBeenCalledWith({ token: 't:https://proxyapi.layaair.com', secret: 's' }, 'ExponentPushToken[old]', { apiEndpoint: 'https://proxyapi.layaair.com' });
         expect(mocks.deletePushToken).toHaveBeenCalledWith({ token: 't:https://company.example.test', secret: 's' }, 'ExponentPushToken[old]', { apiEndpoint: 'https://company.example.test' });
     });
 });
