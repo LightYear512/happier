@@ -1686,7 +1686,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
   {
     id: 'session.simulatorPreview.ios.start',
     title: 'Start iOS simulator preview',
-    description: 'Start an iOS Simulator screenshot stream on the current session machine and register it as a simulator preview for the user.',
+    description: 'Start an iOS Simulator screenshot stream on the current session machine and register it as a simulator preview for the user. If device details are omitted, the tool uses the booted local iOS Simulator or boots an available simulator.',
     safety: 'safe',
     approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
     requiredFeatureId: 'sessions.devPreview',
@@ -1694,7 +1694,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     bindings: { mcpToolName: 'happier_simulator_preview_ios_start' },
     examples: {
       mcp: {
-        argsExample: '{"deviceId":"A1B2-C3D4","port":9814,"pollMs":500,"deviceName":"iPhone 15 Pro","appName":"Example iOS App"}',
+        argsExample: '{"appName":"Example iOS App","pollMs":500}',
       },
     },
     surfaces: {
@@ -1708,7 +1708,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     },
     inputHints: {
       title: 'Start iOS simulator preview',
-      description: 'Use when the user asks to open or preview an iOS Simulator from the current session.',
+      description: 'Use when the user asks to open or preview an iOS Simulator from the current session. Leave deviceId, wdaUrl, and deviceName empty unless the user selected a specific simulator.',
       fields: [
         { path: 'sessionId', title: 'Session id', widget: 'text' },
         { path: 'deviceId', title: 'Simulator UDID', widget: 'text' },

@@ -2,7 +2,11 @@ import { createServer, type OutgoingHttpHeaders, type ServerResponse } from "nod
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AddressInfo } from "node:net";
 import { logger } from "@/ui/logger";
-import { createHappierMcpServer, type AndroidSimulatorPreviewStreamRegistry } from "@/mcp/createHappierMcpServer";
+import {
+    createHappierMcpServer,
+    type AndroidSimulatorPreviewStreamRegistry,
+    type IosSimulatorPreviewStreamRegistry,
+} from "@/mcp/createHappierMcpServer";
 import { listBuiltInHappierTools } from "@/agent/tools/happierTools/listBuiltInHappierTools";
 import type { RpcHandlerManagerLike } from "@/api/rpc/types";
 import type { Metadata } from "@/api/types";
@@ -11,6 +15,8 @@ import type { Credentials } from '@/persistence';
 import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/session/services/executionRuns";
 import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
 import { createAndroidSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
+import { createIosSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
+import { createSimulatorPreviewControlRegistryRouter } from '@/session/simulatorPreview/createSimulatorPreviewControlRegistryRouter';
 import { registerSimulatorPreviewSessionRpcHandlers } from '@/session/simulatorPreview/registerSimulatorPreviewSessionRpcHandlers';
 import type { AccountSettings } from '@happier-dev/protocol';
 import { createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
@@ -42,11 +48,19 @@ export async function startHappyServer(
     // Full server creation is done per request inside the handler.
     const devPreviewRegistry = getSharedSessionDevPreviewRegistry();
     const androidSimulatorPreviewStreams: AndroidSimulatorPreviewStreamRegistry = new Map();
+    const iosSimulatorPreviewStreams: IosSimulatorPreviewStreamRegistry = new Map();
     const androidSimulatorPreviewControlRegistry = createAndroidSimulatorPreviewControlRegistry();
+    const iosSimulatorPreviewControlRegistry = createIosSimulatorPreviewControlRegistry();
+    const simulatorPreviewControlPlatforms = new Map<string, 'android' | 'ios'>();
+    const simulatorPreviewControlRegistry = createSimulatorPreviewControlRegistryRouter({
+        android: androidSimulatorPreviewControlRegistry,
+        ios: iosSimulatorPreviewControlRegistry,
+        platforms: simulatorPreviewControlPlatforms,
+    });
     registerSimulatorPreviewSessionRpcHandlers({
         sessionId: client.sessionId,
         rpcHandlerManager: client.rpcHandlerManager,
-        registry: androidSimulatorPreviewControlRegistry,
+        registry: simulatorPreviewControlRegistry,
     });
     const isActionEnabled = createMcpActionEnablement({
         accountSettings: opts?.accountSettings ?? null,
@@ -80,7 +94,10 @@ export async function startHappyServer(
             accountSettings: opts?.accountSettings ?? null,
             devPreviewRegistry,
             androidSimulatorPreviewStreams,
+            iosSimulatorPreviewStreams,
             androidSimulatorPreviewControlRegistry,
+            iosSimulatorPreviewControlRegistry,
+            simulatorPreviewControlPlatforms,
         });
 
         const transport = new StreamableHTTPServerTransport({

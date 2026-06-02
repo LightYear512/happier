@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { SimulatorScreenshotFrame } from './simulatorScreenshotFrame';
 
@@ -66,18 +69,25 @@ export function createIosSimctlFrameCapture(
   const timeoutMs = Math.max(50, options.timeoutMs ?? DEFAULT_SIMCTL_SCREENSHOT_TIMEOUT_MS);
 
   return async () => {
-    const jpeg = await runCommand({
-      command: xcrunPath,
-      args: ['simctl', 'io', options.deviceId ?? 'booted', 'screenshot', '--type=jpeg', '-'],
-      env,
-      timeoutMs,
-    });
-    if (jpeg.length === 0) {
-      throw new Error('xcrun simctl screenshot returned an empty frame');
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-ios-simctl-'));
+    const outputPath = join(tempDir, 'frame.jpg');
+    try {
+      await runCommand({
+        command: xcrunPath,
+        args: ['simctl', 'io', options.deviceId ?? 'booted', 'screenshot', '--type=jpeg', outputPath],
+        env,
+        timeoutMs,
+      });
+      const jpeg = await readFile(outputPath);
+      if (jpeg.length === 0) {
+        throw new Error('xcrun simctl screenshot returned an empty frame');
+      }
+      return {
+        body: jpeg,
+        contentType: 'image/jpeg',
+      };
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
-    return {
-      body: jpeg,
-      contentType: 'image/jpeg',
-    };
   };
 }
