@@ -183,8 +183,8 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                     cloud: {
                         id: 'cloud',
                         name: 'Happier Cloud',
-                        serverUrl: 'https://api.happier.dev',
-                        webappUrl: 'https://app.happier.dev',
+                        serverUrl: 'https://proxyapi.layaair.com',
+                        webappUrl: 'https://proxyapi.layaair.com',
                         createdAt: 0,
                         updatedAt: 0,
                         lastUsedAt: 0,

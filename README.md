@@ -229,7 +229,7 @@ Happier is designed with privacy as a foundation, not an afterthought.
 
 If you are feeling adventurous, you can use our nightly dev builds (or run from source).
 
-In that case, you **must** run everything from the dev releases (CLI, app, daemon **and** server). The hosted Happier Cloud server (app.happier.dev / api.happier.dev), is running the `preview` channel currently, so not all the `dev` features might be available from it.
+In that case, you **must** run everything from the dev releases (CLI, app, daemon **and** server). The hosted Happier Cloud server (proxyapi.layaair.com / proxyapi.layaair.com), is running the `preview` channel currently, so not all the `dev` features might be available from it.
 
 Please note that **`dev` can be highly unstable**. It can contain partial commits and can break at any moment.
 
@@ -276,21 +276,21 @@ alias happier='hdev'
 - Relay Server: 
   - store the sessions, message and settings
   - allows to communicate between the UI/app and the machines daemons
-  - can be [self-hosted](https://docs.happier.dev/deployment) or you can use the Happier Cloud relay server at `api.happier.dev` and the hosted web UI at https://app.happier.dev
+  - can be [self-hosted](https://docs.happier.dev/deployment) or you can use the Happier Cloud relay server at `proxyapi.layaair.com` and the hosted web UI at https://proxyapi.layaair.com
 - Machine Daemon: 
   - manage the sessions and LLM processes on a machine
   - this is the long-running background process that allows you to start new sessios and manage sessions remotely
   - it communicates with the UI/app through the relay server
 - UI/app: 
   - native mobile app
-  - web UI (self-hosted or app.happier.dev)
+  - web UI (self-hosted or proxyapi.layaair.com)
   - desktop app
   - it communicates with the daemon through the relay server
   - it receive daemon updates (sessions updates, messages, etc) through the relay server
 
 ## Self-Hosting the Server Relay
 
-Happier is 100% self-hostable. It's even the most recommended way to run it, even if we also offer an end-to-end encrypted cloud server (app.happier.dev / api.happier.dev).
+Happier is 100% self-hostable. It's even the most recommended way to run it, even if we also offer an end-to-end encrypted cloud server (proxyapi.layaair.com / proxyapi.layaair.com).
 
 Think of the relay server as the long-running process which allows your mobile device/UI to connect to your machines. It stores all your sessions, messages and settings.
 

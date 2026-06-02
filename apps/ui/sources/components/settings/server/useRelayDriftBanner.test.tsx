@@ -334,7 +334,7 @@ describe('useRelayDriftBanner', () => {
         });
         state.activeServerSnapshot = {
             serverId: 'cloud',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
             generation: 1,
         } as ActiveServerSnapshot;
         state.cachedDoctorSnapshot = {
@@ -370,8 +370,8 @@ describe('useRelayDriftBanner', () => {
         });
 
         expect(startMock).toHaveBeenCalledWith(buildRelayDriftRepairSystemTaskSpec({
-            activeRelayUrl: 'https://api.happier.dev',
-            activeWebappUrl: 'https://app.happier.dev',
+            activeRelayUrl: 'https://proxyapi.layaair.com',
+            activeWebappUrl: 'https://proxyapi.layaair.com',
             activeLocalRelayUrl: null,
         }));
     });

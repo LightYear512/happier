@@ -23,7 +23,7 @@ describe('serverUrlClassification', () => {
   });
 
   it('does not treat public hostnames as local-ish', () => {
-    expect(isLocalishHostname('api.happier.dev')).toBe(false);
+    expect(isLocalishHostname('proxyapi.layaair.com')).toBe(false);
     expect(isLocalishHostname('example.com')).toBe(false);
   });
 

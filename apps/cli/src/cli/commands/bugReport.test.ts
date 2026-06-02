@@ -11,8 +11,8 @@ function createDeps(overrides: Partial<BugReportCommandDependencies> = {}): BugR
     getActiveServerProfile: async () => ({
       id: 'cloud',
       name: 'Happier Cloud',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
     }),
     fetchBugReportsFeature: async () => ({
       enabled: true,
@@ -36,7 +36,7 @@ function createDeps(overrides: Partial<BugReportCommandDependencies> = {}): BugR
         appVersion: '1.0.0',
         platform: 'darwin',
         deploymentType: 'cloud',
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
       },
     }),
     submitBugReport: async () => ({
@@ -171,7 +171,7 @@ describe('runBugReportCommand', () => {
             appVersion: '1.0.0',
             platform: 'darwin',
             deploymentType: 'cloud',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
           },
         };
       },
@@ -288,7 +288,7 @@ describe('runBugReportCommand', () => {
         appVersion: '1.0.0',
         platform: 'darwin',
         deploymentType: 'cloud' as const,
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
       },
     }));
 
@@ -476,7 +476,7 @@ describe('runBugReportCommand', () => {
         appVersion: '1.0.0',
         platform: 'darwin',
         deploymentType: 'cloud' as const,
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
       },
     }));
 
@@ -572,7 +572,7 @@ describe('runBugReportCommand', () => {
             appVersion: '1.0.0',
             platform: 'darwin',
             deploymentType: 'cloud',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
           },
         };
       },
@@ -725,7 +725,7 @@ describe('runBugReportCommand', () => {
             appVersion: '1.0.0',
             platform: 'darwin',
             deploymentType: 'cloud',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
           },
         };
       },

@@ -21,7 +21,7 @@ const routerReplaceSpy = vi.fn();
 
 const upsertActivateAndSwitchServerSpy = vi.fn(async (_params: { serverUrl: string; source: string; scope: string; refreshAuth: unknown }) => true);
 const refreshFromActiveServerSpy = vi.fn(async () => {});
-let activeServerUrl = 'https://api.happier.dev';
+let activeServerUrl = 'https://proxyapi.layaair.com';
 let activeServerSnapshot: { serverId: string; serverUrl: string; generation: number } | null = null;
 
 function readActiveServerSnapshot() {
@@ -175,7 +175,7 @@ vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
 }));
 
 afterEach(() => {
-    activeServerUrl = 'https://api.happier.dev';
+    activeServerUrl = 'https://proxyapi.layaair.com';
     activeServerSnapshot = null;
     historyReplaceStateSpy.mockReset();
     routerPushSpy.mockReset();

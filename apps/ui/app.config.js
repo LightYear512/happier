@@ -61,7 +61,7 @@ const DEFAULTS = {
     owner: "happier-dev",
     slug: "happier",
     easProjectId: "2a550bd7-e4d2-4f59-ab47-dcb778775cee",
-    linkHost: "app.happier.dev",
+    linkHost: "proxyapi.layaair.com",
 };
 
 // Allow opt-in overrides for local dev tooling without changing upstream defaults.

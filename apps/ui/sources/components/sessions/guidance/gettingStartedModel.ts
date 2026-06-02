@@ -143,7 +143,7 @@ export function buildSessionGettingStartedViewModel(input: SessionGettingStarted
         machines,
     });
 
-    const showServerSetup = Boolean(activeProfile.serverUrl) && activeProfile.serverUrl !== 'https://api.happier.dev';
+    const showServerSetup = Boolean(activeProfile.serverUrl) && activeProfile.serverUrl !== 'https://proxyapi.layaair.com';
 
     return {
         kind,

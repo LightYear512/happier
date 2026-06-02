@@ -93,7 +93,7 @@ export class PushNotificationClient {
     private pushTokenFetchFailureCooldownUntilMs = 0
     private didLogPushTokenFetchCooldown = false
 
-    constructor(token: string, baseUrl: string = 'https://api.happier.dev') {
+    constructor(token: string, baseUrl: string = 'https://proxyapi.layaair.com') {
         this.token = token
         this.baseUrl = baseUrl
         this.expo = new Expo()

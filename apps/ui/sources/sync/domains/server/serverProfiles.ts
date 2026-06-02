@@ -13,7 +13,7 @@ export type ServerProfileSource = 'manual' | 'url' | 'stack-env' | 'notification
  * compare an active server URL against it (via createServerUrlComparableKey)
  * without scattering the string literal across the codebase.
  */
-export const HAPPIER_CLOUD_SERVER_URL = 'https://api.happier.dev' as const;
+export const HAPPIER_CLOUD_SERVER_URL = 'https://proxyapi.layaair.com' as const;
 
 export type ServerProfile = Readonly<{
     id: string;
@@ -667,6 +667,10 @@ function getWebSameOriginServerUrl(): string | null {
         // When builds are missing EXPO_PUBLIC_HAPPIER_SERVER_URL (and legacy aliases), this prevents the default server
         // from incorrectly pointing at the web host.
         if (parsed.hostname.toLowerCase() === 'app.happier.dev') {
+            return HAPPIER_CLOUD_SERVER_URL;
+        }
+        // The hosted relay also serves the web UI, so missing env config should resolve to the same origin.
+        if (parsed.hostname.toLowerCase() === 'proxyapi.layaair.com') {
             return HAPPIER_CLOUD_SERVER_URL;
         }
         return origin;

@@ -24,13 +24,13 @@ const VARIANTS = {
     homeDir: path.join(os.homedir(), '.happier'),
     color: '\x1b[32m', // Green
     label: '✅ STABLE',
-    serverUrl: process.env.HAPPIER_SERVER_URL || 'https://api.happier.dev'
+    serverUrl: process.env.HAPPIER_SERVER_URL || 'https://proxyapi.layaair.com'
   },
   dev: {
     homeDir: path.join(os.homedir(), '.happier-dev'),
     color: '\x1b[33m', // Yellow
     label: '🔧 DEV',
-    serverUrl: process.env.HAPPIER_SERVER_URL || 'https://api.happier.dev'
+    serverUrl: process.env.HAPPIER_SERVER_URL || 'https://proxyapi.layaair.com'
   }
 };
 

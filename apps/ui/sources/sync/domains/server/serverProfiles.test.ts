@@ -181,8 +181,8 @@ describe('serverProfiles', () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
 
         const profiles = await importFresh();
-        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(true);
-        expect(profiles.getActiveServerUrl()).toBe('https://api.happier.dev');
+        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(true);
+        expect(profiles.getActiveServerUrl()).toBe('https://proxyapi.layaair.com');
     });
 
     it('seeds a same-origin server profile on web when no preconfigured env exists', async () => {
@@ -279,18 +279,18 @@ describe('serverProfiles', () => {
         expect(profiles.getActiveServerId()).toBe('manual-id');
     });
 
-    it('seeds api.happier.dev on app.happier.dev web origin when no preconfigured env exists', async () => {
+    it('seeds proxyapi.layaair.com on proxyapi.layaair.com web origin when no preconfigured env exists', async () => {
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
         delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
         delete process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS;
-        stubWebRuntime('https://app.happier.dev');
+        stubWebRuntime('https://proxyapi.layaair.com');
 
         const profiles = await importFresh();
         const all = profiles.listServerProfiles();
-        expect(all.some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(true);
-        expect(all.some((p) => p.serverUrl === 'https://app.happier.dev')).toBe(false);
-        expect(profiles.getActiveServerUrl()).toBe('https://api.happier.dev');
+        expect(all.some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(true);
+        expect(all.filter((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toHaveLength(1);
+        expect(profiles.getActiveServerUrl()).toBe('https://proxyapi.layaair.com');
     });
 
     it('does not seed a same-origin server profile when EXPO_PUBLIC_HAPPY_SERVER_URL is set', async () => {
@@ -554,14 +554,14 @@ describe('serverProfiles', () => {
         delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
         process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS = JSON.stringify([
             { name: 'Local 3013', url: 'http://localhost:3013' },
-            { name: 'Cloud Alt', url: 'https://api.happier.dev' },
+            { name: 'Cloud Alt', url: 'https://proxyapi.layaair.com' },
         ]);
 
         const profiles = await importFresh();
         const all = profiles.listServerProfiles();
 
         expect(all.some((p) => p.serverUrl === 'http://localhost:3013')).toBe(true);
-        expect(all.some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(true);
+        expect(all.some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(true);
     });
 
     it('treats a remote URL added manually as a normal removable profile', async () => {
@@ -569,7 +569,7 @@ describe('serverProfiles', () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
 
         const profiles = await importFresh();
-        const remote = profiles.upsertServerProfile({ serverUrl: 'https://api.happier.dev', name: 'remote-manual' });
+        const remote = profiles.upsertServerProfile({ serverUrl: 'https://proxyapi.layaair.com', name: 'remote-manual' });
         expect(profiles.listServerProfiles().some((p) => p.id === remote.id)).toBe(true);
         expect(() => profiles.removeServerProfile(remote.id)).not.toThrow();
         expect(profiles.listServerProfiles().some((p) => p.id === remote.id)).toBe(false);
@@ -585,7 +585,7 @@ describe('serverProfiles', () => {
 
         const profiles = await importFresh();
         const all = profiles.listServerProfiles();
-        expect(all.some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(false);
+        expect(all.some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(false);
     });
 
     it('treats a happier-*.localhost web origin as stack context even if EXPO_PUBLIC_HAPPY_SERVER_CONTEXT is an unknown value', async () => {
@@ -598,7 +598,7 @@ describe('serverProfiles', () => {
 
         const profiles = await importFresh();
         const all = profiles.listServerProfiles();
-        expect(all.some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(false);
+        expect(all.some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(false);
     });
 
     it('does not let an unknown EXPO_PUBLIC_HAPPY_SERVER_CONTEXT disable localhost stack inference', async () => {
@@ -618,19 +618,19 @@ describe('serverProfiles', () => {
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
         process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS = JSON.stringify([
-            { name: 'Cloud Embedded', url: 'https://api.happier.dev' },
+            { name: 'Cloud Embedded', url: 'https://proxyapi.layaair.com' },
         ]);
 
         const profiles = await importFresh();
-        const seeded = profiles.listServerProfiles().find((p) => p.serverUrl === 'https://api.happier.dev');
+        const seeded = profiles.listServerProfiles().find((p) => p.serverUrl === 'https://proxyapi.layaair.com');
         expect(seeded).toBeTruthy();
 
         profiles.removeServerProfile(seeded!.id);
-        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(false);
+        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(false);
 
         expect(profiles.getActiveServerUrl()).toBe('');
         expect(profiles.getResetToDefaultServerId()).toBe('');
-        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(false);
+        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'https://proxyapi.layaair.com')).toBe(false);
     });
 
     it('dedupes localhost and 127.0.0.1 loopback URLs into one profile without rewriting the stored host form', async () => {
@@ -689,7 +689,7 @@ describe('serverProfiles', () => {
         delete process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
 
         const profiles = await importFresh();
-        const cloud = profiles.listServerProfiles().find((p) => p.serverUrl === 'https://api.happier.dev');
+        const cloud = profiles.listServerProfiles().find((p) => p.serverUrl === 'https://proxyapi.layaair.com');
         expect(cloud).toBeTruthy();
 
         const one = profiles.upsertServerProfile({ serverUrl: 'https://one.example.test', name: 'one' });

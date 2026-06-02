@@ -146,7 +146,7 @@ describe('getServerUrl', () => {
 
         const { getServerUrl } = await importFreshServerConfig();
 
-        expect(getServerUrl()).toBe('https://api.happier.dev');
+        expect(getServerUrl()).toBe('https://proxyapi.layaair.com');
     });
 
     it('trims EXPO_PUBLIC_HAPPY_SERVER_URL to avoid whitespace issues', async () => {

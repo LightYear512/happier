@@ -12,7 +12,7 @@ function fakeFetch(response: Partial<Response> & { status: number; ok?: boolean 
 describe('checkAuthLive', () => {
   it('returns ok on 200', async () => {
     const result = await checkAuthLive({
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       token: 'abc',
       fetchImpl: fakeFetch({ status: 200 }),
     });
@@ -21,7 +21,7 @@ describe('checkAuthLive', () => {
 
   it('returns expired on 401', async () => {
     const result = await checkAuthLive({
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       token: 'abc',
       fetchImpl: fakeFetch({ status: 401 }),
     });
@@ -30,7 +30,7 @@ describe('checkAuthLive', () => {
 
   it('returns expired on 403', async () => {
     const result = await checkAuthLive({
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       token: 'abc',
       fetchImpl: fakeFetch({ status: 403 }),
     });
@@ -39,7 +39,7 @@ describe('checkAuthLive', () => {
 
   it('returns unknown on 500', async () => {
     const result = await checkAuthLive({
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       token: 'abc',
       fetchImpl: fakeFetch({ status: 500 }),
     });
@@ -49,7 +49,7 @@ describe('checkAuthLive', () => {
   it('returns unknown on fetch throw (network failure)', async () => {
     const throwing: typeof fetch = (async () => { throw new Error('ECONNREFUSED'); }) as typeof fetch;
     const result = await checkAuthLive({
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       token: 'abc',
       fetchImpl: throwing,
     });
@@ -71,7 +71,7 @@ describe('checkAuthLive', () => {
     }) as typeof fetch;
     const start = Date.now();
     const result = await checkAuthLive({
-      serverUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
       token: 'abc',
       fetchImpl: hanging,
       timeoutMs: 50,

@@ -463,7 +463,7 @@ describe("authRoutes (mTLS) (integration)", () => {
             HAPPIER_FEATURE_AUTH_MTLS__FORWARDED_FINGERPRINT_HEADER: "x-happier-client-cert-sha256",
 
             // A common operator config: "only allow returnTo into the webapp origin".
-            HAPPIER_FEATURE_AUTH_MTLS__RETURN_TO_ALLOW_PREFIXES: "https://app.happier.dev",
+            HAPPIER_FEATURE_AUTH_MTLS__RETURN_TO_ALLOW_PREFIXES: "https://proxyapi.layaair.com",
         });
 
         const app = createTestApp();
@@ -474,7 +474,7 @@ describe("authRoutes (mTLS) (integration)", () => {
             method: "GET",
             url:
                 "/v1/auth/mtls/start?returnTo=" +
-                encodeURIComponent("https://app.happier.dev.evil.com/oauth/mtls"),
+                encodeURIComponent("https://proxyapi.layaair.com.evil.com/oauth/mtls"),
         });
         expect(res.statusCode).toBe(400);
         expect(res.json()).toEqual({ error: "invalid-returnTo" });

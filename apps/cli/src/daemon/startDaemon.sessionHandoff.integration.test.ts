@@ -122,7 +122,7 @@ vi.mock('@/configuration', () => ({
         happyHomeDir: '/tmp/home',
         currentCliVersion: '0.0.0-test',
         publicReleaseRing: 'stable',
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         activeServerDir: '/tmp/server',
         daemonReattachCatchUpConcurrency: 4,
         daemonSpawnExistingSessionWaitForExitMs: 5_000,

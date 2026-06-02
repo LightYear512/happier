@@ -755,7 +755,7 @@ describe('useCreateNewSession (worktree gating)', () => {
         expect(detachWorkspaceLocationMock).not.toHaveBeenCalled();
         expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
         expect(clearNewSessionDraftMock).toHaveBeenCalledTimes(1);
-        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=api.happier.dev', expect.anything());
+        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=proxyapi.layaair.com', expect.anything());
         expect(setIsCreating).not.toHaveBeenCalledWith(false);
     });
 
@@ -1366,7 +1366,7 @@ describe('useCreateNewSession (worktree gating)', () => {
         expect(spawnedOptions?.workspaceLocationId).toBeUndefined();
         expect(spawnedOptions?.workspaceCheckoutId).toBeUndefined();
         expect(updateSessionDraftMock).not.toHaveBeenCalled();
-        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=api.happier.dev', expect.anything());
+        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=proxyapi.layaair.com', expect.anything());
         expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
         expect(clearNewSessionDraftMock).toHaveBeenCalledTimes(1);
         expect(setIsCreating).not.toHaveBeenCalledWith(false);
@@ -1643,7 +1643,7 @@ describe('useCreateNewSession (worktree gating)', () => {
         expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
         expect(clearNewSessionDraftMock).toHaveBeenCalledTimes(1);
         expect(routerReplace).toHaveBeenCalledWith(
-            '/session/session-created?serverId=api.happier.dev',
+            '/session/session-created?serverId=proxyapi.layaair.com',
             expect.anything(),
         );
         expect(vi.mocked(Modal.alert)).toHaveBeenCalledWith('common.error', 'Created session is not available locally yet');

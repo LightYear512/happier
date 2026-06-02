@@ -29,7 +29,7 @@ const entry: AutomaticStartupEntry = {
   ringId: 'publicdev',
   mode: 'user',
   targetMode: 'default-following',
-  relayUrl: 'https://api.happier.dev',
+  relayUrl: 'https://proxyapi.layaair.com',
   running: true,
   configuredCliVersion: '0.12.3',
   runningCliVersion: '0.12.3',

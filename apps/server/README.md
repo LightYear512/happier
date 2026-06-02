@@ -41,7 +41,7 @@ All sharing maintains end-to-end encryption - encrypted data keys are distribute
 
 ## Hosting
 
-**You don't need to self-host!** Our hosted Happier Server at `api.happier.dev` is just as secure as running your own. Since all data is end-to-end encrypted before it reaches our servers, we literally cannot read your messages even if we wanted to. The encryption happens on your device, and only you have the keys.
+**You don't need to self-host!** Our hosted Happier Server at `proxyapi.layaair.com` is just as secure as running your own. Since all data is end-to-end encrypted before it reaches our servers, we literally cannot read your messages even if we wanted to. The encryption happens on your device, and only you have the keys.
 
 That said, Happier Server is open source and self-hostable if you prefer running your own infrastructure. The security model is identical whether you use our servers or your own.
 

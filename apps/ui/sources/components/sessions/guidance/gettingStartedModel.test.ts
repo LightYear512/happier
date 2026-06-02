@@ -79,7 +79,7 @@ describe('buildSessionGettingStartedViewModel', () => {
                 allowedServerIds: ['cloud'],
             },
             serverSelectionGroups: [],
-            serverProfiles: [{ id: 'cloud', name: 'Happier Cloud', serverUrl: 'https://api.happier.dev' }],
+            serverProfiles: [{ id: 'cloud', name: 'Happier Cloud', serverUrl: 'https://proxyapi.layaair.com' }],
             machineListByServerId: { cloud: [] },
             machineListStatusByServerId: { cloud: 'idle' },
         });

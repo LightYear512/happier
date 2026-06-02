@@ -20,8 +20,8 @@ import { resolveCliRuntimeLaunchSpec } from './runtime/launch/resolveCliRuntimeL
 import { resolveJavaScriptRuntimeCommand } from '@happier-dev/cli-common/providers/managedJavaScriptRuntime';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 
-const HOSTED_SERVER_URL = 'https://api.happier.dev';
-const HOSTED_WEBAPP_URL = 'https://app.happier.dev';
+const HOSTED_SERVER_URL = 'https://proxyapi.layaair.com';
+const HOSTED_WEBAPP_URL = 'https://proxyapi.layaair.com';
 
 function isNodeRuntimeEntrypoint(entrypoint) {
   return /\.(?:cjs|js|mjs)$/i.test(String(entrypoint ?? '').trim());

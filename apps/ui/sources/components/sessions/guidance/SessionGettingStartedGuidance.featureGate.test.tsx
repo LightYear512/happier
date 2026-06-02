@@ -56,7 +56,7 @@ vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => ({ serverId: 's1', generation: 1 }),
-    listServerProfiles: () => [{ id: 's1', name: 'cloud', serverUrl: 'https://api.happier.dev' }],
+    listServerProfiles: () => [{ id: 's1', name: 'cloud', serverUrl: 'https://proxyapi.layaair.com' }],
 }));
 
 vi.mock('@/components/ui/buttons/RoundButton', () => ({

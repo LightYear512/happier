@@ -23,7 +23,7 @@ describe('bug report fallback body formatting', () => {
         osVersion: '18.2',
         deviceModel: 'iPhone16,2',
         deploymentType: 'cloud',
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: 'https://proxyapi.layaair.com',
         serverVersion: '0.12.3',
       },
     });

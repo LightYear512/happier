@@ -19,9 +19,9 @@ describe('daemon service install plan', () => {
       uid: 501,
       userHomeDir: '/Users/test',
       happierHomeDir: '/Users/test/.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: '/opt/homebrew/bin/node',
       entryPath: '/usr/local/lib/node_modules/@happier-dev/cli/dist/index.mjs',
     });
@@ -62,9 +62,9 @@ describe('daemon service install plan', () => {
       uid: 501,
       userHomeDir: '/Users/test',
       happierHomeDir: '/Users/test/.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: '/opt/homebrew/bin/node',
       entryPath: '/usr/local/lib/node_modules/@happier-dev/cli/dist/index.mjs',
     });
@@ -90,9 +90,9 @@ describe('daemon service install plan', () => {
       uid: 501,
       userHomeDir: '/Users/test',
       happierHomeDir: '/Users/test/.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: '/opt/homebrew/bin/node',
       entryPath: '/usr/local/lib/node_modules/@happier-dev/cli/dist/index.mjs',
     });
@@ -137,9 +137,9 @@ describe('daemon service install plan', () => {
       instanceId: 'cloud',
       userHomeDir: '/home/test',
       happierHomeDir: '/home/test/.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: '/usr/bin/node',
       entryPath: '/usr/lib/node_modules/@happier-dev/cli/dist/index.mjs',
     });
@@ -151,8 +151,8 @@ describe('daemon service install plan', () => {
     expect(plan.files[0]?.content).toContain('Environment=HAPPIER_DAEMON_STARTUP_SOURCE=background-service');
     expect(plan.files[0]?.content).toContain('Environment=HAPPIER_DAEMON_SERVICE_LABEL=com.happier.cli.daemon.cloud');
     expect(plan.files[0]?.content).toContain('Environment=HAPPIER_ACTIVE_SERVER_ID=cloud');
-    expect(plan.files[0]?.content).toContain('Environment=HAPPIER_SERVER_URL=https://api.happier.dev');
-    expect(plan.files[0]?.content).toContain('Environment=HAPPIER_PUBLIC_SERVER_URL=https://api.happier.dev');
+    expect(plan.files[0]?.content).toContain('Environment=HAPPIER_SERVER_URL=https://proxyapi.layaair.com');
+    expect(plan.files[0]?.content).toContain('Environment=HAPPIER_PUBLIC_SERVER_URL=https://proxyapi.layaair.com');
     expect(plan.files[0]?.content).toContain('Environment=HAPPIER_DAEMON_WAIT_FOR_AUTH=1');
     expect(plan.files[0]?.content).toContain('Environment=PATH=');
     expect(plan.files[0]?.content).toContain('/home/test/.local/bin');
@@ -209,9 +209,9 @@ describe('daemon service install plan', () => {
       instanceId: 'cloud',
       userHomeDir: '/home/test',
       happierHomeDir: '/home/test/.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: '/usr/bin/node',
       entryPath: '/usr/lib/node_modules/@happier-dev/cli/dist/index.mjs',
     });
@@ -323,9 +323,9 @@ describe('daemon service install plan', () => {
       instanceId: 'cloud',
       userHomeDir: '/home/test',
       happierHomeDir: '/home/test/.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: '/opt/Node With Spaces/bin/node',
       entryPath: '/home/test/Library/Application Support/Happier/dist/index.mjs',
     });
@@ -360,9 +360,9 @@ describe('daemon service install plan', () => {
       instanceId: 'cloud',
       userHomeDir: 'C:\\\\Users\\\\test',
       happierHomeDir: 'C:\\\\Users\\\\test\\\\.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: 'C:\\\\Users\\\\test\\\\.local\\\\bin\\\\happier.exe',
       entryPath: '',
     });
@@ -385,9 +385,9 @@ describe('daemon service install plan', () => {
       instanceId: 'cloud',
       userHomeDir: 'C:\\\\Users\\\\test',
       happierHomeDir: 'C:\\\\Users\\\\test\\\\.happier',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
       nodePath: 'C:\\\\Users\\\\test\\\\.local\\\\bin\\\\happier.exe',
       entryPath: '',
     });

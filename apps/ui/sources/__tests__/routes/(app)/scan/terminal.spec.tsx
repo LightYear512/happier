@@ -66,11 +66,11 @@ describe('/scan/terminal', () => {
         expect(typeof lastScannerProps?.onScan).toBe('function');
 
         await act(async () => {
-            await lastScannerProps.onScan('happier://terminal?key=abc&server=https%3A%2F%2Fapi.happier.dev');
+            await lastScannerProps.onScan('happier://terminal?key=abc&server=https%3A%2F%2Fproxyapi.layaair.com');
         });
 
         expect(processTerminalAuthUrlSpy).toHaveBeenCalledTimes(1);
-        expect(processTerminalAuthUrlSpy).toHaveBeenCalledWith('happier://terminal?key=abc&server=https%3A%2F%2Fapi.happier.dev');
+        expect(processTerminalAuthUrlSpy).toHaveBeenCalledWith('happier://terminal?key=abc&server=https%3A%2F%2Fproxyapi.layaair.com');
         expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 

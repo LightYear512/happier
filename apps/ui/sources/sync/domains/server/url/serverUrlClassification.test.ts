@@ -14,17 +14,17 @@ describe('serverUrlClassification', () => {
         expect(isLocalishHostname('192.168.1.2')).toBe(true);
         expect(isLocalishHostname('100.64.0.1')).toBe(true);
         expect(isLocalishHostname('my-nas')).toBe(true);
-        expect(isLocalishHostname('api.happier.dev')).toBe(false);
+        expect(isLocalishHostname('proxyapi.layaair.com')).toBe(false);
     });
 
     it('detects local-ish server URLs by hostname', () => {
         expect(isLocalishServerUrl('http://127.0.0.1:3005')).toBe(true);
         expect(isLocalishServerUrl('http://192.168.0.2:3005')).toBe(true);
-        expect(isLocalishServerUrl('https://api.happier.dev')).toBe(false);
+        expect(isLocalishServerUrl('https://proxyapi.layaair.com')).toBe(false);
     });
 
     it('detects insecure remote http URLs', () => {
-        expect(isInsecureRemoteHttpServerUrl('http://api.happier.dev')).toBe(true);
+        expect(isInsecureRemoteHttpServerUrl('http://proxyapi.layaair.com')).toBe(true);
         expect(isInsecureRemoteHttpServerUrl('http://127.0.0.1:3005')).toBe(false);
     });
 

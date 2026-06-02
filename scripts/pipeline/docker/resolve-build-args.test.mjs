@@ -68,9 +68,9 @@ test('resolveOptionalDockerBuildArgs includes POSTHOG_API_KEY and POSTHOG_HOST w
 });
 
 test('resolveOptionalDockerBuildArgs includes EXPO_PUBLIC_HAPPIER_SERVER_URL when set', () => {
-  assert.deepEqual(resolveOptionalDockerBuildArgs({ EXPO_PUBLIC_HAPPIER_SERVER_URL: 'https://api.happier.dev' }), [
+  assert.deepEqual(resolveOptionalDockerBuildArgs({ EXPO_PUBLIC_HAPPIER_SERVER_URL: 'https://proxyapi.layaair.com' }), [
     '--build-arg',
-    'EXPO_PUBLIC_HAPPIER_SERVER_URL=https://api.happier.dev',
+    'EXPO_PUBLIC_HAPPIER_SERVER_URL=https://proxyapi.layaair.com',
   ]);
 });
 

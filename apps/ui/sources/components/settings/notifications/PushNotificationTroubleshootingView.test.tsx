@@ -57,7 +57,7 @@ vi.mock('@/auth/context/AuthContext', () => {
 });
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://api.happier.dev', generation: 1 }),
+    getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://proxyapi.layaair.com', generation: 1 }),
     subscribeActiveServer: () => () => {},
 }));
 
