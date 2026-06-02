@@ -4,7 +4,7 @@
   "kind": "server_test",
   "data": {
     "ok": true,
-    "url": "https://api.happier.dev/v1/version",
+    "url": "https://proxyapi.layaair.com/v1/version",
     "version": "0.0.0"
   }
 }

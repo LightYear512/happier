@@ -121,7 +121,7 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
     it('does not consume terminal connect query params as a global server override', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://api.happier.dev';
+        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://proxyapi.layaair.com';
 
         stubWebLocation('https://app.example.test/terminal/connect?key=abc123&server=https%3A%2F%2Fwrong.example.test');
 
@@ -132,6 +132,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         const { getActiveServerUrl } = await importFreshServerProfiles();
         expect(override).toBeNull();
         expect(result).toBeNull();
-        expect(getActiveServerUrl()).toBe('https://api.happier.dev');
+        expect(getActiveServerUrl()).toBe('https://proxyapi.layaair.com');
     });
 });

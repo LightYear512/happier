@@ -20,7 +20,7 @@ const mockState = await vi.hoisted(async () => {
     const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
     const { settingsDefaults } = await import('@/sync/domains/settings/settings');
     return {
-        activeServerUrl: 'https://api.happier.dev',
+        activeServerUrl: 'https://proxyapi.layaair.com',
         applySettingsSpy: vi.fn(),
         clearPendingNotificationActionSpy: vi.fn(),
         clearPendingNotificationNavSpy: vi.fn(),
@@ -198,7 +198,7 @@ vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
 }));
 
 afterEach(async () => {
-    mockState.activeServerUrl = 'https://api.happier.dev';
+    mockState.activeServerUrl = 'https://proxyapi.layaair.com';
     mockState.serverProfilesValue = [];
     mockState.tabActiveServerId = null;
     mockState.pendingTerminalConnectValue = null;
@@ -229,7 +229,7 @@ describe('App RootLayout notifications', () => {
     it('routes to pending terminal connect after authentication', async () => {
         mockState.pendingTerminalConnectValue = {
             publicKeyB64Url: 'abc123',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
         };
 
         const Notifications = await import('expo-notifications');
@@ -238,16 +238,16 @@ describe('App RootLayout notifications', () => {
 
         await renderRootLayout();
 
-        expect(mockState.pushSpy).toHaveBeenCalledWith('/terminal/connect#key=abc123&server=https%3A%2F%2Fapi.happier.dev');
+        expect(mockState.pushSpy).toHaveBeenCalledWith('/terminal/connect#key=abc123&server=https%3A%2F%2Fproxyapi.layaair.com');
         expect(mockState.upsertActivateAndSwitchServerSpy).not.toHaveBeenCalled();
     });
 
     it('promotes pending terminal connect server when a tab override masks the device default', async () => {
         mockState.pendingTerminalConnectValue = {
             publicKeyB64Url: 'abc123',
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
         };
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         mockState.tabActiveServerId = 'api-server';
 
         const Notifications = await import('expo-notifications');
@@ -257,12 +257,12 @@ describe('App RootLayout notifications', () => {
         await renderRootLayout();
 
         expect(mockState.upsertActivateAndSwitchServerSpy).toHaveBeenCalledWith({
-            serverUrl: 'https://api.happier.dev',
+            serverUrl: 'https://proxyapi.layaair.com',
             source: 'url',
             scope: 'device',
             refreshAuth: expect.any(Function),
         });
-        expect(mockState.pushSpy).toHaveBeenCalledWith('/terminal/connect#key=abc123&server=https%3A%2F%2Fapi.happier.dev');
+        expect(mockState.pushSpy).toHaveBeenCalledWith('/terminal/connect#key=abc123&server=https%3A%2F%2Fproxyapi.layaair.com');
     });
 
     it('switches server and continues without reloading when pending terminal connect targets another server', async () => {
@@ -270,7 +270,7 @@ describe('App RootLayout notifications', () => {
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://company.example.test',
         };
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue(null);
         vi.spyOn(Notifications, 'addNotificationResponseReceivedListener').mockImplementation(() => ({ remove: () => {} }));
@@ -349,7 +349,7 @@ describe('App RootLayout notifications', () => {
 
     it('switches server and navigates when a notification includes serverUrl', async () => {
         mockState.serverProfilesValue = [
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
             { id: 'server-2', serverUrl: 'https://company.example.test' },
         ];
         const Notifications = await import('expo-notifications');
@@ -385,9 +385,9 @@ describe('App RootLayout notifications', () => {
 
     it('does not auto-switch to loopback serverUrl from notifications', async () => {
         mockState.serverProfilesValue = [
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
         ];
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue({
             actionIdentifier: Notifications.DEFAULT_ACTION_IDENTIFIER,
@@ -431,7 +431,7 @@ describe('App RootLayout notifications', () => {
                         body: null,
                         categoryIdentifier: null,
                         sound: null,
-                        data: { sessionId: 's_allow', requestId: 'p_allow', serverUrl: 'https://api.happier.dev' },
+                        data: { sessionId: 's_allow', requestId: 'p_allow', serverUrl: 'https://proxyapi.layaair.com' },
                     },
                 },
             },
@@ -446,10 +446,10 @@ describe('App RootLayout notifications', () => {
 
     it('switches to a saved inactive server and performs permission allow when notification action is pressed', async () => {
         mockState.serverProfilesValue = [
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
             { id: 'server-2', serverUrl: 'https://company.example.test' },
         ];
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue({
             actionIdentifier: PUSH_NOTIFICATION_ACTION_IDS.permissionAllowV1,
@@ -512,9 +512,9 @@ describe('App RootLayout notifications', () => {
 
     it('does not perform permission allow when notification action targets an unsaved server', async () => {
         mockState.serverProfilesValue = [
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
         ];
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue({
             actionIdentifier: PUSH_NOTIFICATION_ACTION_IDS.permissionAllowV1,
@@ -547,9 +547,9 @@ describe('App RootLayout notifications', () => {
 
     it('ignores unknown notification action identifiers (does not auto-add or navigate)', async () => {
         mockState.serverProfilesValue = [
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
         ];
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue({
             actionIdentifier: 'UNKNOWN_ACTION',
@@ -581,7 +581,7 @@ describe('App RootLayout notifications', () => {
 
     it('auto-adds and switches server when zero servers exist and a permission action targets an unsaved server (but does not perform the action)', async () => {
         mockState.serverProfilesValue = [];
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue({
             actionIdentifier: PUSH_NOTIFICATION_ACTION_IDS.permissionAllowV1,
@@ -617,9 +617,9 @@ describe('App RootLayout notifications', () => {
 
     it('routes to server settings with a prefilled url when a notification targets an unsaved server and servers already exist', async () => {
         mockState.serverProfilesValue = [
-            { id: 'server-1', serverUrl: 'https://api.happier.dev' },
+            { id: 'server-1', serverUrl: 'https://proxyapi.layaair.com' },
         ];
-        mockState.activeServerUrl = 'https://api.happier.dev';
+        mockState.activeServerUrl = 'https://proxyapi.layaair.com';
         const Notifications = await import('expo-notifications');
         vi.spyOn(Notifications, 'getLastNotificationResponseAsync').mockResolvedValue({
             actionIdentifier: Notifications.DEFAULT_ACTION_IDENTIFIER,
@@ -664,7 +664,7 @@ describe('App RootLayout notifications', () => {
                         body: null,
                         categoryIdentifier: null,
                         sound: null,
-                        data: { sessionId: 's_deny', requestId: 'p_deny', serverUrl: 'https://api.happier.dev' },
+                        data: { sessionId: 's_deny', requestId: 'p_deny', serverUrl: 'https://proxyapi.layaair.com' },
                     },
                 },
             },

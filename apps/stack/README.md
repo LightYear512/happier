@@ -1,6 +1,6 @@
 # hstack (Happier Stack)
 
-Run [**Happier**](https://app.happier.dev) locally and access it remotely and securely (using Tailscale).
+Run [**Happier**](https://proxyapi.layaair.com) locally and access it remotely and securely (using Tailscale).
 
 ## What is Happier?
 
@@ -91,7 +91,7 @@ phone, then either:
 
 - Open the URL from `hstack tailscale url` on your phone and “Add to Home Screen”, or
 - [Download the Happier mobile app]
-([https://app.happier.dev](https://app.happier.dev)) and [configure it to use 
+([https://proxyapi.layaair.com](https://proxyapi.layaair.com)) and [configure it to use
 your local server](docs/remote-access.md).
 
 Details (secure context, phone instructions, automation knobs): `[docs/remote-access.md](docs/remote-access.md)`.

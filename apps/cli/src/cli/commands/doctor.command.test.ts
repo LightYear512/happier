@@ -21,9 +21,9 @@ vi.mock('@/ui/doctorSnapshot', () => ({
     capturedAt: '2026-02-23T00:00:00.000Z',
     server: {
       activeServerId: 'cloud',
-      serverUrl: 'https://api.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
     },
     accountId: null,
     settings: {

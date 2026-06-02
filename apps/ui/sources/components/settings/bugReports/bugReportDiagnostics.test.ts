@@ -43,7 +43,7 @@ const collectBugReportDiagnosticsArtifacts: CollectBugReportDiagnosticsArtifacts
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
   getActiveServerSnapshot: () => ({
     serverId: 'cloud',
-    serverUrl: 'https://admin:secret@api.happier.dev/path?token=abc',
+    serverUrl: 'https://admin:secret@proxyapi.layaair.com/path?token=abc',
     generation: 1,
   }),
 }));
@@ -53,7 +53,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     {
       id: 'cloud',
       name: 'Happier Cloud',
-      serverUrl: 'https://api.happier.dev?token=abc',
+      serverUrl: 'https://proxyapi.layaair.com?token=abc',
       createdAt: 0,
       updatedAt: 0,
       lastUsedAt: 0,
@@ -140,9 +140,9 @@ const machineCollectBugReportDiagnosticsMock = vi.fn(async (_machineId?: string,
     capturedAt: '2026-02-23T00:00:00.000Z',
     server: {
       activeServerId: 'cloud',
-      serverUrl: 'https://api.happier.dev',
-      publicServerUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
+      serverUrl: 'https://proxyapi.layaair.com',
+      publicServerUrl: 'https://proxyapi.layaair.com',
+      webappUrl: 'https://proxyapi.layaair.com',
     },
     accountId: 'acct_cli_1',
     settings: {
@@ -151,8 +151,8 @@ const machineCollectBugReportDiagnosticsMock = vi.fn(async (_machineId?: string,
         {
           id: 'cloud',
           name: 'Happier Cloud',
-          serverUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
           createdAt: 0,
           updatedAt: 0,
           lastUsedAt: 0,
@@ -357,7 +357,7 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
     const daemonSummary = result.artifacts.find((artifact) => artifact.filename.includes('daemon-summary'));
     const stackContext = result.artifacts.find((artifact) => artifact.filename.includes('stack-context'));
     const cliDoctorSnapshot = result.artifacts.find((artifact) => artifact.filename.includes('cli-doctor-snapshot'));
-    expect(appContext?.content).toContain('https://api.happier.dev/path');
+    expect(appContext?.content).toContain('https://proxyapi.layaair.com/path');
     expect(appContext?.content).not.toContain('admin:secret');
     expect(appContext?.content).not.toContain('?token=');
     expect(daemonSummary?.content).not.toContain('/tmp/');
@@ -397,9 +397,9 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
         capturedAt: '2026-02-23T00:00:00.000Z',
         server: {
           activeServerId: 'cloud',
-          serverUrl: 'https://api.happier.dev',
-          publicServerUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          publicServerUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
         },
         accountId: 'acct_pasted_1',
         settings: {
@@ -575,9 +575,9 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
         capturedAt: '2026-02-23T00:00:00.000Z',
         server: {
           activeServerId: 'cloud',
-          serverUrl: 'https://api.happier.dev',
-          publicServerUrl: 'https://api.happier.dev',
-          webappUrl: 'https://app.happier.dev',
+          serverUrl: 'https://proxyapi.layaair.com',
+          publicServerUrl: 'https://proxyapi.layaair.com',
+          webappUrl: 'https://proxyapi.layaair.com',
         },
         accountId: 'acct_cli_1',
         settings: {
@@ -586,8 +586,8 @@ describe('collectBugReportDiagnosticsArtifacts', () => {
             {
               id: 'cloud',
               name: 'Happier Cloud',
-              serverUrl: 'https://api.happier.dev',
-              webappUrl: 'https://app.happier.dev',
+              serverUrl: 'https://proxyapi.layaair.com',
+              webappUrl: 'https://proxyapi.layaair.com',
               createdAt: 0,
               updatedAt: 0,
               lastUsedAt: 0,

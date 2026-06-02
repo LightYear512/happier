@@ -10,7 +10,7 @@ describe('fetchBugReportsFeatureFromServer', () => {
   it('uses protocol-aligned defaults when feature request fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
 
-    const feature = await fetchBugReportsFeatureFromServer('https://api.happier.dev');
+    const feature = await fetchBugReportsFeatureFromServer('https://proxyapi.layaair.com');
 
     expect(feature.enabled).toBe(false);
     expect(feature.uploadTimeoutMs).toBe(120_000);
@@ -47,7 +47,7 @@ describe('fetchBugReportsFeatureFromServer', () => {
       ),
     );
 
-    const feature = await fetchBugReportsFeatureFromServer('https://api.happier.dev');
+    const feature = await fetchBugReportsFeatureFromServer('https://proxyapi.layaair.com');
 
     expect(feature.enabled).toBe(true);
     expect(feature.providerUrl).toBe('https://reports.happier.dev');
@@ -84,7 +84,7 @@ describe('fetchBugReportsFeatureFromServer', () => {
       ),
     );
 
-    const feature = await fetchBugReportsFeatureFromServer('https://api.happier.dev');
+    const feature = await fetchBugReportsFeatureFromServer('https://proxyapi.layaair.com');
 
     expect(feature.enabled).toBe(false);
     expect(feature.providerUrl).toBeNull();
@@ -117,7 +117,7 @@ describe('fetchBugReportsFeatureFromServer', () => {
       ),
     );
 
-    const feature = await fetchBugReportsFeatureFromServer('https://api.happier.dev');
+    const feature = await fetchBugReportsFeatureFromServer('https://proxyapi.layaair.com');
 
     expect(feature.enabled).toBe(false);
     expect(feature.providerUrl).toBeNull();

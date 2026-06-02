@@ -25,9 +25,9 @@ describe('machineDoctorSnapshotCache', () => {
         capturedAt: '2026-02-23T00:00:00.000Z',
         server: {
           activeServerId: 'cloud',
-          serverUrl: 'https://api.happier.dev/',
-          publicServerUrl: 'https://api.happier.dev/',
-          webappUrl: 'https://app.happier.dev/',
+          serverUrl: 'https://proxyapi.layaair.com/',
+          publicServerUrl: 'https://proxyapi.layaair.com/',
+          webappUrl: 'https://proxyapi.layaair.com/',
         },
         accountId: 'acct_1',
         settings: {
@@ -41,7 +41,7 @@ describe('machineDoctorSnapshotCache', () => {
     const cached = readCachedMachineDoctorSnapshot({ serverId: 's1', machineId: 'm1' });
     expect(cached).not.toBeNull();
     expect(cached!.cachedAt).toBe(123);
-    expect(cached!.snapshot.server.serverUrl).toBe('https://api.happier.dev');
+    expect(cached!.snapshot.server.serverUrl).toBe('https://proxyapi.layaair.com');
   });
 
   it('deletes invalid cache entries', () => {

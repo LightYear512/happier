@@ -44,7 +44,7 @@ describe('generateWebAuthUrl', () => {
   it('embeds HAPPIER_PUBLIC_SERVER_URL when set (even if the API server URL is different)', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://127.0.0.1:3005';
     process.env.HAPPIER_PUBLIC_SERVER_URL = 'https://my-stack.example.test';
-    process.env.HAPPIER_WEBAPP_URL = 'https://app.happier.dev';
+    process.env.HAPPIER_WEBAPP_URL = 'https://proxyapi.layaair.com';
 
     vi.resetModules();
     const { generateWebAuthUrl } = await import('./webAuth');
@@ -54,7 +54,7 @@ describe('generateWebAuthUrl', () => {
     const key = encodeBase64(publicKey, 'base64url');
     const url = generateWebAuthUrl(publicKey);
     expect(url).toBe(
-      `https://app.happier.dev/terminal/connect#key=${key}&server=${encodeURIComponent('https://my-stack.example.test')}`,
+      `https://proxyapi.layaair.com/terminal/connect#key=${key}&server=${encodeURIComponent('https://my-stack.example.test')}`,
     );
   });
 
@@ -97,7 +97,7 @@ describe('generateWebAuthUrl', () => {
                 name: 'Local',
                 serverUrl: 'https://my-stack.example.test',
                 localServerUrl: 'http://127.0.0.1:53545',
-                webappUrl: 'https://app.happier.dev',
+                webappUrl: 'https://proxyapi.layaair.com',
                 createdAt: 1,
                 updatedAt: 1,
                 lastUsedAt: 1,
@@ -121,7 +121,7 @@ describe('generateWebAuthUrl', () => {
       const key = encodeBase64(publicKey, 'base64url');
       const url = generateWebAuthUrl(publicKey);
       expect(url).toBe(
-        `https://app.happier.dev/terminal/connect#key=${key}&server=${encodeURIComponent('https://my-stack.example.test')}`,
+        `https://proxyapi.layaair.com/terminal/connect#key=${key}&server=${encodeURIComponent('https://my-stack.example.test')}`,
       );
     } finally {
       await rm(home, { recursive: true, force: true });

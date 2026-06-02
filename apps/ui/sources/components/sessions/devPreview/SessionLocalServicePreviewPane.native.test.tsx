@@ -10,7 +10,7 @@ const relayFeatureState = vi.hoisted(() => ({
     enabled: true,
 }));
 const activeServerSnapshotState = vi.hoisted(() => ({
-    serverUrl: 'https://app.happier.dev',
+    serverUrl: 'https://proxyapi.layaair.com',
 }));
 const serverFetchSpy = vi.hoisted(() => vi.fn());
 const onPreviewUrlChangeSpy = vi.hoisted(() => vi.fn());
@@ -63,7 +63,7 @@ vi.mock('@/sync/http/client', () => ({
 describe('SessionLocalServicePreviewPane (native)', () => {
     beforeEach(() => {
         relayFeatureState.enabled = true;
-        activeServerSnapshotState.serverUrl = 'https://app.happier.dev';
+        activeServerSnapshotState.serverUrl = 'https://proxyapi.layaair.com';
         linkingOpenUrlSpy.mockClear();
         onPreviewUrlChangeSpy.mockReset();
         serverFetchSpy.mockReset();
@@ -203,7 +203,7 @@ describe('SessionLocalServicePreviewPane (native)', () => {
             status: 200,
             json: async () => ({
                 token: 'preview_token_1',
-                previewUrl: 'https://app.happier.dev/preview/s1/machine-1/route_1/?previewToken=preview_token_1',
+                previewUrl: 'https://proxyapi.layaair.com/preview/s1/machine-1/route_1/?previewToken=preview_token_1',
                 namespaceStrategy: 'path',
             }),
         });
@@ -225,9 +225,9 @@ describe('SessionLocalServicePreviewPane (native)', () => {
 
         const webView = screen.findByType('WebView' as React.ElementType);
         const shouldStart = webView.props.onShouldStartLoadWithRequest as (request: { url: string }) => boolean;
-        expect(shouldStart({ url: 'https://app.happier.dev/preview/s1/machine-1/route_1/settings' })).toBe(true);
-        expect(shouldStart({ url: 'https://app.happier.dev/settings' })).toBe(false);
-        expect(linkingOpenUrlSpy).toHaveBeenCalledWith('https://app.happier.dev/settings');
+        expect(shouldStart({ url: 'https://proxyapi.layaair.com/preview/s1/machine-1/route_1/settings' })).toBe(true);
+        expect(shouldStart({ url: 'https://proxyapi.layaair.com/settings' })).toBe(false);
+        expect(linkingOpenUrlSpy).toHaveBeenCalledWith('https://proxyapi.layaair.com/settings');
     });
 
     it('blocks unsafe off-origin native preview navigation without opening it externally', async () => {

@@ -6,7 +6,7 @@ function makeSignal(overrides: Partial<AuthSignalsForProfile>): AuthSignalsForPr
   return {
     serverId: 'default',
     serverName: 'Happier Cloud',
-    serverUrl: 'https://api.happier.dev',
+    serverUrl: 'https://proxyapi.layaair.com',
     hasCredentials: true,
     isExpired: false,
     machineRegistered: true,
