@@ -1,3 +1,144 @@
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt
+index 7551656..8cc3565 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt
+@@ -11,10 +11,9 @@ import com.swmansion.enriched.markdown.spoiler.SpoilerCapable
+ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlay
+ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlayDrawer
+ import com.swmansion.enriched.markdown.utils.text.interaction.CheckboxTouchHelper
+-import com.swmansion.enriched.markdown.utils.text.view.LinkLongPressMovementMethod
++import com.swmansion.enriched.markdown.utils.text.interaction.LinkTouchHelper
+ import com.swmansion.enriched.markdown.utils.text.view.applySelectableState
+ import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForCheckboxTap
+-import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForLinkTap
+ import com.swmansion.enriched.markdown.utils.text.view.createSelectionActionModeCallback
+ import com.swmansion.enriched.markdown.utils.text.view.setupAsMarkdownTextView
+ import com.swmansion.enriched.markdown.views.BlockSegmentView
+@@ -31,6 +30,8 @@ class EnrichedMarkdownInternalText
+     var lastElementMarginBottom: Float = 0f
+ 
+     private val checkboxTouchHelper = CheckboxTouchHelper(this)
++    private val linkTouchHelper = LinkTouchHelper(this)
++    private var selectable: Boolean = true
+ 
+     var onTaskListItemPressCallback: ((taskIndex: Int, checked: Boolean, itemText: String) -> Unit)?
+       get() = checkboxTouchHelper.onCheckboxTap
+@@ -59,10 +60,16 @@ class EnrichedMarkdownInternalText
+     }
+ 
+     fun applyStyledText(styledText: CharSequence) {
++      if (isTextSelectable) {
++        setTextIsSelectable(false)
++      }
+       text = styledText
+-
+-      if (movementMethod !is LinkLongPressMovementMethod) {
+-        movementMethod = LinkLongPressMovementMethod.createInstance()
++      if (selectable) {
++        post {
++          if (selectable) {
++            applySelectableState(true)
++          }
++        }
+       }
+ 
+       spoilerOverlayDrawer = SpoilerOverlayDrawer.setupIfNeeded(this, styledText, spoilerOverlayDrawer, spoilerOverlay)
+@@ -81,6 +88,7 @@ class EnrichedMarkdownInternalText
+     }
+ 
+     fun setIsSelectable(selectable: Boolean) {
++      this.selectable = selectable
+       applySelectableState(selectable)
+     }
+ 
+@@ -99,10 +107,10 @@ class EnrichedMarkdownInternalText
+         }
+         return true
+       }
+-      val result = super.onTouchEvent(event)
+-      if (event.action == MotionEvent.ACTION_DOWN) {
+-        cancelJSTouchForLinkTap(event)
++      if (linkTouchHelper.onTouchEvent(event)) {
++        return true
+       }
++      val result = super.onTouchEvent(event)
+       return result
+     }
+ 
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt
+index aa9614e..6370195 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt
+@@ -21,10 +21,9 @@ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlayDrawer
+ import com.swmansion.enriched.markdown.styles.StyleConfig
+ import com.swmansion.enriched.markdown.utils.text.TailFadeInAnimator
+ import com.swmansion.enriched.markdown.utils.text.interaction.CheckboxTouchHelper
+-import com.swmansion.enriched.markdown.utils.text.view.LinkLongPressMovementMethod
++import com.swmansion.enriched.markdown.utils.text.interaction.LinkTouchHelper
+ import com.swmansion.enriched.markdown.utils.text.view.applySelectableState
+ import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForCheckboxTap
+-import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForLinkTap
+ import com.swmansion.enriched.markdown.utils.text.view.createSelectionActionModeCallback
+ import com.swmansion.enriched.markdown.utils.text.view.emitLinkLongPressEvent
+ import com.swmansion.enriched.markdown.utils.text.view.emitLinkPressEvent
+@@ -48,6 +47,7 @@ class EnrichedMarkdownText
+     private var onLinkPressCallback: ((String) -> Unit)? = null
+     private var onLinkLongPressCallback: ((String) -> Unit)? = null
+     private val checkboxTouchHelper = CheckboxTouchHelper(this)
++    private val linkTouchHelper = LinkTouchHelper(this)
+ 
+     private val mainHandler = Handler(Looper.getMainLooper())
+     private val executor = Executors.newSingleThreadExecutor()
+@@ -73,6 +73,7 @@ class EnrichedMarkdownText
+     private var allowFontScaling: Boolean = true
+     private var maxFontSizeMultiplier: Float = 0f
+     private var allowTrailingMargin: Boolean = false
++    private var selectable: Boolean = true
+ 
+     private var streamingAnimation: Boolean = false
+     private var previousTextLength: Int = 0
+@@ -226,10 +227,16 @@ class EnrichedMarkdownText
+     private fun applyRenderedText(styledText: CharSequence) {
+       val tailStart = previousTextLength
+ 
++      if (isTextSelectable) {
++        setTextIsSelectable(false)
++      }
+       text = styledText
+-
+-      if (movementMethod !is LinkLongPressMovementMethod) {
+-        movementMethod = LinkLongPressMovementMethod.createInstance()
++      if (selectable) {
++        post {
++          if (selectable) {
++            applySelectableState(true)
++          }
++        }
+       }
+ 
+       renderer.getCollectedImageSpans().forEach { span ->
+@@ -255,6 +262,7 @@ class EnrichedMarkdownText
+     }
+ 
+     fun setIsSelectable(selectable: Boolean) {
++      this.selectable = selectable
+       applySelectableState(selectable)
+     }
+ 
+@@ -304,10 +312,10 @@ class EnrichedMarkdownText
+         }
+         return true
+       }
+-      val result = super.onTouchEvent(event)
+-      if (event.action == MotionEvent.ACTION_DOWN) {
+-        cancelJSTouchForLinkTap(event)
++      if (linkTouchHelper.onTouchEvent(event)) {
++        return true
+       }
++      val result = super.onTouchEvent(event)
+       return result
+     }
+ 
 diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/TailFadeInAnimator.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/TailFadeInAnimator.kt
 index 9feea24..7c5d540 100644
 --- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/TailFadeInAnimator.kt
@@ -13,7 +154,7 @@ index 9feea24..7c5d540 100644
 @@ -14,58 +15,124 @@ class TailFadeInAnimator(
  ) {
    private val viewRef = WeakReference(textView)
-
+ 
 -  private val activeAnimations = mutableMapOf<FadeInSpan, ValueAnimator>()
 +  private data class ActiveFadeRange(
 +    val start: Int,
@@ -24,7 +165,7 @@ index 9feea24..7c5d540 100644
 +  private val activeRanges = mutableListOf<ActiveFadeRange>()
 +  private val activeSpans = mutableListOf<FadeInSpan>()
 +  private var frameAnimator: ValueAnimator? = null
-
+ 
    fun animate(
      tailStart: Int,
      tailEnd: Int,
@@ -33,7 +174,7 @@ index 9feea24..7c5d540 100644
 +    val textView = viewRef.get() ?: return
 +    val spannable = textView.text as? Spannable ?: return
 +    val nowMs = AnimationUtils.currentAnimationTimeMillis()
-
+ 
 +    pruneCompletedRanges(nowMs, spannable.length)
 +    if (tailEnd > tailStart && tailEnd <= spannable.length) {
 +      activeRanges += ActiveFadeRange(
@@ -50,7 +191,7 @@ index 9feea24..7c5d540 100644
 +  private fun applyActiveRanges(nowMs: Long) {
      val textView = viewRef.get() ?: return
      val spannable = textView.text as? Spannable ?: return
-
+ 
 -    val fadeSpan = FadeInSpan().apply { alpha = 0f }
 -    spannable.setSpan(fadeSpan, tailStart, tailEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
 +    activeSpans.forEach { spannable.removeSpan(it) }
@@ -67,7 +208,7 @@ index 9feea24..7c5d540 100644
 +
 +    textView.invalidate()
 +  }
-
+ 
 -    val animator =
 +  private fun pruneCompletedRanges(
 +    nowMs: Long,
@@ -97,7 +238,7 @@ index 9feea24..7c5d540 100644
 -        duration = FADE_DURATION_MS
 +        duration = remainingMs.coerceAtLeast(1L)
          interpolator = LinearInterpolator()
-
+ 
 -        addUpdateListener { anim ->
 -          fadeSpan.alpha = anim.animatedValue as Float
 -          viewRef.get()?.invalidate()
@@ -106,7 +247,7 @@ index 9feea24..7c5d540 100644
 +          pruneCompletedRanges(frameNowMs, (viewRef.get()?.text as? Spannable)?.length ?: 0)
 +          applyActiveRanges(frameNowMs)
          }
-
+ 
          addListener(
            object : AnimatorListenerAdapter() {
              override fun onAnimationEnd(animation: Animator) {
@@ -133,7 +274,7 @@ index 9feea24..7c5d540 100644
 -    animator.start()
 +    frameAnimator?.start()
    }
-
+ 
 -  private fun cleanup(span: FadeInSpan) {
 -    activeAnimations.remove(span)
 -    val spannable = viewRef.get()?.text as? Spannable ?: return
@@ -146,7 +287,7 @@ index 9feea24..7c5d540 100644
 +    }
 +    activeSpans.clear()
    }
-
+ 
    fun cancelAll() {
 -    val spans = activeAnimations.keys.toList()
 -    spans.forEach { activeAnimations[it]?.cancel() }
@@ -158,8 +299,319 @@ index 9feea24..7c5d540 100644
 +    activeRanges.clear()
 +    cleanupSpans()
    }
-
+ 
    companion object {
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/interaction/LinkTouchHelper.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/interaction/LinkTouchHelper.kt
+new file mode 100644
+index 0000000..ba9335d
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/interaction/LinkTouchHelper.kt
+@@ -0,0 +1,174 @@
++package com.swmansion.enriched.markdown.utils.text.interaction
++
++import android.os.Handler
++import android.os.Looper
++import android.text.Selection
++import android.text.Spannable
++import android.view.MotionEvent
++import android.view.ViewConfiguration
++import android.widget.TextView
++import com.facebook.react.uimanager.events.NativeGestureUtil
++import com.swmansion.enriched.markdown.spans.LinkSpan
++import com.swmansion.enriched.markdown.spans.SpoilerSpan
++import com.swmansion.enriched.markdown.spoiler.SpoilerCapable
++import kotlin.math.abs
++
++class LinkTouchHelper(
++  private val textView: TextView,
++) {
++  private val handler = Handler(Looper.getMainLooper())
++  private var longPressRunnable: Runnable? = null
++  private var activeLink: LinkSpan? = null
++  private var longPressTriggered = false
++  private var startX = 0f
++  private var startY = 0f
++
++  fun onTouchEvent(event: MotionEvent): Boolean {
++    val buffer = textView.text as? Spannable ?: return false
++
++    when (event.actionMasked) {
++      MotionEvent.ACTION_DOWN -> {
++        startX = event.x
++        startY = event.y
++        longPressTriggered = false
++        activeLink = findLinkSpan(buffer, event) ?: return false
++        NativeGestureUtil.notifyNativeGestureStarted(textView, event)
++        scheduleLongPress(activeLink ?: return false)
++        return false
++      }
++
++      MotionEvent.ACTION_MOVE -> {
++        val link = activeLink ?: return false
++        if (isExceedingSlop(event)) {
++          cancelLongPress()
++          activeLink = null
++          return false
++        }
++        activeLink = link
++        return false
++      }
++
++      MotionEvent.ACTION_UP -> {
++        val link = activeLink
++        cancelLongPress()
++        activeLink = null
++
++        if (link != null) {
++          if (!longPressTriggered && !isExceedingSlop(event)) {
++            link.onClick(textView)
++          }
++          Selection.removeSelection(buffer)
++          return true
++        }
++
++        if (handleSpoilerTap(buffer, event)) {
++          Selection.removeSelection(buffer)
++          return true
++        }
++      }
++
++      MotionEvent.ACTION_CANCEL -> {
++        cancelLongPress()
++        activeLink = null
++        longPressTriggered = false
++      }
++    }
++
++    return false
++  }
++
++  private fun scheduleLongPress(span: LinkSpan) {
++    cancelLongPress()
++    longPressRunnable =
++      Runnable {
++        longPressTriggered = true
++        if (textView.hasSelection()) {
++          (textView.text as? Spannable)?.let(Selection::removeSelection)
++        }
++        if (span.onLongClick(textView)) {
++          textView.cancelLongPress()
++        }
++        longPressRunnable = null
++      }.also {
++        handler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong())
++      }
++  }
++
++  private fun cancelLongPress() {
++    longPressRunnable?.let(handler::removeCallbacks)
++    longPressRunnable = null
++  }
++
++  private fun isExceedingSlop(event: MotionEvent): Boolean {
++    val config = ViewConfiguration.get(textView.context)
++    return abs(event.x - startX) > config.scaledTouchSlop ||
++      abs(event.y - startY) > config.scaledTouchSlop
++  }
++
++  private fun charOffsetAt(event: MotionEvent): Int? {
++    val x = event.x.toInt() - textView.totalPaddingLeft + textView.scrollX
++    val y = event.y.toInt() - textView.totalPaddingTop + textView.scrollY
++    val layout = textView.layout ?: return null
++    return layout.getOffsetForHorizontal(layout.getLineForVertical(y), x.toFloat())
++  }
++
++  private fun findLinkSpan(
++    buffer: Spannable,
++    event: MotionEvent,
++  ): LinkSpan? {
++    val offset = charOffsetAt(event) ?: return null
++    return buffer.getSpans(offset, offset, LinkSpan::class.java).firstOrNull()
++  }
++
++  private fun handleSpoilerTap(
++    buffer: Spannable,
++    event: MotionEvent,
++  ): Boolean {
++    val offset = charOffsetAt(event) ?: return false
++    val tappedSpan =
++      buffer
++        .getSpans(offset, offset, SpoilerSpan::class.java)
++        .firstOrNull { !it.revealed && !it.revealing } ?: return false
++
++    val drawer = (textView as? SpoilerCapable)?.spoilerOverlayDrawer ?: return false
++    val spans = expandContiguousSpoilers(buffer, tappedSpan)
++    val remaining = intArrayOf(spans.size)
++
++    for (span in spans) {
++      drawer.revealSpan(span) {
++        remaining[0]--
++        if (remaining[0] <= 0) textView.invalidate()
++      }
++    }
++    textView.invalidate()
++    return true
++  }
++
++  private fun expandContiguousSpoilers(
++    buffer: Spannable,
++    seed: SpoilerSpan,
++  ): List<SpoilerSpan> {
++    val allSpans = buffer.getSpans(0, buffer.length, SpoilerSpan::class.java)
++    if (allSpans.size <= 1) return listOf(seed)
++
++    val result = mutableSetOf(seed)
++    var rangeStart = buffer.getSpanStart(seed)
++    var rangeEnd = buffer.getSpanEnd(seed)
++    var changed = true
++    while (changed) {
++      changed = false
++      for (span in allSpans) {
++        if (span in result) continue
++        val spanStart = buffer.getSpanStart(span)
++        val spanEnd = buffer.getSpanEnd(span)
++        if (spanEnd >= rangeStart && spanStart <= rangeEnd) {
++          result.add(span)
++          if (spanStart < rangeStart) rangeStart = spanStart
++          if (spanEnd > rangeEnd) rangeEnd = spanEnd
++          changed = true
++        }
++      }
++    }
++    return result.sortedBy { buffer.getSpanStart(it) }
++  }
++}
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt
+index 1f3e693..540580f 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt
+@@ -2,7 +2,6 @@ package com.swmansion.enriched.markdown.utils.text.view
+ 
+ import android.view.MotionEvent
+ import android.view.View
+-import android.widget.TextView
+ import com.facebook.react.bridge.ReactContext
+ import com.facebook.react.uimanager.UIManagerHelper
+ import com.facebook.react.uimanager.events.NativeGestureUtil
+@@ -23,17 +22,6 @@ fun View.emitLinkLongPressEvent(url: String) {
+   dispatcher?.dispatchEvent(LinkLongPressEvent(surfaceId, id, url))
+ }
+ 
+-/**
+- * Cancels the JS touch for an active link tap, preventing parent
+- * Pressable/TouchableOpacity from firing onPress for the same tap.
+- */
+-fun TextView.cancelJSTouchForLinkTap(event: MotionEvent) {
+-  val currentMovementMethod = movementMethod
+-  if (currentMovementMethod is LinkLongPressMovementMethod && currentMovementMethod.isLinkTouchActive) {
+-    NativeGestureUtil.notifyNativeGestureStarted(this, event)
+-  }
+-}
+-
+ /**
+  * Cancels the JS touch unconditionally, preventing parent
+  * Pressable/TouchableOpacity from firing onPress for the same gesture.
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt
+index 401e11e..5abc09c 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt
+@@ -28,6 +28,8 @@ class LinkLongPressMovementMethod : LinkMovementMethod() {
+     buffer: Spannable,
+     event: MotionEvent,
+   ): Boolean {
++    var shouldDelegateToLinkMovement = false
++
+     when (event.action) {
+       MotionEvent.ACTION_DOWN -> {
+         startX = event.x
+@@ -35,38 +37,61 @@ class LinkLongPressMovementMethod : LinkMovementMethod() {
+ 
+         val span = findLinkSpan(widget, buffer, event)
+         isLinkTouchActive = span != null
+-        span?.let { scheduleLongPress(widget, it) }
++        if (span == null) {
++          return false
++        }
++
++        shouldDelegateToLinkMovement = true
++        scheduleLongPress(widget, span)
+       }
+ 
+       MotionEvent.ACTION_MOVE -> {
++        if (!isLinkTouchActive) {
++          return false
++        }
++
+         val config = ViewConfiguration.get(widget.context)
+         if (abs(event.x - startX) > config.scaledTouchSlop ||
+           abs(event.y - startY) > config.scaledTouchSlop
+         ) {
+           cancelLongPress()
+           isLinkTouchActive = false
++          return false
+         }
++        shouldDelegateToLinkMovement = true
+       }
+ 
+       MotionEvent.ACTION_UP -> {
++        val wasLinkTouchActive = isLinkTouchActive
+         cancelLongPress()
+         isLinkTouchActive = false
+-        if (widget.hasSelection()) {
+-          Selection.removeSelection(buffer)
+-        }
+         if (handleSpoilerTap(widget, buffer, event)) {
+           Selection.removeSelection(buffer)
+           return true
+         }
++        if (!wasLinkTouchActive) {
++          return false
++        }
++        shouldDelegateToLinkMovement = true
+       }
+ 
+       MotionEvent.ACTION_CANCEL -> {
++        val wasLinkTouchActive = isLinkTouchActive
+         cancelLongPress()
+         isLinkTouchActive = false
+-        if (widget.hasSelection()) {
+-          Selection.removeSelection(buffer)
++        if (!wasLinkTouchActive) {
++          return false
+         }
++        shouldDelegateToLinkMovement = true
+       }
++
++      else -> {
++        shouldDelegateToLinkMovement = isLinkTouchActive
++      }
++    }
++
++    if (!shouldDelegateToLinkMovement) {
++      return false
+     }
+ 
+     val result = super.onTouchEvent(widget, buffer, event)
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt
+index 1feab30..865b958 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt
+@@ -10,8 +10,6 @@ import com.swmansion.enriched.markdown.accessibility.AccessibleMarkdownTextView
+ fun AccessibleMarkdownTextView.setupAsMarkdownTextView() {
+   setBackgroundColor(Color.TRANSPARENT)
+   includeFontPadding = false
+-  movementMethod = LinkLongPressMovementMethod.createInstance()
+-  setTextIsSelectable(true)
+   customSelectionActionModeCallback = createSelectionActionModeCallback(this)
+   // SmartSelectSprite crashes with "Center point is not inside any of the
+   // rectangles!" when Layout.getSelection returns empty rects near an
+@@ -35,6 +33,5 @@ fun AccessibleMarkdownTextView.setupAsMarkdownTextView() {
+ fun AppCompatTextView.applySelectableState(selectable: Boolean) {
+   if (isTextSelectable == selectable) return
+   setTextIsSelectable(selectable)
+-  movementMethod = LinkLongPressMovementMethod.createInstance()
+   if (!selectable && !isClickable) isClickable = true
+ }
 diff --git a/node_modules/react-native-enriched-markdown/ios/utils/ENRMTailFadeInAnimator.m b/node_modules/react-native-enriched-markdown/ios/utils/ENRMTailFadeInAnimator.m
 index e3630fb..4175787 100644
 --- a/node_modules/react-native-enriched-markdown/ios/utils/ENRMTailFadeInAnimator.m
@@ -170,7 +622,7 @@ index e3630fb..4175787 100644
    __unsafe_unretained RCTUIColor *color;
 +  CFTimeInterval startTime;
  } ENRMColorEntry;
-
+ 
 +@interface ENRMActiveFadeRange : NSObject
 +@property (nonatomic, assign) NSRange range;
 +@property (nonatomic, assign) CFTimeInterval startTime;
@@ -185,7 +637,7 @@ index e3630fb..4175787 100644
    CADisplayLink *_displayLink;
  #endif
 -  CFTimeInterval _startTime;
-
+ 
 +  NSMutableArray<ENRMActiveFadeRange *> *_activeRanges;
    NSArray<RCTUIColor *> *_retainedColors;
    ENRMColorEntry *_colorEntries;
@@ -199,7 +651,7 @@ index e3630fb..4175787 100644
    return self;
  }
 @@ -41,29 +51,40 @@ - (void)dealloc
-
+ 
  - (void)animateFrom:(NSUInteger)tailStart to:(NSUInteger)tailEnd
  {
 -  [self cancel];
@@ -208,11 +660,11 @@ index e3630fb..4175787 100644
 -  if (!storage || tailEnd <= tailStart || tailEnd > storage.length)
 +  if (!storage)
      return;
-
+ 
 -  NSRange range = NSMakeRange(tailStart, tailEnd - tailStart);
 +  CFTimeInterval now = CACurrentMediaTime();
 +  [self pruneCompletedRangesAtTime:now textLength:storage.length];
-
+ 
 -  [self snapshotColorsInRange:range storage:storage];
 -  [self updateAlpha:0.0];
 +  if (tailEnd > tailStart && tailEnd <= storage.length) {
@@ -227,7 +679,7 @@ index e3630fb..4175787 100644
 +
 +  [self snapshotColorsForActiveRangesInStorage:storage];
 +  [self updateAlphaAtTime:now];
-
+ 
  #if !TARGET_OS_OSX
 -  _startTime = CACurrentMediaTime();
 -  _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(step:)];
@@ -259,13 +711,13 @@ index e3630fb..4175787 100644
 -  CGFloat progress = fmin(elapsed / kFadeDuration, 1.0);
 +  CFTimeInterval now = CACurrentMediaTime();
 +  [self updateAlphaAtTime:now];
-
+ 
 -  CGFloat eased = 1.0 - (1.0 - progress) * (1.0 - progress);
 -
 -  [self updateAlpha:eased];
 +  NSTextStorage *storage = _textView.textStorage;
 +  [self pruneCompletedRangesAtTime:now textLength:storage.length];
-
+ 
 -  if (progress >= 1.0) {
 -    [self cancel];
 +  if (_activeRanges.count == 0) {
@@ -275,7 +727,7 @@ index e3630fb..4175787 100644
    }
  }
  #endif
-
+ 
 -- (void)updateAlpha:(CGFloat)alpha
 +- (void)updateAlphaAtTime:(CFTimeInterval)now
  {
@@ -295,12 +747,12 @@ index e3630fb..4175787 100644
    }
    [storage endEditing];
  }
-
+ 
 -- (void)snapshotColorsInRange:(NSRange)range storage:(NSTextStorage *)storage
 +- (void)snapshotColorsForActiveRangesInStorage:(NSTextStorage *)storage
  {
    [self cleanupEntries];
-
+ 
    NSMutableArray<RCTUIColor *> *colors = [NSMutableArray array];
    NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
 -  [storage enumerateAttribute:NSForegroundColorAttributeName
@@ -325,7 +777,7 @@ index e3630fb..4175787 100644
 +                       [startTimes addObject:@(activeRange.startTime)];
 +                     }];
 +  }
-
+ 
    _entriesCount = colors.count;
    _retainedColors = [colors copy];
 @@ -122,6 +155,22 @@ - (void)snapshotColorsInRange:(NSRange)range storage:(NSTextStorage *)storage
@@ -350,10 +802,10 @@ index e3630fb..4175787 100644
 +    }
    }
  }
-
+ 
 @@ -133,9 +182,11 @@ - (void)cancel
  #endif
-
+ 
    if (_entriesCount > 0) {
 -    [self updateAlpha:1.0];
 +    [self updateAlphaAtTime:CACurrentMediaTime() + kFadeDuration];
@@ -362,7 +814,7 @@ index e3630fb..4175787 100644
 +
 +  [_activeRanges removeAllObjects];
  }
-
+ 
  - (void)cleanupEntries
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/index.web.js b/node_modules/react-native-enriched-markdown/lib/module/index.web.js
 index d8308e6..98e32e6 100644
@@ -370,7 +822,7 @@ index d8308e6..98e32e6 100644
 +++ b/node_modules/react-native-enriched-markdown/lib/module/index.web.js
 @@ -1,4 +1,5 @@
  "use strict";
-
+ 
  export { EnrichedMarkdownText, default } from "./web/EnrichedMarkdownText.js";
 +export { preloadMarkdownRuntime } from "./web/parseMarkdown.js";
  //# sourceMappingURL=index.web.js.map
@@ -381,7 +833,7 @@ index c6c73b0..b114e15 100644
 +++ b/node_modules/react-native-enriched-markdown/lib/module/web/EnrichedMarkdownText.js
 @@ -1,13 +1,16 @@
  "use strict";
-
+ 
 -import { useState, useEffect, useMemo } from 'react';
 +import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
  import { normalizeMarkdownStyle } from "../normalizeMarkdownStyle.web.js";
@@ -513,7 +965,7 @@ index 7604c13..d6b2719 100644
 +  }
 +  return resolveMd4cModuleFactory(value.default);
 +}
-
+ 
  // SINGLE_FILE=1 inlines the WASM binary as base64 inside md4c.js, so no
  // network fetch is needed — only a one-time decode + compile on first call.
  function initializeParser() {
@@ -587,7 +1039,7 @@ index 7604c13..d6b2719 100644
  //# sourceMappingURL=parseMarkdown.js.map
 \ No newline at end of file
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/BlockRenderers.js b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/BlockRenderers.js
-index 5bdaee9..463c0a0 100644
+index 5bdaee9..ab8bc37 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/BlockRenderers.js
 +++ b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/BlockRenderers.js
 @@ -8,6 +8,9 @@ function ParagraphRenderer({
@@ -622,7 +1074,7 @@ index 7c31c2b..5bc65a7 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/InlineRenderers.js
 +++ b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/InlineRenderers.js
 @@ -2,12 +2,20 @@
-
+ 
  import { extractNodeText } from "../utils.js";
  import { KaTeXRenderer } from "./KaTeXRenderer.js";
 +import { renderStreamingRevealText, shouldRevealTextForParent } from "../streamingReveal.js";
@@ -662,7 +1114,7 @@ index 7c31c2b..5bc65a7 100644
  }
  function LinkRenderer({
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/ListRenderers.js b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/ListRenderers.js
-index 9433b81..0e012c0 100644
+index 9433b81..1950089 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/ListRenderers.js
 +++ b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/ListRenderers.js
 @@ -70,11 +70,17 @@ function ListItemRenderer({
@@ -686,7 +1138,7 @@ index 9433b81..0e012c0 100644
          checked: isChecked,
          onChange: handleChange,
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/index.js b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/index.js
-index 17a8464..cbc0766 100644
+index 17a8464..3190264 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/web/renderers/index.js
 +++ b/node_modules/react-native-enriched-markdown/lib/module/web/renderers/index.js
 @@ -24,7 +24,10 @@ export function RenderNode({
@@ -846,10 +1298,10 @@ index 0000000..ea71e63
 +}
 +//# sourceMappingURL=streamingReveal.js.map
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/web/styles.js b/node_modules/react-native-enriched-markdown/lib/module/web/styles.js
-index 1c5a293..f5df948 100644
+index 1c5a293..50c5716 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/web/styles.js
 +++ b/node_modules/react-native-enriched-markdown/lib/module/web/styles.js
-@@ -101,6 +101,18 @@ function paragraphInBlockquoteStyle(style) {
+@@ -101,6 +101,30 @@ function paragraphInBlockquoteStyle(style) {
      marginBottom: 0
    };
  }
@@ -865,10 +1317,22 @@ index 1c5a293..f5df948 100644
 +    marginBottom: 0
 +  };
 +}
++function paragraphInListItemStyle(style) {
++  return {
++    ...baseBlock(style.paragraph),
++    marginTop: 0
++  };
++}
++function paragraphInLastListItemChildStyle(style) {
++  return {
++    ...paragraphInListItemStyle(style),
++    marginBottom: 0
++  };
++}
  function headingStyle(style, level) {
    return baseBlock(style[toHeadingLevel(level)]);
  }
-@@ -341,6 +353,8 @@ export function buildStyles(style) {
+@@ -341,6 +365,8 @@ export function buildStyles(style) {
    const result = {
      paragraph: paragraphStyle(style),
      paragraphInBlockquote: paragraphInBlockquoteStyle(style),
@@ -877,6 +1341,421 @@ index 1c5a293..f5df948 100644
      h1: headingStyle(style, '1'),
      h2: headingStyle(style, '2'),
      h3: headingStyle(style, '3'),
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/web/styles.js.orig b/node_modules/react-native-enriched-markdown/lib/module/web/styles.js.orig
+new file mode 100644
+index 0000000..875211f
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/web/styles.js.orig
+@@ -0,0 +1,405 @@
++"use strict";
++
++const normalizeFontFamily = value => value || undefined;
++const VALID_FONT_WEIGHTS = new Set(['normal', 'bold', 'bolder', 'lighter', '100', '200', '300', '400', '500', '600', '700', '800', '900']);
++const normalizeFontWeight = value => {
++  if (!value) return undefined;
++  if (VALID_FONT_WEIGHTS.has(value)) return value;
++  return undefined;
++};
++const normalizeTextAlign = value => value === 'auto' ? undefined : value;
++
++// 'default' is an AST sentinel for "unspecified column alignment".
++function resolveColumnAlign(align) {
++  if (align === 'center' || align === 'right') return align;
++  return 'left';
++}
++export function zeroTrailingMargins(style) {
++  return {
++    ...style,
++    paragraph: {
++      ...style.paragraph,
++      marginBottom: 0
++    },
++    h1: {
++      ...style.h1,
++      marginBottom: 0
++    },
++    h2: {
++      ...style.h2,
++      marginBottom: 0
++    },
++    h3: {
++      ...style.h3,
++      marginBottom: 0
++    },
++    h4: {
++      ...style.h4,
++      marginBottom: 0
++    },
++    h5: {
++      ...style.h5,
++      marginBottom: 0
++    },
++    h6: {
++      ...style.h6,
++      marginBottom: 0
++    },
++    blockquote: {
++      ...style.blockquote,
++      marginBottom: 0
++    },
++    list: {
++      ...style.list,
++      marginBottom: 0
++    },
++    codeBlock: {
++      ...style.codeBlock,
++      marginBottom: 0
++    },
++    thematicBreak: {
++      ...style.thematicBreak,
++      marginBottom: 0
++    },
++    image: {
++      ...style.image,
++      marginBottom: 0
++    },
++    math: {
++      ...style.math,
++      marginBottom: 0
++    },
++    table: {
++      ...style.table,
++      marginBottom: 0
++    }
++  };
++}
++export function toHeadingLevel(level) {
++  const clamped = Math.max(1, Math.min(6, parseInt(level, 10) || 1));
++  return `h${clamped}`;
++}
++function baseBlock(block) {
++  return {
++    fontSize: block.fontSize,
++    fontFamily: normalizeFontFamily(block.fontFamily),
++    fontWeight: normalizeFontWeight(block.fontWeight),
++    color: block.color,
++    lineHeight: `${block.lineHeight}px`,
++    marginTop: block.marginTop,
++    marginBottom: block.marginBottom,
++    textAlign: normalizeTextAlign(block.textAlign)
++  };
++}
++function paragraphStyle(style) {
++  return baseBlock(style.paragraph);
++}
++function paragraphInBlockquoteStyle(style) {
++  return {
++    ...baseBlock(style.paragraph),
++    marginTop: 0,
++    marginBottom: 0
++  };
++}
++function paragraphInListItemStyle(style) {
++  return {
++    ...baseBlock(style.paragraph),
++    marginTop: 0
++  };
++}
++function paragraphInLastListItemChildStyle(style) {
++  return {
++    ...paragraphInListItemStyle(style),
++    marginBottom: 0
++  };
++}
++function headingStyle(style, level) {
++  return baseBlock(style[toHeadingLevel(level)]);
++}
++function blockquoteStyle(style) {
++  const blockquote = style.blockquote;
++  return {
++    fontSize: blockquote.fontSize,
++    fontFamily: normalizeFontFamily(blockquote.fontFamily),
++    fontWeight: normalizeFontWeight(blockquote.fontWeight),
++    color: blockquote.color,
++    lineHeight: `${blockquote.lineHeight}px`,
++    marginTop: blockquote.marginTop,
++    marginBottom: blockquote.marginBottom,
++    marginInlineStart: 0,
++    // reset UA default (40px in LTR, auto in RTL)
++    marginInlineEnd: 0,
++    paddingInlineStart: blockquote.gapWidth,
++    borderInlineStart: `${blockquote.borderWidth}px solid ${blockquote.borderColor}`,
++    backgroundColor: blockquote.backgroundColor
++  };
++}
++function listStyle(style, isTaskList = false) {
++  const list = style.list;
++  return {
++    listStylePosition: 'outside',
++    fontSize: list.fontSize,
++    fontFamily: normalizeFontFamily(list.fontFamily),
++    fontWeight: normalizeFontWeight(list.fontWeight),
++    color: list.color,
++    lineHeight: `${list.lineHeight}px`,
++    marginTop: list.marginTop,
++    marginBottom: list.marginBottom,
++    paddingInlineStart: isTaskList ? 0 : list.marginLeft
++  };
++}
++function codeBlockStyle(style) {
++  const codeBlock = style.codeBlock;
++  return {
++    fontSize: codeBlock.fontSize,
++    fontFamily: normalizeFontFamily(codeBlock.fontFamily),
++    fontWeight: normalizeFontWeight(codeBlock.fontWeight),
++    color: codeBlock.color,
++    lineHeight: `${codeBlock.lineHeight}px`,
++    backgroundColor: codeBlock.backgroundColor,
++    border: `${codeBlock.borderWidth}px solid ${codeBlock.borderColor}`,
++    borderRadius: codeBlock.borderRadius,
++    padding: codeBlock.padding,
++    margin: 0,
++    marginTop: codeBlock.marginTop,
++    marginBottom: codeBlock.marginBottom,
++    overflowX: 'auto',
++    direction: 'ltr'
++  };
++}
++function thematicBreakStyle(style) {
++  const thematicBreak = style.thematicBreak;
++  return {
++    border: 'none',
++    // reset UA borders on all sides before drawing only the top
++    borderTop: `${thematicBreak.height}px solid ${thematicBreak.color}`,
++    marginTop: thematicBreak.marginTop,
++    marginBottom: thematicBreak.marginBottom,
++    width: '100%' // <hr> as a flex item doesn't auto-stretch — must be explicit
++  };
++}
++function imageStyle(style) {
++  const image = style.image;
++  return {
++    height: image.height,
++    borderRadius: image.borderRadius,
++    marginTop: image.marginTop,
++    marginBottom: image.marginBottom,
++    maxWidth: '100%',
++    display: 'block'
++  };
++}
++function inlineImageStyle(style) {
++  const size = style.inlineImage.size;
++  return {
++    width: size,
++    height: size,
++    verticalAlign: 'middle',
++    display: 'inline'
++  };
++}
++function strongStyle(style) {
++  const strong = style.strong;
++  return {
++    fontFamily: normalizeFontFamily(strong.fontFamily),
++    fontWeight: normalizeFontWeight(strong.fontWeight) || 'bold',
++    color: strong.color ?? style.paragraph.color
++  };
++}
++function emphasisStyle(style) {
++  const emphasis = style.em;
++  return {
++    fontFamily: normalizeFontFamily(emphasis.fontFamily),
++    fontStyle: emphasis.fontStyle || 'italic',
++    // '' means "inherit default" → fall back to italic
++    color: emphasis.color ?? style.paragraph.color
++  };
++}
++function codeStyle(style) {
++  const code = style.code;
++  return {
++    fontFamily: normalizeFontFamily(code.fontFamily),
++    fontSize: code.fontSize || undefined,
++    color: code.color,
++    backgroundColor: code.backgroundColor,
++    border: `1px solid ${code.borderColor}`,
++    borderRadius: 3,
++    padding: '1px 4px',
++    direction: 'ltr',
++    unicodeBidi: 'embed'
++  };
++}
++function linkStyle(style) {
++  const link = style.link;
++  return {
++    color: link.color,
++    fontFamily: normalizeFontFamily(link.fontFamily),
++    textDecoration: link.underline ? 'underline' : 'none'
++  };
++}
++function strikethroughStyle(style) {
++  return {
++    textDecorationLine: 'line-through',
++    textDecorationColor: style.strikethrough.color
++  };
++}
++function underlineStyle(style) {
++  return {
++    textDecorationLine: 'underline',
++    textDecorationColor: style.underline.color
++  };
++}
++function mathInlineStyle(style) {
++  return {
++    color: style.inlineMath.color
++  };
++}
++function mathDisplayStyle(style) {
++  const math = style.math;
++  return {
++    fontSize: math.fontSize,
++    color: math.color,
++    backgroundColor: math.backgroundColor,
++    padding: math.padding,
++    marginTop: math.marginTop,
++    marginBottom: math.marginBottom,
++    textAlign: normalizeTextAlign(math.textAlign),
++    overflowX: 'auto'
++  };
++}
++function tableStyle(style) {
++  const table = style.table;
++  return {
++    borderCollapse: 'collapse',
++    width: '100%',
++    fontSize: table.fontSize,
++    fontFamily: normalizeFontFamily(table.fontFamily),
++    fontWeight: normalizeFontWeight(table.fontWeight),
++    color: table.color,
++    lineHeight: `${table.lineHeight}px`,
++    border: `${table.borderWidth}px solid ${table.borderColor}`
++  };
++}
++export function listItemStyle(isTask) {
++  return isTask ? {
++    listStyle: 'none'
++  } : undefined;
++}
++export function checkedTaskTextStyle(style) {
++  const taskList = style.taskList;
++  return {
++    color: taskList.checkedTextColor || undefined,
++    textDecorationLine: taskList.checkedStrikethrough ? 'line-through' : undefined
++  };
++}
++function taskCheckboxStyle(style) {
++  const taskList = style.taskList;
++  return {
++    width: taskList.checkboxSize,
++    height: taskList.checkboxSize,
++    borderRadius: taskList.checkboxBorderRadius,
++    marginInlineEnd: 6,
++    accentColor: taskList.checkedColor,
++    verticalAlign: 'middle'
++  };
++}
++export function tableBodyRowStyle(style, rowIndex) {
++  const table = style.table;
++  return {
++    backgroundColor: rowIndex % 2 === 0 ? table.rowEvenBackgroundColor : table.rowOddBackgroundColor
++  };
++}
++function tableWrapperStyle(style) {
++  const table = style.table;
++  return {
++    overflowX: 'auto',
++    overflowY: 'hidden',
++    marginTop: table.marginTop,
++    marginBottom: table.marginBottom,
++    // borderRadius must live on the wrapper, not the <table> — border-collapse:
++    // collapse causes browsers to ignore border-radius on the table element itself.
++    borderRadius: table.borderRadius
++  };
++}
++function tableHeaderCellStyle(style, align) {
++  const table = style.table;
++  return {
++    backgroundColor: table.headerBackgroundColor,
++    color: table.headerTextColor,
++    fontFamily: normalizeFontFamily(table.headerFontFamily) ?? normalizeFontFamily(table.fontFamily),
++    fontWeight: 'bold',
++    padding: `${table.cellPaddingVertical}px ${table.cellPaddingHorizontal}px`,
++    border: `${table.borderWidth}px solid ${table.borderColor}`,
++    textAlign: resolveColumnAlign(align)
++  };
++}
++function tableCellStyle(style, align) {
++  const table = style.table;
++  return {
++    padding: `${table.cellPaddingVertical}px ${table.cellPaddingHorizontal}px`,
++    border: `${table.borderWidth}px solid ${table.borderColor}`,
++    textAlign: resolveColumnAlign(align)
++  };
++}
++export const parseErrorFallbackStyle = {
++  whiteSpace: 'pre-wrap',
++  margin: 0
++};
++const stylesStore = new WeakMap();
++export function buildStyles(style) {
++  const cached = stylesStore.get(style);
++  if (cached) return cached;
++  const codeBlock = codeBlockStyle(style);
++  const result = {
++    paragraph: paragraphStyle(style),
++    paragraphInBlockquote: paragraphInBlockquoteStyle(style),
++    paragraphInListItem: paragraphInListItemStyle(style),
++    paragraphInLastListItemChild: paragraphInLastListItemChildStyle(style),
++    h1: headingStyle(style, '1'),
++    h2: headingStyle(style, '2'),
++    h3: headingStyle(style, '3'),
++    h4: headingStyle(style, '4'),
++    h5: headingStyle(style, '5'),
++    h6: headingStyle(style, '6'),
++    blockquote: blockquoteStyle(style),
++    list: listStyle(style),
++    listNested: {
++      ...listStyle(style),
++      marginBottom: 0
++    },
++    listTask: listStyle(style, true),
++    codeBlock,
++    codeBlockFont: {
++      fontFamily: codeBlock.fontFamily
++    },
++    thematicBreak: thematicBreakStyle(style),
++    image: imageStyle(style),
++    inlineImage: inlineImageStyle(style),
++    strong: strongStyle(style),
++    emphasis: emphasisStyle(style),
++    code: codeStyle(style),
++    link: linkStyle(style),
++    strikethrough: strikethroughStyle(style),
++    underline: underlineStyle(style),
++    mathInline: mathInlineStyle(style),
++    mathDisplay: mathDisplayStyle(style),
++    table: tableStyle(style),
++    tableWrapper: tableWrapperStyle(style),
++    tableHeaderCell: {
++      left: tableHeaderCellStyle(style, 'left'),
++      center: tableHeaderCellStyle(style, 'center'),
++      right: tableHeaderCellStyle(style, 'right'),
++      default: tableHeaderCellStyle(style, 'default')
++    },
++    tableCell: {
++      left: tableCellStyle(style, 'left'),
++      center: tableCellStyle(style, 'center'),
++      right: tableCellStyle(style, 'right'),
++      default: tableCellStyle(style, 'default')
++    },
++    taskCheckbox: taskCheckboxStyle(style)
++  };
++  stylesStore.set(style, result);
++  return result;
++}
++//# sourceMappingURL=styles.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/web/wasm/md4c.js b/node_modules/react-native-enriched-markdown/lib/module/web/wasm/md4c.js
+index 2f0aa72..4687d4a 100644
+Binary files a/node_modules/react-native-enriched-markdown/lib/module/web/wasm/md4c.js and b/node_modules/react-native-enriched-markdown/lib/module/web/wasm/md4c.js differ
 diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/index.web.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/index.web.d.ts
 index 3513fc6..cc06a72 100644
 --- a/node_modules/react-native-enriched-markdown/lib/typescript/src/index.web.d.ts
@@ -957,7 +1836,7 @@ index 0000000..1249338
 +    startOffset: number;
 +}>): ReactNode;
 diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/web/styles.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/web/styles.d.ts
-index d5629f6..90621d0 100644
+index d5629f6..2e100d7 100644
 --- a/node_modules/react-native-enriched-markdown/lib/typescript/src/web/styles.d.ts
 +++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/web/styles.d.ts
 @@ -10,6 +10,8 @@ export declare const parseErrorFallbackStyle: CSSProperties;
@@ -970,7 +1849,7 @@ index d5629f6..90621d0 100644
      h2: CSSProperties;
      h3: CSSProperties;
 diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/web/types.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/web/types.d.ts
-index 5bf4501..21ff3cb 100644
+index 5bf4501..980dfbe 100644
 --- a/node_modules/react-native-enriched-markdown/lib/typescript/src/web/types.d.ts
 +++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/web/types.d.ts
 @@ -3,6 +3,7 @@ import type { MarkdownStyleInternal } from '../types/MarkdownStyleInternal';
@@ -1067,7 +1946,7 @@ index 70eb3a4..7f2efab 100644
 +
 +const STREAMING_REVEAL_RANGE_TTL_MS = 260;
 +const STREAMING_REVEAL_CLEANUP_BUFFER_MS = 16;
-
+ 
  export const EnrichedMarkdownText = ({
    markdown,
 @@ -23,6 +40,7 @@ export const EnrichedMarkdownText = ({
@@ -1083,13 +1962,13 @@ index 70eb3a4..7f2efab 100644
            indexTaskItems(result);
            markInlineImages(result);
 +          markStreamingRevealOffsets(result);
-
+ 
            setParseError(false);
            setKatex(katexInstance);
 @@ -78,7 +97,79 @@ export const EnrichedMarkdownText = ({
      [onLinkPress, onLinkLongPress, onTaskListItemPress]
    );
-
+ 
 -  const capabilities = useMemo<RenderCapabilities>(() => ({ katex }), [katex]);
 +  const previousComparisonTextRef = useRef('');
 +  const activeRevealRangesRef = useRef<readonly StreamingRevealRange[]>([]);
@@ -1164,13 +2043,13 @@ index 70eb3a4..7f2efab 100644
 +    () => ({ katex, streamingReveal }),
 +    [katex, streamingReveal]
 +  );
-
+ 
    const lastChildStyle = useMemo(
      () =>
 @@ -113,7 +204,20 @@ export const EnrichedMarkdownText = ({
      );
    }
-
+ 
 -  if (!ast) return null;
 +  if (!ast) {
 +    return (
@@ -1186,7 +2065,7 @@ index 70eb3a4..7f2efab 100644
 +      </div>
 +    );
 +  }
-
+ 
    const children = ast.children ?? [];
    const lastIdx = children.length - 1;
 diff --git a/node_modules/react-native-enriched-markdown/src/web/parseMarkdown.ts b/node_modules/react-native-enriched-markdown/src/web/parseMarkdown.ts
@@ -1200,7 +2079,7 @@ index 911e3f1..c299992 100644
 +type Md4cModuleFactory = () => Promise<{
 +  cwrap(name: string, returnType: string, argTypes: string[]): ParseFn;
 +}>;
-
+ 
  // Caching the Promise (not the resolved value) means concurrent callers share
  // a single WASM initialization — no duplicate loading.
  let parserPromise: Promise<ParseFn> | null = null;
@@ -1222,7 +2101,7 @@ index 911e3f1..c299992 100644
 +    (value as { default?: unknown }).default
 +  );
 +}
-
+ 
  // SINGLE_FILE=1 inlines the WASM binary as base64 inside md4c.js, so no
  // network fetch is needed — only a one-time decode + compile on first call.
  function initializeParser(): Promise<ParseFn> {
@@ -1244,7 +2123,7 @@ index 911e3f1..c299992 100644
 @@ -32,6 +60,22 @@ function initializeParser(): Promise<ParseFn> {
    return parserPromise;
  }
-
+ 
 +export async function preloadMarkdownRuntime(): Promise<void> {
 +  try {
 +    await initializeParser();
@@ -1276,7 +2155,7 @@ index 911e3f1..c299992 100644
 +    parseCache.set(cacheKey, cached);
 +    return cloneAst(await cached);
 +  }
-
+ 
 -  const result: unknown = JSON.parse(
 -    parse(markdown, underline ? 1 : 0, latexMath ? 1 : 0)
 -  );
@@ -1288,7 +2167,7 @@ index 911e3f1..c299992 100644
 +    if (!isASTNode(result)) {
 +      throw new Error('WASM parser returned invalid AST');
 +    }
-
+ 
 -  if (!isASTNode(result)) {
 -    throw new Error('WASM parser returned invalid AST');
 +    return result;
@@ -1308,7 +2187,7 @@ index 911e3f1..c299992 100644
 +    throw error;
    }
 +}
-
+ 
 -  return result;
 +function cloneAst(ast: ASTNode): ASTNode {
 +  return JSON.parse(JSON.stringify(ast)) as ASTNode;
@@ -1329,7 +2208,7 @@ index 28c5386..f620023 100644
    const isImageOnly =
 @@ -18,7 +21,19 @@ function ParagraphRenderer({
    }
-
+ 
    if (parentType === 'ListItem') {
 -    return <span>{renderChildren(node)}</span>;
 +    if (parentAttributes?.isTask === 'true') {
@@ -1346,7 +2225,7 @@ index 28c5386..f620023 100644
 +
 +    return <p style={paragraphStyle}>{renderChildren(node)}</p>;
    }
-
+ 
    return <p style={styles.paragraph}>{renderChildren(node)}</p>;
 diff --git a/node_modules/react-native-enriched-markdown/src/web/renderers/InlineRenderers.tsx b/node_modules/react-native-enriched-markdown/src/web/renderers/InlineRenderers.tsx
 index f25cb2a..b6c021e 100644
@@ -1360,7 +2239,7 @@ index f25cb2a..b6c021e 100644
 +  renderStreamingRevealText,
 +  shouldRevealTextForParent,
 +} from '../streamingReveal';
-
+ 
 -function TextRenderer({ node }: RendererProps) {
 -  return <>{node.content ?? ''}</>;
 +function TextRenderer({ node, parentType, capabilities }: RendererProps) {
@@ -1375,11 +2254,11 @@ index f25cb2a..b6c021e 100644
 +    </>
 +  );
  }
-
+ 
  function LineBreakRenderer(_props: RendererProps) {
 @@ -32,8 +45,12 @@ function UnderlineRenderer({ node, styles, renderChildren }: RendererProps) {
  }
-
+ 
  function CodeRenderer({ node, styles, renderChildren }: RendererProps) {
 +  if (node.content != null) {
 +    return <code style={styles.code}>{node.content}</code>;
@@ -1390,7 +2269,7 @@ index f25cb2a..b6c021e 100644
 +    <code style={styles.code}>{renderChildren(node)}</code>
    );
  }
-
+ 
 diff --git a/node_modules/react-native-enriched-markdown/src/web/renderers/ListRenderers.tsx b/node_modules/react-native-enriched-markdown/src/web/renderers/ListRenderers.tsx
 index dfe69cb..4d4e7c2 100644
 --- a/node_modules/react-native-enriched-markdown/src/web/renderers/ListRenderers.tsx
@@ -1398,7 +2277,7 @@ index dfe69cb..4d4e7c2 100644
 @@ -84,18 +84,25 @@ function ListItemRenderer({
      ? { ...node, children: node.children?.filter(isNestedList) }
      : null;
-
+ 
 +  if (!isTask) {
 +    return (
 +      <li style={listItemStyle(false)}>
@@ -1454,7 +2333,7 @@ index dca24cf..e6662ba 100644
 +        siblingCount={childNode.children?.length ?? 0}
        />
      )) ?? null;
-
+ 
 @@ -67,6 +73,9 @@ export function RenderNode({
        style={style}
        styles={styles}
@@ -1683,7 +2562,7 @@ index 4d0ff8e..10b7315 100644
 @@ -106,6 +106,16 @@ function paragraphInBlockquoteStyle(
    return { ...baseBlock(style.paragraph), marginTop: 0, marginBottom: 0 };
  }
-
+ 
 +function paragraphInListItemStyle(style: MarkdownStyleInternal): CSSProperties {
 +  return { ...baseBlock(style.paragraph), marginTop: 0 };
 +}
@@ -1724,7 +2603,7 @@ index 3a297c5..95da4b2 100644
  } from '../types/events';
  import type { KaTeXInstance } from './katex';
 +import type { StreamingRevealState } from './streamingReveal';
-
+ 
  export type NodeType =
    | 'Document'
 @@ -62,6 +63,8 @@ export interface ASTNode {
@@ -1734,15 +2613,15 @@ index 3a297c5..95da4b2 100644
 +  /** Stamped by markStreamingRevealOffsets() for web streaming reveal. */
 +  streamingRevealStartOffset?: number;
  }
-
+ 
  export interface RendererCallbacks {
 @@ -72,6 +75,7 @@ export interface RendererCallbacks {
-
+ 
  export interface RenderCapabilities {
    katex: KaTeXInstance | null;
 +  streamingReveal?: StreamingRevealState | null;
  }
-
+ 
  export interface RendererProps {
 @@ -79,6 +83,9 @@ export interface RendererProps {
    style: MarkdownStyleInternal;
@@ -1754,3 +2633,6 @@ index 3a297c5..95da4b2 100644
    callbacks: RendererCallbacks;
    capabilities: RenderCapabilities;
    renderChildren: (node: ASTNode) => ReactNode;
+diff --git a/node_modules/react-native-enriched-markdown/src/web/wasm/md4c.js b/node_modules/react-native-enriched-markdown/src/web/wasm/md4c.js
+index 745874c..4687d4a 100644
+Binary files a/node_modules/react-native-enriched-markdown/src/web/wasm/md4c.js and b/node_modules/react-native-enriched-markdown/src/web/wasm/md4c.js differ
