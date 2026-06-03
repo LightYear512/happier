@@ -354,6 +354,7 @@ const onnxruntimeWebStub = path.resolve(__dirname, "sources/platform/stubs/onnxr
 const kokoroJsStub = path.resolve(__dirname, "sources/platform/stubs/kokoroJsStub.ts");
 const transformersStub = path.resolve(__dirname, "sources/platform/stubs/huggingfaceTransformersStub.ts");
 const fontFaceObserverWebShim = path.resolve(__dirname, "sources/platform/shims/fontFaceObserverWebShim.ts");
+const mermaidNativeStub = path.resolve(__dirname, "sources/platform/stubs/mermaidNativeStub.ts");
 const reactNativeWebShim = path.resolve(__dirname, "sources/platform/shims/reactNativeWebShim.ts");
 const expoSystemUiWebStub = path.resolve(__dirname, "sources/platform/stubs/expoSystemUiWebStub.ts");
 const expoAsyncRequireSetupShim = path.resolve(__dirname, "sources/dev/webHmrOptOut/expoAsyncRequireSetupShim.ts");
@@ -414,10 +415,7 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     return { type: "sourceFile", filePath: expoMessageSocketShim };
   }
 
-  if (
-    platform === "web" &&
-    (resolvedModuleName === "./apps/ui/index.ts" || resolvedModuleName === "apps/ui/index.ts")
-  ) {
+  if (resolvedModuleName === "./apps/ui/index.ts" || resolvedModuleName === "apps/ui/index.ts") {
     return { type: "sourceFile", filePath: workspaceEntryPoint };
   }
 
@@ -434,6 +432,13 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
       resolvedModuleName.startsWith("@huggingface/transformers/"))
   ) {
     return { type: "sourceFile", filePath: transformersStub };
+  }
+
+  if (
+    (platform === "android" || platform === "ios") &&
+    (resolvedModuleName === "mermaid" || resolvedModuleName.startsWith("mermaid/"))
+  ) {
+    return { type: "sourceFile", filePath: mermaidNativeStub };
   }
 
   // expo-font uses fontfaceobserver on web with a hard-coded timeout; in practice this can
