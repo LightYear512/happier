@@ -1,6 +1,7 @@
 import pino from 'pino';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
 import { parseIntEnv, parseOptionalBooleanEnv } from '@/config/env';
 import { redactSensitiveKeys } from '@/utils/logging/redactSensitiveKeys';
@@ -50,6 +51,25 @@ export function resolveServerLogLevelFromEnv(env: NodeJS.ProcessEnv): pino.Level
     ).trim().toLowerCase();
     const allowed = new Set<pino.LevelWithSilent>(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
     return allowed.has(raw as pino.LevelWithSilent) ? (raw as pino.LevelWithSilent) : "info";
+}
+
+// Fail-safe parse of an env var expected to hold a JSON object (e.g. HTTP log
+// headers / static fields). A malformed value must never crash logger setup, so
+// we report and ignore it rather than throwing.
+function parseJsonObjectEnv(name: string, raw: string | undefined): Record<string, unknown> | null {
+    const value = (raw ?? '').trim();
+    if (!value) return null;
+    try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+        }
+        console.error(`[PINO] ${name} must be a JSON object - ignoring`);
+        return null;
+    } catch {
+        console.error(`[PINO] ${name} is not valid JSON - ignoring`);
+        return null;
+    }
 }
 
 export function createLoggingTransportTargets(): any[] {
@@ -113,6 +133,47 @@ export function createLoggingTransportTargets(): any[] {
                     flushInterval: parseIntEnv(process.env.ES_LOG_FLUSH_INTERVAL, 5000),
                     ...(auth ? { auth } : {}),
                     tls: { rejectUnauthorized: parseOptionalBooleanEnv(process.env.ES_LOG_REJECT_UNAUTHORIZED) ?? true },
+                },
+            });
+        }
+    }
+
+    // Ship logs to an arbitrary HTTP endpoint when configured. Fully env-driven
+    // and generic (single vs batched, body format, extra/omitted fields, auth
+    // headers) so a custom collector is just one configuration, not a code path.
+    // Runs in a pino worker thread; failures are swallowed and the buffer is
+    // bounded inside the transport. Skipped under Bun-compiled binaries, where
+    // pino transport targets don't resolve reliably (same as pino-pretty).
+    if (!isBunRuntime() && parseOptionalBooleanEnv(process.env.HTTP_LOG_ENABLED)) {
+        const url = (process.env.HTTP_LOG_URL ?? '').trim();
+        if (!url) {
+            console.error('[PINO] HTTP_LOG_ENABLED is set but HTTP_LOG_URL is missing - skipping HTTP log transport');
+        } else {
+            const headers = parseJsonObjectEnv('HTTP_LOG_HEADERS', process.env.HTTP_LOG_HEADERS);
+            const staticFields = parseJsonObjectEnv('HTTP_LOG_STATIC_FIELDS', process.env.HTTP_LOG_STATIC_FIELDS);
+            const omitFields = (process.env.HTTP_LOG_OMIT_FIELDS ?? '')
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean);
+            const batchFormat = (process.env.HTTP_LOG_BATCH_FORMAT ?? 'array').trim().toLowerCase() === 'ndjson'
+                ? 'ndjson'
+                : 'array';
+            transports.push({
+                target: fileURLToPath(new URL('./httpLogTransport.ts', import.meta.url)),
+                // Like Elasticsearch, HTTP shipping is opt-in for higher-signal logs;
+                // default to info+ (the base logger stays at debug for stdout/file).
+                level: (process.env.HTTP_LOG_LEVEL ?? 'info').trim(),
+                options: {
+                    url,
+                    method: (process.env.HTTP_LOG_METHOD ?? 'POST').trim(),
+                    ...(headers ? { headers } : {}),
+                    timeoutMs: parseIntEnv(process.env.HTTP_LOG_TIMEOUT_MS, 10000),
+                    batchSize: parseIntEnv(process.env.HTTP_LOG_BATCH_SIZE, 1),
+                    flushIntervalMs: parseIntEnv(process.env.HTTP_LOG_FLUSH_INTERVAL_MS, 5000),
+                    batchFormat,
+                    ...(staticFields ? { staticFields } : {}),
+                    ...(omitFields.length ? { omitFields } : {}),
+                    maxBuffer: parseIntEnv(process.env.HTTP_LOG_MAX_BUFFER, 1000),
                 },
             });
         }
