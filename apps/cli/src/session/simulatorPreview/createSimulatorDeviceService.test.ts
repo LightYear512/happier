@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { createSimulatorDeviceService } from './createSimulatorDeviceService';
+import {
+  createFileSimulatorDeviceLockStore,
+  createInMemorySimulatorDeviceLockStore,
+  createSimulatorDeviceService,
+} from './createSimulatorDeviceService';
 
 describe('createSimulatorDeviceService', () => {
   it('lists normalized simulator devices without requiring callers to parse adb or simctl output', async () => {
@@ -118,6 +125,243 @@ describe('createSimulatorDeviceService', () => {
       ok: true,
       controlCapability: 'writable',
     }));
+  });
+
+  it('shares write locks across service instances through the machine-local lock store', async () => {
+    const lockStore = createInMemorySimulatorDeviceLockStore();
+    const discoverAndroidDevices = async () => [
+      {
+        platform: 'android' as const,
+        deviceId: 'emulator-5554',
+        displayName: 'Pixel 8 API 35',
+        state: 'booted' as const,
+      },
+    ];
+    const firstService = createSimulatorDeviceService({
+      lockStore,
+      randomId: () => 'device_lease_1',
+      discoverAndroidDevices,
+      discoverIosDevices: async () => [],
+    });
+    const secondService = createSimulatorDeviceService({
+      lockStore,
+      randomId: () => 'device_lease_2',
+      discoverAndroidDevices,
+      discoverIosDevices: async () => [],
+    });
+
+    await expect(firstService.reservePreview({
+      sessionId: 'session_a',
+      simulatorSessionId: 'sim_a',
+      platform: 'android',
+      selection: 'auto',
+      owner: 'ai',
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      controlCapability: 'writable',
+      writerLeaseId: 'device_lease_1',
+    }));
+
+    await expect(secondService.reservePreview({
+      sessionId: 'session_b',
+      simulatorSessionId: 'sim_b',
+      platform: 'android',
+      selection: 'auto',
+      owner: 'ai',
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      controlCapability: 'readonly',
+      controlUnavailableReason: 'device_in_use',
+      deviceRef: 'android:emulator-5554',
+    }));
+  });
+
+  it('persists write locks across process-local file store instances', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-simulator-lock-store-'));
+    try {
+      const lockStorePath = join(tempDir, 'locks.json');
+      const discoverAndroidDevices = async () => [
+        {
+          platform: 'android' as const,
+          deviceId: 'emulator-5554',
+          displayName: 'Pixel 8 API 35',
+          state: 'booted' as const,
+        },
+      ];
+      const firstService = createSimulatorDeviceService({
+        lockStore: createFileSimulatorDeviceLockStore({ lockStorePath }),
+        randomId: () => 'device_lease_1',
+        discoverAndroidDevices,
+        discoverIosDevices: async () => [],
+      });
+      const secondService = createSimulatorDeviceService({
+        lockStore: createFileSimulatorDeviceLockStore({ lockStorePath }),
+        randomId: () => 'device_lease_2',
+        discoverAndroidDevices,
+        discoverIosDevices: async () => [],
+      });
+
+      await expect(firstService.reservePreview({
+        sessionId: 'session_a',
+        simulatorSessionId: 'sim_a',
+        platform: 'android',
+        selection: 'auto',
+        owner: 'ai',
+      })).resolves.toEqual(expect.objectContaining({
+        ok: true,
+        controlCapability: 'writable',
+      }));
+
+      await expect(secondService.reservePreview({
+        sessionId: 'session_b',
+        simulatorSessionId: 'sim_b',
+        platform: 'android',
+        selection: 'auto',
+        owner: 'ai',
+      })).resolves.toEqual(expect.objectContaining({
+        ok: true,
+        controlCapability: 'readonly',
+        controlUnavailableReason: 'device_in_use',
+      }));
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('renews a writable preview lease so long-running simulator sessions keep device ownership', async () => {
+    let now = 1_000;
+    const service = createSimulatorDeviceService({
+      nowMs: () => now,
+      randomId: () => 'device_lease_1',
+      discoverAndroidDevices: async () => [
+        { platform: 'android', deviceId: 'emulator-5554', displayName: 'Pixel 8', state: 'booted' },
+      ],
+      discoverIosDevices: async () => [],
+    });
+
+    await expect(service.reservePreview({
+      sessionId: 'session_a',
+      simulatorSessionId: 'sim_a',
+      platform: 'android',
+      selection: 'auto',
+      owner: 'ai',
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      controlCapability: 'writable',
+      writerLeaseId: 'device_lease_1',
+    }));
+
+    now = 55_000;
+    expect(service.renewPreviewWriter({
+      sessionId: 'session_a',
+      simulatorSessionId: 'sim_a',
+    })).toEqual({ ok: true });
+
+    now = 61_001;
+    await expect(service.reservePreview({
+      sessionId: 'session_b',
+      simulatorSessionId: 'sim_b',
+      platform: 'android',
+      selection: 'auto',
+      owner: 'ai',
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      controlCapability: 'readonly',
+      controlUnavailableReason: 'device_in_use',
+    }));
+  });
+
+  it('returns capacity_exhausted when writable simulator session capacity is full', async () => {
+    const service = createSimulatorDeviceService({
+      capacityPolicy: { maxWritableSimulatorSessions: 1 },
+      discoverAndroidDevices: async () => [
+        { platform: 'android', deviceId: 'emulator-5554', displayName: 'Pixel 8', state: 'booted' },
+        { platform: 'android', deviceId: 'emulator-5556', displayName: 'Pixel 9', state: 'booted' },
+      ],
+      discoverIosDevices: async () => [],
+    });
+
+    await expect(service.reservePreview({
+      sessionId: 'session_a',
+      simulatorSessionId: 'sim_a',
+      platform: 'android',
+      deviceRef: 'android:emulator-5554',
+      owner: 'ai',
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      controlCapability: 'writable',
+    }));
+
+    await expect(service.reservePreview({
+      sessionId: 'session_b',
+      simulatorSessionId: 'sim_b',
+      platform: 'android',
+      deviceRef: 'android:emulator-5556',
+      owner: 'ai',
+    })).resolves.toEqual({
+      ok: false,
+      code: 'capacity_exhausted',
+    });
+
+    await expect(service.listDevices({ platform: 'android' })).resolves.toEqual({
+      devices: [
+        expect.objectContaining({
+          deviceRef: 'android:emulator-5554',
+          availability: 'busy',
+          recommended: false,
+        }),
+        expect.objectContaining({
+          deviceRef: 'android:emulator-5556',
+          availability: 'capacity_exhausted',
+          recommended: false,
+        }),
+      ],
+    });
+  });
+
+  it('lists devices while holding the lock store when pruning expired writers', async () => {
+    let locked = false;
+    const lockStore = createInMemorySimulatorDeviceLockStore();
+    const guardedLockStore = {
+      ...lockStore,
+      withLock: <T,>(fn: () => T): T => {
+        locked = true;
+        try {
+          return fn();
+        } finally {
+          locked = false;
+        }
+      },
+      deleteWriter: (deviceRef: string) => {
+        expect(locked).toBe(true);
+        lockStore.deleteWriter(deviceRef);
+      },
+    };
+    lockStore.setWriter('android:emulator-5554', {
+      sessionId: 'session_a',
+      simulatorSessionId: 'sim_a',
+      owner: 'ai',
+      leaseId: 'lease_1',
+      expiresAtMs: 1_000,
+    });
+    const service = createSimulatorDeviceService({
+      nowMs: () => 2_000,
+      lockStore: guardedLockStore,
+      discoverAndroidDevices: async () => [
+        { platform: 'android', deviceId: 'emulator-5554', displayName: 'Pixel 8', state: 'booted' },
+      ],
+      discoverIosDevices: async () => [],
+    });
+
+    await expect(service.listDevices({ platform: 'android' })).resolves.toEqual({
+      devices: [
+        expect.objectContaining({
+          deviceRef: 'android:emulator-5554',
+          availability: 'writable',
+          recommended: true,
+        }),
+      ],
+    });
   });
 
   it('requires explicit selection when multiple writable devices match auto selection', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveIosSimulatorPreviewDevice } from './resolveIosSimulatorPreviewDevice';
+import { ensureIosSimulatorPreviewDeviceBooted, resolveIosSimulatorPreviewDevice } from './resolveIosSimulatorPreviewDevice';
 
 describe('resolveIosSimulatorPreviewDevice', () => {
   it('returns the booted iOS simulator without booting another device', async () => {
@@ -42,5 +42,36 @@ describe('resolveIosSimulatorPreviewDevice', () => {
     expect(runCommand).toHaveBeenNthCalledWith(2, 'xcrun', ['simctl', 'list', 'devices', 'available', '--json']);
     expect(runCommand).toHaveBeenNthCalledWith(3, 'xcrun', ['simctl', 'boot', 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B']);
     expect(runCommand).toHaveBeenNthCalledWith(4, 'xcrun', ['simctl', 'bootstatus', 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B', '-b']);
+  });
+
+  it('boots a specific available iOS simulator before preview streaming', async () => {
+    const runCommand = vi.fn()
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('');
+
+    await expect(ensureIosSimulatorPreviewDeviceBooted({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+      runCommand,
+    })).resolves.toEqual({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+    });
+
+    expect(runCommand).toHaveBeenNthCalledWith(1, 'xcrun', ['simctl', 'boot', 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B']);
+    expect(runCommand).toHaveBeenNthCalledWith(2, 'xcrun', ['simctl', 'bootstatus', 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B', '-b']);
+  });
+
+  it('treats an already-booted specific iOS simulator as ready during boot races', async () => {
+    const runCommand = vi.fn()
+      .mockRejectedValueOnce(new Error('Unable to boot device in current state: Booted'))
+      .mockResolvedValueOnce('');
+
+    await expect(ensureIosSimulatorPreviewDeviceBooted({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+      runCommand,
+    })).resolves.toEqual({
+      deviceId: 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B',
+    });
+
+    expect(runCommand).toHaveBeenNthCalledWith(2, 'xcrun', ['simctl', 'bootstatus', 'F3D78E58-6744-47F9-9FFC-5FA39E6D143B', '-b']);
   });
 });

@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 
+import { parseAndroidEmulatorAvdName } from './androidSimulatorDeviceParsing';
 import type { DiscoveredSimulatorDevice } from './simulatorDeviceTypes';
 
 export type ListAndroidSimulatorDevicesOptions = Readonly<{
   adbPath?: string;
+  emulatorPath?: string;
   env?: NodeJS.ProcessEnv;
   runCommand?: (command: string, args: readonly string[]) => Promise<string>;
 }>;
@@ -24,6 +26,17 @@ function parseAdbDeviceLine(line: string): DiscoveredSimulatorDevice | null {
     deviceId,
     displayName: normalizeText(rawModel) || deviceId,
     state: state === 'device' ? 'booted' : state === 'offline' ? 'offline' : 'unknown',
+  };
+}
+
+function parseAndroidAvdLine(line: string): DiscoveredSimulatorDevice | null {
+  const avdName = line.trim();
+  if (!avdName) return null;
+  return {
+    platform: 'android',
+    deviceId: `avd:${avdName}`,
+    displayName: avdName.replace(/_/gu, ' '),
+    state: 'available',
   };
 }
 
@@ -56,13 +69,34 @@ export async function listAndroidSimulatorDevices(
   options: ListAndroidSimulatorDevicesOptions = {},
 ): Promise<readonly DiscoveredSimulatorDevice[]> {
   const adbPath = options.adbPath ?? 'adb';
+  const emulatorPath = options.emulatorPath ?? 'emulator';
   const runCommand = options.runCommand ?? createRunCommand({
     adbPath,
     env: options.env ?? process.env,
   });
-  const output = await runCommand(adbPath, ['devices', '-l']);
-  return output
+  const [adbOutput, avdOutput] = await Promise.all([
+    runCommand(adbPath, ['devices', '-l']).catch(() => ''),
+    runCommand(emulatorPath, ['-list-avds']).catch(() => ''),
+  ]);
+  const adbDevices = adbOutput
     .split(/\r?\n/u)
     .map(parseAdbDeviceLine)
     .filter((device): device is DiscoveredSimulatorDevice => Boolean(device));
+  const runningAvdNames = new Set<string>();
+  if (avdOutput.trim().length > 0) {
+    for (const device of adbDevices) {
+      if (device.state !== 'booted') continue;
+      const avdName = parseAndroidEmulatorAvdName(await runCommand(adbPath, ['-s', device.deviceId, 'emu', 'avd', 'name']).catch(() => ''));
+      if (avdName) {
+        runningAvdNames.add(avdName);
+      }
+    }
+  }
+  const avdDevices = avdOutput
+    .split(/\r?\n/u)
+    .map(parseAndroidAvdLine)
+    .filter((device): device is DiscoveredSimulatorDevice => (
+      device !== null && !runningAvdNames.has(device.deviceId.slice('avd:'.length))
+    ));
+  return [...adbDevices, ...avdDevices];
 }

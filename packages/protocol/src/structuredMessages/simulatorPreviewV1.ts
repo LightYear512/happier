@@ -25,6 +25,7 @@ export const SimulatorPreviewControlUnavailableReasonSchema = z.enum([
   'device_in_use',
   'device_selection_required',
   'device_unavailable',
+  'capacity_exhausted',
 ]);
 export type SimulatorPreviewControlUnavailableReason = z.infer<typeof SimulatorPreviewControlUnavailableReasonSchema>;
 

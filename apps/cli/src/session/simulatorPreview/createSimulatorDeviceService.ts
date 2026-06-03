@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+export { createFileSimulatorDeviceLockStore } from './createFileSimulatorDeviceLockStore';
 import { listAndroidSimulatorDevices } from './listAndroidSimulatorDevices';
 import { listIosSimulatorDevices } from './listIosSimulatorDevices';
 import {
@@ -8,27 +9,28 @@ import {
   type SimulatorDeviceListItem,
   type SimulatorDevicePlatform,
 } from './simulatorDeviceTypes';
+import {
+  isDeviceWritableState,
+  resolveAutoSelectionCandidate,
+  sortDiscoveredSimulatorDevices,
+} from './simulatorDeviceSelection';
+import type {
+  DeviceWriter,
+  PreviewOwner,
+  PreviewReservation,
+  SimulatorDeviceLockStore,
+} from './simulatorDeviceLockStoreTypes';
 
 export type SimulatorDeviceService = ReturnType<typeof createSimulatorDeviceService>;
+export type {
+  DeviceWriter,
+  PreviewOwner,
+  PreviewReservation,
+  SimulatorDeviceLockStore,
+} from './simulatorDeviceLockStoreTypes';
 
-type PreviewOwner = 'ai' | 'user';
-
-type DeviceWriter = Readonly<{
-  sessionId: string;
-  simulatorSessionId: string;
-  owner: PreviewOwner;
-  leaseId: string;
-  expiresAtMs: number;
-}>;
-
-type PreviewReservation = Readonly<{
-  sessionId: string;
-  simulatorSessionId: string;
-  deviceRef: string;
-  deviceId: string;
-  platform: SimulatorDevicePlatform;
-  controlCapability: 'writable' | 'readonly';
-  controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable';
+export type SimulatorDeviceCapacityPolicy = Readonly<{
+  maxWritableSimulatorSessions?: number;
 }>;
 
 type WritableReservationResult = Readonly<{
@@ -36,6 +38,7 @@ type WritableReservationResult = Readonly<{
   controlCapability: 'writable';
   deviceRef: string;
   deviceId: string;
+  deviceState: DiscoveredSimulatorDevice['state'];
   deviceDisplayName: string;
   writerLeaseId: string;
 }>;
@@ -46,6 +49,7 @@ type ReadonlyReservationResult = Readonly<{
   controlUnavailableReason: 'device_in_use';
   deviceRef: string;
   deviceId: string;
+  deviceState: DiscoveredSimulatorDevice['state'];
   deviceDisplayName: string;
 }>;
 
@@ -54,7 +58,7 @@ type ReservationResult =
   | ReadonlyReservationResult
   | Readonly<{
       ok: false;
-      code: 'device_not_found' | 'device_selection_required';
+      code: 'device_not_found' | 'device_selection_required' | 'capacity_exhausted';
       devices?: readonly SimulatorDeviceListItem[];
     }>;
 
@@ -62,6 +66,8 @@ export type SimulatorDeviceServiceOptions = Readonly<{
   nowMs?: () => number;
   randomId?: () => string;
   writerLeaseTtlMs?: number;
+  lockStore?: SimulatorDeviceLockStore;
+  capacityPolicy?: SimulatorDeviceCapacityPolicy;
   discoverAndroidDevices?: () => Promise<readonly DiscoveredSimulatorDevice[]>;
   discoverIosDevices?: () => Promise<readonly DiscoveredSimulatorDevice[]>;
 }>;
@@ -76,27 +82,28 @@ function previewKey(sessionId: string, simulatorSessionId: string): string {
   return `${sessionId}\u0000${simulatorSessionId}`;
 }
 
-function isDeviceWritableState(device: DiscoveredSimulatorDevice): boolean {
-  return device.state === 'booted' || device.state === 'available';
-}
-
-function sortDevices(devices: readonly DiscoveredSimulatorDevice[]): readonly DiscoveredSimulatorDevice[] {
-  return [...devices].sort((a, b) => {
-    const platformOrder = a.platform.localeCompare(b.platform);
-    if (platformOrder !== 0) return platformOrder;
-    const stateOrder = a.state === 'booted' && b.state !== 'booted' ? -1 : a.state !== 'booted' && b.state === 'booted' ? 1 : 0;
-    if (stateOrder !== 0) return stateOrder;
-    return a.displayName.localeCompare(b.displayName);
-  });
-}
-
-function resolveAutoSelectionCandidate(
-  candidates: readonly DiscoveredSimulatorDevice[],
-): DiscoveredSimulatorDevice | null {
-  if (candidates.length === 1) return candidates[0] ?? null;
-  const bootedCandidates = candidates.filter((device) => device.state === 'booted');
-  if (bootedCandidates.length === 1) return bootedCandidates[0] ?? null;
-  return null;
+export function createInMemorySimulatorDeviceLockStore(): SimulatorDeviceLockStore {
+  const writers = new Map<string, DeviceWriter>();
+  const previews = new Map<string, PreviewReservation>();
+  return {
+    withLock: (fn) => fn(),
+    getWriter: (deviceRef) => writers.get(deviceRef),
+    setWriter: (deviceRef, writer) => {
+      writers.set(deviceRef, writer);
+    },
+    deleteWriter: (deviceRef) => {
+      writers.delete(deviceRef);
+    },
+    listWriters: () => [...writers.entries()].map(([deviceRef, writer]) => ({ deviceRef, writer })),
+    getPreview: (previewRef) => previews.get(previewRef),
+    setPreview: (previewRef, reservation) => {
+      previews.set(previewRef, reservation);
+    },
+    deletePreview: (previewRef) => {
+      previews.delete(previewRef);
+    },
+    listPreviews: () => [...previews.values()],
+  };
 }
 
 export function createSimulatorDeviceService(
@@ -105,18 +112,29 @@ export function createSimulatorDeviceService(
   const nowMs = options.nowMs ?? (() => Date.now());
   const randomId = options.randomId ?? (() => randomUUID());
   const writerLeaseTtlMs = options.writerLeaseTtlMs ?? DEFAULT_WRITER_LEASE_TTL_MS;
+  const capacityPolicy = options.capacityPolicy ?? {};
   const discoverAndroidDevices = options.discoverAndroidDevices ?? listAndroidSimulatorDevices;
   const discoverIosDevices = options.discoverIosDevices ?? listIosSimulatorDevices;
-  const writers = new Map<string, DeviceWriter>();
-  const previews = new Map<string, PreviewReservation>();
+  const lockStore = options.lockStore ?? createInMemorySimulatorDeviceLockStore();
 
   function pruneExpiredWriters(): void {
     const now = nowMs();
-    for (const [key, writer] of writers.entries()) {
+    for (const { deviceRef, writer } of lockStore.listWriters()) {
       if (now > writer.expiresAtMs) {
-        writers.delete(key);
+        lockStore.deleteWriter(deviceRef);
       }
     }
+  }
+
+  function countWritableSimulatorSessions(): number {
+    return lockStore.listWriters().length;
+  }
+
+  function isWritableCapacityFull(): boolean {
+    const maxWritableSimulatorSessions = capacityPolicy.maxWritableSimulatorSessions;
+    return typeof maxWritableSimulatorSessions === 'number'
+      && maxWritableSimulatorSessions >= 0
+      && countWritableSimulatorSessions() >= maxWritableSimulatorSessions;
   }
 
   async function discoverPlatformDevices(
@@ -134,19 +152,19 @@ export function createSimulatorDeviceService(
       platform === 'ios' ? Promise.resolve([]) : discoverPlatformDevices(discoverAndroidDevices),
       platform === 'android' ? Promise.resolve([]) : discoverPlatformDevices(discoverIosDevices),
     ]);
-    return sortDevices([...androidDevices, ...iosDevices]);
+    return sortDiscoveredSimulatorDevices([...androidDevices, ...iosDevices]);
   }
 
-  function toListItem(device: DiscoveredSimulatorDevice, recommended: boolean): SimulatorDeviceListItem {
+  function toListItem(device: DiscoveredSimulatorDevice, recommended: boolean, writableCapacityFull: boolean): SimulatorDeviceListItem {
     const key = deviceKey(device.platform, device.deviceId);
-    const writer = writers.get(key);
+    const writer = lockStore.getWriter(key);
     const writableState = isDeviceWritableState(device);
     return {
       deviceRef: key,
       platform: device.platform,
       displayName: device.displayName,
       state: device.state,
-      availability: !writableState ? 'unavailable' : writer ? 'busy' : 'writable',
+      availability: !writableState ? 'unavailable' : writer ? 'busy' : writableCapacityFull ? 'capacity_exhausted' : 'writable',
       recommended,
     };
   }
@@ -154,31 +172,40 @@ export function createSimulatorDeviceService(
   async function listDevices(input: Readonly<{ platform?: SimulatorDevicePlatform }>): Promise<Readonly<{
     devices: readonly SimulatorDeviceListItem[];
   }>> {
-    pruneExpiredWriters();
     const devices = await discoverDevices(input.platform);
-    let recommendedAssigned = false;
-    return {
-      devices: devices.map((device) => {
-        const canRecommend = !recommendedAssigned && isDeviceWritableState(device) && !writers.has(deviceKey(device.platform, device.deviceId));
-        if (canRecommend) recommendedAssigned = true;
-        return toListItem(device, canRecommend);
-      }),
-    };
+    return lockStore.withLock(() => {
+      pruneExpiredWriters();
+      const writableCapacityFull = isWritableCapacityFull();
+      let recommendedAssigned = false;
+      return {
+        devices: devices.map((device) => {
+          const canRecommend = !recommendedAssigned
+            && isDeviceWritableState(device)
+            && !writableCapacityFull
+            && !lockStore.getWriter(deviceKey(device.platform, device.deviceId));
+          if (canRecommend) recommendedAssigned = true;
+          return toListItem(device, canRecommend, writableCapacityFull);
+        }),
+      };
+    });
   }
 
   function releasePreview(input: Readonly<{
     sessionId: string;
     simulatorSessionId: string;
   }>): void {
-    const key = previewKey(input.sessionId, input.simulatorSessionId);
-    const reservation = previews.get(key);
-    previews.delete(key);
-    if (reservation?.controlCapability === 'writable') {
-      const writer = writers.get(reservation.deviceRef);
-      if (writer?.sessionId === input.sessionId && writer.simulatorSessionId === input.simulatorSessionId) {
-        writers.delete(reservation.deviceRef);
+    lockStore.withLock(() => {
+      pruneExpiredWriters();
+      const key = previewKey(input.sessionId, input.simulatorSessionId);
+      const reservation = lockStore.getPreview(key);
+      lockStore.deletePreview(key);
+      if (reservation?.controlCapability === 'writable') {
+        const writer = lockStore.getWriter(reservation.deviceRef);
+        if (writer?.sessionId === input.sessionId && writer.simulatorSessionId === input.simulatorSessionId) {
+          lockStore.deleteWriter(reservation.deviceRef);
+        }
       }
-    }
+    });
   }
 
   return {
@@ -193,7 +220,6 @@ export function createSimulatorDeviceService(
       deviceId?: string;
       owner: PreviewOwner;
     }>): Promise<ReservationResult> {
-      pruneExpiredWriters();
       const devices = await discoverDevices(input.platform);
       const requestedRef = input.deviceRef
         ?? (input.deviceId ? deviceKey(input.platform, input.deviceId) : '');
@@ -216,71 +242,109 @@ export function createSimulatorDeviceService(
       if (!device || !isDeviceWritableState(device)) {
         return { ok: false, code: 'device_not_found' };
       }
-      const key = deviceKey(device.platform, device.deviceId);
-      const existingWriter = writers.get(key);
-      const keyForPreview = previewKey(input.sessionId, input.simulatorSessionId);
-      if (existingWriter && existingWriter.sessionId !== input.sessionId) {
-        previews.set(keyForPreview, {
+      return lockStore.withLock<ReservationResult>(() => {
+        pruneExpiredWriters();
+        const key = deviceKey(device.platform, device.deviceId);
+        const existingWriter = lockStore.getWriter(key);
+        const keyForPreview = previewKey(input.sessionId, input.simulatorSessionId);
+        if (existingWriter && existingWriter.sessionId !== input.sessionId) {
+          lockStore.setPreview(keyForPreview, {
+            sessionId: input.sessionId,
+            simulatorSessionId: input.simulatorSessionId,
+            deviceRef: key,
+            deviceId: device.deviceId,
+            platform: device.platform,
+            controlCapability: 'readonly',
+            controlUnavailableReason: 'device_in_use',
+          });
+          return {
+            ok: true,
+            controlCapability: 'readonly',
+            controlUnavailableReason: 'device_in_use',
+            deviceRef: key,
+            deviceId: device.deviceId,
+            deviceState: device.state,
+            deviceDisplayName: device.displayName,
+          };
+        }
+        if (!existingWriter && isWritableCapacityFull()) {
+          return {
+            ok: false,
+            code: 'capacity_exhausted',
+          };
+        }
+        const writer: DeviceWriter = {
+          sessionId: input.sessionId,
+          simulatorSessionId: input.simulatorSessionId,
+          owner: input.owner,
+          leaseId: existingWriter?.leaseId ?? randomId(),
+          expiresAtMs: nowMs() + writerLeaseTtlMs,
+        };
+        lockStore.setWriter(key, writer);
+        lockStore.setPreview(keyForPreview, {
           sessionId: input.sessionId,
           simulatorSessionId: input.simulatorSessionId,
           deviceRef: key,
           deviceId: device.deviceId,
           platform: device.platform,
-          controlCapability: 'readonly',
-          controlUnavailableReason: 'device_in_use',
+          controlCapability: 'writable',
         });
         return {
           ok: true,
-          controlCapability: 'readonly',
-          controlUnavailableReason: 'device_in_use',
+          controlCapability: 'writable',
           deviceRef: key,
           deviceId: device.deviceId,
+          deviceState: device.state,
           deviceDisplayName: device.displayName,
+          writerLeaseId: writer.leaseId,
         };
-      }
-      const writer: DeviceWriter = {
-        sessionId: input.sessionId,
-        simulatorSessionId: input.simulatorSessionId,
-        owner: input.owner,
-        leaseId: existingWriter?.leaseId ?? randomId(),
-        expiresAtMs: nowMs() + writerLeaseTtlMs,
-      };
-      writers.set(key, writer);
-      previews.set(keyForPreview, {
-        sessionId: input.sessionId,
-        simulatorSessionId: input.simulatorSessionId,
-        deviceRef: key,
-        deviceId: device.deviceId,
-        platform: device.platform,
-        controlCapability: 'writable',
       });
-      return {
-        ok: true,
-        controlCapability: 'writable',
-        deviceRef: key,
-        deviceId: device.deviceId,
-        deviceDisplayName: device.displayName,
-        writerLeaseId: writer.leaseId,
-      };
     },
 
     assertPreviewWritable(input: Readonly<{
       sessionId: string;
       simulatorSessionId: string;
     }>) {
-      pruneExpiredWriters();
-      const reservation = previews.get(previewKey(input.sessionId, input.simulatorSessionId));
-      if (!reservation) {
-        return { ok: false as const, errorCode: 'simulator_preview_not_found' as const, error: 'simulator_preview_not_found' as const };
-      }
-      if (reservation.controlCapability !== 'writable') {
-        return { ok: false as const, errorCode: 'device_readonly' as const, error: 'device_readonly' as const };
-      }
-      const writer = writers.get(reservation.deviceRef);
-      if (!writer || writer.sessionId !== input.sessionId || writer.simulatorSessionId !== input.simulatorSessionId) {
-        return { ok: false as const, errorCode: 'device_in_use' as const, error: 'device_in_use' as const };
-      }
-      return { ok: true as const };
+      return lockStore.withLock(() => {
+        pruneExpiredWriters();
+        const reservation = lockStore.getPreview(previewKey(input.sessionId, input.simulatorSessionId));
+        if (!reservation) {
+          return { ok: false as const, errorCode: 'simulator_preview_not_found' as const, error: 'simulator_preview_not_found' as const };
+        }
+        if (reservation.controlCapability !== 'writable') {
+          return { ok: false as const, errorCode: 'device_readonly' as const, error: 'device_readonly' as const };
+        }
+        const writer = lockStore.getWriter(reservation.deviceRef);
+        if (!writer || writer.sessionId !== input.sessionId || writer.simulatorSessionId !== input.simulatorSessionId) {
+          return { ok: false as const, errorCode: 'device_in_use' as const, error: 'device_in_use' as const };
+        }
+        return { ok: true as const };
+      });
+    },
+
+    renewPreviewWriter(input: Readonly<{
+      sessionId: string;
+      simulatorSessionId: string;
+    }>) {
+      return lockStore.withLock(() => {
+        pruneExpiredWriters();
+        const reservation = lockStore.getPreview(previewKey(input.sessionId, input.simulatorSessionId));
+        if (!reservation) {
+          return { ok: false as const, errorCode: 'simulator_preview_not_found' as const, error: 'simulator_preview_not_found' as const };
+        }
+        if (reservation.controlCapability !== 'writable') {
+          return { ok: false as const, errorCode: 'device_readonly' as const, error: 'device_readonly' as const };
+        }
+        const writer = lockStore.getWriter(reservation.deviceRef);
+        if (!writer || writer.sessionId !== input.sessionId || writer.simulatorSessionId !== input.simulatorSessionId) {
+          return { ok: false as const, errorCode: 'device_in_use' as const, error: 'device_in_use' as const };
+        }
+        lockStore.setWriter(reservation.deviceRef, {
+          ...writer,
+          expiresAtMs: nowMs() + writerLeaseTtlMs,
+        });
+        return { ok: true as const };
+      });
     },
 
     releasePreview,
@@ -290,15 +354,21 @@ export function createSimulatorDeviceService(
       platform?: SimulatorDevicePlatform;
       excludeSimulatorSessionId?: string;
     }>): void {
-      for (const reservation of [...previews.values()]) {
-        if (reservation.sessionId !== input.sessionId) continue;
-        if (input.platform && reservation.platform !== input.platform) continue;
-        if (input.excludeSimulatorSessionId && reservation.simulatorSessionId === input.excludeSimulatorSessionId) continue;
-        releasePreview({
-          sessionId: reservation.sessionId,
-          simulatorSessionId: reservation.simulatorSessionId,
-        });
-      }
+      lockStore.withLock(() => {
+        pruneExpiredWriters();
+        for (const reservation of lockStore.listPreviews()) {
+          if (reservation.sessionId !== input.sessionId) continue;
+          if (input.platform && reservation.platform !== input.platform) continue;
+          if (input.excludeSimulatorSessionId && reservation.simulatorSessionId === input.excludeSimulatorSessionId) continue;
+          const key = previewKey(reservation.sessionId, reservation.simulatorSessionId);
+          lockStore.deletePreview(key);
+          if (reservation.controlCapability !== 'writable') continue;
+          const writer = lockStore.getWriter(reservation.deviceRef);
+          if (writer?.sessionId === reservation.sessionId && writer.simulatorSessionId === reservation.simulatorSessionId) {
+            lockStore.deleteWriter(reservation.deviceRef);
+          }
+        }
+      });
     },
   };
 }

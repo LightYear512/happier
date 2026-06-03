@@ -96,6 +96,23 @@ describe('SimulatorPreviewV1Schema', () => {
     expect(parsed.deviceDisplayName).toBe('Pixel 8 API 35');
   });
 
+  it('parses capacity_exhausted as a simulator control unavailable reason', () => {
+    const parsed = SimulatorPreviewV1Schema.parse({
+      simulatorSessionId: 'sim_1',
+      sessionId: 's1',
+      platform: 'ios',
+      deviceName: 'iPhone 17 Pro',
+      streamUrl: 'https://relay.example.test/simulator/sim_1/stream.mjpeg',
+      mode: 'system_locked',
+      connectionPath: 'relay',
+      controlCapability: 'readonly',
+      controlUnavailableReason: 'capacity_exhausted',
+      registeredAtMs: 1,
+    });
+
+    expect(parsed.controlUnavailableReason).toBe('capacity_exhausted');
+  });
+
   it('rejects non-http simulator stream URLs', () => {
     expect(() => SimulatorPreviewV1Schema.parse({
       simulatorSessionId: 'sim_1',

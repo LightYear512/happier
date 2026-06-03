@@ -11,6 +11,10 @@ export type ResolveIosSimulatorPreviewDeviceOptions = Readonly<{
   runCommand?: (command: string, args: readonly string[]) => Promise<string>;
 }>;
 
+export type EnsureIosSimulatorPreviewDeviceBootedOptions = ResolveIosSimulatorPreviewDeviceOptions & Readonly<{
+  deviceId: string;
+}>;
+
 type SimctlDevice = Readonly<{
   name?: unknown;
   udid?: unknown;
@@ -88,6 +92,11 @@ function createRunCommand(options: Readonly<{
   });
 }
 
+function isAlreadyBootedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /already\s+booted/i.test(message) || /current\s+state:\s*booted/i.test(message);
+}
+
 export async function resolveIosSimulatorPreviewDevice(
   options: ResolveIosSimulatorPreviewDeviceOptions = {},
 ): Promise<IosSimulatorPreviewDevice> {
@@ -104,7 +113,31 @@ export async function resolveIosSimulatorPreviewDevice(
   if (!available) {
     throw new Error('ios_simulator_device_not_found');
   }
-  await runCommand(xcrunPath, ['simctl', 'boot', available.deviceId]);
-  await runCommand(xcrunPath, ['simctl', 'bootstatus', available.deviceId, '-b']);
+  await ensureIosSimulatorPreviewDeviceBooted({
+    deviceId: available.deviceId,
+    xcrunPath,
+    runCommand,
+  });
   return available;
+}
+
+export async function ensureIosSimulatorPreviewDeviceBooted(
+  options: EnsureIosSimulatorPreviewDeviceBootedOptions,
+): Promise<Readonly<{ deviceId: string }>> {
+  const deviceId = normalizeText(options.deviceId);
+  if (!deviceId) {
+    throw new Error('ios_simulator_device_not_found');
+  }
+  const xcrunPath = options.xcrunPath ?? 'xcrun';
+  const runCommand = options.runCommand ?? createRunCommand({
+    xcrunPath,
+    env: options.env ?? process.env,
+  });
+  try {
+    await runCommand(xcrunPath, ['simctl', 'boot', deviceId]);
+  } catch (error) {
+    if (!isAlreadyBootedError(error)) throw error;
+  }
+  await runCommand(xcrunPath, ['simctl', 'bootstatus', deviceId, '-b']);
+  return { deviceId };
 }
