@@ -68,6 +68,7 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.rollback',
   'session.handoff',
   'session.devPreview.register',
+  'session.simulatorPreview.devices.list',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
   'session.simulatorPreview.ios.start',
@@ -486,6 +487,19 @@ describe('Action Spec Registry', () => {
     })).toThrow();
   });
 
+  it('registers simulator preview device listing as a feature-gated session-agent tool', () => {
+    const spec = getActionSpec('session.simulatorPreview.devices.list' as any);
+
+    expect(spec.requiredFeatureId).toBe('sessions.devPreview');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.surfaces.mcp).toBe(false);
+    expect(spec.surfaces.cli).toBe(false);
+    expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_devices_list');
+    expect(spec.inputSchema.parse({ platform: 'android' })).toEqual({ platform: 'android' });
+    expect(spec.inputSchema.parse({})).toEqual({});
+    expect(() => spec.inputSchema.parse({ platform: 'desktop' })).toThrow();
+  });
+
   it('registers the Android simulator preview start action as a feature-gated session-agent tool', () => {
     const spec = getActionSpec('session.simulatorPreview.android.start' as any);
 
@@ -495,13 +509,17 @@ describe('Action Spec Registry', () => {
     expect(spec.surfaces.cli).toBe(false);
     expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_android_start');
     expect(spec.inputSchema.parse({
+      deviceRef: 'android:emulator-5554',
       deviceId: 'emulator-5554',
+      selection: 'auto',
       port: 9812,
       pollMs: 500,
       deviceName: 'Android SDK API 34',
       appName: 'Example Android App',
     })).toEqual({
+      deviceRef: 'android:emulator-5554',
       deviceId: 'emulator-5554',
+      selection: 'auto',
       port: 9812,
       pollMs: 500,
       deviceName: 'Android SDK API 34',
@@ -519,14 +537,18 @@ describe('Action Spec Registry', () => {
     expect(spec.surfaces.cli).toBe(false);
     expect(spec.bindings?.mcpToolName).toBe('happier_simulator_preview_ios_start');
     expect(spec.inputSchema.parse({
+      deviceRef: 'ios:A1B2-C3D4',
       deviceId: 'A1B2-C3D4',
+      selection: 'auto',
       port: 9814,
       pollMs: 500,
       deviceName: 'iPhone 15 Pro',
       appName: 'Example iOS App',
       wdaUrl: 'http://127.0.0.1:8100',
     })).toEqual({
+      deviceRef: 'ios:A1B2-C3D4',
       deviceId: 'A1B2-C3D4',
+      selection: 'auto',
       port: 9814,
       pollMs: 500,
       deviceName: 'iPhone 15 Pro',

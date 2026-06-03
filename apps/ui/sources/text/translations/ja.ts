@@ -4635,6 +4635,11 @@ localTailscale: {
         ownerLabel: ({ owner }: { owner: string }) => `所有者: ${owner}`,
         requestControl: "操作",
         releaseControl: "Release",
+        readonlyStatus: "Read-only · controlled by another session",
+        controlCapability: {
+          writable: "Writable",
+          readonly: "Read-only",
+        },
         controls: {
           back: "Back",
           home: "Home",

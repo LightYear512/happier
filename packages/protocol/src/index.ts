@@ -1728,6 +1728,8 @@ export {
 } from './structuredMessages/localServicePreviewV1.js';
 export {
   SimulatorPreviewConnectionPathSchema,
+  SimulatorPreviewControlCapabilitySchema,
+  SimulatorPreviewControlUnavailableReasonSchema,
   SimulatorPreviewModeSchema,
   SimulatorPreviewOwnerSchema,
   SimulatorPreviewPlatformSchema,
@@ -1735,6 +1737,8 @@ export {
   SimulatorPreviewV1Schema,
   parseSimulatorPreviewV1,
   type SimulatorPreviewConnectionPath,
+  type SimulatorPreviewControlCapability,
+  type SimulatorPreviewControlUnavailableReason,
   type SimulatorPreviewMode,
   type SimulatorPreviewOwner,
   type SimulatorPreviewPlatform,

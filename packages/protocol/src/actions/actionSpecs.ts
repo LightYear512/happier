@@ -402,8 +402,17 @@ const SessionSimulatorPreviewRegisterInputSchema = z.object({
   devServices: SimulatorPreviewDevServicesSchema.optional(),
 }).passthrough();
 
+const SessionSimulatorPreviewDevicesListInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  platform: SimulatorPreviewPlatformSchema.optional(),
+}).passthrough();
+
+const SessionSimulatorPreviewSelectionSchema = z.enum(['auto']);
+
 const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
+  deviceRef: z.string().trim().min(1).max(300).optional(),
+  selection: SessionSimulatorPreviewSelectionSchema.optional(),
   deviceId: z.string().trim().min(1).max(200).optional(),
   port: z.number().int().min(1).max(65535).optional(),
   pollMs: z.number().int().min(50).max(60_000).optional(),
@@ -415,6 +424,8 @@ const SessionSimulatorPreviewAndroidStartInputSchema = z.object({
 
 const SessionSimulatorPreviewIosStartInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
+  deviceRef: z.string().trim().min(1).max(300).optional(),
+  selection: SessionSimulatorPreviewSelectionSchema.optional(),
   deviceId: z.string().trim().min(1).max(200).optional(),
   wdaUrl: z.string().trim().url().optional(),
   port: z.number().int().min(1).max(65535).optional(),
@@ -1577,6 +1588,42 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     inputSchema: SessionDevPreviewRegisterInputSchema,
   },
   {
+    id: 'session.simulatorPreview.devices.list',
+    title: 'List simulator preview devices',
+    description: 'List Android and iOS simulator devices available on the current session machine, including writable/read-only availability.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_simulator_preview_devices_list' },
+    examples: {
+      mcp: {
+        argsExample: '{"platform":"android"}',
+      },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'List simulator devices',
+      description: 'Use before starting a native simulator preview when the user has not selected a specific simulator.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'platform', title: 'Platform', widget: 'select', options: [
+          { value: 'ios', label: 'iOS' },
+          { value: 'android', label: 'Android' },
+        ] },
+      ],
+    },
+    inputSchema: SessionSimulatorPreviewDevicesListInputSchema,
+  },
+  {
     id: 'session.simulatorPreview.register',
     title: 'Register simulator preview',
     description: 'Register an already-running iOS or Android simulator stream so the user can view it in the session details preview tab.',
@@ -1655,7 +1702,11 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       description: 'Use when the user asks to open or preview an Android emulator from the current session.',
       fields: [
         { path: 'sessionId', title: 'Session id', widget: 'text' },
-        { path: 'deviceId', title: 'ADB device id', widget: 'text' },
+        { path: 'deviceRef', title: 'Simulator device', widget: 'text' },
+        { path: 'selection', title: 'Selection', widget: 'select', options: [
+          { value: 'auto', label: 'Auto' },
+        ] },
+        { path: 'deviceId', title: 'ADB device id (debug)', widget: 'text' },
         { path: 'port', title: 'Local stream port', widget: 'text' },
         { path: 'pollMs', title: 'Screenshot poll interval ms', widget: 'text' },
         { path: 'deviceName', title: 'Device name', widget: 'text' },
@@ -1692,7 +1743,11 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       description: 'Use when the user asks to open or preview an iOS Simulator from the current session. Leave deviceId, wdaUrl, and deviceName empty unless the user selected a specific simulator.',
       fields: [
         { path: 'sessionId', title: 'Session id', widget: 'text' },
-        { path: 'deviceId', title: 'Simulator UDID', widget: 'text' },
+        { path: 'deviceRef', title: 'Simulator device', widget: 'text' },
+        { path: 'selection', title: 'Selection', widget: 'select', options: [
+          { value: 'auto', label: 'Auto' },
+        ] },
+        { path: 'deviceId', title: 'Simulator UDID (debug)', widget: 'text' },
         { path: 'wdaUrl', title: 'WebDriverAgent URL', widget: 'text' },
         { path: 'port', title: 'Local stream port', widget: 'text' },
         { path: 'pollMs', title: 'Screenshot poll interval ms', widget: 'text' },

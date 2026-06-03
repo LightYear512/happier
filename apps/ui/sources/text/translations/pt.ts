@@ -4463,6 +4463,11 @@ export const pt: TranslationStructure = {
         ownerLabel: ({ owner }: { owner: string }) => `Proprietário: ${owner}`,
         requestControl: "Controlar",
         releaseControl: "Release",
+        readonlyStatus: "Read-only · controlled by another session",
+        controlCapability: {
+          writable: "Writable",
+          readonly: "Read-only",
+        },
         controls: {
           back: "Back",
           home: "Home",

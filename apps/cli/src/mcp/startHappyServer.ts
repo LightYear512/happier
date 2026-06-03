@@ -16,6 +16,7 @@ import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/ses
 import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
 import { createAndroidSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
 import { createIosSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
+import { createSimulatorDeviceService } from '@/session/simulatorPreview/createSimulatorDeviceService';
 import { createSimulatorPreviewControlRegistryRouter } from '@/session/simulatorPreview/createSimulatorPreviewControlRegistryRouter';
 import { registerSimulatorPreviewSessionRpcHandlers } from '@/session/simulatorPreview/registerSimulatorPreviewSessionRpcHandlers';
 import type { AccountSettings } from '@happier-dev/protocol';
@@ -52,6 +53,7 @@ export async function startHappyServer(
     const androidSimulatorPreviewControlRegistry = createAndroidSimulatorPreviewControlRegistry();
     const iosSimulatorPreviewControlRegistry = createIosSimulatorPreviewControlRegistry();
     const simulatorPreviewControlPlatforms = new Map<string, 'android' | 'ios'>();
+    const simulatorDeviceService = createSimulatorDeviceService();
     const simulatorPreviewControlRegistry = createSimulatorPreviewControlRegistryRouter({
         android: androidSimulatorPreviewControlRegistry,
         ios: iosSimulatorPreviewControlRegistry,
@@ -97,6 +99,7 @@ export async function startHappyServer(
             androidSimulatorPreviewControlRegistry,
             iosSimulatorPreviewControlRegistry,
             simulatorPreviewControlPlatforms,
+            simulatorDeviceService,
         });
 
         const transport = new StreamableHTTPServerTransport({

@@ -4364,6 +4364,11 @@ export const pl: TranslationStructure = {
         ownerLabel: ({ owner }: { owner: string }) => `Właściciel: ${owner}`,
         requestControl: "Steruj",
         releaseControl: "Release",
+        readonlyStatus: "Read-only · controlled by another session",
+        controlCapability: {
+          writable: "Writable",
+          readonly: "Read-only",
+        },
         controls: {
           back: "Back",
           home: "Home",

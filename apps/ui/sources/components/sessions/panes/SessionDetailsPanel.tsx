@@ -274,6 +274,10 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
     owner?: 'ai' | 'user' | 'system';
     connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+    controlCapability?: 'writable' | 'readonly';
+    controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable';
+    deviceRef?: string;
+    deviceDisplayName?: string;
     nativeDevSessionId?: string;
     devServices?: Readonly<{
         metro?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
@@ -292,6 +296,8 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
     const mode = maybe.mode;
     const owner = maybe.owner;
     const connectionPath = maybe.connectionPath;
+    const controlCapability = maybe.controlCapability;
+    const controlUnavailableReason = maybe.controlUnavailableReason;
     const devServices = maybe.devServices;
     return maybe.kind === 'simulatorPreview'
         && typeof maybe.simulatorSessionId === 'string'
@@ -302,6 +308,15 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
         && (mode === undefined || mode === 'idle' || mode === 'ai_control' || mode === 'user_control' || mode === 'system_locked' || mode === 'ended')
         && (owner === undefined || owner === 'ai' || owner === 'user' || owner === 'system')
         && (connectionPath === undefined || connectionPath === 'relay' || connectionPath === 'direct' || connectionPath === 'adb_reverse')
+        && (controlCapability === undefined || controlCapability === 'writable' || controlCapability === 'readonly')
+        && (
+            controlUnavailableReason === undefined
+            || controlUnavailableReason === 'device_in_use'
+            || controlUnavailableReason === 'device_selection_required'
+            || controlUnavailableReason === 'device_unavailable'
+        )
+        && (maybe.deviceRef === undefined || typeof maybe.deviceRef === 'string')
+        && (maybe.deviceDisplayName === undefined || typeof maybe.deviceDisplayName === 'string')
         && (maybe.nativeDevSessionId === undefined || typeof maybe.nativeDevSessionId === 'string')
         && (devServices === undefined || Boolean(devServices) && typeof devServices === 'object')
         && (
@@ -328,6 +343,10 @@ function SessionSimulatorPreviewDetailsPane(props: Readonly<{
         mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended';
         owner?: 'ai' | 'user' | 'system';
         connectionPath?: 'relay' | 'direct' | 'adb_reverse';
+        controlCapability?: 'writable' | 'readonly';
+        controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable';
+        deviceRef?: string;
+        deviceDisplayName?: string;
         nativeDevSessionId?: string;
         devServices?: Readonly<{
             metro?: Readonly<{ status: 'unknown' | 'starting' | 'connected' | 'healthy' | 'ready' | 'degraded' | 'error'; url?: string }>;
@@ -360,6 +379,10 @@ function SessionSimulatorPreviewDetailsPane(props: Readonly<{
             mode={control.controlLease ? 'user_control' : props.resource.mode}
             owner={control.controlLease ? 'user' : props.resource.owner}
             connectionPath={props.resource.connectionPath}
+            controlCapability={props.resource.controlCapability}
+            controlUnavailableReason={props.resource.controlUnavailableReason}
+            deviceRef={props.resource.deviceRef}
+            deviceDisplayName={props.resource.deviceDisplayName}
             nativeDevSessionId={props.resource.nativeDevSessionId}
             devServices={props.resource.devServices}
             controlLease={control.controlLease ?? undefined}

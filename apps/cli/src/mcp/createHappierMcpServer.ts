@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
@@ -42,6 +44,10 @@ import {
   type IosSimulatorPreviewDevice,
 } from '@/session/simulatorPreview/resolveIosSimulatorPreviewDevice';
 import { resolveIosWebDriverAgentUrl } from '@/session/simulatorPreview/resolveIosWebDriverAgentUrl';
+import {
+  createSimulatorDeviceService,
+  type SimulatorDeviceService,
+} from '@/session/simulatorPreview/createSimulatorDeviceService';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -78,6 +84,7 @@ export function createHappierMcpServer(
     androidSimulatorPreviewControlRegistry?: AndroidSimulatorPreviewControlRegistry;
     iosSimulatorPreviewControlRegistry?: IosSimulatorPreviewControlRegistry;
     simulatorPreviewControlPlatforms?: Map<string, 'android' | 'ios'>;
+    simulatorDeviceService?: SimulatorDeviceService;
     resolveIosSimulatorPreviewDevice?: typeof resolveIosSimulatorPreviewDevice;
     resolveIosWebDriverAgentUrl?: typeof resolveIosWebDriverAgentUrl;
   }>,
@@ -102,6 +109,8 @@ export function createHappierMcpServer(
     ?? createIosSimulatorPreviewControlRegistry();
   const simulatorPreviewControlPlatforms = opts?.simulatorPreviewControlPlatforms
     ?? new Map<string, 'android' | 'ios'>();
+  const simulatorDeviceService = opts?.simulatorDeviceService ?? createSimulatorDeviceService();
+  const hasInjectedSimulatorDeviceService = Boolean(opts?.simulatorDeviceService);
   const isActionEnabled = createMcpActionEnablement({
     accountSettings: opts?.accountSettings ?? null,
     surface: toolSurface,
@@ -277,13 +286,45 @@ export function createHappierMcpServer(
         });
         return preview;
       },
+      sessionSimulatorPreviewDevicesList: async (input) => {
+        if (input.sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        return await simulatorDeviceService.listDevices({
+          ...(input.platform ? { platform: input.platform } : {}),
+        });
+      },
       sessionSimulatorPreviewAndroidStart: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        const simulatorSessionId = `sim_${randomUUID()}`;
+        const useDeviceService = hasInjectedSimulatorDeviceService || Boolean(input.deviceRef) || input.selection === 'auto';
+        const reservation = useDeviceService
+          ? await simulatorDeviceService.reservePreview({
+              sessionId: input.sessionId,
+              simulatorSessionId,
+              platform: 'android',
+              selection: input.selection ?? 'auto',
+              ...(input.deviceRef ? { deviceRef: input.deviceRef } : {}),
+              ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+              owner: 'ai',
+            })
+          : null;
+        if (reservation && !reservation.ok) {
+          return reservation;
+        }
+        try {
+        const deviceId = reservation?.ok ? reservation.deviceId : input.deviceId;
+        const deviceName = reservation?.ok ? reservation.deviceDisplayName : input.deviceName;
         const previous = activeAndroidStreams.get(input.sessionId);
         if (previous) {
           activeAndroidStreams.delete(input.sessionId);
+          simulatorDeviceService.releaseSessionPreviews({
+            sessionId: input.sessionId,
+            platform: 'android',
+            excludeSimulatorSessionId: simulatorSessionId,
+          });
           await previous.close().catch((error) => {
             logger.debug('[mcp] Failed to close previous Android simulator preview stream', {
               sessionId: input.sessionId,
@@ -296,10 +337,10 @@ export function createHappierMcpServer(
           host: '127.0.0.1',
           ...(typeof input.port === 'number' ? { port: input.port } : {}),
           ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
-          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          ...(deviceId ? { deviceId } : {}),
         });
         const geometry: AndroidSimulatorPreviewGeometry = await resolveAndroidGeometry({
-          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          ...(deviceId ? { deviceId } : {}),
         });
         activeAndroidStreams.set(input.sessionId, stream);
 
@@ -312,7 +353,7 @@ export function createHappierMcpServer(
               sessionId: input.sessionId,
               expectedMachineId: machineId,
               port: stream.port,
-              name: `${input.deviceName} simulator`,
+              name: `${deviceName} simulator`,
               healthPath: '/frame.jpg',
               rewriteUrls: false,
             });
@@ -340,13 +381,17 @@ export function createHappierMcpServer(
 
         const preview = buildSimulatorPreviewPayload({
           sessionId: input.sessionId,
+          simulatorSessionId,
           platform: 'android',
-          deviceName: input.deviceName,
+          deviceName,
           ...(input.appName ? { appName: input.appName } : {}),
           streamUrl: stream.streamUrl,
           mode: 'ai_control',
           owner: 'ai',
           connectionPath: relay ? 'relay' : 'direct',
+          ...(reservation?.ok ? { controlCapability: reservation.controlCapability } : {}),
+          ...(reservation?.ok && reservation.controlCapability === 'readonly' ? { controlUnavailableReason: reservation.controlUnavailableReason } : {}),
+          ...(reservation?.ok ? { deviceRef: reservation.deviceRef, deviceDisplayName: reservation.deviceDisplayName } : {}),
           ...(relay ? { relay } : {}),
           ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
           ...(input.devServices ? { devServices: input.devServices } : {}),
@@ -355,33 +400,65 @@ export function createHappierMcpServer(
           preview,
           sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
         });
-        androidSimulatorPreviewControlRegistry.registerAndroidPreview({
-          sessionId: input.sessionId,
-          simulatorSessionId: preview.simulatorSessionId,
-          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
-          deviceWidth: geometry.deviceWidth,
-          deviceHeight: geometry.deviceHeight,
-          ...(input.devServices ? { devServices: input.devServices } : {}),
-        });
+        if (reservation?.controlCapability !== 'readonly') {
+          androidSimulatorPreviewControlRegistry.registerAndroidPreview({
+            sessionId: input.sessionId,
+            simulatorSessionId: preview.simulatorSessionId,
+            ...(deviceId ? { deviceId } : {}),
+            deviceWidth: geometry.deviceWidth,
+            deviceHeight: geometry.deviceHeight,
+            ...(input.devServices ? { devServices: input.devServices } : {}),
+          });
+        }
         simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'android');
         return preview;
+        } catch (error) {
+          if (reservation?.ok) {
+            simulatorDeviceService.releasePreview({ sessionId: input.sessionId, simulatorSessionId });
+          }
+          throw error;
+        }
       },
       sessionSimulatorPreviewIosStart: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        const simulatorSessionId = `sim_${randomUUID()}`;
+        const useDeviceService = hasInjectedSimulatorDeviceService || Boolean(input.deviceRef) || input.selection === 'auto';
+        const reservation = useDeviceService
+          ? await simulatorDeviceService.reservePreview({
+              sessionId: input.sessionId,
+              simulatorSessionId,
+              platform: 'ios',
+              selection: input.selection ?? 'auto',
+              ...(input.deviceRef ? { deviceRef: input.deviceRef } : {}),
+              ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+              owner: 'ai',
+            })
+          : null;
+        if (reservation && !reservation.ok) {
+          return reservation;
+        }
+        try {
         let resolvedDevice: IosSimulatorPreviewDevice | null = null;
-        if (!input.deviceId) {
+        if (!input.deviceId && !reservation) {
           resolvedDevice = await resolveIosDevice();
         }
-        const deviceId = input.deviceId || resolvedDevice?.deviceId;
-        const deviceName = input.deviceName !== 'iOS Simulator'
-          ? input.deviceName
-          : resolvedDevice?.deviceName ?? input.deviceName;
+        const deviceId = reservation?.ok ? reservation.deviceId : input.deviceId || resolvedDevice?.deviceId;
+        const deviceName = reservation?.ok
+          ? reservation.deviceDisplayName
+          : input.deviceName !== 'iOS Simulator'
+            ? input.deviceName
+            : resolvedDevice?.deviceName ?? input.deviceName;
         const wdaUrl = input.wdaUrl || await resolveIosWdaUrl();
         const previous = activeIosStreams.get(input.sessionId);
         if (previous) {
           activeIosStreams.delete(input.sessionId);
+          simulatorDeviceService.releaseSessionPreviews({
+            sessionId: input.sessionId,
+            platform: 'ios',
+            excludeSimulatorSessionId: simulatorSessionId,
+          });
           await previous.close().catch((error) => {
             logger.debug('[mcp] Failed to close previous iOS simulator preview stream', {
               sessionId: input.sessionId,
@@ -435,6 +512,7 @@ export function createHappierMcpServer(
 
         const preview = buildSimulatorPreviewPayload({
           sessionId: input.sessionId,
+          simulatorSessionId,
           platform: 'ios',
           deviceName,
           ...(input.appName ? { appName: input.appName } : {}),
@@ -442,6 +520,9 @@ export function createHappierMcpServer(
           mode: 'ai_control',
           owner: 'ai',
           connectionPath: relay ? 'relay' : 'direct',
+          ...(reservation?.ok ? { controlCapability: reservation.controlCapability } : {}),
+          ...(reservation?.ok && reservation.controlCapability === 'readonly' ? { controlUnavailableReason: reservation.controlUnavailableReason } : {}),
+          ...(reservation?.ok ? { deviceRef: reservation.deviceRef, deviceDisplayName: reservation.deviceDisplayName } : {}),
           ...(relay ? { relay } : {}),
           ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
           ...(input.devServices ? { devServices: input.devServices } : {}),
@@ -450,19 +531,29 @@ export function createHappierMcpServer(
           preview,
           sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
         });
-        iosSimulatorPreviewControlRegistry.registerIosPreview({
-          sessionId: input.sessionId,
-          simulatorSessionId: preview.simulatorSessionId,
-          ...(deviceId ? { deviceId } : {}),
-          wdaUrl,
-        });
+        if (reservation?.controlCapability !== 'readonly') {
+          iosSimulatorPreviewControlRegistry.registerIosPreview({
+            sessionId: input.sessionId,
+            simulatorSessionId: preview.simulatorSessionId,
+            ...(deviceId ? { deviceId } : {}),
+            wdaUrl,
+          });
+        }
         simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'ios');
         return preview;
+        } catch (error) {
+          if (reservation?.ok) {
+            simulatorDeviceService.releasePreview({ sessionId: input.sessionId, simulatorSessionId });
+          }
+          throw error;
+        }
       },
       sessionSimulatorPreviewControlAcquire: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        const writable = simulatorDeviceService.assertPreviewWritable(input);
+        if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
         const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
         return platform === 'ios'
           ? await iosSimulatorPreviewControlRegistry.acquire(input)
@@ -481,6 +572,8 @@ export function createHappierMcpServer(
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        const writable = simulatorDeviceService.assertPreviewWritable(input);
+        if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
         const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
         return platform === 'ios'
           ? await iosSimulatorPreviewControlRegistry.sendInput(input)
@@ -490,6 +583,8 @@ export function createHappierMcpServer(
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        const writable = simulatorDeviceService.assertPreviewWritable(input);
+        if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
         const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
         return platform === 'ios'
           ? await iosSimulatorPreviewControlRegistry.reloadApp(input)
@@ -499,6 +594,8 @@ export function createHappierMcpServer(
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
+        const writable = simulatorDeviceService.assertPreviewWritable(input);
+        if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
         const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
         return platform === 'ios'
           ? await iosSimulatorPreviewControlRegistry.reconnectDevServices(input)

@@ -84,6 +84,8 @@ type SessionSimulatorPreviewRegisterActionInput = Readonly<{
 }>;
 
 type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
+  deviceRef?: unknown;
+  selection?: unknown;
   deviceId?: unknown;
   deviceName?: unknown;
   appName?: unknown;
@@ -94,6 +96,8 @@ type SessionSimulatorPreviewAndroidStartActionInput = Readonly<{
 }>;
 
 type SessionSimulatorPreviewIosStartActionInput = Readonly<{
+  deviceRef?: unknown;
+  selection?: unknown;
   deviceId?: unknown;
   wdaUrl?: unknown;
   deviceName?: unknown;
@@ -185,8 +189,14 @@ export type ActionExecutorDeps = Readonly<{
     nativeDevSessionId?: string;
     devServices?: SimulatorPreviewDevServices;
   }>) => Promise<unknown>;
+  sessionSimulatorPreviewDevicesList?: (args: Readonly<{
+    sessionId: string;
+    platform?: 'android' | 'ios';
+  }>) => Promise<unknown>;
   sessionSimulatorPreviewAndroidStart?: (args: Readonly<{
     sessionId: string;
+    deviceRef?: string;
+    selection?: 'auto';
     deviceId?: string;
     port?: number;
     pollMs?: number;
@@ -197,6 +207,8 @@ export type ActionExecutorDeps = Readonly<{
   }>) => Promise<unknown>;
   sessionSimulatorPreviewIosStart?: (args: Readonly<{
     sessionId: string;
+    deviceRef?: string;
+    selection?: 'auto';
     deviceId?: string;
     wdaUrl?: string;
     port?: number;
@@ -1410,6 +1422,20 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           return { ok: true, result: res };
         }
 
+        if (actionId === 'session.simulatorPreview.devices.list') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionSimulatorPreviewDevicesList) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.devices.list' };
+          }
+          const platform = (parsed.data as any).platform;
+          const res = await deps.sessionSimulatorPreviewDevicesList({
+            sessionId,
+            ...(platform === 'android' || platform === 'ios' ? { platform } : {}),
+          });
+          return { ok: true, result: res };
+        }
+
         if (actionId === 'session.simulatorPreview.android.start') {
           const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
           if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
@@ -1417,6 +1443,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.android.start' };
           }
           const input = parsed.data as SessionSimulatorPreviewAndroidStartActionInput;
+          const deviceRef = normalizeId(input.deviceRef);
+          const selection = input.selection === 'auto' ? 'auto' as const : undefined;
           const deviceId = normalizeId(input.deviceId);
           const deviceName = normalizeId(input.deviceName) || 'Android Emulator';
           const appName = normalizeId(input.appName);
@@ -1425,6 +1453,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const pollMs = input.pollMs;
           const res = await deps.sessionSimulatorPreviewAndroidStart({
             sessionId,
+            ...(deviceRef ? { deviceRef } : {}),
+            ...(selection ? { selection } : {}),
             ...(deviceId ? { deviceId } : {}),
             ...(typeof port === 'number' ? { port } : {}),
             ...(typeof pollMs === 'number' ? { pollMs } : {}),
@@ -1443,6 +1473,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.simulatorPreview.ios.start' };
           }
           const input = parsed.data as SessionSimulatorPreviewIosStartActionInput;
+          const deviceRef = normalizeId(input.deviceRef);
+          const selection = input.selection === 'auto' ? 'auto' as const : undefined;
           const deviceId = normalizeId(input.deviceId);
           const wdaUrl = normalizeId(input.wdaUrl);
           const deviceName = normalizeId(input.deviceName) || 'iOS Simulator';
@@ -1452,6 +1484,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const pollMs = input.pollMs;
           const res = await deps.sessionSimulatorPreviewIosStart({
             sessionId,
+            ...(deviceRef ? { deviceRef } : {}),
+            ...(selection ? { selection } : {}),
             ...(deviceId ? { deviceId } : {}),
             ...(wdaUrl ? { wdaUrl } : {}),
             ...(typeof port === 'number' ? { port } : {}),
