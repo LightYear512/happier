@@ -4487,6 +4487,11 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
               ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
               requestControl: '控制',
               releaseControl: '釋放',
+              readonlyStatus: '唯讀 · 其他工作階段正在控制',
+              controlCapability: {
+                writable: '可操作',
+                readonly: '唯讀',
+              },
               controls: {
                 back: '返回',
                 home: '主畫面',

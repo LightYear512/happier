@@ -22,6 +22,10 @@ export type SessionSimulatorPreviewPaneProps = Readonly<{
     deviceName: string;
     streamUrl: string;
     appName?: string | undefined;
+    controlCapability?: 'writable' | 'readonly' | undefined;
+    controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable' | undefined;
+    deviceRef?: string | undefined;
+    deviceDisplayName?: string | undefined;
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended' | undefined;
     owner?: 'ai' | 'user' | 'system' | undefined;
     connectionPath?: 'relay' | 'direct' | 'adb_reverse' | undefined;
@@ -364,6 +368,12 @@ function formatOwner(owner: NonNullable<SessionSimulatorPreviewPaneProps['owner'
     }
 }
 
+function formatControlCapability(capability: SessionSimulatorPreviewPaneProps['controlCapability']): string {
+    return capability === 'readonly'
+        ? t('session.simulatorPreview.controlCapability.readonly')
+        : t('session.simulatorPreview.controlCapability.writable');
+}
+
 function formatDevServiceStatus(status: SimulatorPreviewDevService['status']): string {
     if (status === 'connected') return t('session.simulatorPreview.devServices.status.connected');
     if (status === 'healthy') return t('session.simulatorPreview.devServices.status.healthy');
@@ -435,6 +445,9 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
     const title = props.appName && props.appName.trim().length > 0
         ? `${props.deviceName} · ${props.appName.trim()}`
         : props.deviceName;
+    const isReadonly = props.controlCapability === 'readonly';
+    const canWritePreview = !isReadonly;
+    const deviceStatusText = `${props.deviceDisplayName ?? props.deviceName} · ${formatControlCapability(props.controlCapability)}`;
     const subtitle = [
         props.platform === 'ios' ? t('session.simulatorPreview.platform.ios') : t('session.simulatorPreview.platform.android'),
         formatMode(props.mode),
@@ -444,8 +457,9 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
     const hasUserControl = props.mode === 'user_control'
         && props.owner === 'user'
         && props.controlLease?.owner === 'user'
+        && canWritePreview
         && Boolean(props.onSendInput);
-    const canRequestControl = !hasUserControl && Boolean(props.onRequestControl);
+    const canRequestControl = canWritePreview && !hasUserControl && Boolean(props.onRequestControl);
     const handleLayout = React.useCallback((event: LayoutChangeEvent) => {
         const { width, height } = event.nativeEvent.layout;
         viewportSizeRef.current = { width, height };
@@ -632,6 +646,14 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                     <View style={stylesheet.titleGroup}>
                         <Text style={stylesheet.title}>{title}</Text>
                         <Text style={stylesheet.subtitle}>{subtitle}</Text>
+                        <Text style={stylesheet.subtitle} testID="session.simulatorPreview.deviceStatus">{deviceStatusText}</Text>
+                        {isReadonly
+                            ? (
+                                <Text style={stylesheet.subtitle} testID="session.simulatorPreview.readonlyStatus">
+                                    {t('session.simulatorPreview.readonlyStatus')}
+                                </Text>
+                            )
+                            : null}
                     </View>
                     {canRequestControl
                         ? (
@@ -713,7 +735,7 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                                 {renderDevService(t('session.simulatorPreview.devServices.hmr'), props.devServices?.hmr, 'session.simulatorPreview.devService.hmr')}
                             </View>
                             <View style={stylesheet.devStatusActions}>
-                                {props.onReloadApp
+                                {canWritePreview && props.onReloadApp
                                     ? (
                                         <Pressable
                                             onPress={props.onReloadApp}
@@ -724,7 +746,7 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                                         </Pressable>
                                     )
                                     : null}
-                                {props.onReconnectDevServices
+                                {canWritePreview && props.onReconnectDevServices
                                     ? (
                                         <Pressable
                                             onPress={props.onReconnectDevServices}

@@ -11,6 +11,7 @@ export const ACTION_IDS = [
   'session.rollback',
   'session.handoff',
   'session.devPreview.register',
+  'session.simulatorPreview.devices.list',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
   'session.simulatorPreview.ios.start',

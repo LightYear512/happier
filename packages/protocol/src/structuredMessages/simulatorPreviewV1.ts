@@ -18,6 +18,16 @@ export type SimulatorPreviewOwner = z.infer<typeof SimulatorPreviewOwnerSchema>;
 export const SimulatorPreviewConnectionPathSchema = z.enum(['relay', 'direct', 'adb_reverse']);
 export type SimulatorPreviewConnectionPath = z.infer<typeof SimulatorPreviewConnectionPathSchema>;
 
+export const SimulatorPreviewControlCapabilitySchema = z.enum(['writable', 'readonly']);
+export type SimulatorPreviewControlCapability = z.infer<typeof SimulatorPreviewControlCapabilitySchema>;
+
+export const SimulatorPreviewControlUnavailableReasonSchema = z.enum([
+  'device_in_use',
+  'device_selection_required',
+  'device_unavailable',
+]);
+export type SimulatorPreviewControlUnavailableReason = z.infer<typeof SimulatorPreviewControlUnavailableReasonSchema>;
+
 export const SimulatorPreviewStreamUrlSchema = z
   .string()
   .trim()
@@ -74,6 +84,10 @@ export const SimulatorPreviewV1Schema = z.object({
   mode: SimulatorPreviewModeSchema,
   owner: SimulatorPreviewOwnerSchema.optional(),
   connectionPath: SimulatorPreviewConnectionPathSchema,
+  controlCapability: SimulatorPreviewControlCapabilitySchema.optional(),
+  controlUnavailableReason: SimulatorPreviewControlUnavailableReasonSchema.optional(),
+  deviceRef: z.string().trim().min(1).max(300).optional(),
+  deviceDisplayName: z.string().trim().min(1).max(200).optional(),
   relay: SimulatorPreviewRelaySchema.optional(),
   nativeDevSessionId: z.string().trim().min(1).max(200).optional(),
   devServices: SimulatorPreviewDevServicesSchema.optional(),

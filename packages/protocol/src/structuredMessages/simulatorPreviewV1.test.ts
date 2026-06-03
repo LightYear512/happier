@@ -73,6 +73,29 @@ describe('SimulatorPreviewV1Schema', () => {
     });
   });
 
+  it('parses simulator device capability metadata without exposing raw device ids as required fields', () => {
+    const parsed = SimulatorPreviewV1Schema.parse({
+      simulatorSessionId: 'sim_1',
+      sessionId: 's1',
+      platform: 'android',
+      deviceName: 'Pixel 8 API 35',
+      streamUrl: 'https://relay.example.test/simulator/sim_1/stream.mjpeg',
+      mode: 'ai_control',
+      owner: 'ai',
+      connectionPath: 'relay',
+      controlCapability: 'readonly',
+      controlUnavailableReason: 'device_in_use',
+      deviceRef: 'android:emulator-5554',
+      deviceDisplayName: 'Pixel 8 API 35',
+      registeredAtMs: 1,
+    });
+
+    expect(parsed.controlCapability).toBe('readonly');
+    expect(parsed.controlUnavailableReason).toBe('device_in_use');
+    expect(parsed.deviceRef).toBe('android:emulator-5554');
+    expect(parsed.deviceDisplayName).toBe('Pixel 8 API 35');
+  });
+
   it('rejects non-http simulator stream URLs', () => {
     expect(() => SimulatorPreviewV1Schema.parse({
       simulatorSessionId: 'sim_1',

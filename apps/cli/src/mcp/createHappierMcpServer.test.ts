@@ -126,6 +126,8 @@ describe('createHappierMcpServer', () => {
 
     expect(disabled.toolNames).not.toContain('happier_simulator_preview_register');
     expect(enabled.toolNames).toContain('happier_simulator_preview_register');
+    expect(disabled.toolNames).not.toContain('happier_simulator_preview_devices_list');
+    expect(enabled.toolNames).toContain('happier_simulator_preview_devices_list');
     expect(disabled.toolNames).not.toContain('happier_simulator_preview_android_start');
     expect(enabled.toolNames).toContain('happier_simulator_preview_android_start');
     expect(disabled.toolNames).not.toContain('happier_simulator_preview_ios_start');
@@ -321,6 +323,274 @@ describe('createHappierMcpServer', () => {
     expect(resolveAndroidSimulatorPreviewGeometry).toHaveBeenCalledWith({ deviceId: 'emulator-5554' });
     await mcp.close();
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it('lists simulator devices through the in-session MCP action bridge', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const simulatorDeviceService = {
+      listDevices: vi.fn(async () => ({
+        devices: [
+          {
+            deviceRef: 'android:emulator-5554',
+            platform: 'android',
+            displayName: 'Pixel 8 API 35',
+            state: 'booted',
+            availability: 'writable',
+            recommended: true,
+          },
+        ],
+      })),
+    };
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_devices_list_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any, {
+      simulatorDeviceService,
+    } as any);
+
+    await expect(captured.deps.sessionSimulatorPreviewDevicesList({
+      sessionId: 'sess_simulator_devices_list_1',
+      platform: 'android',
+    })).resolves.toEqual({
+      devices: [
+        {
+          deviceRef: 'android:emulator-5554',
+          platform: 'android',
+          displayName: 'Pixel 8 API 35',
+          state: 'booted',
+          availability: 'writable',
+          recommended: true,
+        },
+      ],
+    });
+    expect(simulatorDeviceService.listDevices).toHaveBeenCalledWith({ platform: 'android' });
+  });
+
+  it('starts a readonly Android preview when the selected physical device is already write-locked', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const sendClaudeSessionMessage = vi.fn();
+    const simulatorDeviceService = {
+      reservePreview: vi.fn(async () => ({
+        ok: true,
+        controlCapability: 'readonly',
+        controlUnavailableReason: 'device_in_use',
+        deviceRef: 'android:emulator-5554',
+        deviceId: 'emulator-5554',
+        deviceDisplayName: 'Pixel 8 API 35',
+      })),
+      assertPreviewWritable: vi.fn(),
+    };
+    const androidSimulatorPreviewControlRegistry = {
+      registerAndroidPreview: vi.fn(),
+      acquire: vi.fn(),
+      release: vi.fn(),
+      sendInput: vi.fn(),
+      reloadApp: vi.fn(),
+      reconnectDevServices: vi.fn(),
+    };
+
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_android_readonly_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage,
+      updateMetadata: () => {},
+    } as any, {
+      daemonDevPreviewRegister: null,
+      simulatorDeviceService,
+      androidSimulatorPreviewControlRegistry,
+      startAndroidSimulatorPreviewStream: vi.fn(async () => ({
+        host: '127.0.0.1',
+        port: 9812,
+        frameUrl: 'http://127.0.0.1:9812/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+        close: vi.fn(async () => {}),
+      })),
+      resolveAndroidSimulatorPreviewGeometry: vi.fn(async () => ({
+        deviceWidth: 720,
+        deviceHeight: 1600,
+      })),
+    } as any);
+
+    const preview = await captured.deps.sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_readonly_1',
+      deviceRef: 'android:emulator-5554',
+      deviceName: 'Android Emulator',
+    });
+
+    expect(preview).toEqual(expect.objectContaining({
+      platform: 'android',
+      deviceName: 'Pixel 8 API 35',
+      controlCapability: 'readonly',
+      controlUnavailableReason: 'device_in_use',
+      deviceRef: 'android:emulator-5554',
+      deviceDisplayName: 'Pixel 8 API 35',
+    }));
+    expect(androidSimulatorPreviewControlRegistry.registerAndroidPreview).not.toHaveBeenCalled();
+    expect(sendClaudeSessionMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        happier: expect.objectContaining({
+          payload: expect.objectContaining({
+            controlCapability: 'readonly',
+            controlUnavailableReason: 'device_in_use',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('releases a reserved Android simulator device when stream startup fails', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const simulatorDeviceService = {
+      reservePreview: vi.fn(async () => ({
+        ok: true,
+        controlCapability: 'writable',
+        deviceRef: 'android:emulator-5554',
+        deviceId: 'emulator-5554',
+        deviceDisplayName: 'Pixel 8 API 35',
+        writerLeaseId: 'lease_1',
+      })),
+      releasePreview: vi.fn(),
+      assertPreviewWritable: vi.fn(),
+    };
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_android_failure_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any, {
+      simulatorDeviceService,
+      startAndroidSimulatorPreviewStream: vi.fn(async () => {
+        throw new Error('stream failed');
+      }),
+    } as any);
+
+    await expect(captured.deps.sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_failure_1',
+      deviceRef: 'android:emulator-5554',
+      deviceName: 'Android Emulator',
+    })).rejects.toThrow('stream failed');
+    expect(simulatorDeviceService.releasePreview).toHaveBeenCalledWith({
+      sessionId: 'sess_simulator_preview_android_failure_1',
+      simulatorSessionId: expect.stringMatching(/^sim_/),
+    });
+  });
+
+  it('keeps the new Android preview reservation writable when replacing an existing stream', async () => {
+    const captured: { deps?: any } = {};
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          captured.deps = deps;
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const { createSimulatorDeviceService } = await import('@/session/simulatorPreview/createSimulatorDeviceService');
+
+    const simulatorDeviceService = createSimulatorDeviceService({
+      randomId: () => 'lease_1',
+      discoverAndroidDevices: async () => [
+        { platform: 'android', deviceId: 'emulator-5554', displayName: 'Pixel 8 API 35', state: 'booted' },
+      ],
+      discoverIosDevices: async () => [],
+    });
+    const closeFirst = vi.fn(async () => {});
+    const closeSecond = vi.fn(async () => {});
+    const startAndroidSimulatorPreviewStream = vi.fn()
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        port: 9812,
+        frameUrl: 'http://127.0.0.1:9812/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9812/stream.mjpeg',
+        close: closeFirst,
+      })
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        port: 9813,
+        frameUrl: 'http://127.0.0.1:9813/frame.jpg',
+        streamUrl: 'http://127.0.0.1:9813/stream.mjpeg',
+        close: closeSecond,
+      });
+
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_android_replace_lock_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any, {
+      daemonDevPreviewRegister: null,
+      simulatorDeviceService,
+      startAndroidSimulatorPreviewStream,
+      resolveAndroidSimulatorPreviewGeometry: vi.fn(async () => ({
+        deviceWidth: 720,
+        deviceHeight: 1600,
+      })),
+    } as any);
+
+    await captured.deps.sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_replace_lock_1',
+      selection: 'auto',
+    });
+    const secondPreview = await captured.deps.sessionSimulatorPreviewAndroidStart({
+      sessionId: 'sess_simulator_preview_android_replace_lock_1',
+      selection: 'auto',
+    });
+
+    expect(closeFirst).toHaveBeenCalledTimes(1);
+    expect(simulatorDeviceService.assertPreviewWritable({
+      sessionId: 'sess_simulator_preview_android_replace_lock_1',
+      simulatorSessionId: secondPreview.simulatorSessionId,
+    })).toEqual({ ok: true });
   });
 
   it('starts an iOS simulator stream and emits a preview message from the in-session action bridge', async () => {
@@ -625,6 +895,10 @@ describe('createHappierMcpServer', () => {
         close: secondClose,
       });
     const androidSimulatorPreviewStreams = new Map();
+    const resolveAndroidSimulatorPreviewGeometry = vi.fn(async () => ({
+      deviceWidth: 720,
+      deviceHeight: 1600,
+    }));
     const fakeClient = {
       sessionId: 'sess_simulator_preview_android_replace_1',
       rpcHandlerManager: { invokeLocal: async () => ({}) },
@@ -635,10 +909,12 @@ describe('createHappierMcpServer', () => {
     createHappierMcpServer(fakeClient, {
       startAndroidSimulatorPreviewStream,
       androidSimulatorPreviewStreams,
+      resolveAndroidSimulatorPreviewGeometry,
     } as any);
     createHappierMcpServer(fakeClient, {
       startAndroidSimulatorPreviewStream,
       androidSimulatorPreviewStreams,
+      resolveAndroidSimulatorPreviewGeometry,
     } as any);
 
     await capturedDeps[0].sessionSimulatorPreviewAndroidStart({

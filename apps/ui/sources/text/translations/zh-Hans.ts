@@ -4995,6 +4995,11 @@ export const zhHans: TranslationStructure = {
       ownerLabel: ({ owner }: { owner: string }) => `控制方：${owner}`,
       requestControl: "控制",
       releaseControl: "释放",
+      readonlyStatus: "只读 · 其他会话正在控制",
+      controlCapability: {
+        writable: "可操作",
+        readonly: "只读",
+      },
       controls: {
         back: "返回",
         home: "主页",

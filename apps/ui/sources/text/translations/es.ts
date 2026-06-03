@@ -5177,6 +5177,11 @@ export const es: TranslationStructure = {
             ownerLabel: ({ owner }: { owner: string }) => `Propietario: ${owner}`,
             requestControl: "Controlar",
             releaseControl: "Release",
+            readonlyStatus: "Read-only · controlled by another session",
+            controlCapability: {
+              writable: "Writable",
+              readonly: "Read-only",
+            },
             controls: {
               back: "Back",
               home: "Home",
