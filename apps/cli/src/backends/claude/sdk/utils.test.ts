@@ -178,7 +178,7 @@ describe('Claude SDK utils - getDefaultClaudeCodePath', () => {
     const localBin = join(homeDir, '.local', 'bin');
     mkdirSync(localBin, { recursive: true });
     const nativeClaudePath = join(localBin, 'claude.exe');
-    writeTextFileSync(nativeClaudePath, 'MZ');
+    writeFileSync(nativeClaudePath, Buffer.from([0x4d, 0x5a, 0x90, 0x00]));
 
     expect(getDefaultClaudeCodePath()).toBe(nativeClaudePath);
   });
@@ -419,6 +419,29 @@ describe('Claude SDK utils - getDefaultClaudeCodePathForAgentSdk', () => {
     Object.defineProperty(process, 'execPath', { value: fakeNode, configurable: true });
 
     expect(getDefaultClaudeCodePathForAgentSdk()).toBe(globalCliJs);
+  });
+
+  it('ignores a Windows npm shell shim on PATH and uses the real Claude binary for Agent SDK', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+    // npm creates an extensionless POSIX shell shim beside claude.cmd on Windows.
+    // Node cannot spawn that shim directly with shell:false.
+    const pathShim = join(binDir, 'claude');
+    writeTextFileSync(pathShim, '#!/bin/sh\nexec "$basedir/node" "$basedir/node_modules/@anthropic-ai/claude-code/cli-wrapper.cjs" "$@"\n');
+
+    const nodeDir = join(workDir, 'nodejs');
+    mkdirSync(nodeDir, { recursive: true });
+    const fakeNode = join(nodeDir, 'node.exe');
+    writeFileSync(fakeNode, Buffer.from([0x4d, 0x5a, 0x90, 0x00]));
+
+    const globalBinDir = join(nodeDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin');
+    mkdirSync(globalBinDir, { recursive: true });
+    const globalClaudeExe = join(globalBinDir, 'claude.exe');
+    writeFileSync(globalClaudeExe, Buffer.from([0x4d, 0x5a, 0x90, 0x00]));
+
+    Object.defineProperty(process, 'execPath', { value: fakeNode, configurable: true });
+
+    expect(getDefaultClaudeCodePathForAgentSdk()).toBe(globalClaudeExe);
   });
 });
 

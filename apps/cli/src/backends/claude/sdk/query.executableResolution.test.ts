@@ -22,6 +22,20 @@ describe('claude sdk query executable resolution', () => {
   ] as const;
   let envScope = createEnvKeyScope(envKeys);
 
+  function expectSpawnUsesEntrypoint(spawnCall: unknown[] | undefined, expectedEntrypoint: string): void {
+    expect(spawnCall).toBeTruthy();
+    const spawnCommand = spawnCall?.[0] as unknown;
+    if (process.platform === 'win32' && expectedEntrypoint.toLowerCase().endsWith('.cmd')) {
+      expect(String(spawnCommand)).toMatch(/cmd\.exe$/i);
+      const spawnArgs = spawnCall?.[1] as unknown;
+      expect(Array.isArray(spawnArgs) ? spawnArgs.slice(0, 3) : null).toEqual(['/d', '/s', '/c']);
+      expect(Array.isArray(spawnArgs) ? spawnArgs[3] : null).toContain(expectedEntrypoint);
+      return;
+    }
+
+    expect(spawnCommand).toBe(expectedEntrypoint);
+  }
+
   function setBunRuntime(enabled: boolean): void {
     if (enabled) {
       Object.defineProperty(process.versions, 'bun', {
@@ -155,7 +169,7 @@ describe('claude sdk query executable resolution', () => {
       ).toThrow(/spawn invoked/);
 
       expect(spawnMock).toHaveBeenCalled();
-      expect(spawnMock.mock.calls[0]?.[0]).toBe(overridePath);
+      expectSpawnUsesEntrypoint(spawnMock.mock.calls[0], overridePath);
     });
   });
 
@@ -199,7 +213,7 @@ describe('claude sdk query executable resolution', () => {
       ).toThrow(/spawn invoked/);
 
       expect(spawnMock).toHaveBeenCalled();
-      expect(spawnMock.mock.calls[0]?.[0]).toBe(overridePath);
+      expectSpawnUsesEntrypoint(spawnMock.mock.calls[0], overridePath);
     });
   });
 
@@ -325,7 +339,7 @@ describe('claude sdk query executable resolution', () => {
     const spawnCommand = spawnMock.mock.calls[0]?.[0] as unknown;
     const spawnArgs = spawnMock.mock.calls[0]?.[1] as unknown;
     const spawnOpts = spawnMock.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
-    expect(spawnCommand).toBe('cmd.exe');
+    expect(String(spawnCommand)).toMatch(/cmd\.exe$/i);
     expect((spawnArgs as any)?.slice?.(0, 3)).toEqual(['/d', '/s', '/c']);
     expect((spawnArgs as any)?.[3]).toContain('claude.cmd');
     expect(spawnOpts?.shell).not.toBe(true);
