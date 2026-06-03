@@ -105,7 +105,7 @@ describe('MessageView (copy button hitSlop)', () => {
     });
 
     it.each(['ios', 'android'] as const)(
-        'renders inline message actions on %s instead of relying on long-press dropdowns',
+        'renders inline message actions on %s without intercepting native text selection',
         async (platformOS) => {
             platformState.os = platformOS;
             vi.resetModules();
@@ -151,6 +151,11 @@ describe('MessageView (copy button hitSlop)', () => {
             );
             expect(longPressables).toHaveLength(0);
 
+            const pressableRows = screen.findAll(
+                (node: any) => node.type === 'Pressable' && node.props?.testID === 'transcript-user-message-row',
+            );
+            expect(pressableRows).toHaveLength(0);
+
             const dropdowns = screen.findAllByType('DropdownMenu');
             expect(dropdowns).toHaveLength(0);
         },
@@ -182,6 +187,7 @@ describe('MessageView (copy button hitSlop)', () => {
             );
 
             const markdownView = screen.findByType('MarkdownView' as any);
+            expect(markdownView.props.testID).toBe('transcript-user-message-markdown');
             expect(markdownView.props.selectable).toBe(expectedSelectable);
             expect(markdownView.props.profile).toBe('transcript');
             expect(markdownView.props.textStyle).toMatchObject({

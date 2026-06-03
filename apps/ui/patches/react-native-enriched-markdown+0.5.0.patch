@@ -1,3 +1,455 @@
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt
+index 7551656..8cc3565 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownInternalText.kt
+@@ -11,10 +11,9 @@ import com.swmansion.enriched.markdown.spoiler.SpoilerCapable
+ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlay
+ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlayDrawer
+ import com.swmansion.enriched.markdown.utils.text.interaction.CheckboxTouchHelper
+-import com.swmansion.enriched.markdown.utils.text.view.LinkLongPressMovementMethod
++import com.swmansion.enriched.markdown.utils.text.interaction.LinkTouchHelper
+ import com.swmansion.enriched.markdown.utils.text.view.applySelectableState
+ import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForCheckboxTap
+-import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForLinkTap
+ import com.swmansion.enriched.markdown.utils.text.view.createSelectionActionModeCallback
+ import com.swmansion.enriched.markdown.utils.text.view.setupAsMarkdownTextView
+ import com.swmansion.enriched.markdown.views.BlockSegmentView
+@@ -31,6 +30,8 @@ class EnrichedMarkdownInternalText
+     var lastElementMarginBottom: Float = 0f
+ 
+     private val checkboxTouchHelper = CheckboxTouchHelper(this)
++    private val linkTouchHelper = LinkTouchHelper(this)
++    private var selectable: Boolean = true
+ 
+     var onTaskListItemPressCallback: ((taskIndex: Int, checked: Boolean, itemText: String) -> Unit)?
+       get() = checkboxTouchHelper.onCheckboxTap
+@@ -59,10 +60,16 @@ class EnrichedMarkdownInternalText
+     }
+ 
+     fun applyStyledText(styledText: CharSequence) {
++      if (isTextSelectable) {
++        setTextIsSelectable(false)
++      }
+       text = styledText
+-
+-      if (movementMethod !is LinkLongPressMovementMethod) {
+-        movementMethod = LinkLongPressMovementMethod.createInstance()
++      if (selectable) {
++        post {
++          if (selectable) {
++            applySelectableState(true)
++          }
++        }
+       }
+ 
+       spoilerOverlayDrawer = SpoilerOverlayDrawer.setupIfNeeded(this, styledText, spoilerOverlayDrawer, spoilerOverlay)
+@@ -81,6 +88,7 @@ class EnrichedMarkdownInternalText
+     }
+ 
+     fun setIsSelectable(selectable: Boolean) {
++      this.selectable = selectable
+       applySelectableState(selectable)
+     }
+ 
+@@ -99,10 +107,10 @@ class EnrichedMarkdownInternalText
+         }
+         return true
+       }
+-      val result = super.onTouchEvent(event)
+-      if (event.action == MotionEvent.ACTION_DOWN) {
+-        cancelJSTouchForLinkTap(event)
++      if (linkTouchHelper.onTouchEvent(event)) {
++        return true
+       }
++      val result = super.onTouchEvent(event)
+       return result
+     }
+ 
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt
+index aa9614e..6370195 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownText.kt
+@@ -21,10 +21,9 @@ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlayDrawer
+ import com.swmansion.enriched.markdown.styles.StyleConfig
+ import com.swmansion.enriched.markdown.utils.text.TailFadeInAnimator
+ import com.swmansion.enriched.markdown.utils.text.interaction.CheckboxTouchHelper
+-import com.swmansion.enriched.markdown.utils.text.view.LinkLongPressMovementMethod
++import com.swmansion.enriched.markdown.utils.text.interaction.LinkTouchHelper
+ import com.swmansion.enriched.markdown.utils.text.view.applySelectableState
+ import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForCheckboxTap
+-import com.swmansion.enriched.markdown.utils.text.view.cancelJSTouchForLinkTap
+ import com.swmansion.enriched.markdown.utils.text.view.createSelectionActionModeCallback
+ import com.swmansion.enriched.markdown.utils.text.view.emitLinkLongPressEvent
+ import com.swmansion.enriched.markdown.utils.text.view.emitLinkPressEvent
+@@ -48,6 +47,7 @@ class EnrichedMarkdownText
+     private var onLinkPressCallback: ((String) -> Unit)? = null
+     private var onLinkLongPressCallback: ((String) -> Unit)? = null
+     private val checkboxTouchHelper = CheckboxTouchHelper(this)
++    private val linkTouchHelper = LinkTouchHelper(this)
+ 
+     private val mainHandler = Handler(Looper.getMainLooper())
+     private val executor = Executors.newSingleThreadExecutor()
+@@ -73,6 +73,7 @@ class EnrichedMarkdownText
+     private var allowFontScaling: Boolean = true
+     private var maxFontSizeMultiplier: Float = 0f
+     private var allowTrailingMargin: Boolean = false
++    private var selectable: Boolean = true
+ 
+     private var streamingAnimation: Boolean = false
+     private var previousTextLength: Int = 0
+@@ -226,10 +227,16 @@ class EnrichedMarkdownText
+     private fun applyRenderedText(styledText: CharSequence) {
+       val tailStart = previousTextLength
+ 
++      if (isTextSelectable) {
++        setTextIsSelectable(false)
++      }
+       text = styledText
+-
+-      if (movementMethod !is LinkLongPressMovementMethod) {
+-        movementMethod = LinkLongPressMovementMethod.createInstance()
++      if (selectable) {
++        post {
++          if (selectable) {
++            applySelectableState(true)
++          }
++        }
+       }
+ 
+       renderer.getCollectedImageSpans().forEach { span ->
+@@ -255,6 +262,7 @@ class EnrichedMarkdownText
+     }
+ 
+     fun setIsSelectable(selectable: Boolean) {
++      this.selectable = selectable
+       applySelectableState(selectable)
+     }
+ 
+@@ -304,10 +312,10 @@ class EnrichedMarkdownText
+         }
+         return true
+       }
+-      val result = super.onTouchEvent(event)
+-      if (event.action == MotionEvent.ACTION_DOWN) {
+-        cancelJSTouchForLinkTap(event)
++      if (linkTouchHelper.onTouchEvent(event)) {
++        return true
+       }
++      val result = super.onTouchEvent(event)
+       return result
+     }
+ 
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/interaction/LinkTouchHelper.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/interaction/LinkTouchHelper.kt
+new file mode 100644
+index 0000000..ba9335d
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/interaction/LinkTouchHelper.kt
+@@ -0,0 +1,174 @@
++package com.swmansion.enriched.markdown.utils.text.interaction
++
++import android.os.Handler
++import android.os.Looper
++import android.text.Selection
++import android.text.Spannable
++import android.view.MotionEvent
++import android.view.ViewConfiguration
++import android.widget.TextView
++import com.facebook.react.uimanager.events.NativeGestureUtil
++import com.swmansion.enriched.markdown.spans.LinkSpan
++import com.swmansion.enriched.markdown.spans.SpoilerSpan
++import com.swmansion.enriched.markdown.spoiler.SpoilerCapable
++import kotlin.math.abs
++
++class LinkTouchHelper(
++  private val textView: TextView,
++) {
++  private val handler = Handler(Looper.getMainLooper())
++  private var longPressRunnable: Runnable? = null
++  private var activeLink: LinkSpan? = null
++  private var longPressTriggered = false
++  private var startX = 0f
++  private var startY = 0f
++
++  fun onTouchEvent(event: MotionEvent): Boolean {
++    val buffer = textView.text as? Spannable ?: return false
++
++    when (event.actionMasked) {
++      MotionEvent.ACTION_DOWN -> {
++        startX = event.x
++        startY = event.y
++        longPressTriggered = false
++        activeLink = findLinkSpan(buffer, event) ?: return false
++        NativeGestureUtil.notifyNativeGestureStarted(textView, event)
++        scheduleLongPress(activeLink ?: return false)
++        return false
++      }
++
++      MotionEvent.ACTION_MOVE -> {
++        val link = activeLink ?: return false
++        if (isExceedingSlop(event)) {
++          cancelLongPress()
++          activeLink = null
++          return false
++        }
++        activeLink = link
++        return false
++      }
++
++      MotionEvent.ACTION_UP -> {
++        val link = activeLink
++        cancelLongPress()
++        activeLink = null
++
++        if (link != null) {
++          if (!longPressTriggered && !isExceedingSlop(event)) {
++            link.onClick(textView)
++          }
++          Selection.removeSelection(buffer)
++          return true
++        }
++
++        if (handleSpoilerTap(buffer, event)) {
++          Selection.removeSelection(buffer)
++          return true
++        }
++      }
++
++      MotionEvent.ACTION_CANCEL -> {
++        cancelLongPress()
++        activeLink = null
++        longPressTriggered = false
++      }
++    }
++
++    return false
++  }
++
++  private fun scheduleLongPress(span: LinkSpan) {
++    cancelLongPress()
++    longPressRunnable =
++      Runnable {
++        longPressTriggered = true
++        if (textView.hasSelection()) {
++          (textView.text as? Spannable)?.let(Selection::removeSelection)
++        }
++        if (span.onLongClick(textView)) {
++          textView.cancelLongPress()
++        }
++        longPressRunnable = null
++      }.also {
++        handler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong())
++      }
++  }
++
++  private fun cancelLongPress() {
++    longPressRunnable?.let(handler::removeCallbacks)
++    longPressRunnable = null
++  }
++
++  private fun isExceedingSlop(event: MotionEvent): Boolean {
++    val config = ViewConfiguration.get(textView.context)
++    return abs(event.x - startX) > config.scaledTouchSlop ||
++      abs(event.y - startY) > config.scaledTouchSlop
++  }
++
++  private fun charOffsetAt(event: MotionEvent): Int? {
++    val x = event.x.toInt() - textView.totalPaddingLeft + textView.scrollX
++    val y = event.y.toInt() - textView.totalPaddingTop + textView.scrollY
++    val layout = textView.layout ?: return null
++    return layout.getOffsetForHorizontal(layout.getLineForVertical(y), x.toFloat())
++  }
++
++  private fun findLinkSpan(
++    buffer: Spannable,
++    event: MotionEvent,
++  ): LinkSpan? {
++    val offset = charOffsetAt(event) ?: return null
++    return buffer.getSpans(offset, offset, LinkSpan::class.java).firstOrNull()
++  }
++
++  private fun handleSpoilerTap(
++    buffer: Spannable,
++    event: MotionEvent,
++  ): Boolean {
++    val offset = charOffsetAt(event) ?: return false
++    val tappedSpan =
++      buffer
++        .getSpans(offset, offset, SpoilerSpan::class.java)
++        .firstOrNull { !it.revealed && !it.revealing } ?: return false
++
++    val drawer = (textView as? SpoilerCapable)?.spoilerOverlayDrawer ?: return false
++    val spans = expandContiguousSpoilers(buffer, tappedSpan)
++    val remaining = intArrayOf(spans.size)
++
++    for (span in spans) {
++      drawer.revealSpan(span) {
++        remaining[0]--
++        if (remaining[0] <= 0) textView.invalidate()
++      }
++    }
++    textView.invalidate()
++    return true
++  }
++
++  private fun expandContiguousSpoilers(
++    buffer: Spannable,
++    seed: SpoilerSpan,
++  ): List<SpoilerSpan> {
++    val allSpans = buffer.getSpans(0, buffer.length, SpoilerSpan::class.java)
++    if (allSpans.size <= 1) return listOf(seed)
++
++    val result = mutableSetOf(seed)
++    var rangeStart = buffer.getSpanStart(seed)
++    var rangeEnd = buffer.getSpanEnd(seed)
++    var changed = true
++    while (changed) {
++      changed = false
++      for (span in allSpans) {
++        if (span in result) continue
++        val spanStart = buffer.getSpanStart(span)
++        val spanEnd = buffer.getSpanEnd(span)
++        if (spanEnd >= rangeStart && spanStart <= rangeEnd) {
++          result.add(span)
++          if (spanStart < rangeStart) rangeStart = spanStart
++          if (spanEnd > rangeEnd) rangeEnd = spanEnd
++          changed = true
++        }
++      }
++    }
++    return result.sortedBy { buffer.getSpanStart(it) }
++  }
++}
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt
+index 1f3e693..540580f 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkEvents.kt
+@@ -2,7 +2,6 @@ package com.swmansion.enriched.markdown.utils.text.view
+ 
+ import android.view.MotionEvent
+ import android.view.View
+-import android.widget.TextView
+ import com.facebook.react.bridge.ReactContext
+ import com.facebook.react.uimanager.UIManagerHelper
+ import com.facebook.react.uimanager.events.NativeGestureUtil
+@@ -23,17 +22,6 @@ fun View.emitLinkLongPressEvent(url: String) {
+   dispatcher?.dispatchEvent(LinkLongPressEvent(surfaceId, id, url))
+ }
+ 
+-/**
+- * Cancels the JS touch for an active link tap, preventing parent
+- * Pressable/TouchableOpacity from firing onPress for the same tap.
+- */
+-fun TextView.cancelJSTouchForLinkTap(event: MotionEvent) {
+-  val currentMovementMethod = movementMethod
+-  if (currentMovementMethod is LinkLongPressMovementMethod && currentMovementMethod.isLinkTouchActive) {
+-    NativeGestureUtil.notifyNativeGestureStarted(this, event)
+-  }
+-}
+-
+ /**
+  * Cancels the JS touch unconditionally, preventing parent
+  * Pressable/TouchableOpacity from firing onPress for the same gesture.
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt
+index 401e11e..5abc09c 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/LinkLongPressMovementMethod.kt
+@@ -28,6 +28,8 @@ class LinkLongPressMovementMethod : LinkMovementMethod() {
+     buffer: Spannable,
+     event: MotionEvent,
+   ): Boolean {
++    var shouldDelegateToLinkMovement = false
++
+     when (event.action) {
+       MotionEvent.ACTION_DOWN -> {
+         startX = event.x
+@@ -35,38 +37,61 @@ class LinkLongPressMovementMethod : LinkMovementMethod() {
+ 
+         val span = findLinkSpan(widget, buffer, event)
+         isLinkTouchActive = span != null
+-        span?.let { scheduleLongPress(widget, it) }
++        if (span == null) {
++          return false
++        }
++
++        shouldDelegateToLinkMovement = true
++        scheduleLongPress(widget, span)
+       }
+ 
+       MotionEvent.ACTION_MOVE -> {
++        if (!isLinkTouchActive) {
++          return false
++        }
++
+         val config = ViewConfiguration.get(widget.context)
+         if (abs(event.x - startX) > config.scaledTouchSlop ||
+           abs(event.y - startY) > config.scaledTouchSlop
+         ) {
+           cancelLongPress()
+           isLinkTouchActive = false
++          return false
+         }
++        shouldDelegateToLinkMovement = true
+       }
+ 
+       MotionEvent.ACTION_UP -> {
++        val wasLinkTouchActive = isLinkTouchActive
+         cancelLongPress()
+         isLinkTouchActive = false
+-        if (widget.hasSelection()) {
+-          Selection.removeSelection(buffer)
+-        }
+         if (handleSpoilerTap(widget, buffer, event)) {
+           Selection.removeSelection(buffer)
+           return true
+         }
++        if (!wasLinkTouchActive) {
++          return false
++        }
++        shouldDelegateToLinkMovement = true
+       }
+ 
+       MotionEvent.ACTION_CANCEL -> {
++        val wasLinkTouchActive = isLinkTouchActive
+         cancelLongPress()
+         isLinkTouchActive = false
+-        if (widget.hasSelection()) {
+-          Selection.removeSelection(buffer)
++        if (!wasLinkTouchActive) {
++          return false
+         }
++        shouldDelegateToLinkMovement = true
+       }
++
++      else -> {
++        shouldDelegateToLinkMovement = isLinkTouchActive
++      }
++    }
++
++    if (!shouldDelegateToLinkMovement) {
++      return false
+     }
+ 
+     val result = super.onTouchEvent(widget, buffer, event)
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt
+index 1feab30..865b958 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/view/TextViewSetup.kt
+@@ -10,8 +10,6 @@ import com.swmansion.enriched.markdown.accessibility.AccessibleMarkdownTextView
+ fun AccessibleMarkdownTextView.setupAsMarkdownTextView() {
+   setBackgroundColor(Color.TRANSPARENT)
+   includeFontPadding = false
+-  movementMethod = LinkLongPressMovementMethod.createInstance()
+-  setTextIsSelectable(true)
+   customSelectionActionModeCallback = createSelectionActionModeCallback(this)
+   // SmartSelectSprite crashes with "Center point is not inside any of the
+   // rectangles!" when Layout.getSelection returns empty rects near an
+@@ -35,6 +33,5 @@ fun AccessibleMarkdownTextView.setupAsMarkdownTextView() {
+ fun AppCompatTextView.applySelectableState(selectable: Boolean) {
+   if (isTextSelectable == selectable) return
+   setTextIsSelectable(selectable)
+-  movementMethod = LinkLongPressMovementMethod.createInstance()
+   if (!selectable && !isClickable) isClickable = true
+ }
 diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/TailFadeInAnimator.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/TailFadeInAnimator.kt
 index 9feea24..7c5d540 100644
 --- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/TailFadeInAnimator.kt

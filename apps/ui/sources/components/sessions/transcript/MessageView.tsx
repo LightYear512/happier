@@ -459,7 +459,8 @@ function UserTextBlock(props: {
   // not inside a chat bubble background, and without echoing displayText fallback.
   if (isStructuredOnly) {
     return (
-      <Pressable
+      <View
+        testID="transcript-user-message-row"
         {...(isWeb
           ? {
               onHoverIn: () => setIsMessageHovered(true),
@@ -558,12 +559,13 @@ function UserTextBlock(props: {
             />
           </MessageActionRow>
         </View>
-      </Pressable>
+      </View>
     );
   }
 
   return (
-    <Pressable
+    <View
+      testID="transcript-user-message-row"
       {...(isWeb
         ? {
             onHoverIn: () => setIsMessageHovered(true),
@@ -588,34 +590,41 @@ function UserTextBlock(props: {
           style={styles.userMessageWrapper}
           {...(isWeb ? {} : { pointerEvents: 'box-none' as const })}
         >
-          <View style={styles.userMessageBubbleAligner}>
-            <View style={[styles.userMessageBubble, isDiscarded && styles.userMessageBubbleDiscarded]}>
-              <StructuredMessageBlock
-                message={props.message as any}
+          <View style={[styles.userMessageBubble, isDiscarded && styles.userMessageBubbleDiscarded]}>
+            <StructuredMessageBlock
+              message={props.message as any}
+              sessionId={props.sessionId}
+              onJumpToAnchor={handleJumpToAnchor}
+            />
+            <MarkdownView
+              testID="transcript-user-message-markdown"
+              markdown={renderedMarkdownText}
+              onOptionPress={handleOptionPress}
+              onOptionLongPress={handleOptionLongPress}
+              onLinkPress={handleMarkdownLinkPress}
+              selectable={true}
+              profile="transcript"
+              textStyle={styles.transcriptMarkdownText}
+            />
+            {sessionMediaInlineImages.length > 0 ? (
+              <SessionMediaInlineImages
                 sessionId={props.sessionId}
-                onJumpToAnchor={handleJumpToAnchor}
+                media={sessionMediaInlineImages}
+                onOpenPath={handleOpenAttachmentPath}
               />
-              <MarkdownView markdown={renderedMarkdownText} onOptionPress={handleOptionPress} onOptionLongPress={handleOptionLongPress} onLinkPress={handleMarkdownLinkPress} selectable={true} profile="transcript" textStyle={styles.transcriptMarkdownText} />
-              {sessionMediaInlineImages.length > 0 ? (
-                <SessionMediaInlineImages
-                  sessionId={props.sessionId}
-                  media={sessionMediaInlineImages}
-                  onOpenPath={handleOpenAttachmentPath}
-                />
-              ) : null}
-              {nonImageAttachments.length > 0 ? (
-                <AttachmentsMessageRow
-                  attachments={nonImageAttachments}
-                  onOpenPath={handleOpenAttachmentPath}
-                />
-              ) : null}
-              {linkedWorkspaceFiles.length > 0 ? (
-                <LinkedWorkspaceFilesRow sessionId={props.sessionId} paths={linkedWorkspaceFiles} />
-              ) : null}
-              {isDiscarded && (
-                <Text selectable style={styles.discardedCommittedMessageLabel}>{t('message.discarded')}</Text>
-              )}
-            </View>
+            ) : null}
+            {nonImageAttachments.length > 0 ? (
+              <AttachmentsMessageRow
+                attachments={nonImageAttachments}
+                onOpenPath={handleOpenAttachmentPath}
+              />
+            ) : null}
+            {linkedWorkspaceFiles.length > 0 ? (
+              <LinkedWorkspaceFilesRow sessionId={props.sessionId} paths={linkedWorkspaceFiles} />
+            ) : null}
+            {isDiscarded && (
+              <Text selectable style={styles.discardedCommittedMessageLabel}>{t('message.discarded')}</Text>
+            )}
           </View>
           <MessageActionRow
             messageId={props.message.id}
@@ -677,7 +686,7 @@ function UserTextBlock(props: {
           </MessageActionRow>
         </View>
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -914,7 +923,8 @@ function AgentTextBlock(props: {
   }, [markdown, shouldRenderStreamingPlain]);
 
   return (
-    <Pressable
+    <View
+      testID="transcript-agent-message-row"
       {...(isWeb
         ? {
             onHoverIn: () => setIsMessageHovered(true),
@@ -986,6 +996,7 @@ function AgentTextBlock(props: {
             ) : (
               shouldRenderStreamingMarkdown ? (
                 <MarkdownView
+                  testID="transcript-agent-message-markdown"
                   markdown={streamingMarkdownText}
                   onOptionPress={handleOptionPress}
                   onOptionLongPress={handleOptionLongPress}
@@ -1007,6 +1018,7 @@ function AgentTextBlock(props: {
                 </Text>
               ) : (
                 <MarkdownView
+                  testID="transcript-agent-message-markdown"
                   markdown={markdown}
                   onOptionPress={handleOptionPress}
                   onOptionLongPress={handleOptionLongPress}
@@ -1089,7 +1101,7 @@ function AgentTextBlock(props: {
           />
         </MessageActionRow>
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -1425,22 +1437,10 @@ const styles = StyleSheet.create((theme) => ({
     maxWidth: '100%',
   },
     userMessageWrapper: {
-      // Stretch the wrapper to the full row width so the absolutely positioned
-      // MessageActionRow is measured against the full width — its timestamp/actions can
-      // then grow past a small bubble's width instead of being constrained to it (which
-      // made short messages wrap the timestamp vertically). The bubble is right-aligned
-      // and hugged by userMessageBubbleAligner below.
-      alignSelf: 'stretch',
+      maxWidth: '100%',
+      alignSelf: 'flex-end',
       position: 'relative',
       paddingBottom: 22,
-    },
-    userMessageBubbleAligner: {
-      // Hug + right-align the bubble within the full-width wrapper. The bubble itself stays
-      // a default-stretch child of this aligner so its text wraps at a bounded width on
-      // native (a flex-end/auto-width bubble would measure text at max-content and overflow
-      // on one line, since maxWidth:'100%' only clamps the box, it does not bound the text).
-      alignSelf: 'flex-end',
-      maxWidth: '100%',
     },
     userMessageBubble: {
       backgroundColor: theme.colors.message.user.background,
