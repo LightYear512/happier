@@ -380,6 +380,38 @@ describe('SessionSimulatorPreviewPane', () => {
         expect(viewport.props.onPress).toBeUndefined();
     });
 
+    it('renders readonly device state and disables manual simulator input', async () => {
+        const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
+        const onSendInput = vi.fn();
+        const onRequestControl = vi.fn();
+
+        const screen = await renderScreen(
+            <SessionSimulatorPreviewPane
+                simulatorSessionId="sim_1"
+                platform="android"
+                deviceName="Android SDK"
+                deviceDisplayName="Pixel 8 API 35"
+                streamUrl="http://127.0.0.1:9812/stream.mjpeg"
+                mode="ai_control"
+                owner="ai"
+                controlCapability="readonly"
+                controlUnavailableReason="device_in_use"
+                onSendInput={onSendInput}
+                onRequestControl={onRequestControl}
+            />,
+        );
+
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.deviceStatus' }).props.children).toContain('Pixel 8 API 35');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.readonlyStatus' })).toBeTruthy();
+        expect(() => screen.findByProps({ testID: 'session.simulatorPreview.requestControl' })).toThrow();
+        expect(() => screen.findByProps({ testID: 'session.simulatorPreview.textInput' })).toThrow();
+
+        const viewport = screen.findByProps({ testID: 'session.simulatorPreview.screenViewport' });
+        expect(viewport.props.onPress).toBeUndefined();
+        expect(onSendInput).not.toHaveBeenCalled();
+        expect(onRequestControl).not.toHaveBeenCalled();
+    });
+
     it('sends basic key and text input from the manual control bar', async () => {
         const { SessionSimulatorPreviewPane } = await import('./SessionSimulatorPreviewPane');
         const onSendInput = vi.fn();

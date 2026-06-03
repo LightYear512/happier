@@ -4513,6 +4513,11 @@ export const en = {
             ownerLabel: ({ owner }: { owner: string }) => `Owner: ${owner}`,
             requestControl: 'Control',
             releaseControl: 'Release',
+            readonlyStatus: 'Read-only · controlled by another session',
+            controlCapability: {
+              writable: 'Writable',
+              readonly: 'Read-only',
+            },
             controls: {
               back: 'Back',
               home: 'Home',

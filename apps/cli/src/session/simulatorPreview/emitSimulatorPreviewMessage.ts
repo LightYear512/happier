@@ -14,6 +14,10 @@ export type SimulatorPreviewRegistrationInput = Readonly<{
   mode?: SimulatorPreviewV1['mode'];
   owner?: SimulatorPreviewV1['owner'];
   connectionPath?: SimulatorPreviewV1['connectionPath'];
+  controlCapability?: SimulatorPreviewV1['controlCapability'];
+  controlUnavailableReason?: SimulatorPreviewV1['controlUnavailableReason'];
+  deviceRef?: SimulatorPreviewV1['deviceRef'];
+  deviceDisplayName?: SimulatorPreviewV1['deviceDisplayName'];
   relay?: SimulatorPreviewV1['relay'];
   nativeDevSessionId?: SimulatorPreviewV1['nativeDevSessionId'];
   devServices?: SimulatorPreviewV1['devServices'];
@@ -30,6 +34,10 @@ export function buildSimulatorPreviewPayload(input: SimulatorPreviewRegistration
     mode: input.mode ?? 'ai_control',
     ...(input.owner ? { owner: input.owner } : {}),
     connectionPath: input.connectionPath ?? 'relay',
+    ...(input.controlCapability ? { controlCapability: input.controlCapability } : {}),
+    ...(input.controlUnavailableReason ? { controlUnavailableReason: input.controlUnavailableReason } : {}),
+    ...(input.deviceRef ? { deviceRef: input.deviceRef } : {}),
+    ...(input.deviceDisplayName ? { deviceDisplayName: input.deviceDisplayName } : {}),
     ...(input.relay ? { relay: input.relay } : {}),
     ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
     ...(input.devServices ? { devServices: input.devServices } : {}),

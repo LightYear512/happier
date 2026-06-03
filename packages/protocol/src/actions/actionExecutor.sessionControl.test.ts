@@ -143,6 +143,48 @@ describe('createActionExecutor (session control)', () => {
     });
   });
 
+  it('executes session.simulatorPreview.devices.list via deps.sessionSimulatorPreviewDevicesList', async () => {
+    const sessionSimulatorPreviewDevicesList = vi.fn(async () => ({
+      devices: [
+        {
+          deviceRef: 'ios:device_1',
+          platform: 'ios',
+          displayName: 'iPhone 17 Pro',
+          state: 'booted',
+          availability: 'writable',
+          recommended: true,
+        },
+      ],
+    }));
+    const executor = createExecutor({ sessionSimulatorPreviewDevicesList } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.simulatorPreview.devices.list' as any,
+      { platform: 'ios' },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      result: {
+        devices: [
+          {
+            deviceRef: 'ios:device_1',
+            platform: 'ios',
+            displayName: 'iPhone 17 Pro',
+            state: 'booted',
+            availability: 'writable',
+            recommended: true,
+          },
+        ],
+      },
+    });
+    expect(sessionSimulatorPreviewDevicesList).toHaveBeenCalledWith({
+      sessionId: 's1',
+      platform: 'ios',
+    });
+  });
+
   it('executes session.simulatorPreview.android.start via deps.sessionSimulatorPreviewAndroidStart', async () => {
     const sessionSimulatorPreviewAndroidStart = vi.fn(async () => ({ ok: true, simulatorSessionId: 'sim_android_1' }));
     const executor = createExecutor({ sessionSimulatorPreviewAndroidStart } as Partial<ActionExecutorDeps>);
