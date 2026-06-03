@@ -449,7 +449,8 @@ function UserTextBlock(props: {
   // not inside a chat bubble background, and without echoing displayText fallback.
   if (isStructuredOnly) {
     return (
-      <Pressable
+      <View
+        testID="transcript-user-message-row"
         {...(isWeb
           ? {
               onHoverIn: () => setIsMessageHovered(true),
@@ -548,12 +549,13 @@ function UserTextBlock(props: {
             />
           </MessageActionRow>
         </View>
-      </Pressable>
+      </View>
     );
   }
 
   return (
-    <Pressable
+    <View
+      testID="transcript-user-message-row"
       {...(isWeb
         ? {
             onHoverIn: () => setIsMessageHovered(true),
@@ -584,7 +586,7 @@ function UserTextBlock(props: {
               sessionId={props.sessionId}
               onJumpToAnchor={handleJumpToAnchor}
             />
-            <MarkdownView markdown={renderedMarkdownText} onOptionPress={handleOptionPress} onLinkPress={handleMarkdownLinkPress} selectable={true} profile="transcript" textStyle={styles.transcriptMarkdownText} />
+            <MarkdownView testID="transcript-user-message-markdown" markdown={renderedMarkdownText} onOptionPress={handleOptionPress} onLinkPress={handleMarkdownLinkPress} selectable={true} profile="transcript" textStyle={styles.transcriptMarkdownText} />
             {sessionMediaInlineImages.length > 0 ? (
               <SessionMediaInlineImages
                 sessionId={props.sessionId}
@@ -665,7 +667,7 @@ function UserTextBlock(props: {
           </MessageActionRow>
         </View>
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -892,7 +894,8 @@ function AgentTextBlock(props: {
   }, [markdown, shouldRenderStreamingPlain]);
 
   return (
-    <Pressable
+    <View
+      testID="transcript-agent-message-row"
       {...(isWeb
         ? {
             onHoverIn: () => setIsMessageHovered(true),
@@ -963,6 +966,7 @@ function AgentTextBlock(props: {
             ) : (
               shouldRenderStreamingMarkdown ? (
                 <MarkdownView
+                  testID="transcript-agent-message-markdown"
                   markdown={streamingMarkdownText}
                   onOptionPress={handleOptionPress}
                   onLinkPress={handleMarkdownLinkPress}
@@ -983,6 +987,7 @@ function AgentTextBlock(props: {
                 </Text>
               ) : (
                 <MarkdownView
+                  testID="transcript-agent-message-markdown"
                   markdown={markdown}
                   onOptionPress={handleOptionPress}
                   onLinkPress={handleMarkdownLinkPress}
@@ -1064,7 +1069,7 @@ function AgentTextBlock(props: {
           />
         </MessageActionRow>
       </View>
-    </Pressable>
+    </View>
   );
 }
 

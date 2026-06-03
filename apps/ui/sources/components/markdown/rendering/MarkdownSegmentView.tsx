@@ -49,18 +49,18 @@ export const MarkdownSegmentView = React.memo((props: MarkdownSegmentViewProps) 
         )
         : (
             <SpecialMarkdownBlockView
-            blocks={props.segment.blocks}
-            first={props.segment.first}
-            last={props.segment.last}
-            selectable={props.selectable}
-            onOptionPress={props.onOptionPress}
-            onLinkPress={props.onLinkPress}
-            textStyle={props.textStyle}
-            profile={props.profile}
-            streamingReveal={props.streamingReveal}
-            streamingRevealPreset={props.streamingRevealPreset}
-        />
-    );
+                blocks={props.segment.blocks}
+                first={props.segment.first}
+                last={props.segment.last}
+                selectable={props.selectable}
+                onOptionPress={props.onOptionPress}
+                onLinkPress={props.onLinkPress}
+                textStyle={props.textStyle}
+                profile={props.profile}
+                streamingReveal={props.streamingReveal}
+                streamingRevealPreset={props.streamingRevealPreset}
+            />
+        );
 
     const after = props.renderAfterSourceRange?.(sourceAction) ?? null;
     if (!props.onPressSourceRange && !after && !highlighted) return content;
