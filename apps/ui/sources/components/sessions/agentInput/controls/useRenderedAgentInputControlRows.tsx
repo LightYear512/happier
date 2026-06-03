@@ -86,9 +86,22 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
     secondaryLeadingControls: ReadonlyArray<React.ReactNode>;
     extraChipAnchorRefsByKey: Readonly<Record<string, React.RefObject<View | null>>>;
 }> {
+    const extraChipAnchorRefsByKey = React.useRef<Record<string, React.RefObject<View | null>>>({});
+
     return React.useMemo(() => {
+        const currentChipKeys = new Set((params.chips ?? []).map((chip) => chip.key));
+        for (const key of Object.keys(extraChipAnchorRefsByKey.current)) {
+            if (!currentChipKeys.has(key)) {
+                delete extraChipAnchorRefsByKey.current[key];
+            }
+        }
+        for (const key of currentChipKeys) {
+            extraChipAnchorRefsByKey.current[key] ??= React.createRef<View | null>();
+        }
+
         const extraControlNodesById = resolveRenderedExtraActionChipNodes({
             chips: params.chips,
+            chipAnchorRefsByKey: extraChipAnchorRefsByKey.current,
             renderContext: {
                 chipStyle: params.chipStyle,
                 showLabel: params.showChipLabels,

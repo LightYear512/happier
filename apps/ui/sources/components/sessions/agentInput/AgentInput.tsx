@@ -668,6 +668,8 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     },
     nativeKeyboardFooterSection: {
         flexShrink: 0,
+        elevation: 1,
+        zIndex: 1,
     },
 
     // Overlay styles
@@ -903,6 +905,7 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     },
     actionButtonsLeftScroll: {
         flex: 1,
+        minHeight: 32,
         overflow: 'visible',
     },
     actionButtonsSecondaryScroll: {
@@ -3232,6 +3235,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                         <>
                             {renderComposerAttentionRequests()}
                             <ScrollView
+                                pointerEvents={Platform.OS === 'android' ? 'box-none' : undefined}
                                 style={[
                                     styles.nativeKeyboardVariableSection,
                                     styles.webVariableSectionEdgeToEdge,

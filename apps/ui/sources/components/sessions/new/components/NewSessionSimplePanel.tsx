@@ -156,7 +156,7 @@ export const NewSessionSimplePanel = React.memo(function NewSessionSimplePanel(p
                     justifyContent: shouldBottomAnchor ? 'flex-end' : 'center',
                 }}
             >
-                {shouldBottomAnchor ? (
+                {shouldBottomAnchor && Platform.OS !== 'android' ? (
                     <Pressable
                         accessible={false}
                         style={{ flex: 1, width: '100%', minHeight: minimumTopGap }}

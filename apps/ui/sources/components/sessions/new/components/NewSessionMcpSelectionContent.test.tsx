@@ -270,12 +270,15 @@ describe('NewSessionMcpSelectionContent', () => {
         const list = requireSelectionList();
         expect(list.testID).toBe('new-session.mcp.selection-list');
         expect(list.maxHeight).toBe(520);
-        expect(list.heightBehavior).toBe('measuredToMaxHeight');
+        expect(list.heightBehavior).toBe('fixedToMaxHeight');
         expect(list.keyboardHintsEnabled).toBe(false);
 
         const container = screen.findAllByType('View' as never)[0];
         expect(container?.props.style).toEqual(expect.arrayContaining([
             expect.objectContaining({ maxHeight: 520 }),
+        ]));
+        expect(container?.props.style).toEqual(expect.arrayContaining([
+            expect.objectContaining({ height: 520 }),
         ]));
     });
 

@@ -792,6 +792,7 @@ describe('AgentInput (action menu popover props)', () => {
         captured.last = null;
         capturedActionMenuContent.last = null;
         const { AgentInput } = await import('./AgentInput');
+        const renderedChipAnchorRefs: unknown[] = [];
 
         const screen = await renderScreen(<AgentInput
                     value=""
@@ -811,14 +812,17 @@ describe('AgentInput (action menu popover props)', () => {
                             maxWidthCap: 480,
                             renderContent: () => React.createElement('View', { testID: 'mcp-content' }),
                         },
-                        render: ({ toggleCollapsedPopover, chipAnchorRef }: any) => React.createElement(
-                            'Pressable',
-                            {
-                                ref: chipAnchorRef,
-                                testID: 'visible-mcp-chip',
-                                onPress: () => toggleCollapsedPopover?.('new-session-mcp'),
-                            },
-                        ),
+                        render: ({ toggleCollapsedPopover, chipAnchorRef }: any) => {
+                            renderedChipAnchorRefs.push(chipAnchorRef);
+                            return React.createElement(
+                                'Pressable',
+                                {
+                                    ref: chipAnchorRef,
+                                    testID: 'visible-mcp-chip',
+                                    onPress: () => toggleCollapsedPopover?.('new-session-mcp'),
+                                },
+                            );
+                        },
                     }]}
                     onMachineClick={() => {}}
                     machineName="Builder"
@@ -836,6 +840,7 @@ describe('AgentInput (action menu popover props)', () => {
         expect(screen.findByTestId('mcp-content')).toBeTruthy();
         const visibleChipPopoverProps = captured.last as CapturedPopoverProps | null;
         expect(visibleChipPopoverProps?.open).toBe(true);
+        expect(visibleChipPopoverProps?.anchorRef).toBe(renderedChipAnchorRefs[0]);
         expect(visibleChipPopoverProps?.maxHeightCap).toBe(520);
 
         await screen.pressByTestIdAsync('visible-mcp-chip');

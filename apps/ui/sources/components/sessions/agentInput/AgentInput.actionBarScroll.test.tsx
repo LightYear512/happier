@@ -41,6 +41,18 @@ function getActionBarContentView(tree: renderer.ReactTestRenderer, index = 0) {
     return scrollView.find((node: any) => node?.type === 'View');
 }
 
+function findNearestAncestorMatching(
+    node: renderer.ReactTestInstance | null | undefined,
+    predicate: (node: renderer.ReactTestInstance) => boolean,
+) {
+    let current = node?.parent;
+    while (current) {
+        if (predicate(current)) return current;
+        current = current.parent;
+    }
+    return null;
+}
+
 async function mockWebPlatform() {
     vi.doMock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -49,6 +61,20 @@ async function mockWebPlatform() {
                             Platform: {
                                 OS: 'web',
                                 select: (v: any) => v?.web ?? v?.default ?? v?.default ?? v?.web ?? v?.native ?? v?.ios ?? v?.android,
+                            },
+                        }
+    );
+});
+}
+
+async function mockAndroidPlatform() {
+    vi.doMock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock(
+        {
+                            Platform: {
+                                OS: 'android',
+                                select: (v: any) => v?.android ?? v?.native ?? v?.default,
                             },
                         }
     );
@@ -237,6 +263,61 @@ function mockScrollEdgeFades(params: { canScrollX: boolean; showRight: boolean }
 }
 
 describe('AgentInput (action bar scroll layout)', () => {
+    it('keeps native primary and secondary scroll rows tall enough to receive chip touches', async () => {
+        vi.resetModules();
+        vi.clearAllMocks();
+        await mockAndroidPlatform();
+        mockCommonDeps();
+        mockSettings();
+        mockScrollEdgeFades({ canScrollX: true, showRight: true });
+
+        const { AgentInput } = await import('./AgentInput');
+
+        let tree: renderer.ReactTestRenderer;
+        tree = (await renderScreen(<AgentInput
+                    value=""
+                    placeholder="Type"
+                    onChangeText={() => {}}
+                    onSend={() => {}}
+                    onPermissionClick={() => {}}
+                    onAgentClick={() => {}}
+                    agentType="codex"
+                    onMachineClick={() => {}}
+                    machineName="Builder"
+                    onPathClick={() => {}}
+                    currentPath="/tmp"
+                    onAbort={() => {}}
+                    showAbortButton
+                    extraActionChips={[{
+                        key: 'mcp',
+                        controlId: 'mcp',
+                        render: () => React.createElement('View', { testID: 'new-session-mcp-chip' }),
+                    }]}
+                    autocompletePrefixes={[]}
+                    autocompleteSuggestions={async () => []}
+                />)).tree;
+
+        const primaryScrollContainer = getActionBarScrollView(tree!, 0).parent;
+        const secondaryScrollContainer = getActionBarScrollView(tree!, 1).parent;
+        const nativeVariableScrollView = tree!.findAll(
+            (node: any) => node?.type === 'ScrollView' && node?.props?.horizontal !== true,
+        )[0];
+        const nativeFooterSection = findNearestAncestorMatching(
+            primaryScrollContainer,
+            (node) => flattenStyle(node.props?.style).flexShrink === 0,
+        );
+
+        expect(nativeVariableScrollView?.props?.pointerEvents).toBe('box-none');
+        expect(getActionBarScrollView(tree!, 0).props?.disableScrollViewPanResponder).not.toBe(true);
+        expect(getActionBarScrollView(tree!, 1).props?.disableScrollViewPanResponder).not.toBe(true);
+        expect(flattenStyle(primaryScrollContainer?.props?.style).minHeight).toBeGreaterThanOrEqual(32);
+        expect(flattenStyle(secondaryScrollContainer?.props?.style).minHeight).toBeGreaterThanOrEqual(32);
+        expect(flattenStyle(nativeFooterSection?.props?.style).zIndex).toBeGreaterThan(0);
+        expect(flattenStyle(nativeFooterSection?.props?.style).elevation).toBeGreaterThan(0);
+
+        act(() => tree!.unmount());
+    });
+
     it('keeps both chip rows horizontally scrollable on web', async () => {
         vi.resetModules();
         vi.clearAllMocks();

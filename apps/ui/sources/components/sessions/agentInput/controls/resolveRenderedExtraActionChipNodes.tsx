@@ -8,6 +8,7 @@ import type { AgentInputControlId } from './agentInputControlTypes';
 
 export function resolveRenderedExtraActionChipNodes(params: Readonly<{
     chips?: readonly AgentInputExtraActionChip[];
+    chipAnchorRefsByKey?: Record<string, React.RefObject<any>>;
     renderContext: AgentInputExtraActionChipRenderContext;
     autoHideRenderContext: AgentInputExtraActionChipRenderContext;
 }>): Readonly<{
@@ -20,7 +21,7 @@ export function resolveRenderedExtraActionChipNodes(params: Readonly<{
     const extraChipAnchorRefsByKey: Record<string, React.RefObject<any>> = {};
 
     for (const chip of params.chips ?? []) {
-        const chipAnchorRef = React.createRef<any>();
+        const chipAnchorRef = params.chipAnchorRefsByKey?.[chip.key] ?? React.createRef<any>();
         extraChipAnchorRefsByKey[chip.key] = chipAnchorRef;
         const renderContext = chip.labelPolicy === 'auto-hide'
             ? { ...params.autoHideRenderContext, chipAnchorRef }
