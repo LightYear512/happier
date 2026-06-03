@@ -40,6 +40,36 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
         expect(fs.existsSync(expectedStubPath)).toBe(true);
     });
 
+    it('stubs `mermaid` on native platforms', () => {
+        const config = requireFreshMetroConfig();
+        const expectedStubPath = path.resolve(__dirname, '../platform/stubs/mermaidNativeStub.ts');
+
+        expect(config.resolver.resolveRequest({}, 'mermaid', 'android')).toEqual({
+            type: 'sourceFile',
+            filePath: expectedStubPath,
+        });
+        expect(config.resolver.resolveRequest({}, 'mermaid', 'ios')).toEqual({
+            type: 'sourceFile',
+            filePath: expectedStubPath,
+        });
+        expect(fs.existsSync(expectedStubPath)).toBe(true);
+    });
+
+    it('resolves workspace app entry requests back to this checkout on native platforms', () => {
+        const config = requireFreshMetroConfig();
+        const expectedEntryPath = path.resolve(__dirname, '../../index.ts');
+
+        expect(config.resolver.resolveRequest({}, './apps/ui/index.ts', 'android')).toEqual({
+            type: 'sourceFile',
+            filePath: expectedEntryPath,
+        });
+        expect(config.resolver.resolveRequest({}, 'apps/ui/index.ts', 'ios')).toEqual({
+            type: 'sourceFile',
+            filePath: expectedEntryPath,
+        });
+        expect(fs.existsSync(expectedEntryPath)).toBe(true);
+    });
+
     it('falls back to resolving hoisted Expo modules through Node-resolved package paths', () => {
         const config = requireFreshMetroConfig();
         const expectedResolvedPath = require.resolve('expo-modules-core', {
