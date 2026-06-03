@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
+import { OVERLAY_PORTAL_HOST_Z_INDEX } from '@/components/ui/overlay/overlayStacking';
 
 type OverlayPortalDispatch = Readonly<{
     setPortalNode: (id: string, node: React.ReactNode) => void;
@@ -61,7 +62,13 @@ export function OverlayPortalHost(props: { pointerEvents?: 'box-none' | 'none' |
             // Collapsable views can be optimized away, producing invalid measurements (e.g. y=0 in contained modals).
             collapsable={false}
             pointerEvents={props.pointerEvents ?? 'box-none'}
-            style={[StyleSheet.absoluteFill, { zIndex: 999999, elevation: 999999 }]}
+            style={[
+                StyleSheet.absoluteFill,
+                {
+                    zIndex: OVERLAY_PORTAL_HOST_Z_INDEX,
+                    elevation: OVERLAY_PORTAL_HOST_Z_INDEX,
+                },
+            ]}
         >
             {Array.from(nodes.entries()).map(([id, node]) => (
                 <React.Fragment key={id}>

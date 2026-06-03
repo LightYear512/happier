@@ -23,6 +23,7 @@ export function createMachineActionChip(params: Readonly<{
     return (
         <Pressable
             ref={params.anchorRef}
+            collapsable={false}
             key="machine"
             testID="agent-input-machine-chip"
             onPress={params.onPress}

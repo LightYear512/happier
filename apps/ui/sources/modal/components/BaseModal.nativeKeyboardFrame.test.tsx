@@ -2,6 +2,8 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { flattenTestStyle } from '@/dev/testkit/harness/popoverHarness';
+import { OVERLAY_PORTAL_HOST_Z_INDEX } from '@/components/ui/overlay/overlayStacking';
 import { installModalComponentCommonModuleMocks } from './modalComponentTestHelpers';
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
@@ -45,6 +47,26 @@ describe('BaseModal (native keyboard frame)', () => {
 
         expect(screen.findByType('KeyboardAwareModalFrame' as any).props.style).toBeDefined();
         expect(screen.findAllByType('KeyboardAvoidingView' as any)).toHaveLength(0);
+    });
+
+    it('layers the native portal root above popover portal hosts so nested modals stay selectable on Android', async () => {
+        const { BaseModal } = await import('./BaseModal');
+
+        const screen = await renderScreen(
+            <BaseModal visible={true}>
+                <Child />
+            </BaseModal>,
+        );
+
+        const portalRoot = screen.tree.root.findAll((node) => {
+            const style = flattenTestStyle(node.props?.style);
+            return typeof style?.zIndex === 'number'
+                && typeof style?.elevation === 'number';
+        })[0];
+
+        const portalStyle = flattenTestStyle(portalRoot?.props?.style);
+        expect(portalStyle?.zIndex).toBeGreaterThan(OVERLAY_PORTAL_HOST_Z_INDEX);
+        expect(portalStyle?.elevation).toBeGreaterThan(OVERLAY_PORTAL_HOST_Z_INDEX);
     });
 });
 

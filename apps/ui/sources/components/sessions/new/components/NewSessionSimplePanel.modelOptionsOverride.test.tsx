@@ -357,6 +357,61 @@ describe('NewSessionSimplePanel (modelOptionsOverride)', () => {
         }
     });
 
+    it('does not render the empty-area keyboard dismiss layer on Android where it can intercept composer chips', async () => {
+        const { NewSessionSimplePanel } = await import('./NewSessionSimplePanel');
+        platformOs = 'android';
+
+        AgentInputMock.mockClear();
+        let tree: renderer.ReactTestRenderer | undefined;
+        try {
+            tree = (await renderScreen(React.createElement(NewSessionSimplePanel, {
+                        popoverBoundaryRef: { current: null } as unknown as React.RefObject<any>,
+                        headerHeight: 44,
+                        safeAreaTop: 0,
+                        safeAreaBottom: 0,
+                        newSessionTopPadding: 20,
+                        newSessionSidePadding: 16,
+                        newSessionBottomPadding: 8,
+                        containerStyle: {},
+                        sessionPrompt: '',
+                        setSessionPrompt: () => {},
+                        handleCreateSession: () => {},
+                        canCreate: true,
+                        isCreating: false,
+                        emptyAutocompletePrefixes: [],
+                        emptyAutocompleteSuggestions: async () => [],
+                        sessionPromptInputMaxHeight: 200,
+                        agentType: 'codex',
+                        handleAgentClick: () => {},
+                        permissionMode: 'default',
+                        handlePermissionModeChange: () => {},
+                        modelMode: 'default',
+                        setModelMode: () => {},
+                        modelOptions: [{ value: 'default', label: 'Default', description: '' }],
+                        connectionStatus: undefined,
+                        machineName: 'Builder',
+                        selectedMachineId: 'machine-1',
+                        selectedMachineHomeDir: '/Users/alice',
+                        selectedPath: '/repo',
+                        showResumePicker: true,
+                        resumeSessionId: 'session-1',
+                        isResumeSupportChecking: false,
+                        useProfiles: false,
+                        selectedProfileId: null,
+                    } as any))).tree;
+
+            const dismissPressables = tree.root.findAllByType('Pressable').filter((node) => {
+                return typeof node.props.onPress === 'function' && flattenStyle(node.props.style).flex === 1;
+            });
+
+            expect(dismissPressables).toHaveLength(0);
+        } finally {
+            act(() => {
+                tree?.unmount();
+            });
+        }
+    });
+
     it('uses the same shared keyboard scaffold on Android so the whole composer can move above the keyboard', async () => {
         const { NewSessionSimplePanel } = await import('./NewSessionSimplePanel');
         platformOs = 'android';

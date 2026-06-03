@@ -169,7 +169,7 @@ describe('NewSessionMachineSelectionContent', () => {
     it('renders empty machine content through SelectionList with the popover height cap', async () => {
         const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
 
-        await renderScreen(<NewSessionMachineSelectionContent
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
             groups={[]}
             selectedMachine={null}
             selectedServerId={null}
@@ -183,9 +183,16 @@ describe('NewSessionMachineSelectionContent', () => {
 
         const props = getLastSelectionList();
         expect(props.maxHeight).toBe(317);
+        expect(props.heightBehavior).toBe('fixedToMaxHeight');
         expect(props.rootStep.emptyStateLabel).toBe('newSession.noMachinesFound');
         expect(props.rootStep.inputPlaceholder).toBeUndefined();
         expect(props.rootStep.sections).toEqual([]);
+
+        const container = screen.findAllByType('View' as never)[0];
+        expect(container?.props.style).toEqual(expect.arrayContaining([
+            expect.objectContaining({ maxHeight: 317 }),
+            expect.objectContaining({ height: 317 }),
+        ]));
     });
 
     it('builds a single-server SelectionList with recent, favorites, and all machines deduped in launch order', async () => {

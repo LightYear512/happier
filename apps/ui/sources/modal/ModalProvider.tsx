@@ -6,6 +6,10 @@ import { WebPromptModal } from './components/WebPromptModal';
 import { CustomModal } from './components/CustomModal';
 import { OverlayPortalHost, OverlayPortalProvider } from '@/components/ui/popover';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import {
+    MODAL_PORTAL_Z_INDEX_BASE,
+    MODAL_PORTAL_Z_INDEX_STEP,
+} from '@/components/ui/overlay/overlayStacking';
 
 const ModalContext = createContext<ModalContextValue | undefined>(undefined);
 
@@ -174,8 +178,8 @@ export function ModalProvider({ active = true, children }: ModalProviderProps) {
     const topVisibleIndex = state.modals.reduce((topIndex, modal, index) => (
         modal.visible ? index : topIndex
     ), -1);
-    const zIndexStep = 10;
-    const zIndexBase = 100000;
+    const zIndexStep = MODAL_PORTAL_Z_INDEX_STEP;
+    const zIndexBase = MODAL_PORTAL_Z_INDEX_BASE;
     const isKeyboardLiftSuppressedByModal = state.modals.length > 0;
 
     const contextValue: ModalContextValue = {

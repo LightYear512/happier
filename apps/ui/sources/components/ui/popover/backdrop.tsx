@@ -13,6 +13,7 @@ export function PopoverBackdrop(props: Readonly<{
     backdropSpotlight: boolean | Readonly<{ padding?: number }>;
     backdropAnchorOverlay: React.ReactNode | ((params: Readonly<{ rect: PopoverWindowRect }>) => React.ReactNode) | undefined;
     backdropStyle: any;
+    backdropPointerEvents: 'auto' | 'none';
     closeOnBackdropPan: boolean;
     onRequestClose: (() => void) | undefined;
 
@@ -61,7 +62,7 @@ export function PopoverBackdrop(props: Readonly<{
             {props.backdropBlocksOutsidePointerEvents ? (
                 <Pressable
                     onPress={props.onRequestClose}
-                    pointerEvents={props.portalOpacity === 0 ? 'none' : 'auto'}
+                    pointerEvents={props.backdropPointerEvents}
                     onMoveShouldSetResponderCapture={() => {
                         if (!props.closeOnBackdropPan || !props.onRequestClose) return false;
                         props.onRequestClose();

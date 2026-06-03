@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { View } from 'react-native';
 
 import { SelectionList } from '@/components/ui/selectionList';
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -47,14 +48,27 @@ export function NewSessionMachineSelectionContent(props: NewSessionMachineSelect
     });
 
     return (
-        <SelectionList
-            testID="new-session-machine-list"
-            rootStep={listModel.rootStep}
-            selectedOptionId={listModel.selectedOptionId}
-            onSelect={() => {}}
-            onRequestClose={() => {}}
-            autoFocusInputOnWeb
-            maxHeight={props.maxHeight}
-        />
+        <View style={[styles.container, props.maxHeight === undefined ? null : {
+            height: props.maxHeight,
+            maxHeight: props.maxHeight,
+        }]}>
+            <SelectionList
+                testID="new-session-machine-list"
+                rootStep={listModel.rootStep}
+                selectedOptionId={listModel.selectedOptionId}
+                onSelect={() => {}}
+                onRequestClose={() => {}}
+                autoFocusInputOnWeb
+                maxHeight={props.maxHeight}
+                heightBehavior="fixedToMaxHeight"
+            />
+        </View>
     );
 }
+
+const styles = {
+    container: {
+        width: '100%',
+        flexShrink: 1,
+    },
+} as const;

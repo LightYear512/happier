@@ -21,6 +21,7 @@ import {
     useOverlayPresence,
 } from '@/components/ui/overlays/motion/overlayMotion';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { MODAL_PORTAL_Z_INDEX_BASE } from '@/components/ui/overlay/overlayStacking';
 
 // On web, stop events from propagating to expo-router's modal overlay
 // which intercepts clicks when it applies pointer-events: none to body
@@ -167,7 +168,7 @@ export function BaseModal({
 }: BaseModalProps) {
     const { theme } = useUnistyles();
     const uiBackdropBlurEnabled = useLocalSetting('uiBackdropBlurEnabled') !== false;
-    const baseZ = zIndexBase ?? 100000;
+    const baseZ = zIndexBase ?? MODAL_PORTAL_Z_INDEX_BASE;
     const modalMotionPreset = React.useMemo(
         () => resolveOverlayMotionPreset({ kind: 'modal' }),
         [],
@@ -415,8 +416,8 @@ export function BaseModal({
 const styles = StyleSheet.create(() => ({
     portalRoot: {
         ...StyleSheet.absoluteFillObject,
-        zIndex: 100000,
-        elevation: 100000,
+        zIndex: MODAL_PORTAL_Z_INDEX_BASE,
+        elevation: MODAL_PORTAL_Z_INDEX_BASE,
     },
       container: {
           flex: 1,

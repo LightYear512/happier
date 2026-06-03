@@ -156,7 +156,7 @@ export function NewSessionSimplePanel(props: NewSessionSimplePanelProps): React.
                     justifyContent: shouldBottomAnchor ? 'flex-end' : 'center',
                 }}
             >
-                {shouldBottomAnchor ? (
+                {shouldBottomAnchor && Platform.OS !== 'android' ? (
                     <Pressable
                         accessible={false}
                         style={{ flex: 1, width: '100%', minHeight: minimumTopGap }}

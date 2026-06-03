@@ -1207,6 +1207,11 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 backdropSpotlight={backdropSpotlight}
                 backdropAnchorOverlay={backdropAnchorOverlay}
                 backdropStyle={backdropStyle}
+                backdropPointerEvents={
+                    overlayPresence.exiting || portalOpacity === 0
+                        ? 'none'
+                        : 'auto'
+                }
                 closeOnBackdropPan={closeOnBackdropPan}
                 onRequestClose={onRequestClose}
                 shouldPortal={shouldPortal}

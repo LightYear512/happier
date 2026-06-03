@@ -142,11 +142,12 @@ export function NewSessionMcpSelectionContent(props: NewSessionMcpSelectionConte
     ]);
 
     return (
-        <View style={[styles.container, { maxHeight: props.maxHeight }]}>
+        <View style={[styles.container, { height: props.maxHeight, maxHeight: props.maxHeight }]}>
             <SelectionList
                 testID="new-session.mcp.selection-list"
                 rootStep={rootStep}
                 maxHeight={props.maxHeight}
+                heightBehavior="fixedToMaxHeight"
                 keyboardHintsEnabled={false}
                 onRequestClose={() => {}}
                 onSelect={() => {}}
