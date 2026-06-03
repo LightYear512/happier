@@ -30,6 +30,7 @@ export function createMcpActionChip(params: Readonly<{
         render: ({ chipStyle, iconColor, showLabel, textStyle, countTextStyle, chipAnchorRef, toggleCollapsedPopover }) => (
             <Pressable
                 ref={chipAnchorRef}
+                collapsable={false}
                 testID="new-session-mcp-chip"
                 onPress={() => toggleCollapsedPopover?.('new-session-mcp')}
                 hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}

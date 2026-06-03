@@ -75,6 +75,14 @@ function readNumericStyle(style: Record<string, unknown>, key: string): number {
     return value;
 }
 
+function findBackdropPressable(tree: ReturnType<typeof renderer.create> | undefined) {
+    if (!tree) return null;
+    return tree.root.findAll((node: any) => (
+        node?.type === 'Pressable'
+        && typeof node?.props?.onPress === 'function'
+    ))[0] ?? null;
+}
+
 describe('Popover (native portal)', () => {
     let restorePopoverWebGlobals: (() => void) | null = null;
 
@@ -702,6 +710,50 @@ describe('Popover (native portal)', () => {
         const hostEffects = tree ? findHostNodesByTestId(tree, 'popover-backdrop-effect') : [];
         expect(hostEffects.length).toBeGreaterThan(0);
         expect(flattenTestStyle(hostEffects[0]?.props?.style).backgroundColor).toBe('rgba(0,0,0,0.08)');
+    });
+
+    it('disables native backdrop touch interception while a portal popover is exiting', async () => {
+        vi.useFakeTimers();
+        const { OverlayPortalHost, OverlayPortalProvider } = await import('./OverlayPortal');
+        const { Popover } = await import('./Popover');
+
+        const anchorRef = {
+            current: {
+                measureInWindow: (cb: any) => {
+                    queueMicrotask(() => cb(100, 100, 20, 20));
+                },
+            },
+        } as any;
+
+        const onRequestClose = vi.fn();
+        let tree: ReturnType<typeof renderer.create> | undefined;
+        const renderTree = (open: boolean) => React.createElement(
+            OverlayPortalProvider,
+            null,
+            React.createElement(Popover, {
+                open,
+                anchorRef,
+                placement: 'bottom',
+                portal: { native: true },
+                onRequestClose,
+                children: () => React.createElement(PopoverChild),
+            } as any),
+            React.createElement(OverlayPortalHost),
+        );
+
+        tree = (await renderScreen(renderTree(true))).tree;
+
+        await act(async () => {
+            await flushInitialPositioning();
+        });
+
+        expect(findBackdropPressable(tree)?.props?.pointerEvents).toBe('auto');
+
+        await act(async () => {
+            tree?.update(renderTree(false));
+        });
+
+        expect(findBackdropPressable(tree)?.props?.pointerEvents).toBe('none');
     });
 
 });

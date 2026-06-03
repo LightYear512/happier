@@ -1,6 +1,5 @@
 import * as React from 'react';
-import { Keyboard, Platform, View, type StyleProp, type ViewProps, type ViewStyle, useWindowDimensions } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { Keyboard, Platform, StyleSheet, View, type StyleProp, type ViewProps, type ViewStyle, useWindowDimensions } from 'react-native';
 import { usePopoverBoundaryRef } from './PopoverBoundary';
 import { usePopoverScrollSourceRef } from './PopoverScrollSource';
 import { requireRadixDismissableLayer } from '@/utils/web/radixCjs';
@@ -1012,7 +1011,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
 
     const fixedPositionOnWeb = (Platform.OS === 'web' ? ('fixed' as any) : 'absolute') as ViewStyle['position'];
 
-    const placementStyle: ViewStyle = (() => {
+    const placementStyle = React.useMemo<ViewStyle>(() => {
         // On web, optional: render as a viewport-fixed overlay so it can escape any overflow:hidden ancestors.
         // This is especially important for headers/sidebars which often clip overflow.
         if (shouldPortal && anchorRectState) {
@@ -1158,7 +1157,29 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
             case 'right':
                 return { position: 'absolute', left: '100%', top: 0, marginLeft: gap, zIndex: 1000 };
         }
-    })();
+    }, [
+        anchorAlignOnPortal,
+        anchorAlignVerticalOnPortal,
+        anchorRectState,
+        boundaryRectState,
+        computed.maxHeight,
+        computed.maxWidth,
+        computed.placement,
+        contentRectState?.height,
+        fixedPositionOnWeb,
+        gap,
+        matchAnchorWidthOnPortal,
+        nativePortalShadowOutset,
+        portalPositionOnWeb,
+        portalTarget?.layout?.height,
+        shouldPortal,
+        shouldPortalWeb,
+        webPortalOffsetX,
+        webPortalOffsetY,
+        webPortalTargetRect?.height,
+        windowHeight,
+        windowWidth,
+    ]);
 
     const portalOpacity = (() => {
         // Web portal popovers should not "jiggle" (render in one place then snap).
@@ -1368,7 +1389,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
         props.closeOnAnchorPress,
     ]);
 
-    const content = shouldRender ? (
+    const content = React.useMemo(() => shouldRender ? (
         <>
             <PopoverBackdrop
                 backdrop={backdropEnabled ? backdrop : false}
@@ -1379,6 +1400,11 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 backdropSpotlight={backdropSpotlight}
                 backdropAnchorOverlay={backdropAnchorOverlay}
                 backdropStyle={backdropStyle}
+                backdropPointerEvents={
+                    overlayPresence.exiting || portalOpacity === 0
+                        ? 'none'
+                        : 'auto'
+                }
                 closeOnBackdropPan={closeOnBackdropPan}
                 onRequestClose={onRequestClose}
                 shouldPortal={shouldPortal}
@@ -1462,9 +1488,46 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 )}
             </ViewWithWheel>
         </>
-    ) : null;
+    ) : null, [
+        anchorRectState,
+        backdrop,
+        backdropAnchorOverlay,
+        backdropBlocksOutsidePointerEvents,
+        backdropBlurOnWeb,
+        backdropEnabled,
+        backdropOutsidePointerEventsMode,
+        backdropSpotlight,
+        backdropStyle,
+        children,
+        closeOnBackdropPan,
+        computed,
+        containerStyle,
+        contentContainerMaxWidth,
+        fixedPositionOnWeb,
+        motionVisible,
+        nativePortalShadowPaddingStyle,
+        onRequestClose,
+        overlayPresence.exiting,
+        paddingStyle,
+        placementStyle,
+        popoverMotionDirection,
+        portalOpacity,
+        portalPositionOnWeb,
+        props.portal,
+        resolvedBackdropEffect,
+        setPopoverModalPortalHostRef,
+        shouldPortal,
+        shouldPortalNative,
+        shouldPortalWeb,
+        shouldRender,
+        stopScrollEventPropagationOnWeb,
+        webPortalOffsetX,
+        webPortalOffsetY,
+        windowHeight,
+        windowWidth,
+    ]);
 
-    const contentWithRadixBranch = (() => {
+    const contentWithRadixBranch = React.useMemo(() => {
         if (!content) return null;
         if (!shouldPortalWeb) return content;
         try {
@@ -1481,7 +1544,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
         } catch {
             return content;
         }
-    })();
+    }, [content, shouldPortalWeb]);
 
     useNativeOverlayPortalNode({
         overlayPortal,

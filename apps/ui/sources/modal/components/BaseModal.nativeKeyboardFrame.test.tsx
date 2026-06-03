@@ -2,6 +2,8 @@ import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
+import { flattenTestStyle } from '@/dev/testkit/harness/popoverHarness';
+import { OVERLAY_PORTAL_HOST_Z_INDEX } from '@/components/ui/overlay/overlayStacking';
 import { installModalComponentCommonModuleMocks } from './modalComponentTestHelpers';
 
 let useOverlayPortalForTest: typeof import('@/components/ui/popover')['useOverlayPortal'];
@@ -93,6 +95,26 @@ describe('BaseModal (native keyboard frame)', () => {
             paddingBottom: 34,
             paddingLeft: 7,
         });
+    });
+
+    it('layers the native portal root above popover portal hosts so nested modals stay selectable on Android', async () => {
+        const { BaseModal } = await import('./BaseModal');
+
+        const screen = await renderScreen(
+            <BaseModal visible={true}>
+                <Child />
+            </BaseModal>,
+        );
+
+        const portalRoot = screen.tree.root.findAll((node) => {
+            const style = flattenTestStyle(node.props?.style);
+            return typeof style?.zIndex === 'number'
+                && typeof style?.elevation === 'number';
+        })[0];
+
+        const portalStyle = flattenTestStyle(portalRoot?.props?.style);
+        expect(portalStyle?.zIndex).toBeGreaterThan(OVERLAY_PORTAL_HOST_Z_INDEX);
+        expect(portalStyle?.elevation).toBeGreaterThan(OVERLAY_PORTAL_HOST_Z_INDEX);
     });
 
     it('provides a modal-local native overlay portal for popovers opened inside the modal', async () => {
