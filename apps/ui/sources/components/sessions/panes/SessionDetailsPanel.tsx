@@ -281,7 +281,7 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
     owner?: 'ai' | 'user' | 'system';
     connectionPath?: 'relay' | 'direct' | 'adb_reverse';
     controlCapability?: 'writable' | 'readonly';
-    controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable';
+    controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable' | 'capacity_exhausted';
     deviceRef?: string;
     deviceDisplayName?: string;
     nativeDevSessionId?: string;
@@ -320,6 +320,7 @@ function isSimulatorPreviewResource(value: unknown): value is Readonly<{
             || controlUnavailableReason === 'device_in_use'
             || controlUnavailableReason === 'device_selection_required'
             || controlUnavailableReason === 'device_unavailable'
+            || controlUnavailableReason === 'capacity_exhausted'
         )
         && (maybe.deviceRef === undefined || typeof maybe.deviceRef === 'string')
         && (maybe.deviceDisplayName === undefined || typeof maybe.deviceDisplayName === 'string')
@@ -350,7 +351,7 @@ function SessionSimulatorPreviewDetailsPane(props: Readonly<{
         owner?: 'ai' | 'user' | 'system';
         connectionPath?: 'relay' | 'direct' | 'adb_reverse';
         controlCapability?: 'writable' | 'readonly';
-        controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable';
+        controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable' | 'capacity_exhausted';
         deviceRef?: string;
         deviceDisplayName?: string;
         nativeDevSessionId?: string;

@@ -33,4 +33,25 @@ describe('createSessionSimulatorPreviewDetailsTab', () => {
             },
         }));
     });
+
+    it('preserves simulator capacity exhaustion metadata in the details tab resource', () => {
+        const tab = createSessionSimulatorPreviewDetailsTab({
+            simulatorSessionId: 'sim_1',
+            sessionId: 's1',
+            platform: 'ios',
+            deviceName: 'iPhone 17 Pro',
+            streamUrl: 'https://relay.example.test/simulator/sim_1/stream.mjpeg',
+            mode: 'system_locked',
+            connectionPath: 'relay',
+            controlCapability: 'readonly',
+            controlUnavailableReason: 'capacity_exhausted',
+            registeredAtMs: 1,
+        });
+
+        expect(tab.resource).toEqual(expect.objectContaining({
+            kind: 'simulatorPreview',
+            controlCapability: 'readonly',
+            controlUnavailableReason: 'capacity_exhausted',
+        }));
+    });
 });

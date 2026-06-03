@@ -23,7 +23,7 @@ export type SessionSimulatorPreviewPaneProps = Readonly<{
     streamUrl: string;
     appName?: string | undefined;
     controlCapability?: 'writable' | 'readonly' | undefined;
-    controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable' | undefined;
+    controlUnavailableReason?: 'device_in_use' | 'device_selection_required' | 'device_unavailable' | 'capacity_exhausted' | undefined;
     deviceRef?: string | undefined;
     deviceDisplayName?: string | undefined;
     mode?: 'idle' | 'ai_control' | 'user_control' | 'system_locked' | 'ended' | undefined;

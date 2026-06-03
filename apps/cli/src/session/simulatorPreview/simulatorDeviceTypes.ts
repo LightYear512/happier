@@ -2,7 +2,7 @@ export type SimulatorDevicePlatform = 'android' | 'ios';
 
 export type SimulatorDeviceState = 'booted' | 'available' | 'offline' | 'unknown';
 
-export type SimulatorDeviceAvailability = 'writable' | 'readonly' | 'busy' | 'unavailable';
+export type SimulatorDeviceAvailability = 'writable' | 'readonly' | 'busy' | 'unavailable' | 'capacity_exhausted';
 
 export type DiscoveredSimulatorDevice = Readonly<{
   platform: SimulatorDevicePlatform;

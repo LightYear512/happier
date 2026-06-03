@@ -16,11 +16,12 @@ import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/ses
 import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedSessionDevPreviewRegistry';
 import { createAndroidSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
 import { createIosSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
-import { createSimulatorDeviceService } from '@/session/simulatorPreview/createSimulatorDeviceService';
+import { createFileSimulatorDeviceLockStore, createSimulatorDeviceService } from '@/session/simulatorPreview/createSimulatorDeviceService';
 import { createSimulatorPreviewControlRegistryRouter } from '@/session/simulatorPreview/createSimulatorPreviewControlRegistryRouter';
 import { registerSimulatorPreviewSessionRpcHandlers } from '@/session/simulatorPreview/registerSimulatorPreviewSessionRpcHandlers';
 import type { AccountSettings } from '@happier-dev/protocol';
 import { createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
+import { join } from 'node:path';
 
 export type HappyMcpExecutionRunService = Readonly<{
     start: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
@@ -53,7 +54,11 @@ export async function startHappyServer(
     const androidSimulatorPreviewControlRegistry = createAndroidSimulatorPreviewControlRegistry();
     const iosSimulatorPreviewControlRegistry = createIosSimulatorPreviewControlRegistry();
     const simulatorPreviewControlPlatforms = new Map<string, 'android' | 'ios'>();
-    const simulatorDeviceService = createSimulatorDeviceService();
+    const simulatorDeviceService = createSimulatorDeviceService({
+        lockStore: createFileSimulatorDeviceLockStore({
+            lockStorePath: join(configuration.happyHomeDir, 'simulator-preview', 'device-locks.json'),
+        }),
+    });
     const simulatorPreviewControlRegistry = createSimulatorPreviewControlRegistryRouter({
         android: androidSimulatorPreviewControlRegistry,
         ios: iosSimulatorPreviewControlRegistry,

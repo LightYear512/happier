@@ -23,6 +23,7 @@ import {
   startAndroidScreenshotMjpegStream,
   type AndroidScreenshotMjpegStream,
 } from '@/session/simulatorPreview/startAndroidScreenshotMjpegStream';
+import { ensureAndroidSimulatorPreviewDeviceBooted } from '@/session/simulatorPreview/ensureAndroidSimulatorPreviewDeviceBooted';
 import {
   startIosScreenshotMjpegStream,
   type IosScreenshotMjpegStream,
@@ -40,6 +41,7 @@ import {
   type IosSimulatorPreviewControlRegistry,
 } from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
 import {
+  ensureIosSimulatorPreviewDeviceBooted,
   resolveIosSimulatorPreviewDevice,
   type IosSimulatorPreviewDevice,
 } from '@/session/simulatorPreview/resolveIosSimulatorPreviewDevice';
@@ -48,6 +50,7 @@ import {
   createSimulatorDeviceService,
   type SimulatorDeviceService,
 } from '@/session/simulatorPreview/createSimulatorDeviceService';
+import { createSimulatorDeviceLeaseRenewalController } from '@/session/simulatorPreview/createSimulatorDeviceLeaseRenewalController';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -66,6 +69,8 @@ import {
   type DaemonDevPreviewRegisterResult,
 } from '@/daemon/controlClient';
 
+const SIMULATOR_DEVICE_WRITER_LEASE_RENEW_INTERVAL_MS = 20_000;
+
 export type AndroidSimulatorPreviewStreamRegistry = Map<string, AndroidScreenshotMjpegStream>;
 export type IosSimulatorPreviewStreamRegistry = Map<string, IosScreenshotMjpegStream>;
 
@@ -77,6 +82,7 @@ export function createHappierMcpServer(
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
     daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
     startAndroidSimulatorPreviewStream?: typeof startAndroidScreenshotMjpegStream;
+    ensureAndroidSimulatorPreviewDeviceBooted?: typeof ensureAndroidSimulatorPreviewDeviceBooted;
     startIosSimulatorPreviewStream?: typeof startIosScreenshotMjpegStream;
     resolveAndroidSimulatorPreviewGeometry?: typeof resolveAndroidSimulatorPreviewGeometry;
     androidSimulatorPreviewStreams?: AndroidSimulatorPreviewStreamRegistry;
@@ -86,6 +92,7 @@ export function createHappierMcpServer(
     simulatorPreviewControlPlatforms?: Map<string, 'android' | 'ios'>;
     simulatorDeviceService?: SimulatorDeviceService;
     resolveIosSimulatorPreviewDevice?: typeof resolveIosSimulatorPreviewDevice;
+    ensureIosSimulatorPreviewDeviceBooted?: typeof ensureIosSimulatorPreviewDeviceBooted;
     resolveIosWebDriverAgentUrl?: typeof resolveIosWebDriverAgentUrl;
   }>,
 ): { mcp: McpServer; toolNames: string[] } {
@@ -98,9 +105,11 @@ export function createHappierMcpServer(
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
   const startAndroidSimulatorPreviewStream = opts?.startAndroidSimulatorPreviewStream ?? startAndroidScreenshotMjpegStream;
+  const ensureAndroidDeviceBooted = opts?.ensureAndroidSimulatorPreviewDeviceBooted ?? ensureAndroidSimulatorPreviewDeviceBooted;
   const startIosSimulatorPreviewStream = opts?.startIosSimulatorPreviewStream ?? startIosScreenshotMjpegStream;
   const resolveAndroidGeometry = opts?.resolveAndroidSimulatorPreviewGeometry ?? resolveAndroidSimulatorPreviewGeometry;
   const resolveIosDevice = opts?.resolveIosSimulatorPreviewDevice ?? resolveIosSimulatorPreviewDevice;
+  const ensureIosDeviceBooted = opts?.ensureIosSimulatorPreviewDeviceBooted ?? ensureIosSimulatorPreviewDeviceBooted;
   const resolveIosWdaUrl = opts?.resolveIosWebDriverAgentUrl ?? resolveIosWebDriverAgentUrl;
   const activeAndroidStreams = opts?.androidSimulatorPreviewStreams ?? new Map<string, AndroidScreenshotMjpegStream>();
   const activeIosStreams = opts?.iosSimulatorPreviewStreams ?? new Map<string, IosScreenshotMjpegStream>();
@@ -123,6 +132,14 @@ export function createHappierMcpServer(
   const ctx = credentials
     ? resolveSessionEncryptionContextFromCredentials(credentials)
     : { encryptionKey: new Uint8Array(0), encryptionVariant: 'legacy' as const };
+
+  const simulatorDeviceLeaseRenewals = createSimulatorDeviceLeaseRenewalController({
+    simulatorDeviceService,
+    renewIntervalMs: SIMULATOR_DEVICE_WRITER_LEASE_RENEW_INTERVAL_MS,
+    onRenewalFailed: (failure) => {
+      logger.debug('[mcp] Failed to renew simulator device writer lease', failure);
+    },
+  });
 
   const mcp = new McpServer({
     name: 'Happier MCP',
@@ -316,103 +333,113 @@ export function createHappierMcpServer(
           return reservation;
         }
         try {
-        const deviceId = reservation?.ok ? reservation.deviceId : input.deviceId;
-        const deviceName = reservation?.ok ? reservation.deviceDisplayName : input.deviceName;
-        const previous = activeAndroidStreams.get(input.sessionId);
-        if (previous) {
-          activeAndroidStreams.delete(input.sessionId);
-          simulatorDeviceService.releaseSessionPreviews({
-            sessionId: input.sessionId,
-            platform: 'android',
-            excludeSimulatorSessionId: simulatorSessionId,
-          });
-          await previous.close().catch((error) => {
-            logger.debug('[mcp] Failed to close previous Android simulator preview stream', {
+          let deviceId = reservation?.ok ? reservation.deviceId : input.deviceId;
+          const deviceName = reservation?.ok ? reservation.deviceDisplayName : input.deviceName;
+          if (reservation?.ok && reservation.deviceState === 'available') {
+            deviceId = (await ensureAndroidDeviceBooted({ deviceId: reservation.deviceId })).deviceId;
+          }
+          const previous = activeAndroidStreams.get(input.sessionId);
+          if (previous) {
+            simulatorDeviceLeaseRenewals.clear(input.sessionId, 'android');
+            activeAndroidStreams.delete(input.sessionId);
+            simulatorDeviceService.releaseSessionPreviews({
               sessionId: input.sessionId,
-              error,
+              platform: 'android',
+              excludeSimulatorSessionId: simulatorSessionId,
             });
+            await previous.close().catch((error) => {
+              logger.debug('[mcp] Failed to close previous Android simulator preview stream', {
+                sessionId: input.sessionId,
+                error,
+              });
+            });
+          }
+
+          const stream = await startAndroidSimulatorPreviewStream({
+            host: '127.0.0.1',
+            ...(typeof input.port === 'number' ? { port: input.port } : {}),
+            ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
+            ...(deviceId ? { deviceId } : {}),
           });
-        }
+          const geometry: AndroidSimulatorPreviewGeometry = await resolveAndroidGeometry({
+            ...(deviceId ? { deviceId } : {}),
+          });
+          activeAndroidStreams.set(input.sessionId, stream);
 
-        const stream = await startAndroidSimulatorPreviewStream({
-          host: '127.0.0.1',
-          ...(typeof input.port === 'number' ? { port: input.port } : {}),
-          ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
-          ...(deviceId ? { deviceId } : {}),
-        });
-        const geometry: AndroidSimulatorPreviewGeometry = await resolveAndroidGeometry({
-          ...(deviceId ? { deviceId } : {}),
-        });
-        activeAndroidStreams.set(input.sessionId, stream);
-
-        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
-        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
-        let relay: { machineId: string; routeKey: string; streamPath: string } | undefined;
-        if (machineId && daemonDevPreviewRegister) {
-          try {
-            const daemonResult = await daemonDevPreviewRegister({
-              sessionId: input.sessionId,
-              expectedMachineId: machineId,
-              port: stream.port,
-              name: `${deviceName} simulator`,
-              healthPath: '/frame.jpg',
-              rewriteUrls: false,
-            });
-            if ('success' in daemonResult && daemonResult.success === true) {
-              relay = {
-                machineId: daemonResult.preview.machineId,
-                routeKey: daemonResult.preview.preview.routeKey,
-                streamPath: '/stream.mjpeg',
-              };
-            } else {
+          const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+          const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+          let relay: { machineId: string; routeKey: string; streamPath: string } | undefined;
+          if (machineId && daemonDevPreviewRegister) {
+            try {
+              const daemonResult = await daemonDevPreviewRegister({
+                sessionId: input.sessionId,
+                expectedMachineId: machineId,
+                port: stream.port,
+                name: `${deviceName} simulator`,
+                healthPath: '/frame.jpg',
+                rewriteUrls: false,
+              });
+              if ('success' in daemonResult && daemonResult.success === true) {
+                relay = {
+                  machineId: daemonResult.preview.machineId,
+                  routeKey: daemonResult.preview.preview.routeKey,
+                  streamPath: '/stream.mjpeg',
+                };
+              } else {
+                logger.debug('[mcp] Failed to register Android simulator preview stream with daemon registry', {
+                  sessionId: input.sessionId,
+                  machineId,
+                  result: daemonResult,
+                });
+              }
+            } catch (error) {
               logger.debug('[mcp] Failed to register Android simulator preview stream with daemon registry', {
                 sessionId: input.sessionId,
                 machineId,
-                result: daemonResult,
+                error,
               });
             }
-          } catch (error) {
-            logger.debug('[mcp] Failed to register Android simulator preview stream with daemon registry', {
-              sessionId: input.sessionId,
-              machineId,
-              error,
-            });
           }
-        }
 
-        const preview = buildSimulatorPreviewPayload({
-          sessionId: input.sessionId,
-          simulatorSessionId,
-          platform: 'android',
-          deviceName,
-          ...(input.appName ? { appName: input.appName } : {}),
-          streamUrl: stream.streamUrl,
-          mode: 'ai_control',
-          owner: 'ai',
-          connectionPath: relay ? 'relay' : 'direct',
-          ...(reservation?.ok ? { controlCapability: reservation.controlCapability } : {}),
-          ...(reservation?.ok && reservation.controlCapability === 'readonly' ? { controlUnavailableReason: reservation.controlUnavailableReason } : {}),
-          ...(reservation?.ok ? { deviceRef: reservation.deviceRef, deviceDisplayName: reservation.deviceDisplayName } : {}),
-          ...(relay ? { relay } : {}),
-          ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
-          ...(input.devServices ? { devServices: input.devServices } : {}),
-        });
-        emitSimulatorPreviewMessage({
-          preview,
-          sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
-        });
-        if (reservation?.controlCapability !== 'readonly') {
-          androidSimulatorPreviewControlRegistry.registerAndroidPreview({
+          const preview = buildSimulatorPreviewPayload({
             sessionId: input.sessionId,
-            simulatorSessionId: preview.simulatorSessionId,
-            ...(deviceId ? { deviceId } : {}),
-            deviceWidth: geometry.deviceWidth,
-            deviceHeight: geometry.deviceHeight,
+            simulatorSessionId,
+            platform: 'android',
+            deviceName,
+            ...(input.appName ? { appName: input.appName } : {}),
+            streamUrl: stream.streamUrl,
+            mode: 'ai_control',
+            owner: 'ai',
+            connectionPath: relay ? 'relay' : 'direct',
+            ...(reservation?.ok ? { controlCapability: reservation.controlCapability } : {}),
+            ...(reservation?.ok && reservation.controlCapability === 'readonly' ? { controlUnavailableReason: reservation.controlUnavailableReason } : {}),
+            ...(reservation?.ok ? { deviceRef: reservation.deviceRef, deviceDisplayName: reservation.deviceDisplayName } : {}),
+            ...(relay ? { relay } : {}),
+            ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
             ...(input.devServices ? { devServices: input.devServices } : {}),
           });
-        }
-        simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'android');
-        return preview;
+          emitSimulatorPreviewMessage({
+            preview,
+            sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
+          });
+          if (reservation?.controlCapability !== 'readonly') {
+            androidSimulatorPreviewControlRegistry.registerAndroidPreview({
+              sessionId: input.sessionId,
+              simulatorSessionId: preview.simulatorSessionId,
+              ...(deviceId ? { deviceId } : {}),
+              deviceWidth: geometry.deviceWidth,
+              deviceHeight: geometry.deviceHeight,
+              ...(input.devServices ? { devServices: input.devServices } : {}),
+            });
+          }
+          simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'android');
+          simulatorDeviceLeaseRenewals.start({
+            sessionId: input.sessionId,
+            simulatorSessionId: preview.simulatorSessionId,
+            platform: 'android',
+            writable: reservation?.ok === true && reservation.controlCapability === 'writable',
+          });
+          return preview;
         } catch (error) {
           if (reservation?.ok) {
             simulatorDeviceService.releasePreview({ sessionId: input.sessionId, simulatorSessionId });
@@ -441,107 +468,117 @@ export function createHappierMcpServer(
           return reservation;
         }
         try {
-        let resolvedDevice: IosSimulatorPreviewDevice | null = null;
-        if (!input.deviceId && !reservation) {
-          resolvedDevice = await resolveIosDevice();
-        }
-        const deviceId = reservation?.ok ? reservation.deviceId : input.deviceId || resolvedDevice?.deviceId;
-        const deviceName = reservation?.ok
-          ? reservation.deviceDisplayName
-          : input.deviceName !== 'iOS Simulator'
-            ? input.deviceName
-            : resolvedDevice?.deviceName ?? input.deviceName;
-        const wdaUrl = input.wdaUrl || await resolveIosWdaUrl();
-        const previous = activeIosStreams.get(input.sessionId);
-        if (previous) {
-          activeIosStreams.delete(input.sessionId);
-          simulatorDeviceService.releaseSessionPreviews({
-            sessionId: input.sessionId,
-            platform: 'ios',
-            excludeSimulatorSessionId: simulatorSessionId,
-          });
-          await previous.close().catch((error) => {
-            logger.debug('[mcp] Failed to close previous iOS simulator preview stream', {
+          let resolvedDevice: IosSimulatorPreviewDevice | null = null;
+          if (!input.deviceId && !reservation) {
+            resolvedDevice = await resolveIosDevice();
+          }
+          const deviceId = reservation?.ok ? reservation.deviceId : input.deviceId || resolvedDevice?.deviceId;
+          const deviceName = reservation?.ok
+            ? reservation.deviceDisplayName
+            : input.deviceName !== 'iOS Simulator'
+              ? input.deviceName
+              : resolvedDevice?.deviceName ?? input.deviceName;
+          if (reservation?.ok && reservation.deviceState === 'available') {
+            await ensureIosDeviceBooted({ deviceId: reservation.deviceId });
+          }
+          const wdaUrl = input.wdaUrl || await resolveIosWdaUrl();
+          const previous = activeIosStreams.get(input.sessionId);
+          if (previous) {
+            simulatorDeviceLeaseRenewals.clear(input.sessionId, 'ios');
+            activeIosStreams.delete(input.sessionId);
+            simulatorDeviceService.releaseSessionPreviews({
               sessionId: input.sessionId,
-              error,
+              platform: 'ios',
+              excludeSimulatorSessionId: simulatorSessionId,
             });
+            await previous.close().catch((error) => {
+              logger.debug('[mcp] Failed to close previous iOS simulator preview stream', {
+                sessionId: input.sessionId,
+                error,
+              });
+            });
+          }
+
+          const stream = await startIosSimulatorPreviewStream({
+            host: '127.0.0.1',
+            ...(typeof input.port === 'number' ? { port: input.port } : {}),
+            ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
+            ...(deviceId ? { deviceId } : {}),
           });
-        }
+          activeIosStreams.set(input.sessionId, stream);
 
-        const stream = await startIosSimulatorPreviewStream({
-          host: '127.0.0.1',
-          ...(typeof input.port === 'number' ? { port: input.port } : {}),
-          ...(typeof input.pollMs === 'number' ? { pollIntervalMs: input.pollMs } : {}),
-          ...(deviceId ? { deviceId } : {}),
-        });
-        activeIosStreams.set(input.sessionId, stream);
-
-        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
-        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
-        let relay: { machineId: string; routeKey: string; streamPath: string } | undefined;
-        if (machineId && daemonDevPreviewRegister) {
-          try {
-            const daemonResult = await daemonDevPreviewRegister({
-              sessionId: input.sessionId,
-              expectedMachineId: machineId,
-              port: stream.port,
-              name: `${deviceName} simulator`,
-              healthPath: '/frame.jpg',
-              rewriteUrls: false,
-            });
-            if ('success' in daemonResult && daemonResult.success === true) {
-              relay = {
-                machineId: daemonResult.preview.machineId,
-                routeKey: daemonResult.preview.preview.routeKey,
-                streamPath: '/stream.mjpeg',
-              };
-            } else {
+          const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+          const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+          let relay: { machineId: string; routeKey: string; streamPath: string } | undefined;
+          if (machineId && daemonDevPreviewRegister) {
+            try {
+              const daemonResult = await daemonDevPreviewRegister({
+                sessionId: input.sessionId,
+                expectedMachineId: machineId,
+                port: stream.port,
+                name: `${deviceName} simulator`,
+                healthPath: '/frame.jpg',
+                rewriteUrls: false,
+              });
+              if ('success' in daemonResult && daemonResult.success === true) {
+                relay = {
+                  machineId: daemonResult.preview.machineId,
+                  routeKey: daemonResult.preview.preview.routeKey,
+                  streamPath: '/stream.mjpeg',
+                };
+              } else {
+                logger.debug('[mcp] Failed to register iOS simulator preview stream with daemon registry', {
+                  sessionId: input.sessionId,
+                  machineId,
+                  result: daemonResult,
+                });
+              }
+            } catch (error) {
               logger.debug('[mcp] Failed to register iOS simulator preview stream with daemon registry', {
                 sessionId: input.sessionId,
                 machineId,
-                result: daemonResult,
+                error,
               });
             }
-          } catch (error) {
-            logger.debug('[mcp] Failed to register iOS simulator preview stream with daemon registry', {
+          }
+
+          const preview = buildSimulatorPreviewPayload({
+            sessionId: input.sessionId,
+            simulatorSessionId,
+            platform: 'ios',
+            deviceName,
+            ...(input.appName ? { appName: input.appName } : {}),
+            streamUrl: stream.streamUrl,
+            mode: 'ai_control',
+            owner: 'ai',
+            connectionPath: relay ? 'relay' : 'direct',
+            ...(reservation?.ok ? { controlCapability: reservation.controlCapability } : {}),
+            ...(reservation?.ok && reservation.controlCapability === 'readonly' ? { controlUnavailableReason: reservation.controlUnavailableReason } : {}),
+            ...(reservation?.ok ? { deviceRef: reservation.deviceRef, deviceDisplayName: reservation.deviceDisplayName } : {}),
+            ...(relay ? { relay } : {}),
+            ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
+            ...(input.devServices ? { devServices: input.devServices } : {}),
+          });
+          emitSimulatorPreviewMessage({
+            preview,
+            sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
+          });
+          if (reservation?.controlCapability !== 'readonly') {
+            iosSimulatorPreviewControlRegistry.registerIosPreview({
               sessionId: input.sessionId,
-              machineId,
-              error,
+              simulatorSessionId: preview.simulatorSessionId,
+              ...(deviceId ? { deviceId } : {}),
+              wdaUrl,
             });
           }
-        }
-
-        const preview = buildSimulatorPreviewPayload({
-          sessionId: input.sessionId,
-          simulatorSessionId,
-          platform: 'ios',
-          deviceName,
-          ...(input.appName ? { appName: input.appName } : {}),
-          streamUrl: stream.streamUrl,
-          mode: 'ai_control',
-          owner: 'ai',
-          connectionPath: relay ? 'relay' : 'direct',
-          ...(reservation?.ok ? { controlCapability: reservation.controlCapability } : {}),
-          ...(reservation?.ok && reservation.controlCapability === 'readonly' ? { controlUnavailableReason: reservation.controlUnavailableReason } : {}),
-          ...(reservation?.ok ? { deviceRef: reservation.deviceRef, deviceDisplayName: reservation.deviceDisplayName } : {}),
-          ...(relay ? { relay } : {}),
-          ...(input.nativeDevSessionId ? { nativeDevSessionId: input.nativeDevSessionId } : {}),
-          ...(input.devServices ? { devServices: input.devServices } : {}),
-        });
-        emitSimulatorPreviewMessage({
-          preview,
-          sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
-        });
-        if (reservation?.controlCapability !== 'readonly') {
-          iosSimulatorPreviewControlRegistry.registerIosPreview({
+          simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'ios');
+          simulatorDeviceLeaseRenewals.start({
             sessionId: input.sessionId,
             simulatorSessionId: preview.simulatorSessionId,
-            ...(deviceId ? { deviceId } : {}),
-            wdaUrl,
+            platform: 'ios',
+            writable: reservation?.ok === true && reservation.controlCapability === 'writable',
           });
-        }
-        simulatorPreviewControlPlatforms.set(`${input.sessionId}\u0000${preview.simulatorSessionId}`, 'ios');
-        return preview;
+          return preview;
         } catch (error) {
           if (reservation?.ok) {
             simulatorDeviceService.releasePreview({ sessionId: input.sessionId, simulatorSessionId });
