@@ -2,6 +2,9 @@ import pino from 'pino';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 
+import { parseIntEnv, parseOptionalBooleanEnv } from '@/config/env';
+import { redactSensitiveKeys } from '@/utils/logging/redactSensitiveKeys';
+
 // Single log file name created once at startup
 let consolidatedLogFile: string | undefined;
 
@@ -66,7 +69,55 @@ export function createLoggingTransportTargets(): any[] {
         });
     }
 
+    // Ship logs to an existing Elasticsearch when configured. The transport runs
+    // in a pino worker thread, so a slow/unavailable ES affects only that worker
+    // and never blocks the main event loop. Skipped under Bun-compiled binaries,
+    // where pino transport targets don't resolve reliably (same as pino-pretty).
+    if (!isBunRuntime() && parseOptionalBooleanEnv(process.env.ES_LOG_ENABLED)) {
+        const node = (process.env.ES_LOG_NODE ?? '').trim();
+        if (!node) {
+            console.error('[PINO] ES_LOG_ENABLED is set but ES_LOG_NODE is missing - skipping Elasticsearch transport');
+        } else {
+            // Only attach `auth` when credentials are actually configured.
+            // Passing an empty {username,password} would send a bogus empty
+            // basic-auth header and override credentials embedded in ES_LOG_NODE
+            // (e.g. https://user:pass@host) or a cert-based / unauthenticated setup.
+            const apiKey = (process.env.ES_LOG_API_KEY ?? '').trim();
+            const username = (process.env.ES_LOG_USERNAME ?? '').trim();
+            const auth = apiKey
+                ? { apiKey }
+                : username
+                    ? { username, password: process.env.ES_LOG_PASSWORD ?? '' }
+                    : undefined;
+            transports.push({
+                target: 'pino-elasticsearch',
+                // ES is opt-in for higher-signal logs; ship info+ by default to bound
+                // volume (the base logger stays at debug for stdout/file).
+                level: (process.env.ES_LOG_LEVEL ?? 'info').trim(),
+                options: {
+                    node,
+                    index: (process.env.ES_LOG_INDEX ?? 'happier-logs').trim(),
+                    esVersion: parseIntEnv(process.env.ES_LOG_ES_VERSION, 8),
+                    flushBytes: parseIntEnv(process.env.ES_LOG_FLUSH_BYTES, 1000),
+                    flushInterval: parseIntEnv(process.env.ES_LOG_FLUSH_INTERVAL, 5000),
+                    ...(auth ? { auth } : {}),
+                    tls: { rejectUnauthorized: parseOptionalBooleanEnv(process.env.ES_LOG_REJECT_UNAUTHORIZED) ?? true },
+                },
+            });
+        }
+    }
+
     return transports;
+}
+
+// Shared pino `formatters.log` hook: redact sensitive fields (same pattern as
+// Sentry) before any transport (stdout / file / Elasticsearch) sees the log
+// object, then stamp localTime on every entry. Exported for testing.
+export function formatLogObject(object: any) {
+    return {
+        ...redactSensitiveKeys(object),
+        localTime: formatLocalTime(typeof object.time === 'number' ? object.time : undefined),
+    };
 }
 
 // Main server logger with local time formatting
@@ -81,13 +132,7 @@ export const logger = pino({
         }
         : {}),
     formatters: {
-        log: (object: any) => {
-            // Add localTime to every log entry
-            return {
-                ...object,
-                localTime: formatLocalTime(typeof object.time === 'number' ? object.time : undefined),
-            };
-        }
+        log: formatLogObject,
     },
     timestamp: () => `,"time":${Date.now()},"localTime":"${formatLocalTime()}"`,
 });
@@ -106,14 +151,9 @@ export const fileConsolidatedLogger = process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_
             }],
         },
         formatters: {
-            log: (object: any) => {
-                // Add localTime to every log entry
-                // Note: source property already exists from CLI/mobile logs
-                return {
-                    ...object,
-                    localTime: formatLocalTime(typeof object.time === 'number' ? object.time : undefined),
-                };
-            }
+            // Same redaction + localTime stamping as the main logger.
+            // Note: source property already exists from CLI/mobile logs
+            log: formatLogObject,
         },
         timestamp: () => `,"time":${Date.now()},"localTime":"${formatLocalTime()}"`,
     }) : undefined;
