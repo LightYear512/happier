@@ -182,15 +182,17 @@ function findLatestVersionedClaudeEntrypointForAgentSdk(versionsDir: string): st
  */
 function findClaudeInNpmGlobalModules(): string | null {
     const execDir = dirname(process.execPath)
-    const claudePkgRelative = join('node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
+    const claudePkgRootRelative = join('node_modules', '@anthropic-ai', 'claude-code')
 
     // Windows npm installs packages next to node.exe (`<execDir>/node_modules/...`).
     // Unix npm installs one level up under `<prefix>/lib/node_modules/...`.
     // The Windows candidate is checked first on all platforms; on Unix it is simply
     // a no-op because that path layout does not exist there.
     const candidates = [
-        join(execDir, claudePkgRelative),
-        join(dirname(execDir), 'lib', claudePkgRelative),
+        join(execDir, claudePkgRootRelative, 'bin', 'claude.exe'),
+        join(execDir, claudePkgRootRelative, 'cli.js'),
+        join(dirname(execDir), 'lib', claudePkgRootRelative, 'bin', 'claude.exe'),
+        join(dirname(execDir), 'lib', claudePkgRootRelative, 'cli.js'),
     ]
 
     for (const candidate of candidates) {
@@ -287,7 +289,6 @@ function isAgentSdkCompatibleClaudeEntrypoint(filePath: string): boolean {
     const lower = resolved.toLowerCase();
     if (lower.endsWith('.js') || lower.endsWith('.mjs')) return true;
 
-    if (process.platform === 'win32') return true;
     try {
         const stat = statSync(resolved);
         return (stat.mode & 0o111) !== 0;
