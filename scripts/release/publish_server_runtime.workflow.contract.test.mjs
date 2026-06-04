@@ -32,6 +32,31 @@ test('publish-server-runtime workflow publishes rolling server-preview tag via r
   assert.match(raw, /node scripts\/pipeline\/run\.mjs publish-server-runtime/);
 });
 
+test('publish-server-runtime falls back to GITHUB_TOKEN when release bot secrets are absent', async () => {
+  const raw = await loadWorkflow('publish-server-runtime.yml');
+
+  assert.match(
+    raw,
+    /RELEASE_BOT_APP_ID:\s*\$\{\{\s*secrets\.RELEASE_BOT_APP_ID\s*\}\}[\s\S]*?RELEASE_BOT_PRIVATE_KEY:\s*\$\{\{\s*secrets\.RELEASE_BOT_PRIVATE_KEY\s*\}\}/,
+    'publish job should expose release bot secrets through env for conditional token creation',
+  );
+  assert.match(
+    raw,
+    /Create GitHub App token[\s\S]*?if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/,
+    'release bot token creation should be skipped when the fork has no app secrets',
+  );
+  assert.match(
+    raw,
+    /token:\s*\$\{\{\s*\(?steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token\)? \|\| github\.token\s*\}\}/,
+    'source checkout should fall back to GITHUB_TOKEN in forks',
+  );
+  assert.match(
+    raw,
+    /GH_TOKEN:\s*\$\{\{\s*\(?steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token\)? \|\| github\.token\s*\}\}/,
+    'release publishing should fall back to GITHUB_TOKEN in forks',
+  );
+});
+
 test('publish-server-runtime supports dev and resolves auto source_ref from the selected channel', async () => {
   const raw = await loadWorkflow('publish-server-runtime.yml');
 
