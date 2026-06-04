@@ -2,11 +2,12 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import type { PetCompanionActivityState } from '@/components/pets/state/buildPetCompanionActivityState';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 import type { StorageState } from '@/sync/store/types';
+import type { Session } from '@/sync/domains/state/storageTypes';
 
 type AccountPetsSettingsSubset = Pick<
     Settings,
@@ -65,6 +66,9 @@ const activityState = vi.hoisted((): { current: PetCompanionActivityState } => (
             },
         ],
     },
+}));
+const sessionsState = vi.hoisted((): { value: Session[] } => ({
+    value: [],
 }));
 const accountSettingsState = vi.hoisted((): { current: AccountPetsSettingsSubset } => ({
     current: {
@@ -181,6 +185,10 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         vi.setSystemTime(12_000);
+        sessionsState.value = [
+            createSessionFixture({ id: 'session-running', serverId: 'server-pets' }),
+            createSessionFixture({ id: 'session-from-tray', serverId: 'server-pets' }),
+        ];
         activityState.current = {
             state: 'running',
             reason: 'running',
@@ -216,6 +224,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         executePetOverlayMainWindowActionMock.mockReset();
         createDefaultActionExecutorMock.mockClear();
         featureState.companionEnabled = true;
+        sessionsState.value = [];
         activityState.current = {
             state: 'running',
             reason: 'running',

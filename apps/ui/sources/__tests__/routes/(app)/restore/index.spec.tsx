@@ -83,6 +83,20 @@ vi.mock('expo-camera', () => ({
 }));
 const pushSpy = vi.fn();
 
+vi.mock('expo-constants', () => ({
+    default: { deviceName: 'Test Computer' },
+}));
+
+vi.mock('@react-navigation/native', () => ({
+    useIsFocused: () => true,
+}));
+
+vi.mock('react-native-safe-area-context', () => ({
+    SafeAreaProvider: ({ children }: { children?: React.ReactNode }) => children,
+    SafeAreaView: 'SafeAreaView',
+    useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => ({ state: 'enabled' }),
 }));

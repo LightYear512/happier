@@ -131,7 +131,6 @@ installSessionShellCommonModuleMocks({
             useSessionTranscriptIds: () => ({ ids: [], isLoaded: true }),
             useSessionSubagentSourceMessages: () => [],
             useSessionPendingMessages: () => pendingMessagesState,
-            useSessionSubagentSourceMessages: () => [],
             useSessionReviewCommentsDrafts: () => [],
             useSessionUsage: () => null,
             useLocalSetting: <K extends keyof LocalSettings>(key: K) => {

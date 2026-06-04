@@ -6,10 +6,14 @@ import { encodeBase64, encrypt } from '@/api/encryption';
 import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
 import { ApiMachineClient } from './apiMachine';
 
-const { mockIo, axiosGet, readLastChangesCursor, writeLastChangesCursor } = vi.hoisted(() => {
+const { mockIo, axiosGet, axiosIsAxiosError, readLastChangesCursor, writeLastChangesCursor } = vi.hoisted(() => {
+    const axiosIsAxiosError = (error: unknown) => Boolean(
+        error && typeof error === 'object' && (error as { isAxiosError?: unknown }).isAxiosError === true,
+    );
     return {
         mockIo: vi.fn(),
         axiosGet: vi.fn(),
+        axiosIsAxiosError,
         readLastChangesCursor: vi.fn(async () => 0),
         writeLastChangesCursor: vi.fn(async () => {}),
     };
@@ -22,8 +26,9 @@ vi.mock('socket.io-client', () => ({
 vi.mock('axios', () => ({
     default: {
         get: axiosGet,
-        isAxiosError: (error: unknown) => Boolean((error as { isAxiosError?: unknown } | null)?.isAxiosError),
+        isAxiosError: axiosIsAxiosError,
     },
+    isAxiosError: axiosIsAxiosError,
 }));
 
 vi.mock('@/persistence', () => ({

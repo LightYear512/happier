@@ -89,6 +89,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
         stopDaemonMock.mockReset();
         waitForDaemonRunningWithinBudgetMock.mockReset();
         restartDaemonAndWaitMock.mockReset();
+        restartDaemonAndWaitMock.mockImplementation(async () => true);
         evaluateDaemonStartupServiceConflictMock.mockReset();
         evaluateDaemonStartupServiceConflictMock.mockImplementation(async () => ({ kind: 'none' }));
         renderDaemonInstalledServiceConflictMock.mockReset();
@@ -228,10 +229,23 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 runtimeId: 'runtime-manual',
             };
             writeDaemonState(manualOwnedState);
-            inspectDaemonMock.mockResolvedValue({
-                status: 'running',
-                state: manualOwnedState,
-            });
+            inspectDaemonMock
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: manualOwnedState,
+                })
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: manualOwnedState,
+                })
+                .mockResolvedValue({
+                    status: 'running',
+                    state: {
+                        ...manualOwnedState,
+                        startedAt: manualOwnedState.startedAt + 1,
+                        runtimeId: 'runtime-manual-restarted',
+                    },
+                });
 
             const output = captureConsoleText();
             const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -587,10 +601,23 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 startedWithPublicReleaseChannel: 'preview' as const,
             };
             writeDaemonState(legacyManualState);
-            inspectDaemonMock.mockResolvedValue({
-                status: 'running',
-                state: legacyManualState,
-            });
+            inspectDaemonMock
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: legacyManualState,
+                })
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: legacyManualState,
+                })
+                .mockResolvedValue({
+                    status: 'running',
+                    state: {
+                        ...legacyManualState,
+                        startedAt: legacyManualState.startedAt + 1,
+                        runtimeId: 'runtime-legacy-manual-restarted',
+                    },
+                });
 
             const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
                 throw new Error(`exit:${code ?? ''}`);

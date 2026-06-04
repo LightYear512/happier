@@ -88,6 +88,33 @@ describe('classifyPrimarySessionRuntimeIssue', () => {
     });
   });
 
+  it('preserves retry-after-ms headers for stable usage-limit errors without connected-service details', () => {
+    const error = Object.assign(
+      new Error('The usage limit has been reached'),
+      {
+        headers: {
+          'retry-after-ms': '30000',
+        },
+      },
+    );
+
+    expect(classifyPrimarySessionRuntimeIssue({
+      provider: 'opencode',
+      cause: 'status_error',
+      error,
+      occurredAt: 1_000,
+    })).toMatchObject({
+      source: 'usage_limit',
+      usageLimit: {
+        v: 1,
+        resetAtMs: null,
+        retryAfterMs: 30_000,
+        quotaScope: 'unknown',
+        recoverability: 'wait',
+      },
+    });
+  });
+
   it('uses shared provider-limit wording for quota exhaustion text', () => {
     expect(classifyPrimarySessionRuntimeIssue({
       provider: 'opencode',

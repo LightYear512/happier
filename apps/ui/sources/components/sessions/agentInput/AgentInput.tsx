@@ -3235,7 +3235,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                         <>
                             {renderComposerAttentionRequests()}
                             <ScrollView
-                                pointerEvents={Platform.OS === 'android' ? 'box-none' : undefined}
                                 style={[
                                     styles.nativeKeyboardVariableSection,
                                     styles.webVariableSectionEdgeToEdge,

@@ -92,6 +92,7 @@ function buildProfile(): AIBackendProfile {
     return {
         id: 'profile-1',
         name: 'Profile One',
+        defaultEnabled: true,
         environmentVariables: [],
         defaultPermissionModeByAgent: {},
         defaultPermissionModeByTargetKey: {},

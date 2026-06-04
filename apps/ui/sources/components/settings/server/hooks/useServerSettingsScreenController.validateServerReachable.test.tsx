@@ -72,6 +72,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     return createServerProfilesModuleMock({
         importOriginal,
         overrides: {
+            resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
             getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 }),
             subscribeActiveServer: () => () => {},
             listServerProfiles: () => [{

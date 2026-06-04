@@ -20,6 +20,11 @@ const keyboardLayoutState = vi.hoisted(() => ({
     windowHeight: 800,
     windowWidth: 390,
 }));
+type NamedSessionMetadata = Session['metadata'] & Readonly<{
+    path: string;
+    host: string;
+    name: string;
+}>;
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -58,7 +63,7 @@ vi.mock(
     }),
 );
 
-function createNamedMetadata(name: string): Session['metadata'] {
+function createNamedMetadata(name: string): NamedSessionMetadata {
     return {
         path: `/Users/tester/${name.toLowerCase().replace(/\s+/g, '-')}`,
         host: 'tester.local',

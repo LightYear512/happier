@@ -9,6 +9,7 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { storage, useSession, useIsDataReady, useLocalSetting, useSetting, useSettingMutable } from '@/sync/domains/state/storage';
 import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getSessionAvatarId, type SessionStatus } from '@/utils/sessions/sessionUtils';
+import * as Clipboard from 'expo-clipboard';
 import { Modal } from '@/modal';
 import { useUnistyles } from 'react-native-unistyles';
 import { layout } from '@/components/ui/layout/layout';
@@ -60,6 +61,7 @@ import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { buildNewSessionTempDataFromSessionConfiguration } from '@/components/sessions/authoring/draft/sessionConfigurationSeed';
 import { storeTempData } from '@/utils/sessions/tempDataStore';
 import { completeSessionForkNavigation } from '@/components/sessions/transcript/forkContext/completeSessionForkNavigation';
+import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
 import { createSessionActionTarget } from '@/components/sessions/actions/sessionActionContext';
 import { executeSessionAction } from '@/components/sessions/actions/sessionActionExecution';
 import {
@@ -461,6 +463,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const sharingSupported = useSessionSharingSupport();
     const automationsSupport = useAutomationsSupport();
     const showAutomations = automationsSupport?.enabled !== false;
+    const [renderDeferredDetails, setRenderDeferredDetails] = React.useState(false);
     const [expandedRawJsonSection, setExpandedRawJsonSection] = React.useState<RawJsonSectionId | null>(null);
     // Check if CLI version is outdated
     const isCliOutdated = session.metadata?.version && !isVersionSupported(session.metadata.version, MINIMUM_CLI_VERSION);
@@ -916,6 +919,27 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         return new Date(timestamp).toLocaleString();
     }, []);
 
+    const handleCopyCommand = useCallback(async (command: string) => {
+        try {
+            await Clipboard.setStringAsync(command);
+            Modal.alert(t('common.success'), command);
+        } catch (error) {
+            Modal.alert(t('common.error'), t('common.error'));
+        }
+    }, []);
+
+    const handleCopyUpdateCommand = useCallback(async () => {
+        const updateCommand = 'happier self update';
+        await handleCopyCommand(updateCommand);
+    }, [handleCopyCommand]);
+
+    React.useEffect(() => {
+        setRenderDeferredDetails(false);
+        return runAfterInteractionsWithFallback(() => {
+            setRenderDeferredDetails(true);
+        });
+    }, [session.id]);
+
     return (
         <>
             <ItemList>
@@ -1146,7 +1170,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 </ItemGroup>
 
                 {/* Metadata */}
-                {session.metadata && (
+                {renderDeferredDetails && session.metadata && (
                     <ItemGroup title={t('sessionInfo.metadata')}>
                         <Item
                             title={t('sessionInfo.host')}
@@ -1265,7 +1289,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 )}
 
                 {/* Agent State */}
-                {session.agentState && (
+                {renderDeferredDetails && session.agentState && (
                     <ItemGroup title={t('sessionInfo.agentState')}>
                         <Item
                             title={t('sessionInfo.controlledByUser')}
@@ -1284,15 +1308,17 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     </ItemGroup>
                 )}
 
-                <SessionInfoActivityGroup
-                    sessionId={session.id}
-                    formatDate={formatDate}
-                    sessionStatus={sessionStatus}
-                    showRawDiagnostics={devModeEnabled}
-                />
+                {renderDeferredDetails ? (
+                    <SessionInfoActivityGroup
+                        sessionId={session.id}
+                        formatDate={formatDate}
+                        sessionStatus={sessionStatus}
+                        showRawDiagnostics={devModeEnabled}
+                    />
+                ) : null}
 
                 {/* Raw JSON (Dev Mode Only) */}
-                {devModeEnabled && (
+                {renderDeferredDetails && devModeEnabled && (
                     <ItemGroup title={t('sessionInfo.rawJsonDevMode')}>
                         {session.agentState && (
                             <>

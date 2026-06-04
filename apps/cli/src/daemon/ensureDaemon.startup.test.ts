@@ -13,7 +13,13 @@ vi.mock('@/daemon/runtime/spawnDetachedDaemonStartSync', () => ({
   spawnDetachedDaemonStartSync: vi.fn(),
 }));
 
-import { isDaemonRunningCurrentlyInstalledHappyVersion } from '@/daemon/controlClient';
+vi.mock('@/daemon/ownership/daemonServiceInventory', () => ({
+  evaluateDaemonStartupServiceConflict: vi.fn(async () => ({ kind: 'none' as const })),
+  renderDaemonInstalledServiceConflict: vi.fn(),
+}));
+
+import { ensureDaemonRunningForSessionCommand } from './ensureDaemon';
+import { isDaemonRunningCurrentlyInstalledHappyVersion } from './controlClient';
 import { spawnDetachedDaemonStartSync } from '@/daemon/runtime/spawnDetachedDaemonStartSync';
 
 describe('ensureDaemonRunningForSessionCommand', () => {
@@ -21,6 +27,8 @@ describe('ensureDaemonRunningForSessionCommand', () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
+    delete process.env.HAPPIER_DAEMON_START_WAIT_TIMEOUT_MS;
+    delete process.env.HAPPIER_DAEMON_START_WAIT_POLL_MS;
   });
 
   it('polls daemon readiness after spawning', async () => {
@@ -36,7 +44,6 @@ describe('ensureDaemonRunningForSessionCommand', () => {
     const unref = vi.fn();
     vi.mocked(spawnDetachedDaemonStartSync).mockResolvedValue({ unref } as any);
 
-    const { ensureDaemonRunningForSessionCommand } = await import('./ensureDaemon');
     const promise = ensureDaemonRunningForSessionCommand();
     await promise;
 

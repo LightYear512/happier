@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { renderSystemdServiceUnit } from '@happier-dev/cli-common/service';
 
 import type { DaemonRunningInspection } from '@/daemon/controlClient';
+import type { evaluateCurrentDaemonOwner } from '@/daemon/ownership/evaluateCurrentDaemonOwner';
 import type { DaemonServiceListEntry } from '@/daemon/service/cli';
 import { resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths } from '@/daemon/service/cli';
 import { withTempDir } from '@/testkit/fs/tempDir';
@@ -13,10 +14,12 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 type DaemonStartupServiceConflictEvaluation =
     | Readonly<{ kind: 'none' }>
     | Readonly<{ kind: 'installed-background-service-conflict'; services: readonly DaemonServiceListEntry[] }>;
+type CurrentDaemonOwnerEvaluation = Awaited<ReturnType<typeof evaluateCurrentDaemonOwner>>;
 
-const { inspectDaemonMock, startDaemonMock, evaluateDaemonStartupServiceConflictMock } = vi.hoisted(() => ({
+const { inspectDaemonMock, startDaemonMock, evaluateCurrentDaemonOwnerMock, evaluateDaemonStartupServiceConflictMock } = vi.hoisted(() => ({
     inspectDaemonMock: vi.fn<() => Promise<DaemonRunningInspection>>(async () => ({ status: 'not-running' })),
     startDaemonMock: vi.fn(async () => {}),
+    evaluateCurrentDaemonOwnerMock: vi.fn<() => Promise<CurrentDaemonOwnerEvaluation>>(async () => ({ kind: 'none' })),
     evaluateDaemonStartupServiceConflictMock: vi.fn<() => Promise<DaemonStartupServiceConflictEvaluation>>(async () => ({ kind: 'none' })),
 }));
 
@@ -30,6 +33,10 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => {
 
 vi.mock('@/daemon/startDaemon', () => ({
     startDaemon: startDaemonMock,
+}));
+
+vi.mock('@/daemon/ownership/evaluateCurrentDaemonOwner', () => ({
+    evaluateCurrentDaemonOwner: evaluateCurrentDaemonOwnerMock,
 }));
 
 vi.mock('@/daemon/ownership/daemonServiceInventory', async (importOriginal) => {
@@ -60,6 +67,8 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
         inspectDaemonMock.mockReset();
         inspectDaemonMock.mockImplementation(async () => ({ status: 'not-running' }));
         startDaemonMock.mockReset();
+        evaluateCurrentDaemonOwnerMock.mockReset();
+        evaluateCurrentDaemonOwnerMock.mockImplementation(async () => ({ kind: 'none' as const }));
         evaluateDaemonStartupServiceConflictMock.mockReset();
         evaluateDaemonStartupServiceConflictMock.mockImplementation(async () => ({ kind: 'none' as const }));
         vi.restoreAllMocks();
@@ -82,13 +91,26 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                 pid: process.pid,
                 httpPort: 43110,
                 startedAt: Date.now(),
-                startedWithCliVersion: '0.0.0-other',
+                startedWithCliVersion: '999.999.999-other',
                 startedWithPublicReleaseChannel: 'preview',
                 startupSource: 'background-service',
                 serviceLabel: 'com.happier.cli.daemon.default',
             },
         };
         inspectDaemonMock.mockResolvedValue(conflictInspection);
+        evaluateCurrentDaemonOwnerMock.mockResolvedValue({
+            kind: 'conflict',
+            owner: {
+                status: 'running',
+                state: conflictInspection.state,
+                currentCliVersion: '0.2.8',
+                currentPublicReleaseChannel: 'stable',
+                versionMatches: false,
+                releaseChannelMatches: false,
+                serviceManaged: true,
+                startupSource: 'background-service',
+            },
+        });
 
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
             throw new Error(`exit:${code ?? ''}`);
@@ -135,6 +157,19 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
             },
         };
         inspectDaemonMock.mockResolvedValue(conflictInspection);
+        evaluateCurrentDaemonOwnerMock.mockResolvedValue({
+            kind: 'conflict',
+            owner: {
+                status: 'running',
+                state: conflictInspection.state,
+                currentCliVersion: '0.2.8',
+                currentPublicReleaseChannel: 'stable',
+                versionMatches: false,
+                releaseChannelMatches: true,
+                serviceManaged: false,
+                startupSource: 'manual',
+            },
+        });
 
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
             throw new Error(`exit:${code ?? ''}`);

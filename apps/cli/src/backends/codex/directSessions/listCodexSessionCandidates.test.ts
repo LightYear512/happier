@@ -830,7 +830,7 @@ describe('listCodexSessionCandidates', () => {
       source: { kind: 'codexHome', home: 'user' },
       env: createDirectSessionsEnv(codexHome, {
         HAPPIER_CODEX_APP_SERVER_BIN: fakeAppServer,
-        HAPPIER_CODEX_DIRECT_SESSIONS_APP_SERVER_LIST_TIMEOUT_MS: '100',
+        HAPPIER_CODEX_DIRECT_SESSIONS_APP_SERVER_LIST_TIMEOUT_MS: '500',
       }),
       activeServerDir: join(root, 'servers', 'cloud'),
       limit: 10,
