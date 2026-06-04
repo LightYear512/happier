@@ -46,3 +46,15 @@ test('nightly-dev workflow runs reusable release verification against the dev ch
     );
   }
 });
+
+test('nightly-dev gates Expo-backed mobile publishing behind an explicit repository variable', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'nightly-dev.yml'), 'utf8');
+
+  for (const inputName of ['publish_ota', 'publish_android_apk', 'submit_ios_testflight']) {
+    assert.match(
+      raw,
+      new RegExp(`${inputName}:\\s*\\$\\{\\{\\s*vars\\.HAPPIER_ENABLE_MOBILE_DEV_RELEASE == 'true'\\s*\\}\\}`),
+      `${inputName} should be disabled by default in forks without Expo project permissions`,
+    );
+  }
+});

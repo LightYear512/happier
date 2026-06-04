@@ -57,6 +57,13 @@ test('publish-server-runtime falls back to GITHUB_TOKEN when release bot secrets
   );
 });
 
+test('publish-server-runtime does not run global release contracts inside the publish lane', async () => {
+  const raw = await loadWorkflow('publish-server-runtime.yml');
+
+  assert.match(raw, /--run-contracts "false"/);
+  assert.match(raw, /--check-installers "false"/);
+});
+
 test('publish-server-runtime supports dev and resolves auto source_ref from the selected channel', async () => {
   const raw = await loadWorkflow('publish-server-runtime.yml');
 

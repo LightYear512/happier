@@ -37,3 +37,10 @@ test('publish-hstack-binaries falls back to GITHUB_TOKEN when release bot secret
     'release publishing should fall back to GITHUB_TOKEN in forks',
   );
 });
+
+test('publish-hstack-binaries does not run global release contracts inside the publish lane', async () => {
+  const raw = await loadWorkflow('publish-hstack-binaries.yml');
+
+  assert.match(raw, /--run-contracts "false"/);
+  assert.match(raw, /--check-installers "false"/);
+});
