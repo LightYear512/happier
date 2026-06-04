@@ -2,9 +2,8 @@ name: NIGHTLY — Dev Releases
 
 on:
   schedule:
-    # Nightly dev channel builds from the default branch (dev). Avoid minute 0 because GitHub
-    # Actions scheduled workflows are more likely to be delayed or dropped at the top of the hour.
-    - cron: "17 2 * * *"
+    # Nightly dev channel builds from the default branch (dev) at 22:00 Asia/Shanghai.
+    - cron: "0 14 * * *"
   workflow_dispatch:
     inputs:
       source_ref:
