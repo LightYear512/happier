@@ -230,7 +230,7 @@ This project has a graphify knowledge graph at `graphify-out/`.
 - Before architecture/codebase relationship answers, read `graphify-out/GRAPH_REPORT.md` for corpus/community context.
 - If `graphify-out/wiki/index.md` exists, navigate it before raw files.
 - Prefer graphify queries/paths/explanations for cross-module relationship questions when graphify tooling is available.
-- After modifying code files in a session, run `graphify update . --no-cluster` when a shell is available; wait up to 20 minutes for this no-cluster update, and report that Graphify update remains to do if it cannot complete within that limit or if no shell is available.
+- After modifying code files in a session, run `graphify update . --no-cluster` when a shell is available. If this is the first generation and `graphify-out/graph.json` does not exist yet, do not impose the 20-minute closeout timeout because initial extraction can take longer. For incremental closeout updates, wait up to 20 minutes and report that Graphify update remains to do if it cannot complete within that limit or if no shell is available.
 - Run clustered Graphify outputs (`graphify cluster-only . --no-viz` or a full update without `--no-cluster`) only for architecture/report/wiki refreshes, not as the default per-session closeout.
 
 ## Final handoff
