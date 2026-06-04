@@ -33,6 +33,7 @@ import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from '@/daemon/spawn/spa
 
 import { createCodexAppServerRuntime } from './runtime';
 import { createCodexAppServerProcessEnv, createCodexAppServerTestEnvScope } from './testkit/fakeCodexAppServer';
+import { CODEX_APP_SERVER_COMPACT_SEED_SENTINEL } from './compact/buildCodexAppServerCompactSeed';
 
 type CommittedSnapshotBody = Readonly<{
     type?: string;
@@ -1031,6 +1032,18 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            }, 18);',
         '            continue;',
         '        }',
+        '        if (text === "compact-task-failure") {',
+        '            setTimeout(() => {',
+        '                process.stdout.write(JSON.stringify({ method: "error", params: { threadId: msg.params?.threadId ?? null, turnId, willRetry: false, error: { message: "Error running remote compact task: stream disconnected before completion", codexErrorInfo: "other", additionalDetails: null } } }) + "\\n");',
+        '            }, 8);',
+        '            continue;',
+        '        }',
+        '        if (text === "stream-disconnected-only") {',
+        '            setTimeout(() => {',
+        '                process.stdout.write(JSON.stringify({ method: "error", params: { threadId: msg.params?.threadId ?? null, turnId, willRetry: false, error: { message: "stream disconnected before completion", codexErrorInfo: "other", additionalDetails: null } } }) + "\\n");',
+        '            }, 8);',
+        '            continue;',
+        '        }',
         '        if (text === "account-mismatch-once" && matchingTurnStartCount === 1) {',
         '            const authAccountChangedMessage = "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.";',
         '            setTimeout(() => {',
@@ -1366,6 +1379,27 @@ describe('createCodexAppServerRuntime', () => {
 
     async function readRequestLog(requestLogPath: string): Promise<Array<{ id: unknown; method: string; params: unknown; result: unknown; error: unknown }>> {
         return (await readFile(requestLogPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    }
+
+    async function writeCodexRolloutForThread(root: string, threadId: string): Promise<void> {
+        const rolloutDir = join(root, 'codex-home', 'sessions', '2026', '05', '26');
+        await mkdir(rolloutDir, { recursive: true });
+        await writeFile(
+            join(rolloutDir, `rollout-2026-05-26T01-02-03-${threadId}.jsonl`),
+            [
+                JSON.stringify({
+                    type: 'message',
+                    role: 'user',
+                    content: [{ type: 'input_text', text: 'original user request' }],
+                }),
+                JSON.stringify({
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'original assistant answer' }],
+                }),
+            ].join('\n'),
+            'utf8',
+        );
     }
 
     it('allows app-server startup when Codex credentials are missing so the backend can surface auth errors itself', async () => {
@@ -8087,6 +8121,81 @@ describe('createCodexAppServerRuntime', () => {
             type: 'turn_aborted',
         }));
         expect(sendSessionEvent).not.toHaveBeenCalled();
+    });
+
+    it('rescues Codex remote compact task failures with a local rollout seed for the next prompt', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-compact-auto-rescue-');
+
+        const sendCodexMessage = vi.fn();
+        const sendSessionEvent = vi.fn();
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: {
+                updateMetadata: vi.fn(),
+                sendCodexMessage,
+                sendSessionEvent,
+            } as any,
+        });
+
+        await runtime.startOrLoad({});
+        await writeCodexRolloutForThread(root, 'thread-started');
+
+        await expect(runtime.sendPrompt('compact-task-failure')).resolves.toBeUndefined();
+
+        await waitForCondition(async () => {
+            const requestLog = await readRequestLog(requestLogPath);
+            return requestLog.filter((entry) => entry.method === 'thread/start').length >= 2;
+        }, {
+            timeoutMs: 2_000,
+            intervalMs: 25,
+            label: 'compact auto-rescue replacement thread start',
+        });
+
+        await runtime.sendPrompt('after-local-fallback');
+
+        const requestLog = await readRequestLog(requestLogPath);
+        const rescuedTurnStart = requestLog.find((entry) => {
+            const params = entry.params as { input?: Array<{ text?: string }> } | null;
+            const text = params?.input?.[0]?.text;
+            return entry.method === 'turn/start'
+                && typeof text === 'string'
+                && text.includes('after-local-fallback');
+        });
+        expect(rescuedTurnStart).toBeTruthy();
+        const rescuedText = (rescuedTurnStart?.params as { input?: Array<{ text?: string }> } | null)?.input?.[0]?.text ?? '';
+        expect(rescuedText).toContain(CODEX_APP_SERVER_COMPACT_SEED_SENTINEL);
+        expect(rescuedText).toContain('original user request');
+        expect(rescuedText).toContain('original assistant answer');
+
+        expect(sendCodexMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringContaining('Error running remote compact task'),
+        }));
+        expect(sendCodexMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'turn_aborted',
+        }));
+    });
+
+    it('does not rescue generic stream disconnect errors without the compact task signature', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-stream-disconnected-only-');
+
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: {
+                updateMetadata: vi.fn(),
+                sendCodexMessage: vi.fn(),
+                sendSessionEvent: vi.fn(),
+            } as any,
+        });
+
+        await runtime.startOrLoad({});
+
+        await expect(runtime.sendPrompt('stream-disconnected-only')).rejects.toThrow(/stream disconnected/);
+
+        const requestLog = await readRequestLog(requestLogPath);
+        expect(requestLog.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
     });
 
     it('rolls back the latest conversation turn through the app-server thread API and records its transcript seq range', async () => {
