@@ -35,6 +35,7 @@ import { ensureEnvFilePruned, ensureEnvFileUpdated } from './utils/env/env_file.
 import { isSandboxed } from './utils/env/sandbox.mjs';
 import { applyStackCacheEnv } from './utils/proc/pm.mjs';
 import { setupInstalledWorktreeDependencies } from './utils/worktrees/dependency_setup.mjs';
+import { seedGraphifyOutFromBase } from './utils/worktrees/seed_graphify_out.mjs';
 import { shouldRunYarnInstall } from './utils/worktrees/yarn_install_guard.mjs';
 import { existsSync } from 'node:fs';
 import { getHomeEnvLocalPath, getHomeEnvPath, resolveUserConfigEnvPath } from './utils/env/config.mjs';
@@ -475,6 +476,14 @@ async function maybeSetupDeps({ repoRoot, baseDir, worktreeDir, depsMode, compon
   };
 }
 
+async function maybeSeedGraphifyOut({ baseDir, repoRoot, worktreeDir }) {
+  const sourceDir = baseDir || repoRoot;
+  if (!sourceDir) {
+    return { ok: true, seeded: false, reason: 'missing-source' };
+  }
+  return await seedGraphifyOutFromBase({ baseDir: sourceDir, worktreeDir });
+}
+
 async function normalizeRemoteName(repoRoot, remoteName) {
   const want = (remoteName ?? '').trim();
   if (!want) return want;
@@ -794,6 +803,7 @@ async function cmdNew({ rootDir, argv }) {
   const depsMode = parseDepsMode(kv.get('--deps'));
   const depsDir = destWorktreeRoot;
   const deps = await maybeSetupDeps({ repoRoot, baseDir: baseWorktreeDir || '', worktreeDir: depsDir, depsMode, component });
+  const graphify = await maybeSeedGraphifyOut({ baseDir: baseWorktreeDir || '', repoRoot, worktreeDir: destWorktreeRoot });
 
   const shouldUse = flags.has('--use');
   const force = flags.has('--force');
@@ -802,7 +812,7 @@ async function cmdNew({ rootDir, argv }) {
     await cmdUse({ rootDir, args: [destWorktreeRoot], flags });
   }
 
-  return { component, category, owner: localOwner, branch: branchName, path: depsDir, base, used: shouldUse, deps, worktreeRoot: destWorktreeRoot };
+  return { component, category, owner: localOwner, branch: branchName, path: depsDir, base, used: shouldUse, deps, graphify, worktreeRoot: destWorktreeRoot };
 }
 
 async function cmdDuplicate({ rootDir, argv }) {
@@ -990,6 +1000,7 @@ async function cmdPr({ rootDir, argv }) {
   const depsMode = parseDepsMode(kv.get('--deps'));
   const depsDir = destWorktreeRoot;
   const deps = await maybeSetupDeps({ repoRoot, baseDir: repoRoot, worktreeDir: depsDir, depsMode, component });
+  const graphify = await maybeSeedGraphifyOut({ baseDir: repoRoot, repoRoot, worktreeDir: destWorktreeRoot });
 
   const shouldUse = flags.has('--use');
   if (shouldUse) {
@@ -1013,6 +1024,7 @@ async function cmdPr({ rootDir, argv }) {
     oldHead,
     newHead,
     deps,
+    graphify,
   };
   if (json) {
     return res;
