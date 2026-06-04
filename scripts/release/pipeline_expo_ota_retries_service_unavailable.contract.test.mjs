@@ -86,3 +86,84 @@ test('expo ota update retries when EAS update fails with Service Unavailable', (
   const attempts = fs.readFileSync(stub.attemptsPath, 'utf8').trim();
   assert.equal(attempts, '2');
 });
+
+test('expo ota update handles large EAS fingerprint JSON output', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-pipeline-expo-ota-large-fingerprint-'));
+  const binDir = path.join(dir, 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const npxLogPath = path.join(dir, 'npx.log');
+  const largeFingerprintPath = path.join(dir, 'fingerprint.json');
+  fs.writeFileSync(
+    largeFingerprintPath,
+    JSON.stringify({
+      hash: 'large-fingerprint-contract-hash',
+      sources: [],
+      fileHookTransformConfig: {},
+      padding: 'x'.repeat(2 * 1024 * 1024),
+    }),
+    'utf8',
+  );
+
+  writeExecutable(
+    path.join(binDir, 'git'),
+    ['#!/usr/bin/env bash', 'set -euo pipefail', 'exit 0', ''].join('\n'),
+  );
+
+  writeExecutable(
+    path.join(binDir, 'yarn'),
+    ['#!/usr/bin/env bash', 'set -euo pipefail', 'exit 0', ''].join('\n'),
+  );
+
+  writeExecutable(
+    path.join(binDir, 'npx'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `echo "$*" >> ${JSON.stringify(npxLogPath)}`,
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then',
+      `  cat ${JSON.stringify(largeFingerprintPath)}`,
+      '  exit 0',
+      'fi',
+      'if [[ "$*" == *"update"* ]]; then',
+      '  echo "Published OTA update"',
+      '  exit 0',
+      'fi',
+      'echo "unexpected npx invocation: $*" >&2',
+      'exit 1',
+      '',
+    ].join('\n'),
+  );
+
+  execFileSync(
+    process.execPath,
+    [
+      path.join(repoRoot, 'scripts', 'pipeline', 'expo', 'ota-update.mjs'),
+      '--environment',
+      'dev',
+      '--platform',
+      'android',
+      '--interactive',
+      'false',
+      '--message',
+      'large fingerprint contract test',
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        EXPO_TOKEN: 'contract-test',
+        SENTRY_AUTH_TOKEN: '',
+        GITHUB_SHA: '0123456789abcdef0123456789abcdef01234567',
+      },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  );
+
+  const npxLog = fs.readFileSync(npxLogPath, 'utf8');
+  assert.match(npxLog, /fingerprint:generate --platform android .*--json --non-interactive/);
+  assert.match(npxLog, /\bupdate\b --channel dev .*--platform android .*--non-interactive/);
+});

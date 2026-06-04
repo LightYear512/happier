@@ -26,7 +26,7 @@ const OTA_IDENTITY_ENV_KEYS = Object.freeze([
   'EXPO_ANDROID_PACKAGE',
   'EXPO_APP_SCHEME',
 ]);
-const EAS_CAPTURE_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+const PIPELINE_EXEC_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 function fail(message) {
   console.error(message);
@@ -106,7 +106,7 @@ function run(opts, cmd, args, extra) {
     env: { ...process.env, ...(extra?.env ?? {}) },
     encoding: 'utf8',
     stdio: extra?.stdio ?? 'inherit',
-    maxBuffer: EAS_CAPTURE_MAX_BUFFER_BYTES,
+    maxBuffer: PIPELINE_EXEC_MAX_BUFFER_BYTES,
     timeout: 30 * 60_000,
   });
 }
