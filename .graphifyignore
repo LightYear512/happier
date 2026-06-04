@@ -25,6 +25,7 @@
 .project/
 .edison/
 .argent/
+/.dev/worktree/
 .codex-tmp/
 .playwright-mcp/
 .tmp-home/
