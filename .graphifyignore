@@ -1,72 +1,45 @@
-# Dependencies and package manager caches
-node_modules/
-.yarn-cache/
-.yarn-global/
+# Graphify already hard-skips common dependency/build/cache folders such as
+# node_modules, dist, build, out, .git, .next, .turbo, coverage, snapshots,
+# graphify-out, and .worktrees. Keep this file focused on repo-specific noise.
 
-# Build outputs and framework caches
-dist/
-build/
-out/
-.next/
-.nuxt/
-.turbo/
-web-build/
-storybook-static/
-coverage/
-lcov-report/
-apps/server/output/
-apps/cli/.dist.hstack-backup/
-packages/*/dist/
-apps/*/dist/
+# Package manager and build outputs not covered by Graphify defaults
+/.yarn-cache/
+/.yarn-global/
+/web-build/
+/apps/server/output/
+/apps/cli/.dist.hstack-backup/
+/apps/stack/output/
 
 # Native/generated app artifacts
-ios/
-android/
-apps/ui/ios/
-apps/ui/android/
-packages/*/android/build/
-.expo/
-.gradle/
-.kotlin/
+/ios/
+/android/
+/apps/ui/ios/
+/apps/ui/android/
+/.expo/
+/.gradle/
+/.kotlin/
 
 # Local tool/runtime state
-.git/
-.worktrees/
-.happier/
-.claude/cache/
-.project/
-.edison/_generated/
-.edison/_locks/
-.edison/session/
-.argent/
-.codex-tmp/
-.playwright-mcp/
-.tmp-home/
-.tmp/
-tmp/
-
-# Graphify output
-graphify-out/
+/.happier/
+/.claude/cache/
+/.project/
+/.edison/_generated/
+/.edison/_locks/
+/.edison/session/
+/.argent/
+/.codex-tmp/
+/.playwright-mcp/
+/.tmp-home/
+/.tmp/
+/tmp/
 
 # Test artifacts and large test-only corpora
-**/coverage/
-**/playwright-report/
-**/test-results/
-**/__snapshots__/
-**/snapshots/
-**/*.snap
-**/*.test.ts
-**/*.test.tsx
-**/*.test.js
-**/*.test.jsx
-**/*.test.mjs
-**/*.spec.ts
-**/*.spec.tsx
-**/*.integration.test.ts
-**/*.integration.test.tsx
-**/*.integration.test.mjs
-**/*.real.integration.test.mjs
-packages/tests/
+playwright-report/
+test-results/
+*.snap
+*.test.*
+*.spec.*
+/packages/tests/
 
 # Local reports, screenshots, and scratch output
 *.log
@@ -76,4 +49,4 @@ packages/tests/
 *.webp
 *_SUMMARY.md
 *_ANALYSIS.md
-output/
+/output/
