@@ -33,7 +33,6 @@ test('nightly-dev workflow runs reusable release verification against the dev ch
   );
 
   for (const inputName of [
-    'run_installers_smoke',
     'run_binary_smoke',
     'run_cli_update_continuity',
     'run_daemon_continuity',
@@ -45,6 +44,16 @@ test('nightly-dev workflow runs reusable release verification against the dev ch
       `nightly-dev should explicitly enable ${inputName} when invoking release-verify`,
     );
   }
+});
+
+test('nightly-dev gates installer smoke behind an explicit repository variable', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'nightly-dev.yml'), 'utf8');
+
+  assert.match(
+    raw,
+    /release_verify:[\s\S]*?run_installers_smoke:\s*\$\{\{\s*vars\.HAPPIER_ENABLE_INSTALLER_SMOKE == 'true'\s*\}\}/,
+    'installer smoke needs the fork signing public key to match the MINISIGN_SECRET_KEY, so it should be opt-in',
+  );
 });
 
 test('nightly-dev gates Expo-backed mobile publishing behind an explicit repository variable', async () => {
