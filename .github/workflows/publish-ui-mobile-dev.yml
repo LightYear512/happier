@@ -188,6 +188,12 @@ jobs:
         if: inputs.publish_ota
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
         run: |
           set -euo pipefail
           node scripts/pipeline/run.mjs ui-mobile-release \
@@ -202,6 +208,12 @@ jobs:
         if: inputs.publish_android_apk && inputs.eas_builder == 'eas_cloud'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           # GitHub App tokens are short-lived and can expire during long native builds.
           # Use the job-scoped GITHUB_TOKEN for release publishing so the lane stays idempotent.
           GH_TOKEN: ${{ github.token }}
@@ -231,6 +243,12 @@ jobs:
         if: inputs.publish_android_apk && inputs.eas_builder == 'eas_local'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           # GitHub App tokens are short-lived and can expire during long native builds.
           # Use the job-scoped GITHUB_TOKEN for release publishing so the lane stays idempotent.
@@ -310,6 +328,12 @@ jobs:
       - name: iOS TestFlight submit (dev lane) (best-effort)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
           APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS: ${{ vars.APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS }}
           APP_STORE_CONNECT_PUBLICDEV_SUBMIT_BETA_REVIEW: ${{ vars.APP_STORE_CONNECT_PUBLICDEV_SUBMIT_BETA_REVIEW }}
@@ -391,6 +415,12 @@ jobs:
       - name: iOS TestFlight submit (dev lane) (best-effort)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
           APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS: ${{ vars.APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS }}
           APP_STORE_CONNECT_PUBLICDEV_SUBMIT_BETA_REVIEW: ${{ vars.APP_STORE_CONNECT_PUBLICDEV_SUBMIT_BETA_REVIEW }}

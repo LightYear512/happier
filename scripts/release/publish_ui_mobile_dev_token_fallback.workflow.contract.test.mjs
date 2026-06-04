@@ -30,3 +30,30 @@ test('publish-ui-mobile-dev falls back to GITHUB_TOKEN when release bot secrets 
     'mobile source checkout should fall back to GITHUB_TOKEN in forks',
   );
 });
+
+test('publish-ui-mobile-dev passes fork Expo app identity through mobile release steps', async () => {
+  const raw = await loadWorkflow('publish-ui-mobile-dev.yml');
+
+  const otaStep = raw.match(/- name: Expo OTA update \(dev lane\)[\s\S]*?(?=\n      - name: Android APK \(dev lane\))/)?.[0] ?? '';
+  const androidCloudStep =
+    raw.match(/- name: Android APK \(dev lane\) \+ rolling GitHub release[\s\S]*?(?=\n      - name: Install Dagger)/)?.[0] ?? '';
+  const androidLocalStep =
+    raw.match(/- name: Android APK \(dev lane\) \(local via Dagger\) \+ rolling GitHub release[\s\S]*?(?=\n      - name: Note)/)?.[0] ?? '';
+  const iosSubmitSteps = [
+    ...raw.matchAll(/- name: iOS TestFlight submit \(dev lane\) \(best-effort\)[\s\S]*?(?=\n\s{6}- name:|\n\s{2}ios_|\n\s*$)/g),
+  ].map((match) => match[0]);
+
+  assert.notEqual(otaStep, '', 'expected OTA release step to be present');
+  assert.notEqual(androidCloudStep, '', 'expected Android cloud release step to be present');
+  assert.notEqual(androidLocalStep, '', 'expected Android local release step to be present');
+  assert.equal(iosSubmitSteps.length, 2, 'expected both iOS submit steps to be present');
+
+  for (const step of [otaStep, androidCloudStep, androidLocalStep, ...iosSubmitSteps]) {
+    assert.match(step, /EXPO_APP_OWNER:\s*\$\{\{\s*vars\.EXPO_APP_OWNER\s*\}\}/);
+    assert.match(step, /EXPO_APP_SLUG:\s*\$\{\{\s*vars\.EXPO_APP_SLUG\s*\}\}/);
+    assert.match(step, /EXPO_PUBLIC_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_PUBLIC_EAS_PROJECT_ID\s*\}\}/);
+    assert.match(step, /EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EAS_PROJECT_ID\s*\}\}/);
+    assert.match(step, /EXPO_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_EAS_PROJECT_ID\s*\}\}/);
+    assert.match(step, /EXPO_UPDATES_URL:\s*\$\{\{\s*vars\.EXPO_UPDATES_URL\s*\}\}/);
+  }
+});
