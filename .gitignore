@@ -87,6 +87,7 @@ notes/
 .argent/
 .vscode/mcp.json
 /output
+/graphify-out/
 /apps/ui/.agent-device/
 /onboarding-remote-*.png
 
