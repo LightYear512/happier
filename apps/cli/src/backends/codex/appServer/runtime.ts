@@ -107,6 +107,14 @@ import {
 import { UsageLimitRecoveryScheduler } from '@/daemon/connectedServices/usageLimitRecovery/UsageLimitRecoveryScheduler';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { deriveUsageLimitRecoveryTiming } from '@/session/usageLimitRecoveryControls/deriveUsageLimitRecoveryTiming';
+import {
+    createCodexAppServerCompactRescueGate,
+    shouldAutoRescueCodexAppServerCompactFailure,
+} from './compact/codexAppServerCompactAutoRescue';
+import {
+    applyCodexAppServerCompactSeedToPrompt,
+    buildCodexAppServerCompactSeed,
+} from './compact/buildCodexAppServerCompactSeed';
 
 type CodexAppServerStartOrLoadOptions = Readonly<{
     resumeId?: string | null;
@@ -146,6 +154,8 @@ type InvalidGoalStatusResult = Readonly<{
     errorCode: 'invalid_goal_status';
     error: 'invalid_goal_status';
 }>;
+
+const CODEX_APP_SERVER_COMPACT_AUTO_RESCUE_COOLDOWN_MS = 30_000;
 
 function unsupportedSessionRuntimeMethod(method: string): UnsupportedSessionRuntimeMethodResult {
     return {
@@ -1014,6 +1024,11 @@ export function createCodexAppServerRuntime(params: Readonly<{
             await applyStartOrLoadResponse(client, resumedThread.nextThreadId, resumedThread.response);
         },
     });
+    const compactAutoRescueGate = createCodexAppServerCompactRescueGate(
+        CODEX_APP_SERVER_COMPACT_AUTO_RESCUE_COOLDOWN_MS,
+    );
+    let pendingCompactAutoRescueSeed: string | null = null;
+    let pendingCompactAutoRescueStart: Promise<void> | null = null;
     const captureCurrentSteerContext = (): CodexAppServerSteerContext => ({
         modeId: currentModeId,
         modelId: currentModelId,
@@ -2393,6 +2408,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
                                 });
                                 return;
                             }
+                            if (await tryHandleCompactAutoRescue(notificationParams, failure)) {
+                                return;
+                            }
                             await abortPendingTurnWithFailure(failure);
                         });
                     });
@@ -2710,6 +2728,59 @@ export function createCodexAppServerRuntime(params: Readonly<{
         );
     };
 
+    const scheduleCompactAutoRescueThreadStart = (): Promise<void> => {
+        const startPromise = new Promise<void>((resolve, reject) => {
+            setTimeout(() => {
+                void startOrLoad({}).then(resolve, reject);
+            }, 0);
+        }).catch((error) => {
+            pendingCompactAutoRescueSeed = null;
+            compactAutoRescueGate.release();
+            throw error;
+        }).finally(() => {
+            if (pendingCompactAutoRescueStart === startPromise) {
+                pendingCompactAutoRescueStart = null;
+            }
+        });
+        pendingCompactAutoRescueStart = startPromise;
+        return startPromise;
+    };
+
+    const tryHandleCompactAutoRescue = async (notificationParams: unknown, failure: Error): Promise<boolean> => {
+        if (!shouldAutoRescueCodexAppServerCompactFailure(notificationParams)) return false;
+        if (!compactAutoRescueGate.tryClaim(Date.now())) return false;
+
+        const failedThreadId = threadId;
+        if (!failedThreadId) {
+            compactAutoRescueGate.release();
+            return false;
+        }
+
+        try {
+            pendingCompactAutoRescueSeed = await buildCodexAppServerCompactSeed({
+                env: runtimeEnv,
+                threadId: failedThreadId,
+            });
+            await finishPendingTurn({ flushReason: 'abort', insideBridgeWork: true });
+            scheduleCompactAutoRescueThreadStart().catch((error) => {
+                logger.debug('[codex-app-server] Compact auto-rescue failed to start a replacement thread', {
+                    threadId: failedThreadId,
+                    error,
+                });
+            });
+            return true;
+        } catch (error) {
+            pendingCompactAutoRescueSeed = null;
+            compactAutoRescueGate.release();
+            logger.debug('[codex-app-server] Compact auto-rescue failed before replacement thread start', {
+                threadId: failedThreadId,
+                error,
+            });
+            await abortPendingTurnWithFailure(failure);
+            return true;
+        }
+    };
+
     const recoverFromCodexAuthAccountChange = async (activeThreadId: string): Promise<void> => {
         params.session.sendSessionEvent({
             type: 'message',
@@ -2898,6 +2969,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
             currentModelId = null;
             currentReasoningEffort = null;
             currentServiceTier = null;
+            pendingCompactAutoRescueSeed = null;
+            pendingCompactAutoRescueStart = null;
             permissionSupport = 'unknown';
             await disposeClient();
             turnInFlight = false;
@@ -3062,6 +3135,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             let promptForAttempt = prompt;
             let optionsForAttempt: CodexAppServerPromptOptions | undefined = options;
             while (true) {
+                await pendingCompactAutoRescueStart;
                 const activeThreadId = threadId;
                 if (!activeThreadId) {
                     throw new Error('Codex app-server sendPrompt requires an active thread');
@@ -3081,6 +3155,14 @@ export function createCodexAppServerRuntime(params: Readonly<{
                             currentReasoningEffort,
                         })?.payload
                         : null;
+                    const compactSeed = pendingCompactAutoRescueSeed;
+                    pendingCompactAutoRescueSeed = null;
+                    if (compactSeed) {
+                        promptForAttempt = applyCodexAppServerCompactSeedToPrompt({
+                            seed: compactSeed,
+                            prompt: promptForAttempt,
+                        });
+                    }
                     const input = await buildCodexTurnInputForPrompt(promptForAttempt, params.directory, optionsForAttempt);
                     const textOnlyInput = [{ type: 'text', text: promptForAttempt }] satisfies CodexAppServerTurnInputItem[];
                     const baseTurnStartParams = {
