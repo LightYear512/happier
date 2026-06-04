@@ -6,6 +6,7 @@ type ControlRegistry = Pick<
   AndroidSimulatorPreviewControlRegistry,
   'acquire' | 'release' | 'sendInput' | 'reloadApp' | 'reconnectDevServices'
 >;
+type ClearableControlRegistry = ControlRegistry & Pick<AndroidSimulatorPreviewControlRegistry, 'clearSessionPreviews'>;
 
 type RegistryOperation = keyof ControlRegistry;
 type RegistryOperationInput<K extends RegistryOperation> = Parameters<ControlRegistry[K]>[0];
@@ -25,8 +26,8 @@ function isSimulatorPreviewNotFound(result: unknown): boolean {
 }
 
 export function createSimulatorPreviewControlRegistryRouter(params: Readonly<{
-  android: ControlRegistry;
-  ios: Pick<IosSimulatorPreviewControlRegistry, RegistryOperation>;
+  android: ClearableControlRegistry;
+  ios: Pick<IosSimulatorPreviewControlRegistry, RegistryOperation | 'clearSessionPreviews'>;
   platforms?: Map<string, SimulatorPreviewPlatform>;
 }>) {
   const platforms = params.platforms ?? new Map<string, SimulatorPreviewPlatform>();
@@ -57,6 +58,25 @@ export function createSimulatorPreviewControlRegistryRouter(params: Readonly<{
     }>): void {
       platforms.set(platformKey(input.sessionId, input.simulatorSessionId), input.platform);
     },
+    clearSessionPreviews(input: Readonly<{
+      sessionId: string;
+      platform?: SimulatorPreviewPlatform;
+      excludeSimulatorSessionId?: string;
+    }>): void {
+      if (!input.platform || input.platform === 'android') {
+        params.android.clearSessionPreviews({
+          sessionId: input.sessionId,
+          ...(input.excludeSimulatorSessionId ? { excludeSimulatorSessionId: input.excludeSimulatorSessionId } : {}),
+        });
+      }
+      if (!input.platform || input.platform === 'ios') {
+        params.ios.clearSessionPreviews({
+          sessionId: input.sessionId,
+          ...(input.excludeSimulatorSessionId ? { excludeSimulatorSessionId: input.excludeSimulatorSessionId } : {}),
+        });
+      }
+      clearSessionPlatformEntries(platforms, input);
+    },
     acquire: async (input: RegistryOperationInput<'acquire'>) => await call('acquire', input),
     release: async (input: RegistryOperationInput<'release'>) => await call('release', input),
     sendInput: async (input: RegistryOperationInput<'sendInput'>) => await call('sendInput', input),
@@ -64,4 +84,24 @@ export function createSimulatorPreviewControlRegistryRouter(params: Readonly<{
     reconnectDevServices: async (input: RegistryOperationInput<'reconnectDevServices'>) =>
       await call('reconnectDevServices', input),
   };
+}
+
+function clearSessionPlatformEntries(
+  platforms: Map<string, SimulatorPreviewPlatform>,
+  input: Readonly<{
+    sessionId: string;
+    platform?: SimulatorPreviewPlatform;
+    excludeSimulatorSessionId?: string;
+  }>,
+): void {
+  const prefix = `${input.sessionId}\u0000`;
+  const excludedKey = input.excludeSimulatorSessionId
+    ? platformKey(input.sessionId, input.excludeSimulatorSessionId)
+    : null;
+  for (const [key, platform] of platforms) {
+    if (key === excludedKey) continue;
+    if (key.startsWith(prefix) && (!input.platform || input.platform === platform)) {
+      platforms.delete(key);
+    }
+  }
 }

@@ -42,6 +42,7 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
       leaseId: 'lease_user_1',
       generation: 1,
       owner: 'user',
+      holderId: 'browser_tab_1',
       input: { type: 'tap', x: 0.5, y: 0.25 },
     })).resolves.toEqual({ ok: true });
     expect(runAdbInput).toHaveBeenCalledWith({
@@ -79,6 +80,7 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
       leaseId: 'lease_user_1',
       generation: 1,
       owner: 'user',
+      holderId: 'browser_tab_1',
       input: { type: 'swipe', x1: 0.1, y1: 0.2, x2: 0.8, y2: 0.9, durationMs: 350 },
     })).resolves.toEqual({ ok: true });
     await expect(registry.sendInput({
@@ -87,6 +89,7 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
       leaseId: 'lease_user_1',
       generation: 1,
       owner: 'user',
+      holderId: 'browser_tab_1',
       input: { type: 'text', text: 'hello world' },
     })).resolves.toEqual({ ok: true });
     await expect(registry.sendInput({
@@ -95,6 +98,7 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
       leaseId: 'lease_user_1',
       generation: 1,
       owner: 'user',
+      holderId: 'browser_tab_1',
       input: { type: 'keyevent', key: 'back' },
     })).resolves.toEqual({ ok: true });
 
@@ -405,5 +409,115 @@ describe('createAndroidSimulatorPreviewControlRegistry', () => {
       generation: 3,
       mode: 'user_control',
     }));
+  });
+
+  it('requires the matching holder id for holder-scoped Android leases', async () => {
+    const runAdbInput = vi.fn(async () => {});
+    const registry = createAndroidSimulatorPreviewControlRegistry({
+      nowMs: () => 1_000,
+      randomId: () => 'lease_user_1',
+      runAdbInput,
+    });
+
+    registry.registerAndroidPreview({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      deviceWidth: 1080,
+      deviceHeight: 1920,
+    });
+    await registry.acquire({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    });
+
+    await expect(registry.sendInput({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      generation: 1,
+      owner: 'user',
+      input: { type: 'tap', x: 0.5, y: 0.25 },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'lease_holder_mismatch',
+      error: 'lease_holder_mismatch',
+    });
+    await expect(registry.release({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      leaseId: 'lease_user_1',
+      owner: 'user',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'lease_holder_mismatch',
+      error: 'lease_holder_mismatch',
+    });
+    await expect(registry.acquire({
+      sessionId: 'sess_1',
+      simulatorSessionId: 'sim_android_1',
+      owner: 'user',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'control_busy',
+      error: 'control_busy',
+      owner: 'user',
+    });
+    expect(runAdbInput).not.toHaveBeenCalled();
+  });
+
+  it('clears stale session previews while preserving an excluded active preview', async () => {
+    const registry = createAndroidSimulatorPreviewControlRegistry({
+      nowMs: () => 1_000,
+      randomId: () => 'lease_android_active',
+    });
+    registry.registerAndroidPreview({
+      sessionId: 'sess_android_clear_1',
+      simulatorSessionId: 'sim_android_old',
+      deviceWidth: 720,
+      deviceHeight: 1600,
+    });
+    registry.registerAndroidPreview({
+      sessionId: 'sess_android_clear_1',
+      simulatorSessionId: 'sim_android_active',
+      deviceWidth: 720,
+      deviceHeight: 1600,
+    });
+    registry.registerAndroidPreview({
+      sessionId: 'sess_android_other',
+      simulatorSessionId: 'sim_android_other',
+      deviceWidth: 720,
+      deviceHeight: 1600,
+    });
+
+    registry.clearSessionPreviews({
+      sessionId: 'sess_android_clear_1',
+      excludeSimulatorSessionId: 'sim_android_active',
+    });
+
+    await expect(registry.acquire({
+      sessionId: 'sess_android_clear_1',
+      simulatorSessionId: 'sim_android_old',
+      owner: 'user',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'simulator_preview_not_found',
+    });
+    await expect(registry.acquire({
+      sessionId: 'sess_android_clear_1',
+      simulatorSessionId: 'sim_android_active',
+      owner: 'user',
+    })).resolves.toMatchObject({
+      ok: true,
+      leaseId: 'lease_android_active',
+    });
+    await expect(registry.acquire({
+      sessionId: 'sess_android_other',
+      simulatorSessionId: 'sim_android_other',
+      owner: 'user',
+    })).resolves.toMatchObject({
+      ok: true,
+    });
   });
 });

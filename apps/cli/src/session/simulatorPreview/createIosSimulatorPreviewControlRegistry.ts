@@ -88,6 +88,20 @@ export function createIosSimulatorPreviewControlRegistry(
       });
     },
 
+    clearSessionPreviews(input: Readonly<{
+      sessionId: string;
+      excludeSimulatorSessionId?: string;
+    }>): void {
+      for (const [key, entry] of entries) {
+        if (
+          entry.registration.sessionId === input.sessionId
+          && entry.registration.simulatorSessionId !== input.excludeSimulatorSessionId
+        ) {
+          entries.delete(key);
+        }
+      }
+    },
+
     async acquire(input: Readonly<{
       sessionId: string;
       simulatorSessionId: string;
@@ -102,7 +116,7 @@ export function createIosSimulatorPreviewControlRegistry(
       }
       if (entry.lease && nowMs() <= entry.lease.expiresAtMs) {
         const sameHolder = entry.lease.owner === input.owner
-          && (!entry.lease.holderId || !input.holderId || entry.lease.holderId === input.holderId);
+          && (!entry.lease.holderId || entry.lease.holderId === input.holderId);
         if (!sameHolder) {
           return {
             ok: false as const,
@@ -222,7 +236,7 @@ function validateLease(
   if (lease.owner !== input.owner) {
     return { ok: false as const, errorCode: 'lease_owner_mismatch' as const, error: 'lease_owner_mismatch' as const };
   }
-  if (lease.holderId && input.holderId && lease.holderId !== input.holderId) {
+  if (lease.holderId && lease.holderId !== input.holderId) {
     return { ok: false as const, errorCode: 'lease_holder_mismatch' as const, error: 'lease_holder_mismatch' as const };
   }
   if (nowMs > lease.expiresAtMs) {
