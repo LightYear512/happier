@@ -23,6 +23,11 @@ on:
         required: true
         default: true
         type: boolean
+      publish_release_notes_assets:
+        description: "Publish — Upload release notes media assets to this repository"
+        required: true
+        default: true
+        type: boolean
       eas_builder:
         description: "Runner — EAS build runner"
         required: true
@@ -51,6 +56,10 @@ on:
         default: true
         type: boolean
       submit_ios_testflight:
+        required: false
+        default: true
+        type: boolean
+      publish_release_notes_assets:
         required: false
         default: true
         type: boolean
@@ -94,20 +103,24 @@ jobs:
     needs: [release_actor_guard]
     runs-on: ubuntu-latest
     environment: release-shared
+    env:
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     steps:
       - name: Create GitHub App token
         id: app_token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Checkout source ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
           persist-credentials: false
 
       - name: Setup Node
@@ -136,35 +149,39 @@ jobs:
           args: --frozen-lockfile --ignore-engines
 
       - name: Generate release notes manifest
+        env:
+          HAPPIER_RELEASE_NOTES_ASSET_BASE_URL: https://github.com/${{ github.repository }}/releases/download/release-notes/
         run: |
           set -euo pipefail
           yarn --cwd apps/ui tsx sources/scripts/parseReleaseNotes.ts
 
       - name: Build release notes assets
+        if: inputs.publish_release_notes_assets
         run: |
           set -euo pipefail
           node scripts/pipeline/release/release-notes/build-release-notes-assets.mjs \
-            --out-dir "dist/release-notes-assets"
+            --out-dir "dist/release-notes-assets" \
+            --assets-base-url "https://github.com/${{ github.repository }}/releases/download/release-notes/"
 
       - name: Create release notes assets GitHub App token
         id: release_notes_assets_token
+        if: ${{ inputs.publish_release_notes_assets && env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: happier-assets
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
           permission-contents: write
 
       - name: Publish release notes assets
+        if: inputs.publish_release_notes_assets
         env:
-          GH_TOKEN: ${{ steps.release_notes_assets_token.outputs.token }}
-          GH_REPO: happier-dev/happier-assets
+          GH_TOKEN: ${{ (steps.release_notes_assets_token.outputs.token != '' && steps.release_notes_assets_token.outputs.token) || github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           node scripts/pipeline/release/release-notes/publish-release-notes-assets.mjs \
             --in-dir "dist/release-notes-assets" \
-            --repo "happier-dev/happier-assets" \
+            --repo "${{ github.repository }}" \
             --tag "release-notes"
 
       - name: Expo OTA update (dev lane)
@@ -247,20 +264,24 @@ jobs:
     runs-on: ubuntu-latest
     environment: release-shared
     continue-on-error: true
+    env:
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     steps:
       - name: Create GitHub App token
         id: app_token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Checkout source ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
           persist-credentials: false
 
       - name: Setup Node
@@ -319,20 +340,24 @@ jobs:
     runs-on: macos-26
     environment: release-shared
     continue-on-error: true
+    env:
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     steps:
       - name: Create GitHub App token
         id: app_token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Checkout source ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
           persist-credentials: false
 
       - name: Setup Node

@@ -15,7 +15,6 @@ async function loadWorkflow(name) {
 
 const releaseNotesAssetCallers = [
   ['promote-ui.yml', 'promote'],
-  ['publish-ui-mobile-dev.yml', 'publish'],
 ];
 
 for (const [workflow, jobName] of releaseNotesAssetCallers) {
@@ -57,6 +56,7 @@ for (const [workflow, jobName] of releaseNotesAssetCallers) {
 for (const [workflow, jobName] of [
   ['build-ui-mobile-local.yml', 'release_notes_assets'],
   ['publish-ui-web.yml', 'publish'],
+  ['publish-ui-mobile-dev.yml', 'publish'],
 ]) {
   test(`${workflow} keeps release notes assets optional and scoped to the current fork`, async () => {
     const { raw, parsed } = await loadWorkflow(workflow);
