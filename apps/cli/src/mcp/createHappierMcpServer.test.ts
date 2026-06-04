@@ -107,10 +107,20 @@ describe('createHappierMcpServer', () => {
       sendClaudeSessionMessage: () => {},
       updateMetadata: () => {},
     } as any;
+    const actionsSettingsV1 = {
+      v: 1,
+      actions: {
+        'session.simulatorPreview.register': { toolExposureModes: { session_agent: 'direct' } },
+        'session.simulatorPreview.devices.list': { toolExposureModes: { session_agent: 'direct' } },
+        'session.simulatorPreview.android.start': { toolExposureModes: { session_agent: 'direct' } },
+        'session.simulatorPreview.ios.start': { toolExposureModes: { session_agent: 'direct' } },
+      },
+    };
 
     const disabled = createHappierMcpServer(fakeClient, {
       accountSettings: {
         experiments: true,
+        actionsSettingsV1,
         featureToggles: {
           'sessions.devPreview': false,
         },
@@ -119,6 +129,7 @@ describe('createHappierMcpServer', () => {
     const enabled = createHappierMcpServer(fakeClient, {
       accountSettings: {
         experiments: true,
+        actionsSettingsV1,
         featureToggles: {
           'sessions.devPreview': true,
         },
@@ -413,6 +424,7 @@ describe('createHappierMcpServer', () => {
     };
     const androidSimulatorPreviewControlRegistry = {
       registerAndroidPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
       acquire: vi.fn(),
       release: vi.fn(),
       sendInput: vi.fn(),
@@ -638,6 +650,7 @@ describe('createHappierMcpServer', () => {
     };
     const androidSimulatorPreviewControlRegistry = {
       registerAndroidPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
       acquire: vi.fn(),
       release: vi.fn(),
       sendInput: vi.fn(),
@@ -734,6 +747,7 @@ describe('createHappierMcpServer', () => {
       })),
       androidSimulatorPreviewControlRegistry: {
         registerAndroidPreview: vi.fn(),
+        clearSessionPreviews: vi.fn(),
         acquire: vi.fn(),
         release: vi.fn(),
         sendInput: vi.fn(),
@@ -809,6 +823,7 @@ describe('createHappierMcpServer', () => {
       })),
       androidSimulatorPreviewControlRegistry: {
         registerAndroidPreview: vi.fn(),
+        clearSessionPreviews: vi.fn(),
         acquire: vi.fn(),
         release: vi.fn(),
         sendInput: vi.fn(),
@@ -962,6 +977,7 @@ describe('createHappierMcpServer', () => {
 
     const iosSimulatorPreviewControlRegistry = {
       registerIosPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
       acquire: vi.fn(async () => ({ ok: true as const, leaseId: 'lease_ios_1', generation: 1 })),
       release: vi.fn(async () => ({ ok: true as const, generation: 2, mode: 'idle' as const })),
       sendInput: vi.fn(async () => ({ ok: true as const })),
@@ -1053,6 +1069,7 @@ describe('createHappierMcpServer', () => {
     }));
     const iosSimulatorPreviewControlRegistry = {
       registerIosPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
       acquire: vi.fn(),
       release: vi.fn(),
       sendInput: vi.fn(),
@@ -1172,6 +1189,8 @@ describe('createHappierMcpServer', () => {
     });
 
     const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const { createAndroidSimulatorPreviewControlRegistry } =
+      await import('@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry');
 
     const firstClose = vi.fn(async () => {});
     const secondClose = vi.fn(async () => {});
@@ -1192,6 +1211,13 @@ describe('createHappierMcpServer', () => {
         close: secondClose,
       });
     const androidSimulatorPreviewStreams = new Map();
+    const androidSimulatorPreviewControlRegistry = createAndroidSimulatorPreviewControlRegistry();
+    const simulatorPreviewControlPlatforms = new Map();
+    const simulatorDeviceLeaseRenewals = {
+      start: vi.fn(),
+      clear: vi.fn(),
+      clearSession: vi.fn(),
+    };
     const resolveAndroidSimulatorPreviewGeometry = vi.fn(async () => ({
       deviceWidth: 720,
       deviceHeight: 1600,
@@ -1206,26 +1232,50 @@ describe('createHappierMcpServer', () => {
     createHappierMcpServer(fakeClient, {
       startAndroidSimulatorPreviewStream,
       androidSimulatorPreviewStreams,
+      androidSimulatorPreviewControlRegistry,
+      simulatorPreviewControlPlatforms,
       resolveAndroidSimulatorPreviewGeometry,
+      simulatorDeviceLeaseRenewals,
     } as any);
     createHappierMcpServer(fakeClient, {
       startAndroidSimulatorPreviewStream,
       androidSimulatorPreviewStreams,
+      androidSimulatorPreviewControlRegistry,
+      simulatorPreviewControlPlatforms,
       resolveAndroidSimulatorPreviewGeometry,
+      simulatorDeviceLeaseRenewals,
     } as any);
 
-    await capturedDeps[0].sessionSimulatorPreviewAndroidStart({
+    const firstPreview = await capturedDeps[0].sessionSimulatorPreviewAndroidStart({
       sessionId: 'sess_simulator_preview_android_replace_1',
       deviceName: 'Android SDK API 34',
     });
-    await capturedDeps[1].sessionSimulatorPreviewAndroidStart({
+    const secondPreview = await capturedDeps[1].sessionSimulatorPreviewAndroidStart({
       sessionId: 'sess_simulator_preview_android_replace_1',
       deviceName: 'Android SDK API 34',
     });
 
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(secondClose).not.toHaveBeenCalled();
+    expect(simulatorDeviceLeaseRenewals.clear).toHaveBeenCalledWith('sess_simulator_preview_android_replace_1', 'android');
     expect(androidSimulatorPreviewStreams.get('sess_simulator_preview_android_replace_1')?.port).toBe(9813);
+    await expect(capturedDeps[1].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_android_replace_1',
+      simulatorSessionId: firstPreview.simulatorSessionId,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'simulator_preview_not_found',
+    });
+    await expect(capturedDeps[1].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_android_replace_1',
+      simulatorSessionId: secondPreview.simulatorSessionId,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toMatchObject({
+      ok: true,
+    });
   });
 
   it('replaces iOS simulator streams through a shared registry across per-request MCP servers', async () => {
@@ -1243,6 +1293,8 @@ describe('createHappierMcpServer', () => {
     });
 
     const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const { createIosSimulatorPreviewControlRegistry } =
+      await import('@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry');
 
     const firstClose = vi.fn(async () => {});
     const secondClose = vi.fn(async () => {});
@@ -1263,6 +1315,15 @@ describe('createHappierMcpServer', () => {
         close: secondClose,
       });
     const iosSimulatorPreviewStreams = new Map();
+    const iosSimulatorPreviewControlRegistry = createIosSimulatorPreviewControlRegistry({
+      sendIosInput: vi.fn(async () => ({ ok: true as const })),
+    });
+    const simulatorPreviewControlPlatforms = new Map();
+    const simulatorDeviceLeaseRenewals = {
+      start: vi.fn(),
+      clear: vi.fn(),
+      clearSession: vi.fn(),
+    };
     const fakeClient = {
       sessionId: 'sess_simulator_preview_ios_replace_1',
       rpcHandlerManager: { invokeLocal: async () => ({}) },
@@ -1273,19 +1334,25 @@ describe('createHappierMcpServer', () => {
     createHappierMcpServer(fakeClient, {
       startIosSimulatorPreviewStream,
       iosSimulatorPreviewStreams,
+      iosSimulatorPreviewControlRegistry,
+      simulatorPreviewControlPlatforms,
+      simulatorDeviceLeaseRenewals,
     } as any);
     createHappierMcpServer(fakeClient, {
       startIosSimulatorPreviewStream,
       iosSimulatorPreviewStreams,
+      iosSimulatorPreviewControlRegistry,
+      simulatorPreviewControlPlatforms,
+      simulatorDeviceLeaseRenewals,
     } as any);
 
-    await capturedDeps[0].sessionSimulatorPreviewIosStart({
+    const firstPreview = await capturedDeps[0].sessionSimulatorPreviewIosStart({
       sessionId: 'sess_simulator_preview_ios_replace_1',
       deviceId: 'ios-device-1',
       deviceName: 'iPhone 15 Pro',
       wdaUrl: 'http://127.0.0.1:8100',
     });
-    await capturedDeps[1].sessionSimulatorPreviewIosStart({
+    const secondPreview = await capturedDeps[1].sessionSimulatorPreviewIosStart({
       sessionId: 'sess_simulator_preview_ios_replace_1',
       deviceId: 'ios-device-1',
       deviceName: 'iPhone 15 Pro',
@@ -1294,7 +1361,82 @@ describe('createHappierMcpServer', () => {
 
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(secondClose).not.toHaveBeenCalled();
+    expect(simulatorDeviceLeaseRenewals.clear).toHaveBeenCalledWith('sess_simulator_preview_ios_replace_1', 'ios');
     expect(iosSimulatorPreviewStreams.get('sess_simulator_preview_ios_replace_1')?.port).toBe(9815);
+    await expect(capturedDeps[1].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_ios_replace_1',
+      simulatorSessionId: firstPreview.simulatorSessionId,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'simulator_preview_not_found',
+    });
+    await expect(capturedDeps[1].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_ios_replace_1',
+      simulatorSessionId: secondPreview.simulatorSessionId,
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('falls back to the iOS control registry when a preview platform mapping is missing', async () => {
+    const capturedDeps: any[] = [];
+
+    vi.doMock('@happier-dev/protocol', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
+      return {
+        ...actual,
+        createActionExecutor: (deps: any) => {
+          capturedDeps.push(deps);
+          return {} as any;
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    const androidSimulatorPreviewControlRegistry = {
+      registerAndroidPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
+      acquire: vi.fn(async () => ({ ok: false, errorCode: 'simulator_preview_not_found', error: 'simulator_preview_not_found' })),
+      release: vi.fn(async () => ({ ok: false, errorCode: 'simulator_preview_not_found', error: 'simulator_preview_not_found' })),
+      sendInput: vi.fn(async () => ({ ok: false, errorCode: 'simulator_preview_not_found', error: 'simulator_preview_not_found' })),
+      reloadApp: vi.fn(async () => ({ ok: false, errorCode: 'simulator_preview_not_found', error: 'simulator_preview_not_found' })),
+      reconnectDevServices: vi.fn(async () => ({ ok: false, errorCode: 'simulator_preview_not_found', error: 'simulator_preview_not_found' })),
+    };
+    const iosSimulatorPreviewControlRegistry = {
+      registerIosPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
+      acquire: vi.fn(async () => ({ ok: true, leaseId: 'lease_ios_1', generation: 1 })),
+      release: vi.fn(async () => ({ ok: true, generation: 2 })),
+      sendInput: vi.fn(async () => ({ ok: true })),
+      reloadApp: vi.fn(async () => ({ ok: false, errorCode: 'unsupported_ios_operation', error: 'unsupported_ios_operation' })),
+      reconnectDevServices: vi.fn(async () => ({ ok: true, reconnectedPorts: [] })),
+    };
+
+    createHappierMcpServer({
+      sessionId: 'sess_simulator_preview_ios_fallback_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      sendClaudeSessionMessage: () => {},
+      updateMetadata: () => {},
+    } as any, {
+      androidSimulatorPreviewControlRegistry,
+      iosSimulatorPreviewControlRegistry,
+      simulatorPreviewControlPlatforms: new Map(),
+    } as any);
+
+    await expect(capturedDeps[0].sessionSimulatorPreviewControlAcquire({
+      sessionId: 'sess_simulator_preview_ios_fallback_1',
+      simulatorSessionId: 'sim_ios_1',
+      owner: 'user',
+      holderId: 'browser_tab_1',
+    })).resolves.toEqual({ ok: true, leaseId: 'lease_ios_1', generation: 1 });
+
+    expect(androidSimulatorPreviewControlRegistry.acquire).toHaveBeenCalled();
+    expect(iosSimulatorPreviewControlRegistry.acquire).toHaveBeenCalled();
   });
 
   it('routes simulator preview control and input through a shared Android control registry', async () => {
@@ -1315,6 +1457,7 @@ describe('createHappierMcpServer', () => {
 
     const androidSimulatorPreviewControlRegistry = {
       registerAndroidPreview: vi.fn(),
+      clearSessionPreviews: vi.fn(),
       acquire: vi.fn(async () => ({ ok: true, leaseId: 'lease_user_1', generation: 1 })),
       release: vi.fn(async () => ({ ok: true, generation: 2 })),
       sendInput: vi.fn(async () => ({ ok: true })),

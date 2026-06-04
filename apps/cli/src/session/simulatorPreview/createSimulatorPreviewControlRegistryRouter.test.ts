@@ -10,6 +10,7 @@ describe('createSimulatorPreviewControlRegistryRouter', () => {
       sendInput: vi.fn(async () => ({ ok: true as const })),
       reloadApp: vi.fn(async () => ({ ok: true as const })),
       reconnectDevServices: vi.fn(async () => ({ ok: true as const, reconnectedPorts: [] as number[] })),
+      clearSessionPreviews: vi.fn(),
     };
     const ios = {
       acquire: vi.fn(async () => ({
@@ -28,6 +29,7 @@ describe('createSimulatorPreviewControlRegistryRouter', () => {
         error: 'unsupported_ios_operation' as const,
       })),
       reconnectDevServices: vi.fn(async () => ({ ok: true as const, reconnectedPorts: [] as number[] })),
+      clearSessionPreviews: vi.fn(),
     };
     const router = createSimulatorPreviewControlRegistryRouter({ android, ios });
 
@@ -54,5 +56,47 @@ describe('createSimulatorPreviewControlRegistryRouter', () => {
 
     expect(ios.acquire).toHaveBeenCalledTimes(1);
     expect(android.acquire).not.toHaveBeenCalled();
+  });
+
+  it('clears registered preview platforms by session and platform while preserving an excluded preview', () => {
+    const android = {
+      acquire: vi.fn(),
+      release: vi.fn(),
+      sendInput: vi.fn(),
+      reloadApp: vi.fn(),
+      reconnectDevServices: vi.fn(),
+      clearSessionPreviews: vi.fn(),
+    };
+    const ios = {
+      acquire: vi.fn(),
+      release: vi.fn(),
+      sendInput: vi.fn(),
+      reloadApp: vi.fn(),
+      reconnectDevServices: vi.fn(),
+      clearSessionPreviews: vi.fn(),
+    };
+    const platforms = new Map([
+      ['sess_1\u0000sim_android_1', 'android' as const],
+      ['sess_1\u0000sim_ios_old', 'ios' as const],
+      ['sess_1\u0000sim_ios_active', 'ios' as const],
+      ['sess_2\u0000sim_ios_2', 'ios' as const],
+    ]);
+    const router = createSimulatorPreviewControlRegistryRouter({ android, ios, platforms });
+
+    router.clearSessionPreviews({
+      sessionId: 'sess_1',
+      platform: 'ios',
+      excludeSimulatorSessionId: 'sim_ios_active',
+    });
+
+    expect(android.clearSessionPreviews).not.toHaveBeenCalled();
+    expect(ios.clearSessionPreviews).toHaveBeenCalledWith({
+      sessionId: 'sess_1',
+      excludeSimulatorSessionId: 'sim_ios_active',
+    });
+    expect(platforms.has('sess_1\u0000sim_android_1')).toBe(true);
+    expect(platforms.has('sess_1\u0000sim_ios_old')).toBe(false);
+    expect(platforms.has('sess_1\u0000sim_ios_active')).toBe(true);
+    expect(platforms.has('sess_2\u0000sim_ios_2')).toBe(true);
   });
 });

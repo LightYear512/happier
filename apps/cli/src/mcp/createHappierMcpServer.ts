@@ -50,7 +50,11 @@ import {
   createSimulatorDeviceService,
   type SimulatorDeviceService,
 } from '@/session/simulatorPreview/createSimulatorDeviceService';
-import { createSimulatorDeviceLeaseRenewalController } from '@/session/simulatorPreview/createSimulatorDeviceLeaseRenewalController';
+import {
+  createSimulatorDeviceLeaseRenewalController,
+  type SimulatorDeviceLeaseRenewalController,
+} from '@/session/simulatorPreview/createSimulatorDeviceLeaseRenewalController';
+import { createSimulatorPreviewControlRegistryRouter } from '@/session/simulatorPreview/createSimulatorPreviewControlRegistryRouter';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -91,6 +95,7 @@ export function createHappierMcpServer(
     iosSimulatorPreviewControlRegistry?: IosSimulatorPreviewControlRegistry;
     simulatorPreviewControlPlatforms?: Map<string, 'android' | 'ios'>;
     simulatorDeviceService?: SimulatorDeviceService;
+    simulatorDeviceLeaseRenewals?: SimulatorDeviceLeaseRenewalController;
     resolveIosSimulatorPreviewDevice?: typeof resolveIosSimulatorPreviewDevice;
     ensureIosSimulatorPreviewDeviceBooted?: typeof ensureIosSimulatorPreviewDeviceBooted;
     resolveIosWebDriverAgentUrl?: typeof resolveIosWebDriverAgentUrl;
@@ -133,12 +138,17 @@ export function createHappierMcpServer(
     ? resolveSessionEncryptionContextFromCredentials(credentials)
     : { encryptionKey: new Uint8Array(0), encryptionVariant: 'legacy' as const };
 
-  const simulatorDeviceLeaseRenewals = createSimulatorDeviceLeaseRenewalController({
+  const simulatorDeviceLeaseRenewals = opts?.simulatorDeviceLeaseRenewals ?? createSimulatorDeviceLeaseRenewalController({
     simulatorDeviceService,
     renewIntervalMs: SIMULATOR_DEVICE_WRITER_LEASE_RENEW_INTERVAL_MS,
     onRenewalFailed: (failure) => {
       logger.debug('[mcp] Failed to renew simulator device writer lease', failure);
     },
+  });
+  const simulatorPreviewControlRegistry = createSimulatorPreviewControlRegistryRouter({
+    android: androidSimulatorPreviewControlRegistry,
+    ios: iosSimulatorPreviewControlRegistry,
+    platforms: simulatorPreviewControlPlatforms,
   });
 
   const mcp = new McpServer({
@@ -422,6 +432,11 @@ export function createHappierMcpServer(
             preview,
             sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
           });
+          simulatorPreviewControlRegistry.clearSessionPreviews({
+            sessionId: input.sessionId,
+            platform: 'android',
+            excludeSimulatorSessionId: preview.simulatorSessionId,
+          });
           if (reservation?.controlCapability !== 'readonly') {
             androidSimulatorPreviewControlRegistry.registerAndroidPreview({
               sessionId: input.sessionId,
@@ -563,6 +578,11 @@ export function createHappierMcpServer(
             preview,
             sendClaudeSessionMessage: client.sendClaudeSessionMessage.bind(client),
           });
+          simulatorPreviewControlRegistry.clearSessionPreviews({
+            sessionId: input.sessionId,
+            platform: 'ios',
+            excludeSimulatorSessionId: preview.simulatorSessionId,
+          });
           if (reservation?.controlCapability !== 'readonly') {
             iosSimulatorPreviewControlRegistry.registerIosPreview({
               sessionId: input.sessionId,
@@ -592,19 +612,13 @@ export function createHappierMcpServer(
         }
         const writable = simulatorDeviceService.assertPreviewWritable(input);
         if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
-        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
-        return platform === 'ios'
-          ? await iosSimulatorPreviewControlRegistry.acquire(input)
-          : await androidSimulatorPreviewControlRegistry.acquire(input);
+        return await simulatorPreviewControlRegistry.acquire(input);
       },
       sessionSimulatorPreviewControlRelease: async (input) => {
         if (input.sessionId !== client.sessionId) {
           return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
         }
-        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
-        return platform === 'ios'
-          ? await iosSimulatorPreviewControlRegistry.release(input)
-          : await androidSimulatorPreviewControlRegistry.release(input);
+        return await simulatorPreviewControlRegistry.release(input);
       },
       sessionSimulatorPreviewInputSend: async (input) => {
         if (input.sessionId !== client.sessionId) {
@@ -612,10 +626,7 @@ export function createHappierMcpServer(
         }
         const writable = simulatorDeviceService.assertPreviewWritable(input);
         if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
-        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
-        return platform === 'ios'
-          ? await iosSimulatorPreviewControlRegistry.sendInput(input)
-          : await androidSimulatorPreviewControlRegistry.sendInput(input);
+        return await simulatorPreviewControlRegistry.sendInput(input);
       },
       sessionSimulatorPreviewAppReload: async (input) => {
         if (input.sessionId !== client.sessionId) {
@@ -623,10 +634,7 @@ export function createHappierMcpServer(
         }
         const writable = simulatorDeviceService.assertPreviewWritable(input);
         if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
-        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
-        return platform === 'ios'
-          ? await iosSimulatorPreviewControlRegistry.reloadApp(input)
-          : await androidSimulatorPreviewControlRegistry.reloadApp(input);
+        return await simulatorPreviewControlRegistry.reloadApp(input);
       },
       sessionSimulatorPreviewDevServicesReconnect: async (input) => {
         if (input.sessionId !== client.sessionId) {
@@ -634,10 +642,7 @@ export function createHappierMcpServer(
         }
         const writable = simulatorDeviceService.assertPreviewWritable(input);
         if (!writable.ok && writable.errorCode !== 'simulator_preview_not_found') return writable;
-        const platform = simulatorPreviewControlPlatforms.get(`${input.sessionId}\u0000${input.simulatorSessionId}`) ?? 'android';
-        return platform === 'ios'
-          ? await iosSimulatorPreviewControlRegistry.reconnectDevServices(input)
-          : await androidSimulatorPreviewControlRegistry.reconnectDevServices(input);
+        return await simulatorPreviewControlRegistry.reconnectDevServices(input);
       },
       executionRunStart: async (_sessionId, request) => await executionRuns.start(request),
       executionRunList: async (_sessionId, request) => await executionRuns.list(request),

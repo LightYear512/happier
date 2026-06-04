@@ -17,6 +17,7 @@ export type SimulatorDeviceLeaseRenewalController = Readonly<{
     writable: boolean;
   }>) => void;
   clear: (sessionId: string, platform: SimulatorDevicePlatform) => void;
+  clearSession: (sessionId: string) => void;
 }>;
 
 export function createSimulatorDeviceLeaseRenewalController(input: Readonly<{
@@ -36,6 +37,11 @@ export function createSimulatorDeviceLeaseRenewalController(input: Readonly<{
     if (!timer) return;
     activeRenewals.delete(key);
     clearInterval(timer);
+  }
+
+  function clearSession(sessionId: string): void {
+    clear(sessionId, 'android');
+    clear(sessionId, 'ios');
   }
 
   function start(startInput: Readonly<{
@@ -64,5 +70,5 @@ export function createSimulatorDeviceLeaseRenewalController(input: Readonly<{
     activeRenewals.set(renewalKey(startInput.sessionId, startInput.platform), timer);
   }
 
-  return { start, clear };
+  return { start, clear, clearSession };
 }

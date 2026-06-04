@@ -17,11 +17,13 @@ import { getSharedSessionDevPreviewRegistry } from '@/session/devPreview/sharedS
 import { createAndroidSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createAndroidSimulatorPreviewControlRegistry';
 import { createIosSimulatorPreviewControlRegistry } from '@/session/simulatorPreview/createIosSimulatorPreviewControlRegistry';
 import { createFileSimulatorDeviceLockStore, createSimulatorDeviceService } from '@/session/simulatorPreview/createSimulatorDeviceService';
+import { createSimulatorDeviceLeaseRenewalController } from '@/session/simulatorPreview/createSimulatorDeviceLeaseRenewalController';
 import { createSimulatorPreviewControlRegistryRouter } from '@/session/simulatorPreview/createSimulatorPreviewControlRegistryRouter';
 import { registerSimulatorPreviewSessionRpcHandlers } from '@/session/simulatorPreview/registerSimulatorPreviewSessionRpcHandlers';
 import type { AccountSettings } from '@happier-dev/protocol';
 import { createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
 import { join } from 'node:path';
+import { closeSimulatorPreviewRuntime } from '@/mcp/simulatorPreviewRuntimeCleanup';
 
 export type HappyMcpExecutionRunService = Readonly<{
     start: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
@@ -58,6 +60,13 @@ export async function startHappyServer(
         lockStore: createFileSimulatorDeviceLockStore({
             lockStorePath: join(configuration.happyHomeDir, 'simulator-preview', 'device-locks.json'),
         }),
+    });
+    const simulatorDeviceLeaseRenewals = createSimulatorDeviceLeaseRenewalController({
+        simulatorDeviceService,
+        renewIntervalMs: 20_000,
+        onRenewalFailed: (failure) => {
+            logger.debug('[happierMCP] Failed to renew simulator device writer lease:', failure);
+        },
     });
     const simulatorPreviewControlRegistry = createSimulatorPreviewControlRegistryRouter({
         android: androidSimulatorPreviewControlRegistry,
@@ -106,6 +115,7 @@ export async function startHappyServer(
             iosSimulatorPreviewControlRegistry,
             simulatorPreviewControlPlatforms,
             simulatorDeviceService,
+            simulatorDeviceLeaseRenewals,
         });
 
         const transport = new StreamableHTTPServerTransport({
@@ -166,20 +176,20 @@ export async function startHappyServer(
         toolNames: toolNamesSnapshot,
         stop: () => {
             logger.debug('[happierMCP] Stopping server');
-            closeAndroidSimulatorPreviewStreams(androidSimulatorPreviewStreams).catch((error) => {
-                logger.debug('[happierMCP] Error closing Android simulator preview streams:', error);
+            closeSimulatorPreviewRuntime({
+                sessionId: client.sessionId,
+                androidStreams: androidSimulatorPreviewStreams,
+                iosStreams: iosSimulatorPreviewStreams,
+                simulatorPreviewControlPlatforms,
+                simulatorPreviewControlRegistry,
+                simulatorDeviceService,
+                simulatorDeviceLeaseRenewals,
+            }).catch((error) => {
+                logger.debug('[happierMCP] Error closing simulator preview runtime:', error);
             });
             server.close();
         }
     }
-}
-
-async function closeAndroidSimulatorPreviewStreams(streams: AndroidSimulatorPreviewStreamRegistry): Promise<void> {
-    const active = [...streams.values()];
-    streams.clear();
-    await Promise.all(active.map(async (stream) => {
-        await stream.close();
-    }));
 }
 
 function startMcpSseKeepAlive(res: ServerResponse, keepAliveIntervalMs: number | null): () => void {
