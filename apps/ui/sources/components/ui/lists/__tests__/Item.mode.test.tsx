@@ -119,7 +119,7 @@ describe('Item mode prop', () => {
         const screen = await renderScreen(<Item title="Compact by setting" subtitle="Subtitle" />);
 
         const titleNode = findTextNode(screen, 'Compact by setting');
-        expect(titleNode?.props?.style).toEqual(expect.arrayContaining([expect.objectContaining({ fontSize: 14, lineHeight: 20 })]));
+        expect(flattenTestStyle(titleNode?.props?.style)).toMatchObject({ fontSize: 14, lineHeight: 20 });
         uiItemDensitySetting = 'comfortable';
     });
 

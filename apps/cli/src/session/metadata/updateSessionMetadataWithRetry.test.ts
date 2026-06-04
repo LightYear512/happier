@@ -46,7 +46,6 @@ vi.mock('@/session/transport/socket/waitForSocketConnect', () => ({
 }));
 
 vi.mock('@/session/transport/shared/sessionTimeouts', () => ({
-  resolveSessionControlSocketAckTimeoutMs: () => 10,
   resolveSessionControlSocketConnectTimeoutMs: () => 10,
   resolveSessionControlSocketAckTimeoutMs: () => 10,
 }));

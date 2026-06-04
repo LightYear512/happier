@@ -3,7 +3,11 @@ import { AsyncTtlCache } from '@happier-dev/protocol';
 
 import { ServerFetchAbortedForServerSwitchError, serverFetch } from '@/sync/http/client';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { getServerProfileById, setServerProfileIdentityForUrl } from '@/sync/domains/server/serverProfiles';
+import {
+    areServerProfileIdentifiersEquivalent,
+    getServerProfileById,
+    setServerProfileIdentityForUrl,
+} from '@/sync/domains/server/serverProfiles';
 import { parseServerFeatures } from './serverFeaturesParse';
 import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 import { normalizeBaseUrl } from './probeAuthenticatedServerAuthPingEndpoint';
@@ -99,7 +103,8 @@ async function getServerFeaturesSnapshotWithRetry(
     const cacheKey = getCacheKey(params?.serverId);
     const requestedServerId = String(params?.serverId ?? '').trim();
     const activeSnapshot = getActiveServerSnapshot();
-    const isExplicitServerRequest = requestedServerId.length > 0 && requestedServerId !== activeSnapshot.serverId;
+    const isExplicitServerRequest = requestedServerId.length > 0
+        && !areServerProfileIdentifiersEquivalent(requestedServerId, activeSnapshot.serverId);
     const explicitServerUrl = isExplicitServerRequest
         ? normalizeBaseUrl(getServerProfileById(requestedServerId)?.serverUrl ?? '')
         : null;

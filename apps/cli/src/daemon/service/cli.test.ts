@@ -2000,12 +2000,11 @@ describe('runDaemonServiceCliCommand', () => {
       });
       vi.resetModules();
 
-      const [{ runDaemonServiceCliCommand, resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }, { writeDaemonState }, { configuration }, { resolveDaemonServiceInstallRuntimeTarget }, controlClient] = await Promise.all([
+      const [{ runDaemonServiceCliCommand, resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }, { writeDaemonState }, { configuration }, { resolveDaemonServiceInstallRuntimeTarget }] = await Promise.all([
         loadCliModule(),
         import('@/persistence'),
         import('@/configuration'),
         import('./resolveDaemonServiceInstallRuntimeTarget'),
-        import('@/daemon/controlClient'),
       ]);
 
       const runtime = resolveDaemonServiceCliRuntimeFromEnv({ targetMode: 'default-following' });
@@ -2042,18 +2041,6 @@ describe('runDaemonServiceCliCommand', () => {
         startedWithPublicReleaseChannel: 'stable',
         startupSource: 'background-service',
         serviceLabel: paths.label,
-      });
-      vi.spyOn(controlClient, 'inspectDaemonRunningStateAndCleanupStaleState').mockResolvedValue({
-        status: 'running',
-        state: {
-          pid: process.pid,
-          httpPort: 43129,
-          startedAt: Date.now(),
-          startedWithCliVersion: configuration.currentCliVersion,
-          startedWithPublicReleaseChannel: 'stable',
-          startupSource: 'background-service',
-          serviceLabel: paths.label,
-        },
       });
 
       const output = captureStdoutJsonOutput<{

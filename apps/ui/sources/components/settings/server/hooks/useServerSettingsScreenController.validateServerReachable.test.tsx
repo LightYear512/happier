@@ -68,6 +68,7 @@ vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 }),
     listServerProfiles: () => [{ id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 0 }],
     getActiveServerId: () => 'server-a',

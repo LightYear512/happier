@@ -270,6 +270,21 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
     const ownership = await evaluateCurrentDaemonOwner();
     const takeoverRequested = args.includes('--takeover');
     const startupSource = resolveDaemonStartupSourceFromEnv(process.env);
+    if (
+      ownership.kind === 'compatible'
+      && ownership.owner.serviceManaged === true
+      && !isDaemonStartupSourceServiceManaged(startupSource)
+    ) {
+      const message = renderDaemonOwnerConflict({
+        intent: 'daemon-start-sync',
+        owner: ownership.owner,
+      });
+      console.error(message.title);
+      for (const line of message.lines) {
+        console.error(`  ${line}`);
+      }
+      process.exit(1);
+    }
     if (ownership.kind === 'compatible') {
       console.log(chalk.green('Daemon already running'));
       console.log(`  Relay URL: ${configuration.serverUrl}`);

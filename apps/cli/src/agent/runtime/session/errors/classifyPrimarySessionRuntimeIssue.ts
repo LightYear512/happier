@@ -195,7 +195,7 @@ function buildUsageLimitDetailsFromStableText(
   return {
     v: 1,
     resetAtMs: readStableRetryTimeResetAtMs(extractErrorText(error), nowMs),
-    retryAfterMs: null,
+    retryAfterMs: readTemporaryThrottleRetryAfterMs(error, nowMs),
     quotaScope: 'unknown',
     recoverability: 'wait',
   };

@@ -13,6 +13,11 @@ vi.mock('@/daemon/runtime/spawnDetachedDaemonStartSync', () => ({
   spawnDetachedDaemonStartSync: vi.fn(),
 }));
 
+vi.mock('@/daemon/ownership/daemonServiceInventory', () => ({
+  evaluateDaemonStartupServiceConflict: vi.fn(async () => ({ kind: 'none' as const })),
+  renderDaemonInstalledServiceConflict: vi.fn(),
+}));
+
 import { ensureDaemonRunningForSessionCommand } from './ensureDaemon';
 import { isDaemonRunningCurrentlyInstalledHappyVersion } from './controlClient';
 import { spawnDetachedDaemonStartSync } from '@/daemon/runtime/spawnDetachedDaemonStartSync';
@@ -21,9 +26,13 @@ describe('ensureDaemonRunningForSessionCommand', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    delete process.env.HAPPIER_DAEMON_START_WAIT_TIMEOUT_MS;
+    delete process.env.HAPPIER_DAEMON_START_WAIT_POLL_MS;
   });
 
   it('polls daemon readiness after spawning', async () => {
+    process.env.HAPPIER_DAEMON_START_WAIT_TIMEOUT_MS = '100';
+    process.env.HAPPIER_DAEMON_START_WAIT_POLL_MS = '1';
     const isRunning = vi.mocked(isDaemonRunningCurrentlyInstalledHappyVersion);
     isRunning
       .mockResolvedValueOnce(false)
@@ -33,10 +42,7 @@ describe('ensureDaemonRunningForSessionCommand', () => {
     const unref = vi.fn();
     vi.mocked(spawnDetachedDaemonStartSync).mockResolvedValue({ unref } as any);
 
-    vi.useFakeTimers();
-    const promise = ensureDaemonRunningForSessionCommand();
-    await vi.advanceTimersByTimeAsync(1000);
-    await promise;
+    await ensureDaemonRunningForSessionCommand();
 
     expect(spawnDetachedDaemonStartSync).toHaveBeenCalledTimes(1);
     expect(unref).toHaveBeenCalledTimes(1);

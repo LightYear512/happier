@@ -123,10 +123,27 @@ function openCodeRetryStatusLooksLikeUsageLimit(message: string): boolean {
   return /\b(usage\s+limit|quota|limit\s+reached|insufficient\s+credits|billing)\b/iu.test(message);
 }
 
+function readOpenCodeRetryNextAt(status: Record<string, unknown>): unknown {
+  const error = asRecord(status.error);
+  const retry = asRecord(status.retry);
+  const properties = asRecord(status.properties);
+  return status.next
+    ?? status.nextAt
+    ?? status.retryNextAt
+    ?? retry?.next
+    ?? retry?.nextAt
+    ?? error?.next
+    ?? error?.nextAt
+    ?? asRecord(error?.retry)?.next
+    ?? properties?.next
+    ?? properties?.nextAt;
+}
+
 function buildOpenCodeRetryStatusError(status: Record<string, unknown>): Error {
   const message = normalizeString(status.message) || 'OpenCode session is waiting before retrying';
-  const retryNextAt = normalizeNonNegativeInteger(status.next);
-  const retryAfterMs = retryNextAt === null ? null : Math.max(0, retryNextAt - Date.now());
+  const retryNextAt = normalizeNonNegativeInteger(readOpenCodeRetryNextAt(status));
+  const explicitRetryAfterMs = normalizeNonNegativeInteger(status.retryAfterMs);
+  const retryAfterMs = explicitRetryAfterMs ?? (retryNextAt === null ? null : Math.max(0, retryNextAt - Date.now()));
   const attempt = normalizeNonNegativeInteger(status.attempt);
   const error = new Error(message);
   error.name = openCodeRetryStatusLooksLikeRateLimit(message)
@@ -137,6 +154,7 @@ function buildOpenCodeRetryStatusError(status: Record<string, unknown>): Error {
   return Object.assign(error, {
     code: 'opencode_session_retry',
     type: 'opencode_session_retry',
+    ...(retryAfterMs === null ? {} : { retryAfterMs }),
     ...(retryAfterMs === null ? {} : { headers: { 'retry-after-ms': String(retryAfterMs) } }),
     ...(attempt === null ? {} : { metadata: { attempt } }),
   });
@@ -2707,11 +2725,14 @@ export function createOpenCodeServerRuntime(params: {
         || extractOpenCodeErrorText(rec.error)
         || normalizeString(errorRecord?.message)
         || 'OpenCode session is waiting before retrying';
+      const retryNextAt = readOpenCodeRetryNextAt(rec);
+      const normalizedRetryNextAt = normalizeNonNegativeInteger(retryNextAt);
       failActiveTurnOnRetryStatus({
         type: 'retry',
         attempt: rec.attempt ?? errorRecord?.attempt,
         message,
-        next: rec.next ?? errorRecord?.next,
+        next: retryNextAt,
+        ...(normalizedRetryNextAt === null ? {} : { retryAfterMs: Math.max(0, normalizedRetryNextAt - Date.now()) }),
       });
       return true;
     }

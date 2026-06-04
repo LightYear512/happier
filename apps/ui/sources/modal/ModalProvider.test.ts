@@ -138,12 +138,13 @@ describe('ModalProvider', () => {
 
         showCustomModal(Modal, DummyModalA);
 
+        const backdrop = screen.findAllByType('Backdrop' as any)[0];
         const portalHost = screen.tree.root.find((node: any) => (
             node?.type === 'View'
             && node?.props?.collapsable === false
-            && node?.props?.style?.[1]?.zIndex === 90000
+            && typeof node?.props?.style?.[1]?.zIndex === 'number'
+            && node.props.style[1].zIndex < backdrop.props.zIndexBase
         ));
-        const backdrop = screen.findAllByType('Backdrop' as any)[0];
         expect(portalHost.props.style[1].zIndex).toBeLessThan(backdrop.props.zIndexBase);
         expect(screen.findByTestId('screen-portal-node')).toBeTruthy();
     });

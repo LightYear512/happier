@@ -65,6 +65,7 @@ import { createSessionReadStateInfoItemProps } from '@/components/sessions/actio
 import { buildNewSessionTempDataFromSessionConfiguration } from '@/components/sessions/authoring/draft/sessionConfigurationSeed';
 import { storeTempData } from '@/utils/sessions/tempDataStore';
 import { completeSessionForkNavigation } from '@/components/sessions/transcript/forkContext/completeSessionForkNavigation';
+import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
 
 type RawJsonSectionId = 'agentState' | 'metadata' | 'sessionStatus' | 'session';
 
@@ -345,6 +346,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const sharingSupported = useSessionSharingSupport();
     const automationsSupport = useAutomationsSupport();
     const showAutomations = automationsSupport?.enabled !== false;
+    const [renderDeferredDetails, setRenderDeferredDetails] = React.useState(false);
     const [expandedRawJsonSection, setExpandedRawJsonSection] = React.useState<RawJsonSectionId | null>(null);
     // Check if CLI version is outdated
     const isCliOutdated = session.metadata?.version && !isVersionSupported(session.metadata.version, MINIMUM_CLI_VERSION);
@@ -712,6 +714,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         await handleCopyCommand(updateCommand);
     }, [handleCopyCommand]);
 
+    React.useEffect(() => {
+        setRenderDeferredDetails(false);
+        return runAfterInteractionsWithFallback(() => {
+            setRenderDeferredDetails(true);
+        });
+    }, [session.id]);
+
     return (
         <>
             <ItemList>
@@ -922,7 +931,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 </ItemGroup>
 
                 {/* Metadata */}
-                {session.metadata && (
+                {renderDeferredDetails && session.metadata && (
                     <ItemGroup title={t('sessionInfo.metadata')}>
                         <Item
                             title={t('sessionInfo.host')}
@@ -1032,7 +1041,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 )}
 
                 {/* Agent State */}
-                {session.agentState && (
+                {renderDeferredDetails && session.agentState && (
                     <ItemGroup title={t('sessionInfo.agentState')}>
                         <Item
                             title={t('sessionInfo.controlledByUser')}
@@ -1051,15 +1060,17 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     </ItemGroup>
                 )}
 
-                <SessionInfoActivityGroup
-                    sessionId={session.id}
-                    formatDate={formatDate}
-                    sessionStatus={sessionStatus}
-                    showRawDiagnostics={devModeEnabled}
-                />
+                {renderDeferredDetails ? (
+                    <SessionInfoActivityGroup
+                        sessionId={session.id}
+                        formatDate={formatDate}
+                        sessionStatus={sessionStatus}
+                        showRawDiagnostics={devModeEnabled}
+                    />
+                ) : null}
 
                 {/* Raw JSON (Dev Mode Only) */}
-                {devModeEnabled && (
+                {renderDeferredDetails && devModeEnabled && (
                     <ItemGroup title={t('sessionInfo.rawJsonDevMode')}>
                         {session.agentState && (
                             <>

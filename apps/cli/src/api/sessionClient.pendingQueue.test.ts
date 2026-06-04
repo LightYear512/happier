@@ -491,7 +491,11 @@ describe('ApiSessionClient pending queue materialization', () => {
             reportProbeResult: vi.fn(),
         };
         type RecoveryHost = {
-            recoverMaterializedLocalId(localId: string, opts?: { maxWaitMs?: number }): Promise<boolean>;
+            recoverMaterializedLocalId(localId: string, opts?: { maxWaitMs?: number }): Promise<
+                | { status: 'recovered'; seq: number }
+                | { status: 'not_found' }
+                | { status: 'error'; error: unknown }
+            >;
         };
         const recoveryHost = Object.assign(
             Object.create(ApiSessionClient.prototype) as unknown as RecoveryHost,
@@ -504,7 +508,7 @@ describe('ApiSessionClient pending queue materialization', () => {
         );
 
         try {
-            await expect(recoveryHost.recoverMaterializedLocalId('local-p1', { maxWaitMs: 1 })).resolves.toBe(false);
+            await expect(recoveryHost.recoverMaterializedLocalId('local-p1', { maxWaitMs: 1 })).resolves.toEqual({ status: 'not_found' });
             expect(getSpy).not.toHaveBeenCalled();
         } finally {
             getSpy.mockRestore();

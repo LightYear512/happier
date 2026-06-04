@@ -93,6 +93,23 @@ const AnimatedValue = vi.hoisted(
 const useHappyActionMock = vi.hoisted(() =>
     vi.fn((fn: any): readonly [boolean, any] => [false, fn] as const),
 );
+const deferredInteractionsMock = vi.hoisted(() => {
+    const state = {
+        defer: false,
+        callbacks: [] as Array<() => void>,
+    };
+    const runAfterInteractionsWithFallback = vi.fn((callback: () => void) => {
+        if (!state.defer) {
+            callback();
+            return () => undefined;
+        }
+        state.callbacks.push(callback);
+        return () => {
+            state.callbacks = state.callbacks.filter((entry) => entry !== callback);
+        };
+    });
+    return { state, runAfterInteractionsWithFallback };
+});
 const mockResolveAgentIdFromFlavor = vi.fn<(flavor: string | null | undefined) => string | undefined>(() => 'claude');
 const useSessionStatusSpy = vi.fn();
 const itemListRenderSpy = vi.fn();
@@ -210,6 +227,10 @@ vi.mock('@/components/ui/media/CodeView', () => ({
 }));
 vi.mock('@/components/sessions/info/SessionRetentionNotice', () => ({ SessionRetentionNotice: 'SessionRetentionNotice' }));
 vi.mock('@/hooks/ui/useHappyAction', () => ({ useHappyAction: (fn: any) => useHappyActionMock(fn) }));
+vi.mock('@/utils/timing/runAfterInteractionsWithFallback', () => ({
+    runAfterInteractionsWithFallback: (callback: () => void) =>
+        deferredInteractionsMock.runAfterInteractionsWithFallback(callback),
+}));
 vi.mock('@/sync/ops', () => ({
     sessionArchiveWithServerScope: sessionArchiveSpy,
     sessionDelete: sessionDeleteSpy,
@@ -417,6 +438,9 @@ describe('/session/[id]/info', () => {
         vi.clearAllMocks();
         useHappyActionMock.mockReset();
         useHappyActionMock.mockImplementation((fn: any) => [false, fn] as const);
+        deferredInteractionsMock.state.defer = false;
+        deferredInteractionsMock.state.callbacks = [];
+        deferredInteractionsMock.runAfterInteractionsWithFallback.mockClear();
         createDefaultActionExecutorSpy.mockReturnValue({});
     });
 
@@ -602,6 +626,40 @@ describe('/session/[id]/info', () => {
         await screen.update(<Screen />);
 
         expect(itemListRenderSpy).not.toHaveBeenCalled();
+    });
+
+    it('defers below-fold diagnostic details until interactions settle', async () => {
+        deferredInteractionsMock.state.defer = true;
+        mockSession = {
+            id: 'session-1234567890abcdef',
+            active: true,
+            accessLevel: null,
+            createdAt: 100,
+            updatedAt: 200,
+            seq: 1,
+            metadata: {
+                host: 'dev-machine',
+                path: '/workspace/happier',
+            },
+            agentState: {
+                controlledByUser: true,
+            },
+        };
+
+        const screen = await renderInfoScreen();
+        let itemTitles = screen.findAllByType('Item' as any).map((node: any) => node.props?.title);
+        expect(itemTitles).toContain('sessionInfo.renameSession');
+        expect(itemTitles).not.toContain('sessionInfo.host');
+        expect(itemTitles).not.toContain('sessionInfo.controlledByUser');
+
+        const callbacks = [...deferredInteractionsMock.state.callbacks];
+        await act(async () => {
+            callbacks.forEach((callback) => callback());
+        });
+
+        itemTitles = screen.findAllByType('Item' as any).map((node: any) => node.props?.title);
+        expect(itemTitles).toContain('sessionInfo.host');
+        expect(itemTitles).toContain('sessionInfo.controlledByUser');
     });
 
     it('does not subscribe to execution-run session signals while the runs feature is disabled', async () => {
@@ -1539,10 +1597,7 @@ describe('/session/[id]/info', () => {
     });
 
     it('shows loading on the stop and archive rows while their mutations are running', async () => {
-        useHappyActionMock
-            .mockImplementationOnce((fn: any) => [true, fn] as const)
-            .mockImplementationOnce((fn: any) => [true, fn] as const)
-            .mockImplementation((fn: any) => [false, fn] as const);
+        useHappyActionMock.mockImplementation((fn: any) => [true, fn] as const);
         mockSession = {
             id: 'session-1',
             active: true,

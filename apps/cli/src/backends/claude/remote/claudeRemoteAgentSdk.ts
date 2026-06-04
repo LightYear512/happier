@@ -46,6 +46,10 @@ import {
     HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR,
     parseExplicitSpawnEnvKeysFromProcessEnv,
 } from '@/daemon/spawn/spawnExplicitEnvKeysMarker';
+import {
+    HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY,
+    HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY,
+} from '@/daemon/connectedServices/connectedServiceChildEnvironment';
 import { mapClaudeRateLimitEventToUsageDetails, type NormalizedProviderUsageLimitDetailsV1 } from '../connectedServices/mapClaudeRateLimitEventToUsageDetails';
 import { classifyClaudeConnectedServiceRuntimeAuthFailure } from '../connectedServices/classifyClaudeConnectedServiceRuntimeAuthFailure';
 import {
@@ -621,6 +625,8 @@ export async function claudeRemoteAgentSdk(opts: {
             'HAPPIER_E2E_FAKE_CLAUDE_SESSION_ID',
             'HAPPY_E2E_FAKE_CLAUDE_LOG',
             'HAPPY_E2E_FAKE_CLAUDE_SESSION_ID',
+            HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY,
+            HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY,
         ]);
         if (process.platform === 'win32') {
             for (const key of ['USERPROFILE', 'USERNAME', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR']) {

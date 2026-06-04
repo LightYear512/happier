@@ -37,6 +37,7 @@ const inspectDaemonMock = vi.fn<() => Promise<DaemonRunningInspection>>(async ()
 const spawnDetachedDaemonStartSyncMock = vi.fn(async () => ({ unref() {} }));
 const stopDaemonMock = vi.fn(async () => undefined);
 const waitForDaemonRunningWithinBudgetMock = vi.fn(async () => true);
+const restartDaemonAndWaitMock = vi.fn(async () => true);
 
 vi.mock('@/daemon/runtime/spawnDetachedDaemonStartSync', () => ({
     spawnDetachedDaemonStartSync: spawnDetachedDaemonStartSyncMock,
@@ -53,6 +54,10 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => {
 
 vi.mock('@/daemon/waitForDaemonRunningWithinBudget', () => ({
     waitForDaemonRunningWithinBudget: waitForDaemonRunningWithinBudgetMock,
+}));
+
+vi.mock('@/daemon/restartDaemonAndWait', () => ({
+    restartDaemonAndWait: restartDaemonAndWaitMock,
 }));
 
 vi.mock('@/daemon/ownership/daemonServiceInventory', () => ({
@@ -83,6 +88,8 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
         spawnDetachedDaemonStartSyncMock.mockReset();
         stopDaemonMock.mockReset();
         waitForDaemonRunningWithinBudgetMock.mockReset();
+        restartDaemonAndWaitMock.mockReset();
+        restartDaemonAndWaitMock.mockImplementation(async () => true);
         evaluateDaemonStartupServiceConflictMock.mockReset();
         evaluateDaemonStartupServiceConflictMock.mockImplementation(async () => ({ kind: 'none' }));
         renderDaemonInstalledServiceConflictMock.mockReset();
@@ -222,10 +229,23 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 runtimeId: 'runtime-manual',
             };
             writeDaemonState(manualOwnedState);
-            inspectDaemonMock.mockResolvedValue({
-                status: 'running',
-                state: manualOwnedState,
-            });
+            inspectDaemonMock
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: manualOwnedState,
+                })
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: manualOwnedState,
+                })
+                .mockResolvedValue({
+                    status: 'running',
+                    state: {
+                        ...manualOwnedState,
+                        startedAt: manualOwnedState.startedAt + 1,
+                        runtimeId: 'runtime-manual-restarted',
+                    },
+                });
 
             const output = captureConsoleText();
             const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -554,17 +574,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 exitSpy.mockRestore();
             }
 
-            expect(stopDaemonMock).toHaveBeenCalledTimes(1);
-            expect(spawnDetachedDaemonStartSyncMock).toHaveBeenCalledTimes(1);
-            const [spawnCall] = spawnDetachedDaemonStartSyncMock.mock.calls as unknown as Array<[Record<string, unknown>]>;
-            expect(spawnCall?.[0]).toEqual(
-                expect.objectContaining({
-                    env: expect.objectContaining({
-                        HAPPIER_DAEMON_TAKEOVER: '1',
-                    }),
-                }),
-            );
-            expect(waitForDaemonRunningWithinBudgetMock).toHaveBeenCalledTimes(1);
+            expect(restartDaemonAndWaitMock).toHaveBeenCalledWith({ stopSessions: false, takeover: true });
             expect(output.text()).toContain('Taking over the current manual daemon');
         });
     });
@@ -591,10 +601,23 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 startedWithPublicReleaseChannel: 'preview' as const,
             };
             writeDaemonState(legacyManualState);
-            inspectDaemonMock.mockResolvedValue({
-                status: 'running',
-                state: legacyManualState,
-            });
+            inspectDaemonMock
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: legacyManualState,
+                })
+                .mockResolvedValueOnce({
+                    status: 'running',
+                    state: legacyManualState,
+                })
+                .mockResolvedValue({
+                    status: 'running',
+                    state: {
+                        ...legacyManualState,
+                        startedAt: legacyManualState.startedAt + 1,
+                        runtimeId: 'runtime-legacy-manual-restarted',
+                    },
+                });
 
             const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
                 throw new Error(`exit:${code ?? ''}`);
@@ -661,9 +684,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 exitSpy.mockRestore();
             }
 
-            expect(stopDaemonMock).toHaveBeenCalledTimes(1);
-            expect(spawnDetachedDaemonStartSyncMock).toHaveBeenCalledTimes(1);
-            expect(waitForDaemonRunningWithinBudgetMock).toHaveBeenCalledTimes(1);
+            expect(restartDaemonAndWaitMock).toHaveBeenCalledWith({ stopSessions: false, takeover: true });
             expect(output.text()).toContain('Taking over the current manual daemon');
         });
     });

@@ -1,18 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderSystemdServiceUnit } from '@happier-dev/cli-common/service';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 import { reloadConfiguration } from '@/configuration';
 import { writeDaemonSettingsFixture } from '@/daemon/testkit/fakeDaemonLifecycle.testkit';
+import type { evaluateDaemonStartupServiceConflict } from '@/daemon/ownership/daemonServiceInventory';
 
-const spawnDetachedDaemonStartSyncMock = vi.fn(async () => ({ unref() {} }));
+type DaemonStartupServiceConflictEvaluation = Awaited<ReturnType<typeof evaluateDaemonStartupServiceConflict>>;
+
+const { spawnDetachedDaemonStartSyncMock, evaluateDaemonStartupServiceConflictMock } = vi.hoisted(() => ({
+    spawnDetachedDaemonStartSyncMock: vi.fn(async () => ({ unref() {} })),
+    evaluateDaemonStartupServiceConflictMock: vi.fn<() => Promise<DaemonStartupServiceConflictEvaluation>>(async () => ({ kind: 'none' })),
+}));
 vi.mock('@/daemon/runtime/spawnDetachedDaemonStartSync', () => ({
     spawnDetachedDaemonStartSync: spawnDetachedDaemonStartSyncMock,
 }));
+vi.mock('@/daemon/ownership/daemonServiceInventory', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/daemon/ownership/daemonServiceInventory')>();
+    return {
+        ...actual,
+        evaluateDaemonStartupServiceConflict: evaluateDaemonStartupServiceConflictMock,
+    };
+});
 
 describe('ensureDaemonRunningForSessionCommand conflict handling', () => {
     const envScope = createEnvKeyScope([
@@ -33,6 +43,8 @@ describe('ensureDaemonRunningForSessionCommand conflict handling', () => {
     afterEach(() => {
         envScope.restore();
         spawnDetachedDaemonStartSyncMock.mockClear();
+        evaluateDaemonStartupServiceConflictMock.mockReset();
+        evaluateDaemonStartupServiceConflictMock.mockImplementation(async () => ({ kind: 'none' as const }));
         vi.restoreAllMocks();
         vi.resetModules();
     });
@@ -135,10 +147,18 @@ describe('ensureDaemonRunningForSessionCommand conflict handling', () => {
             });
             reloadConfiguration();
             vi.resetModules();
+            vi.doMock('@/daemon/ownership/daemonServiceInventory', () => ({
+                evaluateDaemonStartupServiceConflict: evaluateDaemonStartupServiceConflictMock,
+                renderDaemonInstalledServiceConflict: () => ({
+                    title: 'A background service is already installed for the selected relay.',
+                    lines: [
+                        'Use `happier service start` to start the installed background service instead of starting another daemon.',
+                    ],
+                }),
+            }));
 
-            const [{ ensureDaemonRunningForSessionCommand }, { resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }, controlClient] = await Promise.all([
+            const [{ ensureDaemonRunningForSessionCommand }, controlClient] = await Promise.all([
                 import('@/daemon/ensureDaemon'),
-                import('@/daemon/service/cli'),
                 import('@/daemon/controlClient'),
             ]);
             vi.spyOn(controlClient, 'isDaemonRunningCurrentlyInstalledHappyVersion').mockResolvedValueOnce(false);
@@ -157,24 +177,21 @@ describe('ensureDaemonRunningForSessionCommand conflict handling', () => {
                 },
             });
 
-            const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
-            const paths = resolveDaemonServicePaths(runtime);
-            mkdirSync(dirname(paths.installedPath), { recursive: true });
-            writeFileSync(
-                paths.installedPath,
-                renderSystemdServiceUnit({
-                    description: 'Happier Daemon',
-                    execStart: ['/Users/tester/.happier/cli/current/happier', 'daemon', 'start-sync'],
-                    env: {
-                        HAPPIER_DAEMON_STARTUP_SOURCE: 'background-service',
-                        HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
-                        HAPPIER_ACTIVE_SERVER_ID: 'cloud',
-                        HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
-                    },
-                    wantedBy: 'default.target',
-                }),
-                'utf-8',
-            );
+            evaluateDaemonStartupServiceConflictMock.mockResolvedValueOnce({
+                kind: 'installed-background-service-conflict',
+                services: [{
+                    serverId: 'cloud',
+                    label: 'happier-daemon.default',
+                    name: 'Default background service',
+                    platform: 'linux',
+                    mode: 'user',
+                    installed: true,
+                    path: `${homeDir}/happier-daemon.default.service`,
+                    installedDefinitionMatchesExpected: true,
+                    targetMode: 'default-following',
+                    releaseChannel: 'stable',
+                }],
+            });
 
             const output = captureConsoleText();
             try {
