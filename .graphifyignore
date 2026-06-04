@@ -20,18 +20,16 @@
 /.kotlin/
 
 # Local tool/runtime state
-/.happier/
-/.claude/cache/
-/.project/
-/.edison/_generated/
-/.edison/_locks/
-/.edison/session/
-/.argent/
-/.codex-tmp/
-/.playwright-mcp/
-/.tmp-home/
-/.tmp/
-/tmp/
+.claude/cache/
+.happier/
+.project/
+.edison/
+.argent/
+.codex-tmp/
+.playwright-mcp/
+.tmp-home/
+.tmp/
+tmp/
 
 # Test artifacts and large test-only corpora
 playwright-report/
