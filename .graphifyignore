@@ -1,0 +1,79 @@
+# Dependencies and package manager caches
+node_modules/
+.yarn-cache/
+.yarn-global/
+
+# Build outputs and framework caches
+dist/
+build/
+out/
+.next/
+.nuxt/
+.turbo/
+web-build/
+storybook-static/
+coverage/
+lcov-report/
+apps/server/output/
+apps/cli/.dist.hstack-backup/
+packages/*/dist/
+apps/*/dist/
+
+# Native/generated app artifacts
+ios/
+android/
+apps/ui/ios/
+apps/ui/android/
+packages/*/android/build/
+.expo/
+.gradle/
+.kotlin/
+
+# Local tool/runtime state
+.git/
+.worktrees/
+.happier/
+.claude/cache/
+.project/
+.edison/_generated/
+.edison/_locks/
+.edison/session/
+.argent/
+.codex-tmp/
+.playwright-mcp/
+.tmp-home/
+.tmp/
+tmp/
+
+# Graphify output
+graphify-out/
+
+# Test artifacts and large test-only corpora
+**/coverage/
+**/playwright-report/
+**/test-results/
+**/__snapshots__/
+**/snapshots/
+**/*.snap
+**/*.test.ts
+**/*.test.tsx
+**/*.test.js
+**/*.test.jsx
+**/*.test.mjs
+**/*.spec.ts
+**/*.spec.tsx
+**/*.integration.test.ts
+**/*.integration.test.tsx
+**/*.integration.test.mjs
+**/*.real.integration.test.mjs
+packages/tests/
+
+# Local reports, screenshots, and scratch output
+*.log
+*.png
+*.jpg
+*.jpeg
+*.webp
+*_SUMMARY.md
+*_ANALYSIS.md
+output/
