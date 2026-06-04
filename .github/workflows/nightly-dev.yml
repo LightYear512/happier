@@ -73,9 +73,9 @@ jobs:
     secrets: inherit
     with:
       source_ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_ref || 'dev' }}
-      publish_ota: true
-      publish_android_apk: true
-      submit_ios_testflight: true
+      publish_ota: ${{ vars.HAPPIER_ENABLE_MOBILE_DEV_RELEASE == 'true' }}
+      publish_android_apk: ${{ vars.HAPPIER_ENABLE_MOBILE_DEV_RELEASE == 'true' }}
+      submit_ios_testflight: ${{ vars.HAPPIER_ENABLE_MOBILE_DEV_RELEASE == 'true' }}
       eas_builder: eas_local
       release_message: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_message || format('Nightly dev build (run {0})', github.run_id) }}
 
