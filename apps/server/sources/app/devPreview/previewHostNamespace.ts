@@ -1,13 +1,9 @@
 import { createHmac } from 'node:crypto';
-import { createRequire } from 'node:module';
 import type { IncomingHttpHeaders } from 'node:http';
 
-import type { PreviewRouteContext } from './previewRoutePaths';
+import psl from 'psl';
 
-const require = createRequire(import.meta.url);
-const psl = require('psl') as {
-  parse(hostname: string): { domain: string | null; error?: never } | { error: unknown; domain?: never };
-};
+import type { PreviewRouteContext } from './previewRoutePaths';
 
 const HOST_LABEL_PREFIX = 'hp';
 const MAX_DNS_LABEL_LENGTH = 63;
