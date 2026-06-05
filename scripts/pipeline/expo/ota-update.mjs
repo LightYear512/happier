@@ -305,6 +305,13 @@ function main() {
       envKey: 'HAPPIER_PIPELINE_EXPO_MAX_OLD_SPACE_SIZE_MB',
     }),
   );
+  const localValidationEnv = applyExpoNodeHeapEnv({
+    ...process.env,
+    APP_ENV: process.env.APP_ENV ?? appEnvironment,
+    NODE_ENV: process.env.NODE_ENV ?? nodeEnvironment,
+  }, {
+    envKey: 'HAPPIER_PIPELINE_EXPO_MAX_OLD_SPACE_SIZE_MB',
+  });
   const runtimeVersion =
     explicitRuntimeVersion ||
     (normalizedEnvironment === 'publicdev' && platform !== 'all'
@@ -322,22 +329,13 @@ function main() {
   }
   run(opts, 'yarn', ['tsx', 'sources/scripts/parseChangelog.ts'], {
     cwd: uiDir,
-    env: { ...process.env, APP_ENV: process.env.APP_ENV ?? appEnvironment, NODE_ENV: process.env.NODE_ENV ?? nodeEnvironment },
+    env: localValidationEnv,
   });
   run(opts, 'yarn', ['tsx', 'sources/scripts/parseReleaseNotes.ts'], {
     cwd: uiDir,
-    env: { ...process.env, APP_ENV: process.env.APP_ENV ?? appEnvironment, NODE_ENV: process.env.NODE_ENV ?? nodeEnvironment },
+    env: localValidationEnv,
   });
-  run(opts, 'yarn', ['typecheck'], {
-    cwd: uiDir,
-    env: applyExpoNodeHeapEnv({
-      ...process.env,
-      APP_ENV: process.env.APP_ENV ?? appEnvironment,
-      NODE_ENV: process.env.NODE_ENV ?? nodeEnvironment,
-    }, {
-      envKey: 'HAPPIER_PIPELINE_EXPO_MAX_OLD_SPACE_SIZE_MB',
-    }),
-  });
+  run(opts, 'yarn', ['typecheck'], { cwd: uiDir, env: localValidationEnv });
 
   const message = resolvePreviewMessage(normalizedEnvironment, values.message, opts);
   if (!message) fail(`Missing Expo update message for ${normalizedEnvironment} OTA update.`);

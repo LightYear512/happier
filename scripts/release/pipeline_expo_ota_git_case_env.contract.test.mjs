@@ -160,6 +160,19 @@ test('expo ota update respects explicit Expo heap overrides for EAS update', () 
   assert.doesNotMatch(npxLog, /NODE_OPTIONS=.*--max-old-space-size=2048/);
 });
 
+test('expo ota update raises the Node heap limit for local typecheck validation', () => {
+  const stub = runExpoOtaUpdateWithStubbedCommands({
+    prefix: 'happier-pipeline-eas-ota-typecheck-heap-',
+    extraEnv: {
+      HAPPIER_PIPELINE_EXPO_MAX_OLD_SPACE_SIZE_MB: '8192',
+      NODE_OPTIONS: '--trace-warnings',
+    },
+  });
+
+  const yarnLog = fs.readFileSync(stub.yarnLogPath, 'utf8');
+  assert.match(yarnLog, /typecheck\nNODE_OPTIONS=.*--trace-warnings.*--max-old-space-size=8192/);
+});
+
 test('expo ota update publishes production directly through EAS update instead of the legacy app script wrapper', () => {
   const stub = runExpoOtaUpdateWithStubbedCommands({
     environment: 'production',
