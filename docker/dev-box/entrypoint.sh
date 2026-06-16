@@ -49,4 +49,33 @@ if [ -n "$providers" ]; then
   fi
 fi
 
+autostart_server="$(printf "%s" "${HAPPIER_DEV_BOX_AUTOSTART_SERVER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+case "$autostart_server" in
+  1|true|yes|on)
+    if ! command -v hstack >/dev/null 2>&1; then
+      echo "[dev-box] Cannot autostart server: hstack not found." >&2
+      exit 1
+    fi
+
+    server_workspace="${HAPPIER_DEV_BOX_WORKSPACE:-/workspace/happier}"
+    if [ ! -d "$server_workspace" ]; then
+      echo "[dev-box] Cannot autostart server: workspace not found: $server_workspace" >&2
+      exit 1
+    fi
+
+    HAPPIER_STACK_SERVER_PORT="${HAPPIER_STACK_SERVER_PORT:-4101}"
+    HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-http://127.0.0.1:${HAPPIER_STACK_SERVER_PORT}}"
+    export HAPPIER_STACK_SERVER_PORT HAPPIER_SERVER_URL
+
+    server_flavor="${HAPPIER_DEV_BOX_SERVER_FLAVOR:-light}"
+    server_bind="${HAPPIER_DEV_BOX_SERVER_BIND:-loopback}"
+
+    echo "[dev-box] Starting Happier server in $server_workspace at $HAPPIER_SERVER_URL"
+    (
+      cd "$server_workspace"
+      hstack start --server-flavor="$server_flavor" --bind="$server_bind" --restart
+    ) &
+    ;;
+esac
+
 exec "$@"

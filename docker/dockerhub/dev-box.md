@@ -24,6 +24,16 @@ docker run --rm -it \
   happierdev/dev-box:preview
 ```
 
+Optional: start the local Happier server when the container starts:
+
+```bash
+docker run --rm -it \
+  -v /path/to/workspace:/workspace \
+  -v happier-home:/home/happier/.happier \
+  -e HAPPIER_DEV_BOX_AUTOSTART_SERVER=1 \
+  happierdev/dev-box:preview
+```
+
 Docs:
 
 - Dev Containers: https://docs.happier.dev/development/devcontainers
