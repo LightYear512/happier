@@ -95,7 +95,11 @@ describe('createHappierMcpServer', () => {
     } as any);
 
     expect(disabled.toolNames).not.toContain('happier_dev_preview_register');
+    expect(disabled.toolNames).not.toContain('happier_dev_preview_list');
+    expect(disabled.toolNames).not.toContain('happier_dev_preview_close');
     expect(enabled.toolNames).toContain('happier_dev_preview_register');
+    expect(enabled.toolNames).toContain('happier_dev_preview_list');
+    expect(enabled.toolNames).toContain('happier_dev_preview_close');
   });
 
   it('hides the session simulator preview tool until the experimental feature toggle is enabled', async () => {
@@ -2039,6 +2043,87 @@ describe('createHappierMcpServer', () => {
             preview: expect.objectContaining({ routeKey: 'route_daemon_1' }),
           }),
         ],
+      },
+    });
+  });
+
+  it('closes session dev previews through the daemon registry and removes active metadata', async () => {
+    const captured: { deps?: any } = {};
+    const metadataUpdates: Array<Record<string, unknown>> = [];
+    const preview = {
+      resourceId: 'preview_close_1',
+      sessionId: 'sess_dev_preview_close_1',
+      machineId: 'machine-1',
+      port: 52112,
+      origin: 'http://127.0.0.1:52112',
+      source: 'manual',
+      registeredAtMs: 1,
+      health: { status: 'ready' },
+      preview: {
+        rewriteUrls: true,
+        supportsWebSocket: true,
+        routeKey: 'route_close_1',
+        initialPath: '/',
+      },
+    } as const;
+    const daemonDevPreviewClose = vi.fn(async () => ({
+      success: true,
+      closed: true,
+      preview,
+    } as const));
+
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@/session/actions/createCliActionExecutorHarness')>();
+      return {
+        ...actual,
+        createCliActionExecutorHarness: (_ctx: any, deps: any) => {
+          captured.deps = deps;
+          return { executor: { execute: vi.fn() } };
+        },
+      };
+    });
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    createHappierMcpServer(
+      {
+        sessionId: 'sess_dev_preview_close_1',
+        rpcHandlerManager: { invokeLocal: async () => ({}) },
+        sendClaudeSessionMessage: () => {},
+        updateMetadata: (updater: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
+          const current = metadataUpdates.at(-1) ?? {
+            machineId: 'machine-1',
+            localServicePreviewsV1: { v: 1, previews: [preview] },
+          };
+          const next = updater(current);
+          metadataUpdates.push(next);
+          return next;
+        },
+        getMetadataSnapshot: () => ({ machineId: 'machine-1' }),
+      } as any,
+      {
+        credentials: null,
+        daemonDevPreviewClose,
+      },
+    );
+
+    expect(captured.deps).toBeDefined();
+    await expect(captured.deps.sessionDevPreviewClose({
+      sessionId: 'sess_dev_preview_close_1',
+      resourceId: 'preview_close_1',
+    })).resolves.toEqual({
+      ok: true,
+      closed: true,
+      preview,
+    });
+    expect(daemonDevPreviewClose).toHaveBeenCalledWith({
+      sessionId: 'sess_dev_preview_close_1',
+      expectedMachineId: 'machine-1',
+      resourceId: 'preview_close_1',
+    });
+    expect(metadataUpdates.at(-1)).toMatchObject({
+      localServicePreviewsV1: {
+        v: 1,
+        previews: [],
       },
     });
   });

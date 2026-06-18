@@ -62,13 +62,20 @@ import {
   type AccountSettings,
   getActionSpec,
   isActionSpecSurfacedOn,
+  removeLocalServicePreviewFromSessionMetadata,
   writeLocalServicePreviewToSessionMetadata,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { MemorySearchResultV1Schema, MemoryWindowV1Schema, type MemorySearchResultV1, type MemoryWindowV1 } from '@happier-dev/protocol';
 import { createMcpActionApprovalRequirement, createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
 import {
+  closeDaemonSessionDevPreview,
+  listDaemonSessionDevPreviews,
   registerDaemonSessionDevPreview,
+  type DaemonDevPreviewCloseRequest,
+  type DaemonDevPreviewCloseResult,
+  type DaemonDevPreviewListRequest,
+  type DaemonDevPreviewListResult,
   type DaemonDevPreviewRegisterRequest,
   type DaemonDevPreviewRegisterResult,
 } from '@/daemon/controlClient';
@@ -85,6 +92,8 @@ export function createHappierMcpServer(
     accountSettings?: AccountSettings | null;
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
     daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
+    daemonDevPreviewList?: ((request: DaemonDevPreviewListRequest) => Promise<DaemonDevPreviewListResult>) | null;
+    daemonDevPreviewClose?: ((request: DaemonDevPreviewCloseRequest) => Promise<DaemonDevPreviewCloseResult>) | null;
     startAndroidSimulatorPreviewStream?: typeof startAndroidScreenshotMjpegStream;
     ensureAndroidSimulatorPreviewDeviceBooted?: typeof ensureAndroidSimulatorPreviewDeviceBooted;
     startIosSimulatorPreviewStream?: typeof startIosScreenshotMjpegStream;
@@ -109,6 +118,8 @@ export function createHappierMcpServer(
   const actionsSettings = opts?.accountSettings?.actionsSettingsV1 ?? null;
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
+  const daemonDevPreviewList = opts?.daemonDevPreviewList ?? listDaemonSessionDevPreviews;
+  const daemonDevPreviewClose = opts?.daemonDevPreviewClose ?? closeDaemonSessionDevPreview;
   const startAndroidSimulatorPreviewStream = opts?.startAndroidSimulatorPreviewStream ?? startAndroidScreenshotMjpegStream;
   const ensureAndroidDeviceBooted = opts?.ensureAndroidSimulatorPreviewDeviceBooted ?? ensureAndroidSimulatorPreviewDeviceBooted;
   const startIosSimulatorPreviewStream = opts?.startIosSimulatorPreviewStream ?? startIosScreenshotMjpegStream;
@@ -302,6 +313,112 @@ export function createHappierMcpServer(
           });
         }
         return preview;
+      },
+      sessionDevPreviewList: async ({ sessionId }) => {
+        if (sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+        if (!machineId) {
+          return {
+            ok: false as const,
+            errorCode: 'missing_machine_id' as const,
+            error: 'missing_machine_id' as const,
+          };
+        }
+        if (daemonDevPreviewList) {
+          try {
+            const daemonResult = await daemonDevPreviewList({
+              sessionId,
+              expectedMachineId: machineId,
+            });
+            if ('success' in daemonResult && daemonResult.success === true) {
+              return {
+                ok: true as const,
+                previews: daemonResult.previews,
+              };
+            }
+            logger.debug('[mcp] Failed to list dev previews from daemon registry', {
+              sessionId,
+              machineId,
+              result: daemonResult,
+            });
+          } catch (error) {
+            logger.debug('[mcp] Failed to list dev previews from daemon registry', {
+              sessionId,
+              machineId,
+              error,
+            });
+          }
+        }
+        return {
+          ok: true as const,
+          previews: devPreviewRegistry.list({ sessionId, machineId }),
+        };
+      },
+      sessionDevPreviewClose: async ({ sessionId, resourceId }) => {
+        if (sessionId !== client.sessionId) {
+          return { ok: false as const, errorCode: 'not_authenticated' as const, error: 'not_authenticated' as const };
+        }
+        const metadataSnapshot = client.getMetadataSnapshot?.() ?? null;
+        const machineId = typeof metadataSnapshot?.machineId === 'string' ? metadataSnapshot.machineId.trim() : '';
+        if (!machineId) {
+          return {
+            ok: false as const,
+            errorCode: 'missing_machine_id' as const,
+            error: 'missing_machine_id' as const,
+          };
+        }
+        let closed = devPreviewRegistry.close({ sessionId, machineId, resourceId });
+        if (daemonDevPreviewClose) {
+          try {
+            const daemonResult = await daemonDevPreviewClose({
+              sessionId,
+              expectedMachineId: machineId,
+              resourceId,
+            });
+            if ('success' in daemonResult && daemonResult.success === true) {
+              closed = {
+                closed: daemonResult.closed,
+                preview: daemonResult.preview,
+              };
+            } else {
+              logger.debug('[mcp] Failed to close dev preview in daemon registry', {
+                sessionId,
+                machineId,
+                resourceId,
+                result: daemonResult,
+              });
+            }
+          } catch (error) {
+            logger.debug('[mcp] Failed to close dev preview in daemon registry', {
+              sessionId,
+              machineId,
+              resourceId,
+              error,
+            });
+          }
+        }
+        if (closed.closed) {
+          try {
+            await Promise.resolve(client.updateMetadata((current) => (
+              removeLocalServicePreviewFromSessionMetadata(current, resourceId)
+            )));
+          } catch (error) {
+            logger.debug('[mcp] Failed to remove dev preview metadata via session-scoped bridge', {
+              sessionId,
+              machineId,
+              resourceId,
+              error,
+            });
+          }
+        }
+        return {
+          ok: true as const,
+          closed: closed.closed,
+          preview: closed.preview,
+        };
       },
       sessionSimulatorPreviewRegister: async (input) => {
         if (input.sessionId !== client.sessionId) {

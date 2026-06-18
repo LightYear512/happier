@@ -1893,6 +1893,8 @@ export {
 } from './structuredMessages/sessionSummaryShardV1.js';
 
 export {
+  DaemonSessionDevPreviewCloseRequestSchema,
+  DaemonSessionDevPreviewCloseResponseSchema,
   DaemonSessionDevPreviewHeaderMapSchema,
   DaemonSessionDevPreviewHttpErrorCodeSchema,
   DaemonSessionDevPreviewHttpErrorSchema,
@@ -1905,6 +1907,8 @@ export {
   SessionDevPreviewSocketServerToMachineEnvelopeSchema,
   SessionDevPreviewSocketServerToMachineMessageSchema,
   SessionDevPreviewTokenResponseSchema,
+  type DaemonSessionDevPreviewCloseRequest,
+  type DaemonSessionDevPreviewCloseResponse,
   type DaemonSessionDevPreviewHeaderMap,
   type DaemonSessionDevPreviewHttpError,
   type DaemonSessionDevPreviewHttpErrorCode,
@@ -1955,6 +1959,7 @@ export {
   LOCAL_SERVICE_PREVIEW_METADATA_MAX_PREVIEWS,
   LocalServicePreviewsMetadataV1Schema,
   readLocalServicePreviewsFromSessionMetadata,
+  removeLocalServicePreviewFromSessionMetadata,
   writeLocalServicePreviewToSessionMetadata,
   type LocalServicePreviewsMetadataV1,
 } from './structuredMessages/localServicePreviewMetadataV1.js';

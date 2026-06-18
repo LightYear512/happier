@@ -334,7 +334,7 @@ export function readSessionDevPreviewFeatureEnv(env: NodeJS.ProcessEnv): Session
   const featureToggleEnabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayEnabled], true);
   const hostBaseDomain = resolvePreviewHostBaseDomain(env);
   const pathEnabled = env.NODE_ENV === 'development'
-    && parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayPathModeEnabled], false);
+    && parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayPathModeEnabled], true);
   const hostEnabled = Boolean(hostBaseDomain);
   const relayEnabled = featureToggleEnabled && (hostEnabled || pathEnabled);
   return {

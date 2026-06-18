@@ -4,8 +4,8 @@
 >
 > This plan covers the product path where an AI agent starts a real iOS or
 > Android simulator and a user remotely previews and operates that simulator
-> through Happier. It complements, but does not replace, the dev preview relay
-> plan in [dev-preview-in-app.md](./dev-preview-in-app.md).
+> through Happier. It complements, but does not replace, the Web Preview relay
+> plan in [web-preview-in-app.md](./web-preview-in-app.md).
 
 ## Decision Summary
 

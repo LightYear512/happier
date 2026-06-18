@@ -9,6 +9,8 @@ export const SESSION_AGENT_DIRECT_ACTION_TOOL_ALLOW_LIST = [
   'action.spec.get',
   'action.options.resolve',
   'session.devPreview.register',
+  'session.devPreview.list',
+  'session.devPreview.close',
 ] as const satisfies readonly ActionId[];
 
 const SESSION_AGENT_DIRECT_ACTION_TOOL_ALLOW_SET = new Set<ActionId>(SESSION_AGENT_DIRECT_ACTION_TOOL_ALLOW_LIST);

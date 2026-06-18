@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LocalServicePreviewV1Schema } from '../structuredMessages/localServicePreviewV1.js';
 
 export const SessionDevPreviewTokenResponseSchema = z.object({
   token: z.string().min(1),
@@ -61,6 +62,20 @@ export const DaemonSessionDevPreviewHttpResponseSchema = z.union([
   DaemonSessionDevPreviewHttpErrorSchema,
 ]);
 export type DaemonSessionDevPreviewHttpResponse = z.infer<typeof DaemonSessionDevPreviewHttpResponseSchema>;
+
+export const DaemonSessionDevPreviewCloseRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  machineId: z.string().min(1),
+  resourceId: z.string().min(1).max(200),
+}).passthrough();
+export type DaemonSessionDevPreviewCloseRequest = z.infer<typeof DaemonSessionDevPreviewCloseRequestSchema>;
+
+export const DaemonSessionDevPreviewCloseResponseSchema = z.object({
+  ok: z.literal(true),
+  closed: z.boolean(),
+  preview: LocalServicePreviewV1Schema.nullable(),
+}).passthrough();
+export type DaemonSessionDevPreviewCloseResponse = z.infer<typeof DaemonSessionDevPreviewCloseResponseSchema>;
 
 const SessionDevPreviewSocketTunnelIdSchema = z.string().min(1).max(256);
 const SessionDevPreviewSocketPathSchema = z.string().min(1).max(10_000);

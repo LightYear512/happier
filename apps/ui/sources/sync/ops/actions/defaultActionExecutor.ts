@@ -4,6 +4,7 @@ import {
   createActionExecutor,
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
+  removeLocalServicePreviewFromSessionMetadata,
   type ActionExecutorDeps,
   type ActionId,
   type ApprovalRequestV1,
@@ -335,6 +336,37 @@ export function createDefaultActionExecutor(opts?: Readonly<{
             : {}),
         })),
       };
+    },
+    sessionDevPreviewClose: async ({ sessionId, resourceId }) => {
+      const sid = String(sessionId ?? '').trim();
+      const rid = String(resourceId ?? '').trim();
+      if (!sid || !rid) {
+        return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+      }
+      const session = (storage.getState() as any)?.sessions?.[sid] ?? null;
+      const machineId = resolveSessionMachineId(sid, session?.metadata ?? null);
+      if (!machineId) {
+        return { ok: false, errorCode: 'missing_machine_id', error: 'missing_machine_id' };
+      }
+      const serverId = opts?.resolveServerIdForSessionId?.(sid) ?? undefined;
+      const result = await machineRpcWithServerScope({
+        machineId,
+        serverId,
+        method: RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_CLOSE,
+        payload: {
+          sessionId: sid,
+          machineId,
+          resourceId: rid,
+        },
+      });
+      if ((result as any)?.ok === true) {
+        await sync.patchSessionMetadataWithRetry(
+          sid,
+          (metadata) => removeLocalServicePreviewFromSessionMetadata(metadata, rid),
+          { serverId: serverId ?? null },
+        );
+      }
+      return result as any;
     },
 
     sessionTargetPrimarySet: async ({ sessionId }) => await setPrimaryActionSessionId({ sessionId }),

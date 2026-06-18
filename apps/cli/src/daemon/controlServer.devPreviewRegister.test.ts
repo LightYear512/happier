@@ -123,4 +123,69 @@ describe('daemon control server: /dev-preview/register', () => {
       await app.close();
     }
   });
+
+  it('lists and closes registered previews in the shared daemon registry', async () => {
+    previewServer = createServer((_req, res) => {
+      res.statusCode = 200;
+      res.end('ok');
+    });
+    const previewPort = await listen(previewServer);
+    const registry = createSessionDevPreviewRegistry({ healthCheckTimeoutMs: 100 });
+
+    const app = createDaemonControlApp({
+      getChildren: () => [],
+      machineId: 'machine-local',
+      stopSession: async () => false,
+      spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
+      requestShutdown: () => {},
+      onHappySessionWebhook: () => {},
+      controlToken: 'test-token',
+      devPreviewRegistry: registry,
+    });
+
+    try {
+      await app.ready();
+      const register = await app.inject({
+        method: 'POST',
+        url: '/dev-preview/register',
+        headers: { 'x-happier-daemon-token': 'test-token' },
+        payload: {
+          sessionId: 'sess-preview-1',
+          expectedMachineId: 'machine-local',
+          port: previewPort,
+        },
+      });
+      const preview = register.json().preview;
+
+      const listed = await app.inject({
+        method: 'POST',
+        url: '/dev-preview/list',
+        headers: { 'x-happier-daemon-token': 'test-token' },
+        payload: {
+          sessionId: 'sess-preview-1',
+          expectedMachineId: 'machine-local',
+        },
+      });
+
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json()).toEqual({ success: true, previews: [preview] });
+
+      const closed = await app.inject({
+        method: 'POST',
+        url: '/dev-preview/close',
+        headers: { 'x-happier-daemon-token': 'test-token' },
+        payload: {
+          sessionId: 'sess-preview-1',
+          expectedMachineId: 'machine-local',
+          resourceId: preview.resourceId,
+        },
+      });
+
+      expect(closed.statusCode).toBe(200);
+      expect(closed.json()).toEqual({ success: true, closed: true, preview });
+      expect(registry.getByRouteKey(preview.preview.routeKey)).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
 });

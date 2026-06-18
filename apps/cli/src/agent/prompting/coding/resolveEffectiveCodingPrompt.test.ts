@@ -167,6 +167,8 @@ describe('resolveEffectiveCodingPromptText', () => {
 
     expect(out).toContain('BASE');
     expect(out).toContain('happier_dev_preview_register');
+    expect(out).toContain('happier_dev_preview_list');
+    expect(out).toContain('happier_dev_preview_close');
     expect(out).toContain('npm run dev');
     expect(out).toContain('next dev');
     expect(out).toContain('explicitly asks you not to expose');
@@ -193,6 +195,8 @@ describe('resolveEffectiveCodingPromptText', () => {
 
     expect(out).toContain('BASE');
     expect(out).not.toContain('happier_dev_preview_register');
+    expect(out).not.toContain('happier_dev_preview_list');
+    expect(out).not.toContain('happier_dev_preview_close');
   });
 
   it('appends provider behavior blocks after the shared base and prompt library blocks', async () => {

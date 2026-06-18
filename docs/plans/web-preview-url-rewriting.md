@@ -1,12 +1,16 @@
-# Dev Preview URL Rewriting
+# Web Preview URL Rewriting
 
-> Status: revised Happier sub-plan, 2026-05-15.
+> Status: revised Happier sub-plan, 2026-06-06.
 >
-> Parent plan: [dev-preview-in-app.md](./dev-preview-in-app.md).
+> Parent plan: [web-preview-in-app.md](./web-preview-in-app.md).
 
 ## Purpose
 
-The preview relay can proxy a registered local dev server, but many dev servers emit localhost-bound URLs and root-relative same-dev-server URLs in HTML, CSS, or runtime JavaScript calls. Those URLs must be rewritten to the Happier preview route or they break in remote web, mobile WebView, and HTTPS relay contexts.
+The Web Preview relay can proxy a registered local dev server, but many dev
+servers emit localhost-bound URLs and root-relative same-dev-server URLs in HTML,
+CSS, or runtime JavaScript calls. Those URLs must be rewritten to the Happier Web
+Preview route or they break in remote web, mobile WebView, and HTTPS relay
+contexts.
 
 This subsystem is intentionally deferred until the basic preview resource and relay are working.
 
@@ -40,17 +44,17 @@ The `plan-review` skill's `BENCHMARKS.md` has no URL-rewriting entry, so this su
 Use a single owning server domain, for example:
 
 ```text
-apps/server/sources/app/devPreview/
+apps/server/sources/app/webPreview/
 ```
 
 Suggested modules:
 
-- `rewritePreviewHtmlStream.ts`
-- `rewritePreviewCssUrls.ts`
-- `rewritePreviewContentSecurityPolicy.ts`
-- `createPreviewRuntimeInterceptorSource.ts`
-- `createPreviewServiceWorkerSource.ts`
-- `resolvePreviewUrlRewritePolicy.ts`
+- `rewriteWebPreviewHtmlStream.ts`
+- `rewriteWebPreviewCssUrls.ts`
+- `rewriteWebPreviewContentSecurityPolicy.ts`
+- `createWebPreviewRuntimeInterceptorSource.ts`
+- `createWebPreviewServiceWorkerSource.ts`
+- `resolveWebPreviewUrlRewritePolicy.ts`
 
 Do not scatter rewriter logic inside the route handler.
 
@@ -59,7 +63,7 @@ Do not scatter rewriter logic inside the route handler.
 Rewrite only these URL classes:
 
 - URLs that target registered loopback hosts: `localhost`, `127.0.0.1`, or `[::1]`.
-- Root-relative same-dev-server URLs such as `/@vite/client`, `/src/main.ts`, `/api/...`, and `/assets/...` that would otherwise escape the `/preview/:sessionId/:machineId/:routeKey/` route prefix.
+- Root-relative same-dev-server URLs such as `/@vite/client`, `/src/main.ts`, `/api/...`, and `/assets/...` that would otherwise escape the `/web-preview/:sessionId/:machineId/:routeKey/` route prefix.
 
 Do not rewrite document-relative URLs that already resolve under the current preview resource path, and do not rewrite external hosts.
 
@@ -73,7 +77,7 @@ Allowed schemes:
 Target shape:
 
 ```text
-<previewOrigin>/preview/:sessionId/:machineId/:routeKey/*
+<previewOrigin>/web-preview/:sessionId/:machineId/:routeKey/*
 ```
 
 `previewOrigin` must be resource-scoped when script-capable content is served, for example `https://<routeKey>.<previewBaseHost>`. A shared preview origin is allowed only in sandboxed degraded mode without `allow-same-origin`. Preserve path, query, and hash. Do not inject preview tokens into rewritten URLs. The rewriter receives a registry map of `localhost port -> routeKey`; it must not derive route keys from port values.
@@ -167,7 +171,7 @@ Use only when CSP prevents runtime script injection.
 Scope:
 
 ```text
-<previewOrigin>/preview/:sessionId/:machineId/:routeKey/
+<previewOrigin>/web-preview/:sessionId/:machineId/:routeKey/
 ```
 
 Capabilities:

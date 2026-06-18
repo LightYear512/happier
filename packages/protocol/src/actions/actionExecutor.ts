@@ -185,6 +185,13 @@ export type ActionExecutorDeps = Readonly<{
     rewriteUrls?: boolean;
     healthPath?: string;
   }>) => Promise<unknown>;
+  sessionDevPreviewList?: (args: Readonly<{
+    sessionId: string;
+  }>) => Promise<unknown>;
+  sessionDevPreviewClose?: (args: Readonly<{
+    sessionId: string;
+    resourceId: string;
+  }>) => Promise<unknown>;
   sessionSimulatorPreviewRegister?: (args: Readonly<{
     sessionId: string;
     simulatorSessionId?: string;
@@ -1487,6 +1494,30 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(typeof (parsed.data as any).rewriteUrls === 'boolean' ? { rewriteUrls: (parsed.data as any).rewriteUrls } : {}),
             ...(healthPath ? { healthPath } : {}),
           });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.devPreview.list') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionDevPreviewList) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.devPreview.list' };
+          }
+          const res = await deps.sessionDevPreviewList({ sessionId });
+          return { ok: true, result: res };
+        }
+
+        if (actionId === 'session.devPreview.close') {
+          const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
+          if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          if (!deps.sessionDevPreviewClose) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.devPreview.close' };
+          }
+          const resourceId = normalizeId((parsed.data as any).resourceId);
+          if (!resourceId) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.sessionDevPreviewClose({ sessionId, resourceId });
           return { ok: true, result: res };
         }
 
