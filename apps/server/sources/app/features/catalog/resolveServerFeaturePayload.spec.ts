@@ -183,7 +183,7 @@ describe("resolveServerFeaturePayload", () => {
             enabled: false,
             configured: false,
             baseDomain: null,
-            suggestedBaseDomain: "preview.example.com",
+            suggestedBaseDomain: "app.example.com",
             reason: "missing_env",
         });
         expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);

@@ -51,13 +51,16 @@ describe('previewHostNamespace', () => {
     }
   });
 
-  it('suggests a preview base domain from the public server registrable domain', () => {
+  it('suggests the public server host as the preview base domain', () => {
     expect(resolveSuggestedPreviewHostBaseDomain({
       HAPPIER_PUBLIC_SERVER_URL: 'https://app.example.com',
-    })).toBe('preview.example.com');
+    })).toBe('app.example.com');
     expect(resolveSuggestedPreviewHostBaseDomain({
       HAPPIER_PUBLIC_SERVER_URL: 'https://app.example.co.uk',
-    })).toBe('preview.example.co.uk');
+    })).toBe('app.example.co.uk');
+    expect(resolveSuggestedPreviewHostBaseDomain({
+      HAPPIER_PUBLIC_SERVER_URL: 'https://proxyapi.layaair.com',
+    })).toBe('proxyapi.layaair.com');
   });
 
   it('does not suggest a preview base domain for local or IP server URLs', () => {
