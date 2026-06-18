@@ -1,8 +1,6 @@
 import { createHmac } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 
-import psl from 'psl';
-
 import type { PreviewRouteContext } from './previewRoutePaths';
 
 const HOST_LABEL_PREFIX = 'hp';
@@ -91,12 +89,7 @@ export function resolveSuggestedPreviewHostBaseDomain(env: NodeJS.ProcessEnv = p
   if (!hostname || hostname === 'localhost' || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')) {
     return null;
   }
-  const parsedDomain = psl.parse(hostname);
-  if ('error' in parsedDomain || !parsedDomain.domain) {
-    return null;
-  }
-  const suggestion = `preview.${parsedDomain.domain}`;
-  return isValidBaseDomain(suggestion) ? suggestion : null;
+  return isValidBaseDomain(hostname) ? hostname : null;
 }
 
 export function resolvePreviewHostHeader(headers: IncomingHttpHeaders | Record<string, unknown> | undefined): string | undefined {
