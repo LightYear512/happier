@@ -176,6 +176,39 @@ export type DaemonDevPreviewRegisterResult =
     }>
   | Readonly<{ error: string; errorCode?: string }>;
 
+export type DaemonDevPreviewListRequest = Readonly<{
+  sessionId: string;
+  expectedMachineId?: string;
+}>;
+
+export type DaemonDevPreviewListResult =
+  | Readonly<{ success: true; previews: LocalServicePreviewV1[] }>
+  | Readonly<{
+      success: false;
+      error?: string;
+      errorCode?: string;
+      machineId?: string;
+      expectedMachineId?: string;
+    }>
+  | Readonly<{ error: string; errorCode?: string }>;
+
+export type DaemonDevPreviewCloseRequest = Readonly<{
+  sessionId: string;
+  expectedMachineId?: string;
+  resourceId: string;
+}>;
+
+export type DaemonDevPreviewCloseResult =
+  | Readonly<{ success: true; closed: boolean; preview: LocalServicePreviewV1 | null }>
+  | Readonly<{
+      success: false;
+      error?: string;
+      errorCode?: string;
+      machineId?: string;
+      expectedMachineId?: string;
+    }>
+  | Readonly<{ error: string; errorCode?: string }>;
+
 export async function inspectDaemonRunningStateAndCleanupStaleState(): Promise<DaemonRunningInspection> {
   const state = await readDaemonState();
   if (!state) {
@@ -517,6 +550,20 @@ export async function registerDaemonSessionDevPreview(
   options: DaemonControlRequestOptions = {},
 ): Promise<DaemonDevPreviewRegisterResult> {
   return await daemonPost('/dev-preview/register', request, options) as DaemonDevPreviewRegisterResult;
+}
+
+export async function listDaemonSessionDevPreviews(
+  request: DaemonDevPreviewListRequest,
+  options: DaemonControlRequestOptions = {},
+): Promise<DaemonDevPreviewListResult> {
+  return await daemonPost('/dev-preview/list', request, options) as DaemonDevPreviewListResult;
+}
+
+export async function closeDaemonSessionDevPreview(
+  request: DaemonDevPreviewCloseRequest,
+  options: DaemonControlRequestOptions = {},
+): Promise<DaemonDevPreviewCloseResult> {
+  return await daemonPost('/dev-preview/close', request, options) as DaemonDevPreviewCloseResult;
 }
 
 export async function stopDaemonHttp(params: { stopSessions?: boolean } = {}): Promise<void> {

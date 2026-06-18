@@ -39,3 +39,21 @@ export function writeLocalServicePreviewToSessionMetadata<TMetadata extends Reco
     },
   };
 }
+
+export function removeLocalServicePreviewFromSessionMetadata<TMetadata extends Record<string, unknown>>(
+  metadata: TMetadata,
+  resourceId: string,
+): TMetadata & Readonly<{ localServicePreviewsV1: LocalServicePreviewsMetadataV1 }> {
+  const normalizedResourceId = resourceId.trim();
+  const previews = readLocalServicePreviewsFromSessionMetadata(metadata)
+    .filter((candidate) => candidate.resourceId !== normalizedResourceId)
+    .slice(0, LOCAL_SERVICE_PREVIEW_METADATA_MAX_PREVIEWS);
+
+  return {
+    ...metadata,
+    localServicePreviewsV1: {
+      v: 1,
+      previews,
+    },
+  };
+}

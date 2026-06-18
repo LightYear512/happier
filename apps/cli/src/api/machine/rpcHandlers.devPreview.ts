@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
+  DaemonSessionDevPreviewCloseRequestSchema,
   DaemonSessionDevPreviewHttpRequestSchema,
   type DaemonSessionDevPreviewHttpErrorCode,
   type DaemonSessionDevPreviewHttpResponse,
@@ -166,5 +167,25 @@ export function registerMachineDevPreviewRpcHandlers(params: Readonly<{
     } catch (error) {
       return err('preview_unreachable', error instanceof Error ? error.message : 'preview_unreachable');
     }
+  });
+
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_CLOSE, async (raw: unknown) => {
+    const parsed = DaemonSessionDevPreviewCloseRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        errorCode: 'preview_invalid_request',
+        error: 'preview_invalid_request',
+      };
+    }
+
+    return {
+      ok: true,
+      ...registry.close({
+        sessionId: parsed.data.sessionId,
+        machineId: parsed.data.machineId,
+        resourceId: parsed.data.resourceId,
+      }),
+    };
   });
 }

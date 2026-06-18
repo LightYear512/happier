@@ -112,6 +112,29 @@ describe('createActionExecutor (session control)', () => {
     });
   });
 
+  it('executes session.devPreview.list and close via deps', async () => {
+    const sessionDevPreviewList = vi.fn(async () => ({ ok: true, previews: [] }));
+    const sessionDevPreviewClose = vi.fn(async () => ({ ok: true, closed: true }));
+    const executor = createExecutor({
+      sessionDevPreviewList,
+      sessionDevPreviewClose,
+    } as Partial<ActionExecutorDeps>);
+
+    await expect(executor.execute(
+      'session.devPreview.list' as any,
+      {},
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    )).resolves.toEqual({ ok: true, result: { ok: true, previews: [] } });
+    expect(sessionDevPreviewList).toHaveBeenCalledWith({ sessionId: 's1' });
+
+    await expect(executor.execute(
+      'session.devPreview.close' as any,
+      { resourceId: 'preview_1' },
+      { surface: 'session_agent', defaultSessionId: 's1' },
+    )).resolves.toEqual({ ok: true, result: { ok: true, closed: true } });
+    expect(sessionDevPreviewClose).toHaveBeenCalledWith({ sessionId: 's1', resourceId: 'preview_1' });
+  });
+
   it('executes session.simulatorPreview.register via deps.sessionSimulatorPreviewRegister', async () => {
     const sessionSimulatorPreviewRegister = vi.fn(async () => ({ ok: true, simulatorSessionId: 'sim_1' }));
     const executor = createExecutor({ sessionSimulatorPreviewRegister } as Partial<ActionExecutorDeps>);

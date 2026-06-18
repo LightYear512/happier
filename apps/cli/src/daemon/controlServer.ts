@@ -441,6 +441,13 @@ export function createDaemonControlApp({
       });
     }
   });
+  const devPreviewSessionRequestSchema = z.object({
+    sessionId: z.string().min(1),
+    expectedMachineId: z.string().min(1).optional(),
+  });
+  const devPreviewCloseRequestSchema = devPreviewSessionRequestSchema.extend({
+    resourceId: z.string().min(1).max(200),
+  });
 
   const requireAuth = async (request: { headers: Record<string, unknown> }, reply: any): Promise<void> => {
     const rawHeader = (request.headers as any)['x-happier-daemon-token'];
@@ -1095,6 +1102,108 @@ export function createDaemonControlApp({
         errorCode: 'preview_register_failed',
       };
     }
+  });
+
+  typed.post('/dev-preview/list', {
+    schema: {
+      body: devPreviewSessionRequestSchema,
+      response: {
+        200: z.object({
+          success: z.literal(true),
+          previews: z.array(LocalServicePreviewV1Schema),
+        }),
+        401: authSchema401,
+        409: controlErrorSchema.extend({
+          errorCode: z.literal('machine_mismatch'),
+          machineId: z.string(),
+          expectedMachineId: z.string(),
+        }),
+        500: controlErrorSchema,
+      },
+    },
+    preHandler: requireAuth,
+  }, async (request, reply) => {
+    if (!normalizedMachineId) {
+      reply.code(500);
+      return {
+        success: false as const,
+        error: 'missing_machine_id',
+        errorCode: 'missing_machine_id',
+      };
+    }
+
+    const expectedMachineId = request.body.expectedMachineId?.trim();
+    if (expectedMachineId && expectedMachineId !== normalizedMachineId) {
+      reply.code(409);
+      return {
+        success: false as const,
+        error: 'machine_mismatch',
+        errorCode: 'machine_mismatch' as const,
+        machineId: normalizedMachineId,
+        expectedMachineId,
+      };
+    }
+
+    return {
+      success: true as const,
+      previews: resolvedDevPreviewRegistry.list({
+        sessionId: request.body.sessionId,
+        machineId: normalizedMachineId,
+      }),
+    };
+  });
+
+  typed.post('/dev-preview/close', {
+    schema: {
+      body: devPreviewCloseRequestSchema,
+      response: {
+        200: z.object({
+          success: z.literal(true),
+          closed: z.boolean(),
+          preview: LocalServicePreviewV1Schema.nullable(),
+        }),
+        401: authSchema401,
+        409: controlErrorSchema.extend({
+          errorCode: z.literal('machine_mismatch'),
+          machineId: z.string(),
+          expectedMachineId: z.string(),
+        }),
+        500: controlErrorSchema,
+      },
+    },
+    preHandler: requireAuth,
+  }, async (request, reply) => {
+    if (!normalizedMachineId) {
+      reply.code(500);
+      return {
+        success: false as const,
+        error: 'missing_machine_id',
+        errorCode: 'missing_machine_id',
+      };
+    }
+
+    const expectedMachineId = request.body.expectedMachineId?.trim();
+    if (expectedMachineId && expectedMachineId !== normalizedMachineId) {
+      reply.code(409);
+      return {
+        success: false as const,
+        error: 'machine_mismatch',
+        errorCode: 'machine_mismatch' as const,
+        machineId: normalizedMachineId,
+        expectedMachineId,
+      };
+    }
+
+    const result = resolvedDevPreviewRegistry.close({
+      sessionId: request.body.sessionId,
+      machineId: normalizedMachineId,
+      resourceId: request.body.resourceId,
+    });
+    return {
+      success: true as const,
+      closed: result.closed,
+      preview: result.preview,
+    };
   });
 
   // Stop specific session

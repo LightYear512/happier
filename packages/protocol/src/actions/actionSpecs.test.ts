@@ -79,6 +79,8 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.rollback',
   'session.handoff',
   'session.devPreview.register',
+  'session.devPreview.list',
+  'session.devPreview.close',
   'session.simulatorPreview.devices.list',
   'session.simulatorPreview.register',
   'session.simulatorPreview.android.start',
@@ -588,6 +590,26 @@ describe('Action Spec Registry', () => {
       rewriteUrls: false,
     });
     expect(() => spec.inputSchema.parse({ port: 3000, healthPath: 'http://127.0.0.1:3000/' })).toThrow();
+  });
+
+  it('registers session dev preview list and close as feature-gated session-agent tools', () => {
+    const list = getActionSpec('session.devPreview.list' as any);
+    const close = getActionSpec('session.devPreview.close' as any);
+
+    expect(list.requiredFeatureId).toBe('sessions.devPreview');
+    expect(list.surfaces.session_agent).toBe(true);
+    expect(list.surfaces.ui_button).toBe(false);
+    expect(list.bindings?.mcpToolName).toBe('happier_dev_preview_list');
+    expect(list.inputSchema.parse({ sessionId: 's1' })).toEqual({ sessionId: 's1' });
+
+    expect(close.requiredFeatureId).toBe('sessions.devPreview');
+    expect(close.surfaces.session_agent).toBe(true);
+    expect(close.surfaces.ui_button).toBe(true);
+    expect(close.bindings?.mcpToolName).toBe('happier_dev_preview_close');
+    expect(close.inputSchema.parse({ sessionId: 's1', resourceId: 'preview_1' })).toEqual({
+      sessionId: 's1',
+      resourceId: 'preview_1',
+    });
   });
 
   it('registers the session simulator preview action as a feature-gated session-agent tool', () => {

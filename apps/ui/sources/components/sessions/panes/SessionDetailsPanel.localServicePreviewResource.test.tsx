@@ -159,7 +159,7 @@ describe('SessionDetailsPanel (local service preview resource)', () => {
         expect(screen.getTextContent()).toContain('Preview app');
         expect(screen.findByTestId('session-details-tab-unpin-localServicePreview_preview_1')).toBeTruthy();
         expect(screen.findByTestId('session-details-tab-pin-localServicePreview_preview_1')).toBeNull();
-        expect(screen.findByTestId('session-details-tab-close-localServicePreview_preview_1')).toBeTruthy();
+        expect(screen.findByTestId('session-details-tab-close-localServicePreview_preview_1')).toBeNull();
         expect(screen.getTextContent()).toContain('http://127.0.0.1:3000');
         expect(screen.getTextContent()).not.toContain('machine-1');
         expect(screen.getTextContent()).not.toContain('ready');

@@ -663,7 +663,9 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                         const isActive = effectiveActiveKey ? tab.key === effectiveActiveKey : false;
                         const safeTabKey = toTestIdSafeValue(tab.key);
                         const isLocalServicePreviewTab = tab.kind === 'localServicePreview';
+                        const isPreviewResourceTab = tab.kind === 'localServicePreview' || tab.kind === 'simulatorPreview';
                         const showPinAction = tab.isPreview || tab.isPinned;
+                        const showCloseAction = !isPreviewResourceTab;
                         const tabSubtitle = isLocalServicePreviewTab
                             ? resolveLocalServicePreviewTabSubtitle(tab, details?.tabState?.[tab.key])
                             : typeof tab.subtitle === 'string' && tab.subtitle.trim().length > 0
@@ -703,7 +705,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                         styles.tab,
                                         isActive ? styles.tabActive : null,
                                         // Reserve room for the action buttons so the label doesn't overlap.
-                                        { paddingRight: showPinAction ? 52 : 34 },
+                                        { paddingRight: showPinAction && showCloseAction ? 52 : showPinAction || showCloseAction ? 34 : 10 },
                                     ]}
                                     accessibilityRole="button"
                                     accessibilityState={{ selected: isActive }}
@@ -772,18 +774,20 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                                             <PinSlashIcon size={14} color={theme.colors.text.secondary} />
                                         </Pressable>
                                     ) : null}
-                                    <Pressable
-                                        onPress={(event: any) => {
-                                            event?.stopPropagation?.();
-                                            pane.closeDetailsTab(tab.key);
-                                        }}
-                                        testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, `session-details-tab-close-${safeTabKey}`)}
-                                        accessibilityRole="button"
-                                        accessibilityLabel={t('session.detailsPanel.closeTabA11y')}
-                                        hitSlop={10}
-                                    >
-                                        <Octicons name="x" size={13} color={theme.colors.text.secondary} />
-                                    </Pressable>
+                                    {showCloseAction ? (
+                                        <Pressable
+                                            onPress={(event: any) => {
+                                                event?.stopPropagation?.();
+                                                pane.closeDetailsTab(tab.key);
+                                            }}
+                                            testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, `session-details-tab-close-${safeTabKey}`)}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={t('session.detailsPanel.closeTabA11y')}
+                                            hitSlop={10}
+                                        >
+                                            <Octicons name="x" size={13} color={theme.colors.text.secondary} />
+                                        </Pressable>
+                                    ) : null}
                                 </View>
                             </View>
                         );

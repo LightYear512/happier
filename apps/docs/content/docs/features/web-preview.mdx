@@ -1,16 +1,23 @@
 ---
-title: Dev preview relay
-description: Preview local development servers inside Happier sessions across web and native clients.
+title: Web Preview
+description: Preview local web apps inside Happier sessions across web and native clients.
 ---
 
-Dev preview relay lets an agent register a local development server with a Happier session so the user can open that app from the session UI.
+Web Preview lets an agent start or register a local web app with a Happier
+session so the user can open, reload, focus, and close that app from the session
+UI.
 
 The product contract is:
 
-- the agent registers the dev server through `happier_dev_preview_register`
-- Happier shows a preview affordance in the session
+- the agent reuses existing previews through `happier_web_preview_list` and
+  `happier_web_preview_status`
+- the agent starts or registers a preview through `happier_web_preview_start` or
+  `happier_web_preview_register`
+- Happier shows a Web Preview affordance in the session
 - opening the preview uses the same session details-tab model as files, commits, terminals, and other resources
 - the displayed URL is the resolved preview URL, not the machine-local `127.0.0.1` URL
+- closing a preview unregisters Happier's resource and stops only processes that
+  Web Preview started
 
 ## UI model
 
@@ -21,9 +28,20 @@ They are not part of the fixed right-panel tool tabs. The right panel is for sta
 Entry points:
 
 - the session header preview button
-- the local-service preview card in the transcript
+- the Web Preview card in the transcript
 
 When multiple previews are registered, each preview opens as its own details tab. Reopening the same preview should reuse the same tab key. On narrow native screens, the same details pane can present as a full-screen or overlay surface while preserving the same tab model.
+
+## Lifecycle model
+
+Web Preview resources move through `starting`, `ready`, `reloading`, `dead`, and
+`closed` states.
+
+Agents should list or inspect active previews before starting a new one. Starting
+or registering the same app again should reuse the existing preview unless the
+agent explicitly asks to replace it. Closing a Web Preview removes Happier's
+preview resource and route registration. It only stops the underlying dev-server
+process when Web Preview started that process.
 
 ## Rendering model
 
@@ -67,7 +85,11 @@ Host-based native preview needs:
 - a server/relay URL reachable from the device
 - WebSocket relay support for dev-server HMR
 
-For a server hosted at `https://proxyapi.layaair.com`, a deployment can set `HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN=proxyapi.layaair.com`; preview URLs then use hosts like `hp-example.proxyapi.layaair.com`, which are covered by a `*.proxyapi.layaair.com` certificate. The base domain does not need a `preview.` prefix.
+For a server hosted at `https://proxyapi.layaair.com`, a deployment can set
+`HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN=proxyapi.layaair.com`; preview URLs
+then use hosts like `hp-example.proxyapi.layaair.com`, which are covered by a
+`*.proxyapi.layaair.com` certificate. The base domain does not need a
+`preview.` prefix.
 
 `*.localhost` is a web-local fallback only. In iOS or Android, `localhost` means the device itself, not the Mac or server that owns the dev server.
 
@@ -89,6 +111,10 @@ The first native implementation can use the existing preview token URL directly.
 Required test coverage:
 
 - Web preview still renders an `iframe` and shows the resolved host-based URL in the details tab.
+- `start` and `register` reuse active previews instead of creating duplicates.
+- `close` unregisters the preview and stops only Web Preview-owned processes.
+- `list` and `status` expose lifecycle, connection path, controls, and stable
+  error codes.
 - Native preview requests a relay token and renders `react-native-webview`.
 - Native preview does not attempt same-machine `127.0.0.1` fallback.
 - Native preview reports the resolved preview URL to the details tab state.

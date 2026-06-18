@@ -409,6 +409,15 @@ const SessionDevPreviewRegisterInputSchema = z.object({
   }
 });
 
+const SessionDevPreviewListInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+}).passthrough();
+
+const SessionDevPreviewCloseInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  resourceId: z.string().trim().min(1).max(200),
+}).passthrough();
+
 const SessionSimulatorPreviewRegisterInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   simulatorSessionId: z.string().trim().min(1).max(200).optional(),
@@ -1243,7 +1252,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       },
     },
     surfaces: {
-      ui_button: false,
+      ui_button: true,
       ui_slash_command: false,
       voice_tool: false,
       voice_action_block: false,
@@ -1436,7 +1445,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       mcp: { argsExample: '{"sessionId":"{{sessionId}}","runId":"run_123"}' },
     },
     surfaces: {
-      ui_button: false,
+      ui_button: true,
       ui_slash_command: false,
       voice_tool: false,
       voice_action_block: false,
@@ -1607,6 +1616,67 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: SessionDevPreviewRegisterInputSchema,
+  },
+  {
+    id: 'session.devPreview.list',
+    title: 'List local dev previews',
+    description: 'List active local web previews already registered for this session. Use before registering another preview so the existing one can be reused instead of creating duplicates.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_dev_preview_list' },
+    examples: {
+      mcp: { argsExample: '{"sessionId":"{{sessionId}}"}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'List local loopback previews',
+      description: 'Use before registering a new web dev server preview.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionDevPreviewListInputSchema,
+  },
+  {
+    id: 'session.devPreview.close',
+    title: 'Close local dev preview',
+    description: 'Close an active local web preview resource so it is removed from the session preview registry and can no longer be opened through its route key.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_OPTIONAL_DEFERRED,
+    requiredFeatureId: 'sessions.devPreview',
+    placements: [],
+    bindings: { mcpToolName: 'happier_dev_preview_close' },
+    examples: {
+      mcp: { argsExample: '{"sessionId":"{{sessionId}}","resourceId":"preview_..."}' },
+    },
+    surfaces: {
+      ui_button: true,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: true,
+      mcp: false,
+      cli: false,
+    },
+    inputHints: {
+      title: 'Close local loopback preview',
+      description: 'Use when a preview is no longer needed or before replacing it.',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text' },
+        { path: 'resourceId', title: 'Preview resource id', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionDevPreviewCloseInputSchema,
   },
   {
     id: 'session.simulatorPreview.devices.list',

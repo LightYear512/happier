@@ -166,4 +166,40 @@ describe('rpcHandlers.devPreview', () => {
       errorCode: 'preview_not_found',
     });
   });
+
+  it('closes a registered preview through daemon RPC and removes its routeKey', async () => {
+    const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
+        handlers.set(method, handler);
+      },
+    } as any;
+
+    const registry = createSessionDevPreviewRegistry();
+    const preview = await registry.register({
+      sessionId: 'session_1',
+      machineId: 'machine_1',
+      port: 5173,
+      source: 'manual',
+    });
+
+    registerMachineDevPreviewRpcHandlers({
+      rpcHandlerManager,
+      registry,
+    });
+
+    const handler = handlers.get((RPC_METHODS as any).DAEMON_SESSION_DEV_PREVIEW_CLOSE);
+    expect(handler).toBeTruthy();
+
+    await expect(handler!({
+      sessionId: 'session_1',
+      machineId: 'machine_1',
+      resourceId: preview.resourceId,
+    })).resolves.toEqual({
+      ok: true,
+      closed: true,
+      preview,
+    });
+    expect(registry.getByRouteKey(preview.preview.routeKey)).toBeNull();
+  });
 });

@@ -171,7 +171,7 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.sessions.folders.enabled).toBe(false);
     });
 
-    it("disables session dev preview relay by default when no host base or dev path mode is configured", () => {
+    it("disables session dev preview relay by default outside development when no host base is configured", () => {
         const payload = resolveServerFeaturePayload({
             HAPPIER_PUBLIC_SERVER_URL: "https://app.example.com",
         } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
@@ -189,6 +189,15 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
     });
 
+    it("enables path dev preview relay by default in development", () => {
+        const payload = resolveServerFeaturePayload({
+            NODE_ENV: "development",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(true);
+    });
+
     it("enables session dev preview relay when a valid host base is configured", () => {
         const payload = resolveServerFeaturePayload({
             HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: "preview.example.com",
@@ -202,7 +211,7 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
     });
 
-    it("enables path dev preview relay only in development when explicitly configured", () => {
+    it("keeps path dev preview relay enabled in development when explicitly configured", () => {
         const payload = resolveServerFeaturePayload({
             NODE_ENV: "development",
             HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: "1",

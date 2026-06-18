@@ -13,6 +13,11 @@ type SessionDevPreviewRegistryEntry = Readonly<{
 
 export type SessionDevPreviewRegistry = Readonly<{
   register: (input: SessionDevPreviewRegistrationInput) => Promise<LocalServicePreviewV1>;
+  list: (input: Readonly<{ sessionId: string; machineId?: string }>) => LocalServicePreviewV1[];
+  close: (input: Readonly<{ sessionId: string; machineId?: string; resourceId: string }>) => Readonly<{
+    closed: boolean;
+    preview: LocalServicePreviewV1 | null;
+  }>;
   getByResourceId: (resourceId: string) => LocalServicePreviewV1 | null;
   getByRouteKey: (routeKey: string) => LocalServicePreviewV1 | null;
 }>;
@@ -59,6 +64,28 @@ export function createSessionDevPreviewRegistry(params?: Readonly<{ healthCheckT
       byResourceId.set(payload.resourceId, entry);
       routeKeyToResourceId.set(payload.preview.routeKey, payload.resourceId);
       return payload;
+    },
+    list: (input) => {
+      const sessionId = String(input.sessionId).trim();
+      const machineId = typeof input.machineId === 'string' ? input.machineId.trim() : '';
+      return [...byResourceId.values()]
+        .map((entry) => entry.payload)
+        .filter((preview) => preview.sessionId === sessionId)
+        .filter((preview) => !machineId || preview.machineId === machineId)
+        .sort((a, b) => a.registeredAtMs - b.registeredAtMs || a.resourceId.localeCompare(b.resourceId));
+    },
+    close: (input) => {
+      const sessionId = String(input.sessionId).trim();
+      const machineId = typeof input.machineId === 'string' ? input.machineId.trim() : '';
+      const resourceId = String(input.resourceId).trim();
+      const entry = byResourceId.get(resourceId);
+      if (!entry || entry.payload.sessionId !== sessionId || (machineId && entry.payload.machineId !== machineId)) {
+        return { closed: false, preview: null };
+      }
+      byResourceId.delete(resourceId);
+      byCompositeKey.delete(entry.compositeKey);
+      routeKeyToResourceId.delete(entry.payload.preview.routeKey);
+      return { closed: true, preview: entry.payload };
     },
     getByResourceId: (resourceId) => byResourceId.get(String(resourceId).trim())?.payload ?? null,
     getByRouteKey: (routeKey) => {
