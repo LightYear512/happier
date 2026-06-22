@@ -501,7 +501,7 @@ describe('SessionView info navigation', () => {
         expect(headerProps?.subtitleEllipsizeMode).not.toBe('head');
     });
 
-    it('opens child sessions with the current session owner when child cache resolution is unavailable', async () => {
+    it('opens child sessions with the cached owner when cache resolution is available', async () => {
         const { SessionView } = await import('./SessionView');
 
         await renderScreen(
@@ -511,7 +511,7 @@ describe('SessionView info navigation', () => {
 
         capturedOpenSessionSpy('child-session-1');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/session/child-session-1?serverId=server-2');
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/child-session-1?serverId=server-cache');
     });
 
     it('does not eagerly hydrate discovered subagent sidechains from the session shell or header', async () => {

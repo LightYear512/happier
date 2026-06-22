@@ -190,8 +190,6 @@ function mockCommonDeps() {
         AGENT_IDS: ['codex'],
         DEFAULT_AGENT_ID: 'codex',
         resolveAgentIdFromFlavor: () => null,
-        getAgentIconSource: () => null,
-        getAgentIconSvgXml: () => null,
         getAgentCore: () => ({ displayNameKey: 'agents.codex', toolRendering: { hideUnknownToolsByDefault: false } }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {

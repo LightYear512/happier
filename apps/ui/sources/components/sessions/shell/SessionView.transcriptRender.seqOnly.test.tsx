@@ -585,7 +585,6 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
             accessLevel: 'edit',
             agentStateVersion: 1,
             metadata: { machineId: 'm1', flavor: 'codex', version: '0.0.0', path: '/tmp', homeDir: '/tmp' },
-            agentStateVersion: 1,
             agentState: {},
         };
         setSessionUsageState(null);

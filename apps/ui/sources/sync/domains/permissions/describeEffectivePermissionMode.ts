@@ -30,6 +30,10 @@ export type EffectivePermissionModeReason = Readonly<{
     params?: Readonly<Record<string, string>>;
 }>;
 
+function isProviderNativeReadOnlyMode(providerNative: string): boolean {
+    return providerNative === 'read-only' || providerNative === 'dontAsk';
+}
+
 function noteForReason(reason: EffectivePermissionModeReason): string {
     switch (reason.code) {
         case 'plan_not_supported_for_provider':
@@ -77,7 +81,7 @@ export function describeEffectivePermissionMode(_params: {
     }
 
     const providerNative = resolveProviderNativePermissionModeForAgent({ agentId, mode: effectiveMode });
-    if (providerNative !== effectiveMode) {
+    if (selected !== effectiveMode) {
         reasons.push({ code: 'mode_mapped_for_provider', params: { providerMode: providerNative } });
     }
 
@@ -89,7 +93,7 @@ export function describeEffectivePermissionMode(_params: {
         }
     }
 
-    if (effectiveMode === 'read-only' && providerNative !== 'read-only') {
+    if (effectiveMode === 'read-only' && !isProviderNativeReadOnlyMode(providerNative)) {
         reasons.push({ code: 'read_only_best_effort' });
     }
 

@@ -145,7 +145,6 @@ const storageState = vi.hoisted(() => ({
       encryptionMode: 'plain',
       presence: 'online',
       active: true,
-      pendingVersion: 2,
       agentStateVersion: 1,
       accessLevel: 'edit',
       canApprovePermissions: false,
@@ -165,7 +164,6 @@ const storageState = vi.hoisted(() => ({
         },
       },
       agentState: {},
-      agentStateVersion: 1,
     } as any,
   } as Record<string, any>,
   artifacts: {} as Record<string, any>,
@@ -801,7 +799,6 @@ describe('SessionView (direct sessions)', () => {
       encryptionMode: 'plain',
       presence: 'online',
       active: true,
-      pendingVersion: 2,
       agentStateVersion: 1,
       accessLevel: 'edit',
       canApprovePermissions: false,
@@ -821,7 +818,6 @@ describe('SessionView (direct sessions)', () => {
         },
       },
       agentState: {},
-      agentStateVersion: 1,
       lastRuntimeIssue: null,
     };
     storageState.artifacts = {};
@@ -1590,7 +1586,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       providerDisplayName: 'connectedServices.serviceNames.openaiCodex',
-      activeAccountDisplayLabel: null,
+      activeAccountDisplayLabel: 'backup-account',
     }));
   });
 
@@ -1629,7 +1625,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'claude-subscription',
       providerDisplayName: 'connectedServices.serviceNames.claudeSubscription',
-      activeAccountDisplayLabel: null,
+      activeAccountDisplayLabel: 'claude-backup',
     }));
   });
 

@@ -74,8 +74,6 @@ vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['codex', 'claude', 'opencode', 'gemini'],
     DEFAULT_AGENT_ID: 'codex',
     resolveAgentIdFromFlavor: () => null,
-    getAgentIconSource: () => null,
-    getAgentIconSvgXml: () => null,
     getAgentCore: () => ({ displayNameKey: 'agents.codex', toolRendering: { hideUnknownToolsByDefault: false } }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
