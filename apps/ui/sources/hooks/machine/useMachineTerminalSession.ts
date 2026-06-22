@@ -178,6 +178,9 @@ export function useMachineTerminalSession(params: Readonly<{
         };
 
         const start = async () => {
+            await Promise.resolve();
+            if (canceled) return;
+
             const previousTerminalId = terminalIdRef.current;
             const previousCursor = cursorRef.current;
             const cachedSurfaceState = readTerminalSurfaceState(params.terminalKey) ?? createEmptyTerminalSurfaceState();

@@ -224,7 +224,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         expect(secondMarkOrder).toBeGreaterThan(secondApplyOrder);
     });
 
-    it('defers the first off-screen new-message session projection until the coalescing window flushes', async () => {
+    it('keeps the first off-screen new-message out of the transcript and marks it deferred', async () => {
         storage.setState((prev) => ({
             ...prev,
             sessions: {
@@ -296,15 +296,10 @@ describe('socket new-message + coalescer: materialized max seq', () => {
 
         expect(applyMessages).not.toHaveBeenCalled();
         expect(markSessionMaterializedMaxSeq).not.toHaveBeenCalled();
-        expect(applySessions).toHaveBeenCalledTimes(1);
-        expect(applySessions).toHaveBeenCalledWith([
-            expect.objectContaining({
-                id: 's-offscreen',
-                seq: 2,
-                updatedAt: 1_002,
-                meaningfulActivityAt: 1_002,
-            }),
-        ]);
+        expect(markSessionTranscriptDeferred).toHaveBeenCalledWith('s-offscreen', expect.objectContaining({
+            updateType: 'new-message',
+            seq: 2,
+        }));
     });
 
     it('recomputes unread state for cache-only renderables when a hidden durable new-message advances the readable seq', async () => {

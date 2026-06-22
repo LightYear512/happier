@@ -459,7 +459,7 @@ describe('useCreateNewSession (worktree gating)', () => {
 
         expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
         expect(clearNewSessionDraftMock).toHaveBeenCalledWith(draftScope);
-        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=api.happier.dev', expect.anything());
+        expect(routerReplace).toHaveBeenCalledWith('/session/session-created?serverId=proxyapi.layaair.com', expect.anything());
     });
 
     it('creates a git worktree on the resolved target server when checkoutCreationDraft is selected', async () => {

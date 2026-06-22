@@ -41,7 +41,7 @@ describe('describeEffectivePermissionMode', () => {
         expect(reasonCodes(res)).toContain('plan_not_supported_for_provider');
     });
 
-    it('emits provider-native mapping reason when provider canonicalization changes the mode', () => {
+    it('does not emit mapping reason for canonical provider modes', () => {
         const res = describeEffectivePermissionMode({
             agentType: 'claude',
             selectedMode: 'safe-yolo',
@@ -49,10 +49,7 @@ describe('describeEffectivePermissionMode', () => {
             applyTiming: 'immediate',
         });
 
-        expect(res.reasons).toContainEqual({
-            code: 'mode_mapped_for_provider',
-            params: { providerMode: 'auto' },
-        });
+        expect(reasonCodes(res)).not.toContain('mode_mapped_for_provider');
     });
 
     it('emits codex-like read-only enforcement reason', () => {
@@ -101,7 +98,7 @@ describe('describeEffectivePermissionMode', () => {
         expect(reasonCodes(res)).not.toContain('read_only_enforced_by_tool_gating');
     });
 
-    it('emits read_only_best_effort when provider maps read-only to a non-read-only native mode', () => {
+    it('does not emit read_only_best_effort when the provider supports read-only natively', () => {
         const res = describeEffectivePermissionMode({
             agentType: 'claude',
             selectedMode: 'read-only',
@@ -109,8 +106,8 @@ describe('describeEffectivePermissionMode', () => {
             applyTiming: 'immediate',
         });
 
-        expect(reasonCodes(res)).toContain('read_only_best_effort');
-        expect(res.notes.some((note) => /best effort/i.test(note))).toBe(true);
+        expect(reasonCodes(res)).not.toContain('read_only_best_effort');
+        expect(res.notes.some((note) => /best effort/i.test(note))).toBe(false);
     });
 
     it('emits MCP spawn restriction reason when ACP policy providers have no ACP metadata', () => {

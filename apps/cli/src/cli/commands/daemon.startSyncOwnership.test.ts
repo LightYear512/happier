@@ -102,6 +102,7 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
             kind: 'conflict',
             owner: {
                 status: 'running',
+                source: 'state',
                 state: conflictInspection.state,
                 currentCliVersion: '0.2.8',
                 currentPublicReleaseChannel: 'stable',
@@ -122,6 +123,7 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                 kind: 'conflict' as const,
                 owner: {
                     status: 'running' as const,
+                    source: 'state' as const,
                     state: conflictInspection.state,
                     currentCliVersion: '0.2.8',
                     currentPublicReleaseChannel: 'stable' as const,
@@ -161,6 +163,7 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
             kind: 'conflict',
             owner: {
                 status: 'running',
+                source: 'state',
                 state: conflictInspection.state,
                 currentCliVersion: '0.2.8',
                 currentPublicReleaseChannel: 'stable',

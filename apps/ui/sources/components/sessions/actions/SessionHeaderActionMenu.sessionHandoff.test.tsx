@@ -99,10 +99,6 @@ const storageState = vi.hoisted(() => ({
 }));
 
 installSessionActionsCommonModuleMocks({
-  modal: async () => {
-    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-    return createModalModuleMock({ confirmResult: true }).module;
-  },
   reactNative: async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -152,6 +148,7 @@ installSessionActionsCommonModuleMocks({
   modal: async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
     return createModalModuleMock({
+      confirmResult: true,
       spies: {
         alert: modalAlertMock,
         confirm: modalConfirmMock,

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Keyboard, Platform, StyleSheet, View, type StyleProp, type ViewProps, type ViewStyle, useWindowDimensions } from 'react-native';
+import { Keyboard, Platform, View, type StyleProp, type ViewProps, type ViewStyle, useWindowDimensions } from 'react-native';
 import { usePopoverBoundaryRef } from './PopoverBoundary';
 import { usePopoverScrollSourceRef } from './PopoverScrollSource';
 import { requireRadixDismissableLayer } from '@/utils/web/radixCjs';
@@ -55,13 +55,21 @@ function readNumericStyleValue(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function flattenPopoverStyle(style: unknown): ViewStyle {
+    if (!style) return {};
+    if (Array.isArray(style)) {
+        return Object.assign({}, ...style.map(flattenPopoverStyle));
+    }
+    return typeof style === 'object' ? style as ViewStyle : {};
+}
+
 function resolvePaddingEdges(style: StyleProp<ViewStyle>): Readonly<{
     top: number;
     right: number;
     bottom: number;
     left: number;
 }> {
-    const flatStyle = StyleSheet.flatten(style) as ViewStyle | undefined;
+    const flatStyle = flattenPopoverStyle(style);
     const base = readNumericStyleValue(flatStyle?.padding) ?? 0;
     const horizontal = readNumericStyleValue(flatStyle?.paddingHorizontal) ?? base;
     const vertical = readNumericStyleValue(flatStyle?.paddingVertical) ?? base;

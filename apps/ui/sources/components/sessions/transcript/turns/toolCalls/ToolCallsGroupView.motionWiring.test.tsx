@@ -96,6 +96,7 @@ describe('ToolCallsGroupView (motion wiring)', () => {
         expect(screen.findAllByTestId('transcript-enter-wrapper')).toHaveLength(2);
         const collapsibleAfter = screen.findByTestId('transcript-collapsible') as any;
         expect(collapsibleAfter?.props.expanded).toBe(true);
+        expect(screen.findAllByTestId('transcript-enter-wrapper')).toHaveLength(2);
     });
 
     it('shows a stack icon and toggles chevron direction when expanded', async () => {

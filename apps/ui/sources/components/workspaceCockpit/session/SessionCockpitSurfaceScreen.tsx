@@ -358,7 +358,6 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
                 <SessionDetailsPanel
                     sessionId={props.sessionId}
                     scopeId={props.scopeId}
-                    presentation={props.safeAreaPadding === false ? 'screen' : undefined}
                     showHeaderActions={false}
                 />
             )}

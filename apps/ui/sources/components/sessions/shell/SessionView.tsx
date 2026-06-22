@@ -654,7 +654,6 @@ type SessionViewLoadedProps = Readonly<{
     jumpToSeq: number | null;
     participantTargets: readonly SessionParticipantTarget[];
     paneUrlState: SessionPaneUrlState | null;
-    localServicePreviews: readonly LocalServicePreviewV1[];
     initialAttachmentDrafts: readonly AttachmentDraft[] | null;
     paneScopeId: string;
     // Stable per-pane-mount id (NOT keyed by session) used to seed the first-frame content width
@@ -706,7 +705,6 @@ const SessionViewLoadedWithPendingMessages = React.memo(function SessionViewLoad
 type SessionHeaderRightElementProps = Readonly<{
     sessionId: string;
     session: Session;
-    localServicePreviews: readonly LocalServicePreviewV1[];
     paneScopeId: string;
     currentSessionRouteServerId: string;
     mobileWorkspaceExperienceToggleActionId: string;
@@ -813,6 +811,7 @@ const SessionHeaderRightElement = React.memo(function SessionHeaderRightElement(
 
     const badgeLabel =
         props.sessionAutomationsEnabledCount > 99 ? '99+' : String(props.sessionAutomationsEnabledCount);
+    const localServicePreviews = useSessionLocalServicePreviews(props.session);
 
     return (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -824,7 +823,7 @@ const SessionHeaderRightElement = React.memo(function SessionHeaderRightElement(
             />
             <SessionHeaderDevPreviewButton
                 scopeId={props.paneScopeId}
-                previews={props.localServicePreviews}
+                previews={localServicePreviews}
             />
             {!props.shouldFoldHeaderIconActions ? (
                 <SessionHeaderSubagentsButton
@@ -898,6 +897,60 @@ const SessionHeaderRightElement = React.memo(function SessionHeaderRightElement(
             ) : null}
         </View>
     );
+});
+
+function useSessionLocalServicePreviews(session: Session): readonly LocalServicePreviewV1[] {
+    const { messages } = useSessionMessages(session.id);
+    return React.useMemo(
+        () => listLocalServicePreviewPayloadsFromSources({
+            metadata: session.metadata ?? null,
+            messages,
+        }),
+        [messages, session.metadata],
+    );
+}
+
+const SessionLocalServicePreviewPaneSync = React.memo(function SessionLocalServicePreviewPaneSync(props: Readonly<{
+    enabled: boolean;
+    pane: ReturnType<typeof useAppPaneScope>;
+    paneScopeId: string;
+    paneUrlState: SessionPaneUrlState | null;
+    session: Session;
+    setParams: ((params: Record<string, unknown>) => void) | null;
+}>) {
+    const localServicePreviews = useSessionLocalServicePreviews(props.session);
+    const localServicePreviewDetailsTabResolver = React.useMemo(
+        () => createLocalServicePreviewDetailsTabResolver(localServicePreviews),
+        [localServicePreviews],
+    );
+
+    useSessionPaneUrlSync({
+        enabled: props.enabled,
+        scopeKey: props.paneScopeId,
+        scopeState: props.pane.scopeState,
+        urlState: props.paneUrlState,
+        pane: props.pane,
+        resolveLocalServicePreviewDetailsTab: localServicePreviewDetailsTabResolver,
+        setParams: props.setParams,
+    });
+
+    React.useEffect(() => {
+        if (Platform.OS === 'web') return;
+        if (props.paneUrlState?.details?.kind !== 'localServicePreview') return;
+
+        const tab = localServicePreviewDetailsTabResolver(props.paneUrlState.details.resourceId ?? '');
+        if (!tab) return;
+        if (props.pane.scopeState?.details?.activeTabKey === tab.key) return;
+
+        props.pane.openDetailsTab(tab, { intent: 'preview' });
+    }, [
+        localServicePreviewDetailsTabResolver,
+        props.pane,
+        props.pane.scopeState?.details?.activeTabKey,
+        props.paneUrlState?.details,
+    ]);
+
+    return null;
 });
 
 type SessionAgentInputWithUsageProps = Omit<React.ComponentProps<typeof AgentInput>, 'usageData'> & {
@@ -1478,7 +1531,6 @@ export const SessionView = React.memo((props: SessionViewProps) => {
             <SessionHeaderRightElement
                 sessionId={sessionId}
                 session={headerSession}
-                localServicePreviews={localServicePreviews}
                 paneScopeId={paneScopeId}
                 currentSessionRouteServerId={currentSessionRouteServerId}
                 mobileWorkspaceExperienceToggleActionId={mobileWorkspaceExperienceToggleActionId}
@@ -1512,7 +1564,6 @@ export const SessionView = React.memo((props: SessionViewProps) => {
         mobileWorkspaceExperienceState.workspaceExperienceToggleLabelKey,
         mobileWorkspaceExperienceToggleActionId,
         paneScopeId,
-        localServicePreviews,
         routeHydrationPending,
         routeHydrationState,
         routeHydrationTerminalMissing,
@@ -1538,7 +1589,6 @@ export const SessionView = React.memo((props: SessionViewProps) => {
                 executionRunsEnabled={executionRunsEnabled}
                 jumpToSeq={props.jumpToSeq ?? null}
                 paneUrlState={props.paneUrlState ?? null}
-                localServicePreviews={localServicePreviews}
                 initialAttachmentDrafts={props.initialAttachmentDrafts ?? null}
                 paneScopeId={paneScopeId}
                 contentWidthSurfaceId={contentWidthSurfaceId}
@@ -2003,7 +2053,6 @@ function SessionViewLoaded({
     jumpToSeq,
     participantTargets,
     paneUrlState,
-    localServicePreviews,
     initialAttachmentDrafts,
     paneScopeId,
     contentWidthSurfaceId,
@@ -2096,10 +2145,6 @@ function SessionViewLoaded({
         issue: session.lastRuntimeIssue ?? null,
         recovery: usageLimitRecovery,
     }), [session.lastRuntimeIssue, usageLimitRecovery]);
-    const localServicePreviewDetailsTabResolver = React.useMemo(
-        () => createLocalServicePreviewDetailsTabResolver(localServicePreviews),
-        [localServicePreviews],
-    );
     const [usageLimitRecoveryNowMs, setUsageLimitRecoveryNowMs] = React.useState(() => nowServerMs());
     const [usageLimitRecoveryOperationStatus, setUsageLimitRecoveryOperationStatus] = React.useState<Readonly<{
         issueFingerprint: string;
@@ -2135,32 +2180,6 @@ function SessionViewLoaded({
             clearTimeout(timer);
         };
     }, [sessionId, usageLimitRecoveryResetAtMs]);
-
-    useSessionPaneUrlSync({
-        enabled: paneUrlSyncRouteActive && multiPaneEnabled && Platform.OS === 'web',
-        scopeKey: paneScopeId,
-        scopeState: pane.scopeState,
-        urlState: paneUrlState,
-        pane,
-        resolveLocalServicePreviewDetailsTab: localServicePreviewDetailsTabResolver,
-        setParams: typeof (router as any)?.setParams === 'function' ? (router as any).setParams.bind(router) : null,
-    });
-
-    React.useEffect(() => {
-        if (Platform.OS === 'web') return;
-        if (paneUrlState?.details?.kind !== 'localServicePreview') return;
-
-        const tab = localServicePreviewDetailsTabResolver(paneUrlState.details.resourceId ?? '');
-        if (!tab) return;
-        if (pane.scopeState?.details?.activeTabKey === tab.key) return;
-
-        pane.openDetailsTab(tab, { intent: 'preview' });
-    }, [
-        localServicePreviewDetailsTabResolver,
-        pane,
-        pane.scopeState?.details?.activeTabKey,
-        paneUrlState?.details,
-    ]);
 
     // Session preference: optionally open the right sidebar by default (files tab) when
     // entering a session for the first time on this device.
@@ -4951,6 +4970,14 @@ function SessionViewLoaded({
 
     return (
         <SessionResumeProvider onResumeSession={handleResumeSession}>
+            <SessionLocalServicePreviewPaneSync
+                enabled={paneUrlSyncRouteActive && multiPaneEnabled && Platform.OS === 'web'}
+                pane={pane}
+                paneScopeId={paneScopeId}
+                paneUrlState={paneUrlState}
+                session={session}
+                setParams={typeof (router as any)?.setParams === 'function' ? (router as any).setParams.bind(router) : null}
+            />
             <AppPaneScopeHost
                 scopeId={paneScopeId}
                 // Keep the real session tree mounted; the pane host is responsible for hiding

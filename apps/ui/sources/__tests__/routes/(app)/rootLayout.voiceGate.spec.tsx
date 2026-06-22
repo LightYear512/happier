@@ -38,6 +38,11 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
+vi.mock('expo-blur', () => ({
+    BlurView: (props: React.PropsWithChildren<Record<string, unknown>>) =>
+        React.createElement('BlurView', props, props.children),
+}));
+
 installRootLayoutRouteCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');

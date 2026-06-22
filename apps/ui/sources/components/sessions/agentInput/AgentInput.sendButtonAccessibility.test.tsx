@@ -98,6 +98,8 @@ vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['codex', 'claude', 'opencode', 'gemini'],
     DEFAULT_AGENT_ID: 'codex',
     resolveAgentIdFromFlavor: () => null,
+    getAgentIconSvgXml: () => null,
+    getAgentIconSource: () => null,
     getAgentCore: () => ({ displayNameKey: 'agents.codex', toolRendering: { hideUnknownToolsByDefault: false } }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
@@ -256,32 +258,20 @@ describe('AgentInput (send button accessibility)', () => {
             autocompleteSuggestions={autocompleteSuggestions}
         />);
 
-        expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
-            null,
-            autocompleteSuggestions,
-            expect.objectContaining({ clampSelection: true, wrapAround: true }),
-        );
+        expect(autocompleteSuggestions).not.toHaveBeenCalled();
 
         const input = screen.root.findByType('MultiTextInput' as any);
         await act(async () => {
             input.props.onFocus?.();
         });
 
-        expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
-            '@src',
-            autocompleteSuggestions,
-            expect.objectContaining({ clampSelection: true, wrapAround: true }),
-        );
+        expect(autocompleteSuggestions).not.toHaveBeenCalled();
 
         await act(async () => {
             input.props.onStateChange?.({ text: '@/src', selection: { start: 5, end: 5 } });
         });
 
-        expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
-            '@/src',
-            autocompleteSuggestions,
-            expect.objectContaining({ clampSelection: true, wrapAround: true }),
-        );
+        expect(autocompleteSuggestions).not.toHaveBeenCalled();
 
         await act(async () => {
             input.props.onChangeText?.('@/src');

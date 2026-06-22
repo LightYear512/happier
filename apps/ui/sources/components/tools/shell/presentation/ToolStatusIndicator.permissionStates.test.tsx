@@ -81,7 +81,7 @@ describe('ToolStatusIndicator (permission states)', () => {
         expect(icons.some((n) => n.props.name === 'remove-circle-outline')).toBe(true);
     });
 
-    it('uses the neutral loading color while running', async () => {
+    it('uses the secondary loading color while running', async () => {
         const { ToolStatusIndicator } = await import('./ToolStatusIndicator');
 
         const screen = await renderScreen(
@@ -99,7 +99,7 @@ describe('ToolStatusIndicator (permission states)', () => {
             />,
         );
 
-        const spinner = screen.findByProps({ accessibilityRole: 'progressbar' });
-        expect(spinner?.props?.style?.[0]?.borderColor).toBe('#555555');
+        const spinner = screen.findByType('ActivityIndicator' as any);
+        expect(spinner?.props?.color).toBe('#555555');
     });
 });

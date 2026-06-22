@@ -10,7 +10,7 @@ import { installSessionHandoffCommonModuleMocks } from './sessionHandoffTestHelp
 installSessionHandoffCommonModuleMocks();
 
 function findProgressIndicators(screen: Awaited<ReturnType<typeof renderScreen>>) {
-    return screen.findAll((node) => node.props?.accessibilityRole === 'progressbar');
+    return screen.findAll((node) => (node.type as unknown) === 'ActivityIndicator');
 }
 
 describe('SessionHandoffProgressModal', () => {

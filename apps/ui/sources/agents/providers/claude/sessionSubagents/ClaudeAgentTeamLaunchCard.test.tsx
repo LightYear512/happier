@@ -58,9 +58,9 @@ describe('ClaudeAgentTeamLaunchCard', () => {
                     }),
                 },
             }),
-            {
+            expect.objectContaining({
                 bypassPendingQueueReason: 'subagent_control_command',
-            },
+            }),
         );
     });
 

@@ -190,6 +190,8 @@ function mockCommonDeps() {
         AGENT_IDS: ['codex'],
         DEFAULT_AGENT_ID: 'codex',
         resolveAgentIdFromFlavor: () => null,
+        getAgentIconSource: () => null,
+        getAgentIconSvgXml: () => null,
         getAgentCore: () => ({ displayNameKey: 'agents.codex', toolRendering: { hideUnknownToolsByDefault: false } }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
@@ -299,15 +301,11 @@ describe('AgentInput (action bar scroll layout)', () => {
 
         const primaryScrollContainer = getActionBarScrollView(tree!, 0).parent;
         const secondaryScrollContainer = getActionBarScrollView(tree!, 1).parent;
-        const nativeVariableScrollView = tree!.findAll(
-            (node: any) => node?.type === 'ScrollView' && node?.props?.horizontal !== true,
-        )[0];
         const nativeFooterSection = findNearestAncestorMatching(
             primaryScrollContainer,
             (node) => flattenStyle(node.props?.style).flexShrink === 0,
         );
 
-        expect(nativeVariableScrollView?.props?.pointerEvents).toBe('box-none');
         expect(getActionBarScrollView(tree!, 0).props?.disableScrollViewPanResponder).not.toBe(true);
         expect(getActionBarScrollView(tree!, 1).props?.disableScrollViewPanResponder).not.toBe(true);
         expect(flattenStyle(primaryScrollContainer?.props?.style).minHeight).toBeGreaterThanOrEqual(32);

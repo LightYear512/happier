@@ -412,6 +412,7 @@ describe('SessionView attachments gating', () => {
   });
 
   it('wires attachments when the viewed session server enables uploads', async () => {
+    sessionState.session.serverId = 'server-2';
     attachmentsFeatureScopeState.enabledForServerId = 'server-2';
     featureEnabledState['attachments.uploads'] = false;
     attachmentsTransferAvailableState.value = true;

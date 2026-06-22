@@ -119,26 +119,25 @@ function createHarness(createSessionsDomain: any, createReducer: any) {
 }
 
 describe('sessions domain: thinking grace', () => {
+    const THINKING_GRACE_TIMEOUT_MS = 3_000;
+
     it('starts thinkingGraceUntil only after thinking turns off (prevents UI flicker without streaming churn)', async () => {
         mockSessionsDomainBoundaries();
 
-        const scheduledTimeouts = new Map<number, { callback: () => void; delay: number }>();
+        const scheduledThinkingGraceTimeouts = new Map<number, () => void>();
         let nextTimeoutId = 1;
         let nowMs = Date.parse('2026-02-05T00:00:00.000Z');
 
         vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
         vi.spyOn(globalThis, 'setTimeout').mockImplementation((((callback: TimerHandler, delay?: number) => {
             const timeoutId = nextTimeoutId++;
-            if (typeof callback === 'function') {
-                scheduledTimeouts.set(timeoutId, {
-                    callback: callback as () => void,
-                    delay: typeof delay === 'number' ? delay : 0,
-                });
+            if (delay === THINKING_GRACE_TIMEOUT_MS && typeof callback === 'function') {
+                scheduledThinkingGraceTimeouts.set(timeoutId, callback as () => void);
             }
             return timeoutId as unknown as ReturnType<typeof setTimeout>;
         }) as typeof setTimeout));
         vi.spyOn(globalThis, 'clearTimeout').mockImplementation((((timeoutId: ReturnType<typeof setTimeout>) => {
-            scheduledTimeouts.delete(timeoutId as unknown as number);
+            scheduledThinkingGraceTimeouts.delete(timeoutId as unknown as number);
         }) as typeof clearTimeout));
 
         const { createReducer } = await import('../../reducer/reducer');
@@ -166,7 +165,7 @@ describe('sessions domain: thinking grace', () => {
         ]);
 
         expect(get().sessions.s1?.thinkingGraceUntil ?? null).toBeNull();
-        expect(scheduledTimeouts.size).toBe(0);
+        expect(scheduledThinkingGraceTimeouts.size).toBe(0);
 
         nowMs += 250;
         const t1 = nowMs;
@@ -192,12 +191,11 @@ describe('sessions domain: thinking grace', () => {
         expect(typeof graceUntil).toBe('number');
         expect(graceUntil).toBeGreaterThan(t1);
         expect(get().sessionListRenderables.s1?.thinkingGraceUntil ?? null).toBe(graceUntil);
-        const graceTimers = [...scheduledTimeouts.values()].filter((timeout) => timeout.delay === 3_000);
-        expect(graceTimers).toHaveLength(1);
+        expect(scheduledThinkingGraceTimeouts.size).toBe(1);
 
         // Once the grace timer expires, the marker clears without polling.
         nowMs = (graceUntil as number) + 1;
-        const expireThinkingGrace = graceTimers[0]?.callback;
+        const expireThinkingGrace = scheduledThinkingGraceTimeouts.values().next().value;
         expect(typeof expireThinkingGrace).toBe('function');
         expireThinkingGrace?.();
 
@@ -209,8 +207,14 @@ describe('sessions domain: thinking grace', () => {
         mockSessionsDomainBoundaries();
 
         let nowMs = Date.parse('2026-02-05T00:00:00.000Z');
+        let thinkingGraceTimeoutCount = 0;
         vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
-        vi.spyOn(globalThis, 'setTimeout');
+        vi.spyOn(globalThis, 'setTimeout').mockImplementation((((callback: TimerHandler, delay?: number) => {
+            if (delay === THINKING_GRACE_TIMEOUT_MS) {
+                thinkingGraceTimeoutCount += 1;
+            }
+            return 1 as unknown as ReturnType<typeof setTimeout>;
+        }) as typeof setTimeout));
 
         const { createReducer } = await import('../../reducer/reducer');
         const { createSessionsDomain } = await import('./sessions');
@@ -260,6 +264,6 @@ describe('sessions domain: thinking grace', () => {
         expect(get().sessions.s1?.thinkingGraceUntil ?? null).toBeNull();
         expect(get().sessionListRenderables.s1?.thinking).toBe(false);
         expect(get().sessionListRenderables.s1?.thinkingGraceUntil ?? null).toBeNull();
-        expect(vi.mocked(globalThis.setTimeout).mock.calls.filter((call) => call[1] === 3_000)).toHaveLength(0);
+        expect(thinkingGraceTimeoutCount).toBe(0);
     });
 });

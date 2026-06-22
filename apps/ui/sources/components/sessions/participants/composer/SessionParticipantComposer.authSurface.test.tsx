@@ -154,6 +154,10 @@ describe('SessionParticipantComposer auth send surface', () => {
 
     it('surfaces not_authenticated from the real pending send path instead of silently enqueueing', async () => {
         const sessionId = 's_auth_surface';
+        storage.getState().applySettings({
+            ...storage.getState().settings,
+            sessionMessageSendMode: 'agent_queue',
+        }, 1);
         storage.getState().applySessions([createActiveSession(sessionId)]);
         storage.getState().applySettingsLocal({ sessionMessageSendMode: 'agent_queue' });
 

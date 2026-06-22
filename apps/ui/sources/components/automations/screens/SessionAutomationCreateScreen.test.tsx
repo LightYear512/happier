@@ -1,6 +1,7 @@
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { installAutomationScreensCommonModuleMocks } from './automationScreensTestHelpers';
 import type { StorageState } from '@/sync/store/types';
+import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';

@@ -2,7 +2,37 @@ import { fromByteArray, toByteArray } from 'base64-js';
 
 export type Base64Variant = 'base64' | 'base64url';
 
+const LARGE_CANONICAL_BASE64_FAST_PATH_MIN_CHARS = 1024;
+const LARGE_CANONICAL_BASE64_CHUNK_CHARS = 8192;
+const CANONICAL_BASE64_BODY_CHUNK_PATTERN = /^[A-Za-z0-9+/]*$/;
+const CANONICAL_BASE64_FINAL_QUARTET_PATTERN = /^(?:[A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)$/;
+
+function isLargeCanonicalPaddedBase64(input: string): boolean {
+  if (
+    input.length < LARGE_CANONICAL_BASE64_FAST_PATH_MIN_CHARS
+    || input.length % 4 !== 0
+  ) {
+    return false;
+  }
+
+  const bodyEnd = input.length - 4;
+  for (let offset = 0; offset < bodyEnd; offset += LARGE_CANONICAL_BASE64_CHUNK_CHARS) {
+    const chunk = input.slice(offset, Math.min(offset + LARGE_CANONICAL_BASE64_CHUNK_CHARS, bodyEnd));
+    if (!CANONICAL_BASE64_BODY_CHUNK_PATTERN.test(chunk)) return false;
+  }
+  return CANONICAL_BASE64_FINAL_QUARTET_PATTERN.test(input.slice(bodyEnd));
+}
+
+function readCanonicalPaddedBase64PaddingLength(input: string): number {
+  if (input.endsWith('==')) return 2;
+  if (input.endsWith('=')) return 1;
+  return 0;
+}
+
 export function readCanonicalPaddedBase64DecodedLength(input: string): number | null {
+  if (isLargeCanonicalPaddedBase64(input)) {
+    return (input.length / 4) * 3 - readCanonicalPaddedBase64PaddingLength(input);
+  }
   if (input.length % 4 !== 0) return null;
   let paddingStart = input.length;
   for (let index = 0; index < input.length; index += 1) {

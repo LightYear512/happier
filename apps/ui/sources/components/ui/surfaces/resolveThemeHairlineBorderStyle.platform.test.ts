@@ -8,11 +8,13 @@ async function loadSurfaceBorderModule(platformOS: 'web' | 'ios') {
             Platform: {
                 OS: platformOS,
             },
-            StyleSheet: {
-                hairlineWidth: 0.5,
-            },
         });
     });
+    vi.doMock('react-native-unistyles', () => ({
+        StyleSheet: {
+            hairlineWidth: 0.5,
+        },
+    }));
 
     return import('./resolveThemeHairlineBorderStyle');
 }
@@ -20,6 +22,7 @@ async function loadSurfaceBorderModule(platformOS: 'web' | 'ios') {
 describe('resolveThemeHairlineBorderStyle platform widths', () => {
     afterEach(() => {
         vi.doUnmock('react-native');
+        vi.doUnmock('react-native-unistyles');
         vi.resetModules();
     });
 

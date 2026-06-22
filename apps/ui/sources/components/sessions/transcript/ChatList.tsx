@@ -2830,8 +2830,9 @@ const ChatListInternal = React.memo((props: {
     const isCatchingUpNewer = useSessionCatchingUpNewer(props.sessionId);
     const showCatchUpOverlay = isCatchingUpNewer;
     const transcriptListExtraData = React.useMemo(() => ({
+        messagesById: props.messagesById,
         selectionVersion: transcriptMessageSelection.selectionVersion,
-    }), [transcriptMessageSelection.selectionVersion]);
+    }), [props.messagesById, transcriptMessageSelection.selectionVersion]);
 
     // N3.1: the inverted pilot rides the flash_v2 machinery with orientation as an
     // orthogonal axis — every `=== 'flash_v2'` gate below stays authoritative; the

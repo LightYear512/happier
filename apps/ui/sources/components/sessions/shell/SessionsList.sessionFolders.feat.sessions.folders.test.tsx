@@ -137,10 +137,13 @@ vi.mock('react-native-worklets', () => ({
     scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args),
 }));
 
-vi.mock('react-native-safe-area-context', () => ({
-    SafeAreaInsetsContext: React.createContext({ top: 0, bottom: 0, left: 0, right: 0 }),
-    useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
-}));
+vi.mock('react-native-safe-area-context', async () => {
+    const React = await import('react');
+    return {
+        SafeAreaInsetsContext: React.createContext({ top: 0, bottom: 0, left: 0, right: 0 }),
+        useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+    };
+});
 
 vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
     useResolvedActiveServerSelection: () => ({
@@ -170,7 +173,9 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    areServerProfileIdentifiersEquivalent: (left: string | null | undefined, right: string | null | undefined) => left === right,
+    areServerProfileIdentifiersEquivalent: (left: string | null | undefined, right: string | null | undefined) => (
+        String(left ?? '').trim().toLowerCase() === String(right ?? '').trim().toLowerCase()
+    ),
     getServerProfileById: getServerProfileByIdSpy,
     // `serverRuntime.getActiveServerSnapshot` re-exports this; the session-list
     // memory-search augmentation reads it during render.

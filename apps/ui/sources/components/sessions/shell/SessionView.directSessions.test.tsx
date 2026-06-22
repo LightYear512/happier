@@ -134,13 +134,14 @@ const draftHookState = vi.hoisted(() => ({
 }));
 const quotaSnapshotsState = vi.hoisted(() => ({
   current: {} as Record<string, any>,
-  requestedProfiles: [] as ReadonlyArray<Readonly<{ serviceId: string; profileId: string }>>,
+  requestedProfiles: [] as ReadonlyArray<Readonly<{ serviceId: string; profileId: string; provenance?: string }>>,
 }));
 const storageState = vi.hoisted(() => ({
   sessions: {
     s1: {
       id: 's1',
       seq: 1,
+      pendingVersion: 2,
       encryptionMode: 'plain',
       presence: 'online',
       active: true,
@@ -152,7 +153,7 @@ const storageState = vi.hoisted(() => ({
         machineId: 'machine-1',
         host: 'happy-host',
         flavor: 'codex',
-        version: '0.0.0',
+        version: '0.2.8',
         path: '/tmp',
         homeDir: '/tmp',
         directSessionV1: {
@@ -164,13 +165,14 @@ const storageState = vi.hoisted(() => ({
         },
       },
       agentState: {},
+      agentStateVersion: 1,
     } as any,
-  },
+  } as Record<string, any>,
   artifacts: {} as Record<string, any>,
   profile: {
     connectedServicesV2: [],
   } as any,
-  settings: {} as Record<string, unknown>,
+  settings: { sessionMessageSendMode: 'agent_queue' } as Record<string, unknown>,
   sessionListViewDataByServerId: {} as Record<string, unknown>,
   // Stable container references so the storage snapshot built lazily on first
   // `vi.mock` factory invocation (see createStorageStoreMock) shares identity
@@ -334,7 +336,7 @@ vi.mock('@/auth/context/AuthContext', () => ({
 }));
 
 vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots', () => ({
-  useConnectedServiceQuotaSnapshots: (profiles: ReadonlyArray<Readonly<{ serviceId: string; profileId: string }>>) => {
+  useConnectedServiceQuotaSnapshots: (profiles: ReadonlyArray<Readonly<{ serviceId: string; profileId: string; provenance?: string }>>) => {
     quotaSnapshotsState.requestedProfiles = profiles;
     return quotaSnapshotsState.current;
   },
@@ -500,8 +502,7 @@ vi.mock('@/sync/sync', () => ({
     publishSessionModelOverrideToMetadata: async () => {},
     refreshSessions: async () => {},
     refreshSessionMessages: syncRefreshSessionMessagesSpy,
-    refreshSessionForSubmit: async (sessionId: string) =>
-      storageState.sessions[sessionId as keyof typeof storageState.sessions] ?? null,
+    refreshSessionForSubmit: async (sessionId: string) => storageState.sessions[sessionId] ?? null,
     onSessionVisible: () => {},
     markSessionLiveTailIntent: () => {},
     sendMessage: syncSubmitMessageSpy,
@@ -751,7 +752,7 @@ describe('SessionView (direct sessions)', () => {
     featureEnabledState['connectedServices.quotas'] = false;
     keyboardAvoidanceState.availablePanelHeight = undefined;
     keyboardAvoidanceState.keyboardHeight = 0;
-    settingsState.current = {};
+    settingsState.current = { sessionMessageSendMode: 'agent_queue' };
     settingByKeyState.current = {};
     modalAlertSpy.mockReset();
     syncRefreshSessionMessagesSpy.mockReset();
@@ -796,6 +797,7 @@ describe('SessionView (direct sessions)', () => {
     storageState.sessions.s1 = {
       id: 's1',
       seq: 1,
+      pendingVersion: 2,
       encryptionMode: 'plain',
       presence: 'online',
       active: true,
@@ -807,7 +809,7 @@ describe('SessionView (direct sessions)', () => {
         machineId: 'machine-1',
         host: 'happy-host',
         flavor: 'codex',
-        version: '0.0.0',
+        version: '0.2.8',
         path: '/tmp',
         homeDir: '/tmp',
         directSessionV1: {
@@ -819,6 +821,7 @@ describe('SessionView (direct sessions)', () => {
         },
       },
       agentState: {},
+      agentStateVersion: 1,
       lastRuntimeIssue: null,
     };
     storageState.artifacts = {};
@@ -1313,7 +1316,9 @@ describe('SessionView (direct sessions)', () => {
       serverId: 'server-route-1',
     }));
     expect(sessionUsageLimitCheckNowSpy).not.toHaveBeenCalled();
-    expect(screen.findByTestId('session-usageLimit-recovery')).toBeNull();
+    await vi.waitFor(() => {
+      expect(screen.findByTestId('session-usageLimit-recovery')).toBeNull();
+    });
   });
 
   it('surfaces switch-account recovery progress while the control request is in flight', async () => {
@@ -1364,18 +1369,22 @@ describe('SessionView (direct sessions)', () => {
       serverId: 'server-route-1',
     }));
     expect(sessionUsageLimitCheckNowSpy).not.toHaveBeenCalled();
-    expect(findUsageLimitStatusBadge(screen)).toEqual(expect.objectContaining({
-      label: 'session.usageLimitRecovery.statusChecking',
-    }));
+    await vi.waitFor(() => {
+      expect(findUsageLimitStatusBadge(screen)).toEqual(expect.objectContaining({
+        label: 'session.usageLimitRecovery.statusChecking',
+      }));
+    });
 
     await act(async () => {
       resolveSwitchAccountNow?.({ ok: true, status: 'waiting' });
       await Promise.resolve();
     });
 
-    expect(findUsageLimitStatusBadge(screen)).toEqual(expect.objectContaining({
-      label: 'session.usageLimitRecovery.statusWaiting',
-    }));
+    await vi.waitFor(() => {
+      expect(findUsageLimitStatusBadge(screen)).toEqual(expect.objectContaining({
+        label: 'session.usageLimitRecovery.statusWaiting',
+      }));
+    });
   });
 
   it('shows a user-facing check-now error instead of raw recovery-control codes', async () => {
@@ -1434,6 +1443,29 @@ describe('SessionView (direct sessions)', () => {
       latestTurnStatusObservedAt: 1,
       presence: 'online',
     };
+    quotaSnapshotsState.current = {
+      'openai-codex/backup-profile': {
+        v: 1,
+        serviceId: 'openai-codex',
+        profileId: 'backup-profile',
+        fetchedAt: Date.now(),
+        staleAfterMs: 60_000,
+        planLabel: null,
+        accountLabel: 'backup-account',
+        meters: [{
+          meterId: 'weekly',
+          label: 'Weekly',
+          used: null,
+          limit: null,
+          unit: 'unknown',
+          utilizationPct: 58,
+          remainingPct: 42,
+          resetsAt: null,
+          status: 'ok',
+          details: { limitCategory: 'usage_limit' },
+        }],
+      },
+    };
 
     const screen = await renderSessionViewAndSettle();
 
@@ -1479,6 +1511,29 @@ describe('SessionView (direct sessions)', () => {
           recoverability: 'switch_account',
           recoveryDecision: 'switching',
         },
+      },
+    };
+    quotaSnapshotsState.current = {
+      'claude-subscription/claude-backup': {
+        v: 1,
+        serviceId: 'claude-subscription',
+        profileId: 'claude-backup',
+        fetchedAt: Date.now(),
+        staleAfterMs: 60_000,
+        planLabel: null,
+        accountLabel: 'claude-backup',
+        meters: [{
+          meterId: 'weekly',
+          label: 'Weekly',
+          used: null,
+          limit: null,
+          unit: 'unknown',
+          utilizationPct: 48,
+          remainingPct: 52,
+          resetsAt: null,
+          status: 'ok',
+          details: { limitCategory: 'usage_limit' },
+        }],
       },
     };
 
@@ -1535,7 +1590,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       providerDisplayName: 'connectedServices.serviceNames.openaiCodex',
-      activeAccountDisplayLabel: 'backup-account',
+      activeAccountDisplayLabel: null,
     }));
   });
 
@@ -1574,7 +1629,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'claude-subscription',
       providerDisplayName: 'connectedServices.serviceNames.claudeSubscription',
-      activeAccountDisplayLabel: 'claude-backup',
+      activeAccountDisplayLabel: null,
     }));
   });
 
@@ -1636,12 +1691,11 @@ describe('SessionView (direct sessions)', () => {
 
     const screen = await renderSessionViewAndSettle();
 
-    expect(quotaSnapshotsState.requestedProfiles).toEqual([
-      expect.objectContaining({
-        serviceId: 'openai-codex',
-        profileId: 'active-profile',
-      }),
-    ]);
+    expect(quotaSnapshotsState.requestedProfiles).toEqual([{
+      serviceId: 'openai-codex',
+      profileId: 'active-profile',
+      provenance: 'connected_binding_group',
+    }]);
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       activeAccountDisplayLabel: 'Active Codex account',

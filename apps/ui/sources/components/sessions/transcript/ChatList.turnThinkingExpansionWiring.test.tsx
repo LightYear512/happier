@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { standardCleanup } from '@/dev/testkit';
 import {
   legacyChatListHarnessState,
+  requireCapturedFlatListProps,
   renderLegacyChatList,
   resetLegacyChatListHarness,
 } from './ChatList.legacyListTestHarness';
@@ -208,8 +209,14 @@ describe('ChatList (turn thinking expansion wiring)', () => {
     };
 
     await act(async () => {
-      await screen.update(<ChatList session={{ ...legacyChatListHarnessState.sessionState }} />);
+      await screen.update(<ChatList session={{
+        ...legacyChatListHarnessState.sessionState,
+        seq: (legacyChatListHarnessState.sessionState.seq ?? 0) + 1,
+      }} />);
     });
+
+    const flatListProps = requireCapturedFlatListProps();
+    flatListProps.renderItem?.({ item: flatListProps.data[0], index: 0 });
 
     const lastTurnProps = renderedTurnViewProps[renderedTurnViewProps.length - 1];
     expect(typeof lastTurnProps?.getMessageById).toBe('function');

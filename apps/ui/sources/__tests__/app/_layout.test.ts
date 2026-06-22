@@ -23,6 +23,11 @@ const notificationNativeState = vi.hoisted(() => ({
     unavailable: false,
 }));
 
+vi.mock('expo-blur', () => ({
+    BlurView: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) =>
+        React.createElement('BlurView', props, children),
+}));
+
 let isAuthenticated = true;
 let allowPublicUnauthRoute = false;
 let segments: string[] = ['(app)'];

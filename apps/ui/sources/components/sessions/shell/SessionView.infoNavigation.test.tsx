@@ -91,7 +91,7 @@ installSessionShellCommonModuleMocks({
                 sessions: { s1: session },
                 settings: settingsDefaults,
                 sessionListViewDataByServerId: {
-                    'server-1': [
+                    'server-2': [
                         {
                             type: 'session',
                             session,
@@ -505,7 +505,7 @@ describe('SessionView info navigation', () => {
         const { SessionView } = await import('./SessionView');
 
         await renderScreen(
-            <SessionView id="s1" routeServerId="server-2" />,
+            <SessionView id="s1" />,
             { wrapper: AppPaneProviderWrapper },
         );
 

@@ -42,6 +42,7 @@ type ShortcutSettingsSubset = Pick<
 >;
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+type SettingsKeyboardCommand = (typeof defaultKeyboardCommands)[number] & { settingsTitleKey: TranslationKey };
 
 type KeyboardShortcutToggleDelta =
     & Mutable<Pick<Settings, 'keyboardShortcutDisabledCommandIdsV1'>>
@@ -59,8 +60,10 @@ function commandIdSort(left: KeyboardCommandId, right: KeyboardCommandId): numbe
     return left.localeCompare(right);
 }
 
-function isKeyboardSettingsVisibleCommand(command: (typeof defaultKeyboardCommands)[number]): boolean {
-    return command.settingsTitleKey != null;
+function getSettingsKeyboardCommands(): readonly SettingsKeyboardCommand[] {
+    return defaultKeyboardCommands.filter((command): command is SettingsKeyboardCommand =>
+        command.settingsTitleKey != null,
+    );
 }
 
 function getEffectiveBindings(
@@ -112,11 +115,12 @@ function buildBrowserReservedConflicts(params: Readonly<{
     disabledIds: ReadonlySet<string>;
     overrides: Readonly<Record<string, readonly KeybindingRule[]>>;
     singleKeyShortcutsEnabled: boolean;
+    commands: readonly SettingsKeyboardCommand[];
 }>): readonly KeyboardShortcutSettingsConflict[] {
     const { surface } = params;
     if (surface !== 'web') return [];
 
-    return defaultKeyboardCommands.filter(isKeyboardSettingsVisibleCommand).flatMap((command) => {
+    return params.commands.flatMap((command) => {
         if (params.disabledIds.has(command.id)) return [];
         return getActiveEffectiveBindings({
             commandId: command.id,
@@ -145,10 +149,11 @@ function buildDuplicateBindingConflicts(params: Readonly<{
     disabledIds: ReadonlySet<string>;
     overrides: Readonly<Record<string, readonly KeybindingRule[]>>;
     singleKeyShortcutsEnabled: boolean;
+    commands: readonly SettingsKeyboardCommand[];
 }>): readonly KeyboardShortcutSettingsConflict[] {
     const commandIdsByLabel = new Map<string, KeyboardCommandId[]>();
 
-    for (const command of defaultKeyboardCommands.filter(isKeyboardSettingsVisibleCommand)) {
+    for (const command of params.commands) {
         if (params.disabledIds.has(command.id)) continue;
         for (const binding of getActiveEffectiveBindings({
             commandId: command.id,
@@ -185,9 +190,7 @@ export function buildKeyboardShortcutSettingsModel(params: Readonly<{
     }
     const overrides = params.settings.keyboardShortcutOverridesV1;
     const singleKeyShortcutsEnabled = params.settings.keyboardSingleKeyShortcutsEnabled === true;
-    const titledCommands = defaultKeyboardCommands.filter((command): command is (typeof defaultKeyboardCommands)[number] & { settingsTitleKey: TranslationKey } =>
-        isKeyboardSettingsVisibleCommand(command),
-    );
+    const titledCommands = getSettingsKeyboardCommands();
     const commandRows = titledCommands.map((command): KeyboardShortcutSettingsCommandRow => {
         const effectiveBinding = getActiveEffectiveBindings({
             commandId: command.id,
@@ -220,6 +223,7 @@ export function buildKeyboardShortcutSettingsModel(params: Readonly<{
                 disabledIds,
                 overrides,
                 singleKeyShortcutsEnabled,
+                commands: titledCommands,
             }),
             ...buildDuplicateBindingConflicts({
                 platform: params.platform,
@@ -227,6 +231,7 @@ export function buildKeyboardShortcutSettingsModel(params: Readonly<{
                 disabledIds,
                 overrides,
                 singleKeyShortcutsEnabled,
+                commands: titledCommands,
             }),
         ],
     };

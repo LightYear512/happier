@@ -10,6 +10,14 @@ function createDeterministicBytes(length: number): Uint8Array {
   return out;
 }
 
+function computeChecksum(bytes: Uint8Array): number {
+  let checksum = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    checksum = (checksum + bytes[i]) % 1_000_000_007;
+  }
+  return checksum;
+}
+
 describe('protocol base64 helpers', () => {
   it('round-trips base64', () => {
     const bytes = createDeterministicBytes(1024);
@@ -41,6 +49,18 @@ describe('protocol base64 helpers', () => {
     expect(readCanonicalPaddedBase64DecodedLength('AQI')).toBeNull();
     expect(readCanonicalPaddedBase64DecodedLength('AA=A')).toBeNull();
     expect(readCanonicalPaddedBase64DecodedLength(' AA==')).toBeNull();
+  });
+
+  it('round-trips multi-megabyte canonical base64 without overflowing the regex stack', () => {
+    const bytes = createDeterministicBytes(5_000_000);
+    const expectedChecksum = computeChecksum(bytes);
+    const encoded = encodeBase64(bytes, 'base64');
+    const decoded = decodeBase64(encoded, 'base64');
+
+    expect(decoded.length).toBe(bytes.length);
+    expect(decoded[0]).toBe(bytes[0]);
+    expect(decoded[decoded.length - 1]).toBe(bytes[bytes.length - 1]);
+    expect(computeChecksum(decoded)).toBe(expectedChecksum);
   });
 
   it('decodes base64 leniently (whitespace, invalid chars, missing padding)', () => {

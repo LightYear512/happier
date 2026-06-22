@@ -25,9 +25,9 @@ describe('useBugReportComposerDraftState', () => {
         expect(hook.getCurrent().serverUrl).toBe('http://self-hosted.example.test');
         expect(hook.getCurrent().deploymentType).toBe('self-hosted');
 
-        await hook.rerender({ serverUrlDefault: 'https://proxyapi.layaair.com' });
+        await hook.rerender({ serverUrlDefault: 'https://api.happier.dev' });
 
-        expect(hook.getCurrent().serverUrl).toBe('https://proxyapi.layaair.com');
+        expect(hook.getCurrent().serverUrl).toBe('https://api.happier.dev');
         expect(hook.getCurrent().deploymentType).toBe('cloud');
     });
 
@@ -50,7 +50,7 @@ describe('useBugReportComposerDraftState', () => {
         });
         await flushHookEffects();
 
-        await hook.rerender({ serverUrlDefault: 'https://proxyapi.layaair.com' });
+        await hook.rerender({ serverUrlDefault: 'https://api.happier.dev' });
 
         expect(hook.getCurrent().serverUrl).toBe('https://corp.internal');
         expect(hook.getCurrent().deploymentType).toBe('enterprise');

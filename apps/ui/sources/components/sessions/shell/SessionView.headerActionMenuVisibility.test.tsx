@@ -620,6 +620,10 @@ describe('SessionView header action menu visibility', () => {
     executionRunsFeatureState.enabled = false;
     sessionExecutionRunsSupportedState.supported = true;
     sessionExecutionRunsSupportedState.serverId = 'server-2';
+    sessionState.session = {
+      ...sessionState.session,
+      serverId: 'server-2',
+    };
     executionRunsBackendsState.backends = {
       codex: { available: true },
     };
@@ -663,6 +667,10 @@ describe('SessionView header action menu visibility', () => {
     sessionMessagesState.messages = [];
     automationsSupportState.enabled = true;
     automationsSupportState.serverId = 'server-2';
+    sessionState.session = {
+      ...sessionState.session,
+      serverId: 'server-2',
+    };
 
     const screen = await renderSessionView('server-2');
     const openAutomationsButton = findPressableByAccessibilityLabel(screen, 'session.openAutomations');

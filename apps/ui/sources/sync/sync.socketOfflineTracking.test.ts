@@ -137,6 +137,10 @@ import {
   readMountedSessionRealtimeScmConsumerScopes,
   registerSessionRealtimeScmConsumerScope,
 } from '@/sync/runtime/sessionRealtimeScmConsumers';
+import {
+  clearMountedSessionRealtimeTranscriptConsumers,
+  registerSessionRealtimeTranscriptConsumer,
+} from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
 import { WEB_SYNC_INSTANCE_ID_SESSION_KEY } from '@/sync/runtime/webSyncClientIdentity';
 import { syncReliabilityTelemetry } from '@/sync/runtime/syncReliabilityTelemetry';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
@@ -251,6 +255,7 @@ describe('sync socket offline tracking', () => {
     storage.setState(initialStorageState, true);
     clearActiveViewingSessionsForServerScopeReset();
     clearMountedSessionRealtimeScmConsumerScopes();
+    clearMountedSessionRealtimeTranscriptConsumers();
     kvStore.clear();
     statusListeners.clear();
     const heartbeatTimer = (sync as any).webSyncClientIdentityHeartbeatTimer as ReturnType<typeof setInterval> | null;
@@ -261,6 +266,12 @@ describe('sync socket offline tracking', () => {
     (sync as any).webSyncClientIdentity = null;
     (sync as any).syncTuning = loadSyncTuning();
     (sync as any).changesCursor = null;
+    (sync as any).activeServerSessionIds = new Set();
+    (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
+    (sync as any).lastSocketDisconnectedAtMs = null;
+    (sync as any).lastSocketOfflineDurationMs = null;
+    (sync as any).socketOfflineCatchUpConsumedSessionIds.clear();
+    (sync as any).sessionMaterializedMaxSeqById = {};
     (sync as any).directSessionTailCursorBySessionId.clear();
     (sync as any).directSessionOlderCursorBySessionId.clear();
     (sync as any).directSessionHasMoreOlderBySessionId.clear();
@@ -340,6 +351,7 @@ describe('sync socket offline tracking', () => {
     syncAccess.lastSocketDisconnectedAtMs = null;
     syncAccess.lastSocketOfflineDurationMs = 2500;
     syncAccess.sessionMaterializedMaxSeqById = { [sessionId]: 5 };
+    registerSessionRealtimeTranscriptConsumer(sessionId);
 
     await syncAccess.fetchMessages(sessionId);
 
@@ -378,6 +390,8 @@ describe('sync socket offline tracking', () => {
     (sync as any).sessionMaterializedMaxSeqById = { s_tuned_page_size: 20 };
     (sync as any).isForeground = true;
     markSessionVisible('s_tuned_page_size');
+    (sync as any).lastSocketOfflineDurationMs = 2500;
+    registerSessionRealtimeTranscriptConsumer('s_tuned_page_size');
 
     await (sync as any).fetchMessages('s_tuned_page_size');
 
@@ -411,6 +425,7 @@ describe('sync socket offline tracking', () => {
       seq: 8,
       messageId: 'm8',
     });
+    registerSessionRealtimeTranscriptConsumer('s_deferred_durable_gap');
 
     await (sync as any).fetchMessages('s_deferred_durable_gap');
 
@@ -439,6 +454,7 @@ describe('sync socket offline tracking', () => {
     syncAccess.lastSocketDisconnectedAtMs = null;
     syncAccess.lastSocketOfflineDurationMs = 2500;
     syncAccess.sessionMaterializedMaxSeqById = { [sessionId]: 20 };
+    registerSessionRealtimeTranscriptConsumer(sessionId);
 
     await syncAccess.fetchMessages(sessionId);
     await syncAccess.fetchMessages(sessionId);

@@ -7,6 +7,14 @@ import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+function findPressableByTestId(screen: any, testID: string) {
+    const matches = screen.findAll(
+        (node: any) => node.type === 'Pressable' && node.props?.testID === testID,
+    );
+    expect(matches).toHaveLength(1);
+    return matches[0];
+}
+
 function findAncestor(instance: any, predicate: (node: any) => boolean) {
     let current = instance?.parent ?? null;
     while (current) {
@@ -103,14 +111,15 @@ describe('MessageView (copy button hitSlop, web)', () => {
         const firstActions = screen.findByTestId('transcript-message-actions:m1');
         const firstHoverableRow = findAncestor(
             firstActions,
-            (node: any) => node.type === 'Pressable' && typeof node.props.onHoverIn === 'function',
+            (node: any) => typeof node.props?.onHoverIn === 'function',
         );
         expect(firstHoverableRow).not.toBeNull();
         await act(async () => {
             firstHoverableRow!.props.onHoverIn();
         });
+        const firstSelect = findPressableByTestId(screen, 'transcript-message-select:m1');
         await act(async () => {
-            screen.findByTestId('transcript-message-select:m1')!.props.onPress();
+            firstSelect.props.onPress();
         });
 
         const secondSelect = screen.findByTestId('transcript-message-select:m2');

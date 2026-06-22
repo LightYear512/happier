@@ -18,6 +18,16 @@ const shouldRenderChatTimelineForSessionMock = vi.fn((_args: any) => true);
 const realtimeStatusValue = vi.hoisted(() => ({ current: { status: 'connected' } as any }));
 const onSessionVisibleSpy = vi.hoisted(() => vi.fn());
 const markSessionLiveTailIntentSpy = vi.hoisted(() => vi.fn());
+const sendMessageSpy = vi.hoisted(() => vi.fn(async (
+    _sessionId: string,
+    _text: string,
+    _displayText?: string,
+    _metaOverrides?: unknown,
+    options?: { onLocalPendingProjectionCreated?: (payload: { localId: string }) => void },
+) => {
+    options?.onLocalPendingProjectionCreated?.({ localId: 'local-1' });
+    return { localId: 'local-1' };
+}));
 const fetchPendingMessagesSpy = vi.hoisted(() => vi.fn(async (_sessionId: string) => undefined));
 const chatHeaderRenderSpy = vi.hoisted(() => vi.fn());
 const chatListRenderSpy = vi.hoisted(() => vi.fn());
@@ -443,7 +453,7 @@ vi.mock('@/sync/sync', () => ({
         refreshSessionForSubmit: async (sessionId: string) => sessionState?.id === sessionId ? sessionState : null,
         onSessionVisible: onSessionVisibleSpy,
         markSessionLiveTailIntent: markSessionLiveTailIntentSpy,
-        sendMessage: async () => {},
+        sendMessage: sendMessageSpy,
         enqueuePendingMessage: async () => {},
         submitMessage: async () => {},
         encryption: {
@@ -477,6 +487,7 @@ vi.mock('@/components/sessions/agentInput', () => ({
 vi.mock('@/utils/system/versionUtils', () => ({
     isVersionSupported: () => true,
     MINIMUM_CLI_VERSION: '0.0.0',
+    MINIMUM_CLI_PENDING_QUEUE_V2_VERSION: '0.0.0',
 }));
 vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
     const actual = await importOriginal<any>();
@@ -567,18 +578,21 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
         sessionState = {
             id: 's1',
             seq: 25,
+            pendingVersion: 1,
             updatedAt: 100,
             presence: 'online',
             active: true,
             accessLevel: 'edit',
             agentStateVersion: 1,
             metadata: { machineId: 'm1', flavor: 'codex', version: '0.0.0', path: '/tmp', homeDir: '/tmp' },
+            agentStateVersion: 1,
             agentState: {},
         };
         setSessionUsageState(null);
         shouldRenderChatTimelineForSessionMock.mockClear();
         onSessionVisibleSpy.mockClear();
         markSessionLiveTailIntentSpy.mockClear();
+        sendMessageSpy.mockClear();
         chatHeaderRenderSpy.mockClear();
         chatListRenderSpy.mockClear();
         agentContentViewRenderSpy.mockClear();
@@ -1192,19 +1206,26 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
         });
         await flushHookEffects({ cycles: 2, turns: 1 });
 
+        await vi.waitFor(() => {
+            expect(agentInputRenderSpy.mock.calls.at(-1)?.[0]?.value).toBe('hello from the composer');
+        });
+
         const sendAgentInputProps = agentInputRenderSpy.mock.calls.at(-1)?.[0];
         expect(typeof sendAgentInputProps?.onSend).toBe('function');
 
         await act(async () => {
-            sendAgentInputProps.onSend();
+            sendAgentInputProps.onSend({ forceImmediate: true });
             await Promise.resolve();
             await Promise.resolve();
         });
         await flushHookEffects({ cycles: 2, turns: 2 });
 
+        await vi.waitFor(() => {
+            expect(markSessionLiveTailIntentSpy).toHaveBeenCalledWith('s1');
+        });
+
         const nextFollowBottomIntentKey = chatListRenderSpy.mock.calls.at(-1)?.[0]?.followBottomIntentKey;
         expect(nextFollowBottomIntentKey).not.toBe(initialFollowBottomIntentKey);
-        expect(markSessionLiveTailIntentSpy).toHaveBeenCalledWith('s1');
 
         await screen.unmount();
     });

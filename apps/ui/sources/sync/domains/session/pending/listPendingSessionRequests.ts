@@ -298,7 +298,7 @@ function shouldUseProjectedPendingRequestCounts(session: Session, transcriptStat
         newestTerminalTranscriptCreatedAt = Math.max(newestTerminalTranscriptCreatedAt, state.createdAt);
     }
     if (hasPendingTranscriptRequests) {
-        return true;
+        return false;
     }
 
     if (newestTerminalTranscriptCreatedAt === 0) {

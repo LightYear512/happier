@@ -91,6 +91,8 @@ const IGNORED_UNTRANSLATED_KEY_PREFIXES = [
     'commandPalette.commands.',
     'releaseNotes.onboardingShowcase.',
     'sessionsList.',
+    'connectedServices.diagnostics.',
+    'session.simulatorPreview.',
 ];
 const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>> = {
     ru: {
@@ -101,6 +103,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 27,
     },
     pl: {
         'settingsAppearance.themeProfiles.': 106,
@@ -110,6 +114,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 28,
     },
     es: {
         'settingsAppearance.themeProfiles.': 106,
@@ -119,6 +125,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 14,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 27,
     },
     it: {
         'settingsAppearance.themeProfiles.': 106,
@@ -128,6 +136,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 14,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 27,
     },
     pt: {
         'settingsAppearance.themeProfiles.': 106,
@@ -137,6 +147,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 27,
     },
     ca: {
         'settingsAppearance.themeProfiles.': 106,
@@ -146,6 +158,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 27,
     },
     'zh-Hans': {
         'settingsAppearance.themeProfiles.': 106,
@@ -155,6 +169,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 5,
     },
     'zh-Hant': {
         'settingsAppearance.themeProfiles.': 106,
@@ -164,6 +180,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 6,
     },
     ja: {
         'settingsAppearance.themeProfiles.': 106,
@@ -173,6 +191,8 @@ const UNTRANSLATED_PREFIX_BASELINE_COUNTS: Record<string, Record<string, number>
         'commandPalette.commands.': 35,
         'releaseNotes.onboardingShowcase.': 0,
         'sessionsList.': 22,
+        'connectedServices.diagnostics.': 27,
+        'session.simulatorPreview.': 27,
     },
 };
 
