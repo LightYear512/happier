@@ -47,6 +47,16 @@ function buildUpdate(params: {
     };
 }
 
+function buildPlainUserTextContent(text = 'hidden'): { t: 'plain'; v: unknown } {
+    return {
+        t: 'plain',
+        v: {
+            role: 'user',
+            content: { type: 'text', text },
+        },
+    };
+}
+
 function buildSession(sessionId: string, seq = 1): Session {
     return {
         id: sessionId,
@@ -177,7 +187,12 @@ describe('handleNewMessageSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptDeferred = vi.fn();
         const { params, applyMessages, applySessions, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent(),
+            }),
             getSession: () => ({
                 ...buildSession('s1'),
                 latestTurnStatus: 'in_progress',
@@ -219,7 +234,12 @@ describe('handleNewMessageSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptDeferred = vi.fn();
         const { params, applyMessages, applySessions, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent(),
+            }),
             getSession: () => ({
                 ...buildSession('s1'),
                 lastViewedSessionSeq: 1,
@@ -263,7 +283,12 @@ describe('handleNewMessageSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptDeferred = vi.fn();
         const { params, applyMessages, fetchSessions, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent(),
+            }),
             getSession: () => undefined,
             getSessionProjection: () => ({
                 latestTurnStatus: 'in_progress',
@@ -306,6 +331,12 @@ describe('handleNewMessageSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptDeferred = vi.fn();
         const { params, applyMessages, applySessions, markSessionMaterializedMaxSeq } = buildHarness({
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent('legacy'),
+            }),
             getSession: () => buildSession('s1'),
             getSessionEncryption: () => ({ decryptMessage }),
             isSessionActivelyViewed: () => false,
