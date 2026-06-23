@@ -231,6 +231,6 @@ describe('PermissionFooter (Claude permission updates)', () => {
         const allowForToolButton = findPermissionFooterButton(shellScreen, 'claude.permissions.yesForTool');
         const allowForToolTextStyle = getTextStyleFragments(allowForToolButton);
 
-        expect(allowForToolTextStyle.some((style) => style.color === lightTheme.colors.permissionButton.allow.text)).toBe(true);
+        expect(allowForToolTextStyle.some((style) => style.color === lightTheme.colors.permissionButton.allowAll.text)).toBe(true);
     });
 });
