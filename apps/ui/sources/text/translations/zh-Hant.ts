@@ -1216,10 +1216,10 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
             noData: '尚無配額資料',
             planLabel: ({ plan }: { plan: string }) => `方案：${plan}`,
             recoveryCreditTitle: ({ count }: { count: number }) => count === 1 ? '1 reset available' : `${count} resets available`,
-            recoveryCreditSubtitle: 'Apply a usage reset to recover quota now.',
+            recoveryCreditSubtitle: '立即套用用量重設以恢復配額。',
             recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
-            recoveryCreditApplying: 'Applying reset…',
-            recoveryCreditMachineUnavailable: 'No active machine is available to apply this reset.',
+            recoveryCreditApplying: '正在套用重設…',
+            recoveryCreditMachineUnavailable: '沒有可用來套用此重設的作用中機器。',
             recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? '1 reset' : `${count} resets`,
             remaining: ({ percent }: { percent: string }) => `剩餘 ${percent}`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>

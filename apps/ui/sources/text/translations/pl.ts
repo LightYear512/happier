@@ -2612,10 +2612,10 @@ export const pl: TranslationStructure = {
       noData: "Brak danych limitu",
       planLabel: ({ plan }: { plan: string }) => `Plan: ${plan}`,
       recoveryCreditTitle: ({ count }: { count: number }) => count === 1 ? "1 reset available" : `${count} resets available`,
-      recoveryCreditSubtitle: "Apply a usage reset to recover quota now.",
+      recoveryCreditSubtitle: "Zastosuj reset użycia, aby teraz odzyskać limit.",
       recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
-      recoveryCreditApplying: "Applying reset…",
-      recoveryCreditMachineUnavailable: "No active machine is available to apply this reset.",
+      recoveryCreditApplying: "Stosowanie resetu…",
+      recoveryCreditMachineUnavailable: "Brak aktywnej maszyny do zastosowania tego resetu.",
       recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? "1 reset" : `${count} resets`,
       remaining: ({ percent }: { percent: string }) => `Pozostało ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
@@ -3040,7 +3040,7 @@ export const pl: TranslationStructure = {
     },
     pools: {
       title: "Pule",
-      autoBadge: "Auto",
+      autoBadge: "Automatyczne",
       manualBadge: "Ręczne",
       capacity: ({ percent }: { percent: number }) => `${percent}% pojemności`,
       avatarOverflowA11y: ({ count }: { count: number }) => `${count} więcej członków`,

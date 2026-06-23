@@ -2505,10 +2505,10 @@ export const zhHans: TranslationStructure = {
       noData: "暂无配额数据",
       planLabel: ({ plan }: { plan: string }) => `方案：${plan}`,
       recoveryCreditTitle: ({ count }: { count: number }) => count === 1 ? "1 reset available" : `${count} resets available`,
-      recoveryCreditSubtitle: "Apply a usage reset to recover quota now.",
+      recoveryCreditSubtitle: "立即应用用量重置以恢复配额。",
       recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
-      recoveryCreditApplying: "Applying reset…",
-      recoveryCreditMachineUnavailable: "No active machine is available to apply this reset.",
+      recoveryCreditApplying: "正在应用重置…",
+      recoveryCreditMachineUnavailable: "没有可用于应用此重置的活动机器。",
       recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? "1 reset" : `${count} resets`,
       remaining: ({ percent }: { percent: string }) => `剩余 ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>

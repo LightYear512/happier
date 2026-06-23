@@ -2994,10 +2994,10 @@ localTailscale: {
       noData: "クォータデータはまだありません",
       planLabel: ({ plan }: { plan: string }) => `プラン: ${plan}`,
       recoveryCreditTitle: ({ count }: { count: number }) => count === 1 ? "1 reset available" : `${count} resets available`,
-      recoveryCreditSubtitle: "Apply a usage reset to recover quota now.",
+      recoveryCreditSubtitle: "使用量リセットを適用して今すぐクォータを回復します。",
       recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
-      recoveryCreditApplying: "Applying reset…",
-      recoveryCreditMachineUnavailable: "No active machine is available to apply this reset.",
+      recoveryCreditApplying: "リセットを適用中…",
+      recoveryCreditMachineUnavailable: "このリセットを適用できるアクティブなマシンがありません。",
       recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? "1 reset" : `${count} resets`,
       remaining: ({ percent }: { percent: string }) => `残り${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>

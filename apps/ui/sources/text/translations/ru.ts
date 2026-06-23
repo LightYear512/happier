@@ -2547,10 +2547,10 @@ export const ru: TranslationStructure = {
       noData: "Пока нет данных по квоте",
       planLabel: ({ plan }: { plan: string }) => `План: ${plan}`,
       recoveryCreditTitle: ({ count }: { count: number }) => count === 1 ? "1 reset available" : `${count} resets available`,
-      recoveryCreditSubtitle: "Apply a usage reset to recover quota now.",
+      recoveryCreditSubtitle: "Примените сброс использования, чтобы восстановить квоту сейчас.",
       recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
-      recoveryCreditApplying: "Applying reset…",
-      recoveryCreditMachineUnavailable: "No active machine is available to apply this reset.",
+      recoveryCreditApplying: "Применение сброса…",
+      recoveryCreditMachineUnavailable: "Нет активной машины для применения этого сброса.",
       recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? "1 reset" : `${count} resets`,
       remaining: ({ percent }: { percent: string }) => `${percent} осталось`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, vi } from 'vitest';
 
 export const sendMessage = vi.fn();
+export const sendSessionMessageWithServerScope = vi.fn(async (_args: any) => ({ ok: true }));
 export const daemonVoiceAgentStart = vi.fn();
 export const daemonVoiceAgentSendTurn = vi.fn();
 export const daemonVoiceAgentWelcome = vi.fn();
@@ -255,6 +256,10 @@ vi.mock('@/sync/sync', () => ({
     },
 }));
 
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage', () => ({
+    sendSessionMessageWithServerScope: (args: any) => sendSessionMessageWithServerScope(args),
+}));
+
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
     sessionExecutionRunStart: (sessionId: string, request: any) => sessionExecutionRunStart(sessionId, request),
     sessionExecutionRunAction: (sessionId: string, request: any) => sessionExecutionRunAction(sessionId, request),
@@ -481,6 +486,8 @@ export function registerLocalVoiceEngineHarnessHooks() {
         vi.resetModules();
         console.error = (() => {}) as any;
         sendMessage.mockReset();
+        sendSessionMessageWithServerScope.mockReset();
+        sendSessionMessageWithServerScope.mockImplementation(async () => ({ ok: true }));
         daemonVoiceAgentStart.mockReset();
         daemonVoiceAgentSendTurn.mockReset();
         daemonVoiceAgentStartTurnStream.mockReset();
