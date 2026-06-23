@@ -1511,7 +1511,7 @@ describe('computeVisibleSessionListIndex', () => {
                     activeAt: now - 1_000,
                     presence: 'online',
                     thinking: false,
-                    latestTurnStatus: 'completed',
+                    latestTurnStatus: 'in_progress',
                     latestTurnStatusObservedAt: now - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
                     updatedAt: 30,
                 }),
