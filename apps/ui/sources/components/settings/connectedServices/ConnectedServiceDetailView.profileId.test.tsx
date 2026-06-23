@@ -43,7 +43,7 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
   useFeatureEnabled: (featureId: string) => {
     if (featureId === 'connectedServices') return connectedServicesEnabled;
     if (featureId === 'connectedServices.quotas') return quotasEnabled;
-    return true;
+    return false;
   },
 }));
 
