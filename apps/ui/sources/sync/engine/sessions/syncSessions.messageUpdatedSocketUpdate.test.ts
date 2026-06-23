@@ -49,6 +49,16 @@ function buildUpdate(params: {
     };
 }
 
+function buildPlainUserTextContent(text = 'edited'): { t: 'plain'; v: unknown } {
+    return {
+        t: 'plain',
+        v: {
+            role: 'user',
+            content: { type: 'text', text },
+        },
+    };
+}
+
 function buildSession(sessionId: string, seq = 1): Session {
     return {
         id: sessionId,
@@ -212,7 +222,12 @@ describe('handleMessageUpdatedSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptStale = vi.fn();
         const { params, applyMessages, applySessions, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent(),
+            }),
             getSession: () => ({
                 ...buildSession('s1'),
                 latestTurnStatus: 'in_progress',
@@ -249,7 +264,12 @@ describe('handleMessageUpdatedSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptStale = vi.fn();
         const { params, applyMessages, applySessions, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent(),
+            }),
             getSession: () => ({
                 ...buildSession('s1'),
                 latestTurnStatus: 'in_progress',
@@ -295,7 +315,12 @@ describe('handleMessageUpdatedSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptStale = vi.fn();
         const { params, applySessions } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                content: buildPlainUserTextContent(),
+            }),
             getSession: () => ({
                 ...buildSession('s1', 5),
                 updatedAt: 5_000,

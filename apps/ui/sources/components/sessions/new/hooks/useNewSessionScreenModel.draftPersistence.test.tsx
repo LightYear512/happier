@@ -450,7 +450,7 @@ describe('useNewSessionScreenModel (draft hydration — core)', () => {
             baseRef: 'main',
             branchMode: 'new',
         });
-        expect(getCheckoutChipLabel(model)).toBe('newSession.checkout.newWorktree');
+        expect(getCheckoutChipLabel(model)).toBe('newSession.checkout.newWorktree: feature/first-render-fix');
         const getServerChip = () => model?.simpleProps?.agentInputExtraActionChips?.find(
             (chip: any) => chip?.key === 'new-session-target-server',
         );
