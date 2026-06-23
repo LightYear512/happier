@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { darkTheme, lightTheme } from './theme';
 import type { ThemeProfilesLocalStateV1 } from './theme/profiles/themeProfileTypes';
 
 const brokenProfileState = {
@@ -63,13 +62,17 @@ const installStartupMocks = async (mocks: StartupMocks): Promise<void> => {
     });
 };
 
-const expectConfiguredWithCanonicalBaseThemes = (configure: ReturnType<typeof vi.fn>): void => {
+const expectConfiguredWithCanonicalBaseThemes = async (configure: ReturnType<typeof vi.fn>): Promise<string> => {
+    const { darkTheme, lightTheme } = await import('@/theme');
+
     expect(configure).toHaveBeenCalledWith(expect.objectContaining({
         themes: {
             light: lightTheme,
             dark: darkTheme,
         },
     }));
+
+    return lightTheme.colors.background.canvas;
 };
 
 describe('Unistyles startup theme fallback', () => {
@@ -83,8 +86,8 @@ describe('Unistyles startup theme fallback', () => {
 
         await expect(import('./unistyles')).resolves.toBeDefined();
 
-        expectConfiguredWithCanonicalBaseThemes(mocks.configure);
-        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightTheme.colors.background.canvas);
+        const lightBackground = await expectConfiguredWithCanonicalBaseThemes(mocks.configure);
+        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightBackground);
     });
 
     it('configures web startup with canonical base themes when effective profile resolution throws', async () => {
@@ -97,7 +100,7 @@ describe('Unistyles startup theme fallback', () => {
 
         await expect(import('./unistyles.web')).resolves.toBeDefined();
 
-        expectConfiguredWithCanonicalBaseThemes(mocks.configure);
-        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightTheme.colors.background.canvas);
+        const lightBackground = await expectConfiguredWithCanonicalBaseThemes(mocks.configure);
+        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightBackground);
     });
 });
