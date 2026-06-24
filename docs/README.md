@@ -18,6 +18,9 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - pi-feature-matrix.md: Low-level PI implementation matrix and unified-architecture migration notes.
 - acp-provider-feature-matrix.md: Low-level ACP-provider matrix and catalog migration notes.
 - issue-triage.md: How the GitHub issue triage workflows are wired to maintainer tooling.
+- plans/session-first-external-issues.md: Proposed design for GitHub or GitLab issue-driven automation while keeping Happier session-first.
+- plans/session-first-external-issues-schema-api.md: Prisma schema and server-side API draft for the session-first external issues design.
+- plans/session-first-external-issues-service-transactions.md: Transaction boundaries, idempotency rules, and service-layer orchestration for the session-first external issues design.
 
 ## Conventions
 - Paths and field names reflect the current implementation in `apps/server`.
