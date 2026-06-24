@@ -29,6 +29,7 @@ import { featuresRoutes } from "./routes/features/featuresRoutes";
 import { sessionPendingRoutes } from "./routes/session/pendingRoutes";
 import { bugReportDiagnosticsRoutes } from "./routes/diagnostics/bugReportDiagnosticsRoutes";
 import { automationRoutes } from "./routes/automations/automationRoutes";
+import { externalIssueControlPlaneRoutes } from "./routes/externalIssues/externalIssueControlPlaneRoutes";
 import { resolveApiRateLimitPluginOptions, resolveApiTrustProxy } from "./utils/apiRateLimitPolicy";
 
 export function resolveApiListenHost(env: Record<string, string | undefined>): string {
@@ -102,6 +103,7 @@ export async function startApi() {
     shareRoutes(typed);
     publicShareRoutes(typed);
     automationRoutes(typed);
+    externalIssueControlPlaneRoutes(typed);
 
     // Start HTTP 
     const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3005;

@@ -84,6 +84,19 @@ model Account {
     AccountIdentity        AccountIdentity[]
     automations            Automation[]
     automationRuns         AutomationRun[]
+    repositoryConnections  RepositoryConnection[]
+    externalIssueRefs      ExternalIssueRef[]
+    issueExecutionProjections IssueExecutionProjection[]
+    sessionIssueLinks      SessionIssueLink[]
+    sessionRuns            SessionRun[]
+    sessionRunEvents       SessionRunEvent[]
+    providerActionRequests ProviderActionRequest[]
+    providerEventReceipts  ProviderEventReceipt[]
+    verificationPolicies   VerificationPolicy[]
+    externalIssueSyncCursors ExternalIssueSyncCursor[]
+    verificationAttempts   VerificationAttempt[]
+    verificationProjections VerificationProjection[]
+    mergeabilityProjections MergeabilityProjection[]
 }
 
 model AccountSettingsSnapshot {
@@ -326,6 +339,9 @@ model Session {
     accountChanges    AccountChange[]    @relation("AccountChangeSession")
     sessionFolderAssignments SessionFolderAssignment[]
     producedByAutomationRuns AutomationRun[] @relation("AutomationRunProducedSession")
+    issueLinks         SessionIssueLink[]
+    issueRuns          SessionRun[]
+    activeIssueExecutionProjections IssueExecutionProjection[] @relation("IssueExecutionProjectionActivePrimarySession")
 
     @@unique([accountId, tag])
     @@index([accountId, updatedAt])
@@ -554,6 +570,9 @@ model Machine {
     accountChanges     AccountChange[] @relation("AccountChangeMachine")
     automationAssignments AutomationAssignment[]
     automationClaimedRuns AutomationRun[] @relation("AutomationRunClaimedByMachine")
+    pollerRepositoryConnections RepositoryConnection[] @relation("RepositoryConnectionPollingOwnerMachine")
+    claimedIssueRuns   SessionRun[] @relation("SessionRunClaimedByMachine")
+    targetedProviderActions ProviderActionRequest[] @relation("ProviderActionTargetMachine")
 
     @@unique([accountId, id])
     @@index([accountId])
@@ -561,6 +580,465 @@ model Machine {
     @@index([accountId, replacedByMachineId])
     @@index([accountId, replacedAt])
     @@index([accountId, revokedAt])
+}
+
+enum RepositoryProviderKind {
+    github
+    gitlab
+}
+
+enum RepositoryConnectionMode {
+    quickstart
+    managed
+}
+
+enum RepositoryAuthKind {
+    github_app
+    gitlab_token
+    gh_cli
+    glab_cli
+    user_pat
+}
+
+enum SessionIssueRelation {
+    primary
+    context
+}
+
+enum SessionRunState {
+    queued
+    claimed
+    running
+    waiting_user
+    succeeded
+    failed
+    cancelled
+    expired
+}
+
+enum ProviderActionKind {
+    comment
+    label_sync
+    assignee_sync
+    issue_link_back
+    open_change
+    update_change
+    close_issue
+}
+
+enum VerificationSource {
+    remote_ci
+    local_runtime
+    manual_override
+}
+
+enum VerificationLifecycleState {
+    queued
+    running
+    completed
+    failed
+    cancelled
+    timed_out
+}
+
+enum VerificationConclusion {
+    passed
+    failed
+    pending
+    skipped
+    neutral
+    action_required
+    unknown
+}
+
+enum VerificationProjectionHeadline {
+    verified_remote
+    verified_local_only
+    partially_verified
+    unverified
+    verification_failed
+    verification_pending
+}
+
+enum VerificationBlockingState {
+    clear
+    warning
+    blocked
+}
+
+enum ProviderActionExecutionMode {
+    server_worker
+    machine_runtime
+}
+
+enum ProviderActionState {
+    queued
+    claimed
+    running
+    succeeded
+    failed
+    cancelled
+    expired
+}
+
+enum IssueWorkflowState {
+    idle
+    executing
+    change_open
+    awaiting_review
+    done
+}
+
+enum MergeabilityState {
+    mergeable
+    blocked_required_checks
+    blocked_reviews
+    blocked_conflicts
+    draft
+    unknown
+}
+
+model RepositoryConnection {
+    id                    String                   @id @default(cuid())
+    accountId             String
+    account               Account                  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    provider              RepositoryProviderKind
+    providerBaseUrl       String
+    repositoryKey         String
+    mode                  RepositoryConnectionMode
+    authKind              RepositoryAuthKind
+    enabled               Boolean                  @default(true)
+    webhookEnabled        Boolean                  @default(false)
+    remoteCiDetected      Boolean                  @default(false)
+    pollerEnabled         Boolean                  @default(false)
+    pollingOwnerMachineId String?
+    pollingOwnerMachine   Machine?                 @relation("RepositoryConnectionPollingOwnerMachine", fields: [pollingOwnerMachineId], references: [id], onDelete: SetNull)
+    pollingLeaseExpiresAt DateTime?
+    degradedReason        String?
+    capabilities          Json?
+    installedAt           DateTime?
+    lastCapabilitySyncAt  DateTime?
+    createdAt             DateTime                 @default(now())
+    updatedAt             DateTime                 @updatedAt
+    issueRefs             ExternalIssueRef[]
+    sessionRuns           SessionRun[]
+    providerActions       ProviderActionRequest[]
+    eventReceipts         ProviderEventReceipt[]
+    verificationPolicies  VerificationPolicy[]
+    syncCursors           ExternalIssueSyncCursor[]
+
+    @@unique([accountId, provider, providerBaseUrl, repositoryKey])
+    @@index([accountId, enabled, updatedAt])
+    @@index([accountId, mode, updatedAt])
+    @@index([pollingOwnerMachineId, pollingLeaseExpiresAt])
+}
+
+model ExternalIssueRef {
+    id                      String                   @id @default(cuid())
+    accountId               String
+    account                 Account                  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    repositoryConnectionId  String
+    repositoryConnection    RepositoryConnection     @relation(fields: [repositoryConnectionId], references: [id], onDelete: Cascade)
+    provider                RepositoryProviderKind
+    providerBaseUrl         String
+    repositoryKey           String
+    providerIssueExternalId String?
+    issueNumber             Int
+    title                   String
+    state                   String
+    labels                  Json?
+    assignees               Json?
+    url                     String
+    lastEventKey            String?
+    lastEventAt             DateTime?
+    rawSnapshot             Json?
+    syncedAt                DateTime
+    createdAt               DateTime                 @default(now())
+    updatedAt               DateTime                 @updatedAt
+    sessionLinks            SessionIssueLink[]
+    sessionRuns             SessionRun[]
+    executionProjection     IssueExecutionProjection?
+    providerActions         ProviderActionRequest[]
+    providerEventReceipts   ProviderEventReceipt[]
+
+    @@unique([accountId, provider, providerBaseUrl, repositoryKey, issueNumber])
+    @@index([repositoryConnectionId, issueNumber])
+    @@index([accountId, state, syncedAt])
+    @@index([accountId, repositoryKey, updatedAt])
+}
+
+model SessionIssueLink {
+    id                 String               @id @default(cuid())
+    accountId          String
+    account            Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    sessionId          String
+    session            Session              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    externalIssueRefId String
+    externalIssueRef   ExternalIssueRef     @relation(fields: [externalIssueRefId], references: [id], onDelete: Cascade)
+    relation           SessionIssueRelation
+    active             Boolean              @default(true)
+    resolutionReason   String?
+    createdBy          String?
+    createdAt          DateTime             @default(now())
+    updatedAt          DateTime             @updatedAt
+    deactivatedAt      DateTime?
+
+    @@index([externalIssueRefId, relation, active])
+    @@index([sessionId, relation, active])
+    @@index([sessionId, externalIssueRefId, relation, active])
+    @@index([accountId, createdAt])
+}
+
+model SessionRun {
+    id                       String                @id @default(cuid())
+    accountId                String
+    account                  Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    repositoryConnectionId   String
+    repositoryConnection     RepositoryConnection  @relation(fields: [repositoryConnectionId], references: [id], onDelete: Cascade)
+    sessionId                String
+    session                  Session               @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    externalIssueRefId       String
+    externalIssueRef         ExternalIssueRef      @relation(fields: [externalIssueRefId], references: [id], onDelete: Cascade)
+    state                    SessionRunState       @default(queued)
+    triggerKind              String
+    scheduledAt              DateTime              @default(now())
+    dueAt                    DateTime?
+    claimedAt                DateTime?
+    startedAt                DateTime?
+    finishedAt               DateTime?
+    claimedByMachineId       String?
+    claimedByMachine         Machine?              @relation("SessionRunClaimedByMachine", fields: [claimedByMachineId], references: [id], onDelete: SetNull)
+    leaseExpiresAt           DateTime?
+    attempt                  Int                   @default(0)
+    idempotencyKey           String
+    generation               Int                   @default(0)
+    branchName               String?
+    providerChangeUrl        String?
+    providerChangeNumber     Int?
+    providerChangeExternalId String?
+    headCommitSha            String?
+    baseCommitSha            String?
+    summaryCiphertext        String?
+    errorCode                String?
+    errorMessage             String?
+    retryOfRunId             String?
+    retryOfRun               SessionRun?           @relation("SessionRunRetryChain", fields: [retryOfRunId], references: [id], onDelete: SetNull)
+    retryChildren            SessionRun[]          @relation("SessionRunRetryChain")
+    createdAt                DateTime              @default(now())
+    updatedAt                DateTime              @updatedAt
+    events                   SessionRunEvent[]
+    providerActions          ProviderActionRequest[]
+    activeIssueExecutionProjections IssueExecutionProjection[] @relation("IssueExecutionProjectionActivePrimaryRun")
+    verificationAttempts     VerificationAttempt[]
+    verificationProjection   VerificationProjection?
+    mergeabilityProjection   MergeabilityProjection?
+
+    @@unique([accountId, idempotencyKey])
+    @@index([accountId, state, scheduledAt])
+    @@index([sessionId, createdAt])
+    @@index([externalIssueRefId, createdAt])
+    @@index([claimedByMachineId, leaseExpiresAt])
+    @@index([providerChangeExternalId, headCommitSha])
+}
+
+model IssueExecutionProjection {
+    id                          String              @id @default(cuid())
+    accountId                   String
+    account                     Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    externalIssueRefId          String              @unique
+    externalIssueRef            ExternalIssueRef    @relation(fields: [externalIssueRefId], references: [id], onDelete: Cascade)
+    workflowState               IssueWorkflowState
+    activePrimarySessionId      String?
+    activePrimarySession        Session?            @relation("IssueExecutionProjectionActivePrimarySession", fields: [activePrimarySessionId], references: [id], onDelete: SetNull)
+    activePrimaryRunId          String?
+    activePrimaryRun            SessionRun?         @relation("IssueExecutionProjectionActivePrimaryRun", fields: [activePrimaryRunId], references: [id], onDelete: SetNull)
+    currentProviderChangeExternalId String?
+    currentProviderChangeUrl    String?
+    subjectHeadSha              String?
+    transitionReason            String?
+    createdAt                   DateTime            @default(now())
+    updatedAt                   DateTime            @updatedAt
+
+    @@index([accountId, workflowState, updatedAt])
+    @@index([activePrimarySessionId])
+    @@index([activePrimaryRunId])
+}
+
+model SessionRunEvent {
+    id           String      @id @default(cuid())
+    accountId    String
+    account      Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    sessionRunId String
+    sessionRun   SessionRun  @relation(fields: [sessionRunId], references: [id], onDelete: Cascade)
+    ts           DateTime    @default(now())
+    type         String
+    payload      Json?
+
+    @@index([sessionRunId, ts])
+    @@index([accountId, ts])
+}
+
+model ProviderActionRequest {
+    id                     String                       @id @default(cuid())
+    accountId              String
+    account                Account                      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    repositoryConnectionId String
+    repositoryConnection   RepositoryConnection         @relation(fields: [repositoryConnectionId], references: [id], onDelete: Cascade)
+    sessionRunId           String?
+    sessionRun             SessionRun?                  @relation(fields: [sessionRunId], references: [id], onDelete: SetNull)
+    externalIssueRefId     String?
+    externalIssueRef       ExternalIssueRef?            @relation(fields: [externalIssueRefId], references: [id], onDelete: SetNull)
+    provider               RepositoryProviderKind
+    repositoryKey          String
+    actionKind             ProviderActionKind
+    executionMode          ProviderActionExecutionMode
+    state                  ProviderActionState          @default(queued)
+    targetMachineId        String?
+    targetMachine          Machine?                     @relation("ProviderActionTargetMachine", fields: [targetMachineId], references: [id], onDelete: SetNull)
+    idempotencyKey         String
+    claimedByExecutorId    String?
+    claimedAt              DateTime?
+    startedAt              DateTime?
+    finishedAt             DateTime?
+    leaseExpiresAt         DateTime?
+    payload                Json
+    attemptCount           Int                          @default(0)
+    providerExternalId     String?
+    resultSummary          String?
+    lastErrorCode          String?
+    lastErrorMessage       String?
+    lastAttemptedAt        DateTime?
+    createdAt              DateTime                     @default(now())
+    updatedAt              DateTime                     @updatedAt
+
+    @@unique([accountId, idempotencyKey])
+    @@index([accountId, state, createdAt])
+    @@index([repositoryConnectionId, state, createdAt])
+    @@index([targetMachineId, leaseExpiresAt])
+    @@index([sessionRunId, state, createdAt])
+}
+
+model VerificationPolicy {
+    id                         String                  @id @default(cuid())
+    accountId                  String
+    account                    Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    repositoryConnectionId     String
+    repositoryConnection       RepositoryConnection    @relation(fields: [repositoryConnectionId], references: [id], onDelete: Cascade)
+    repositoryKey              String
+    requiresRemoteCi           Boolean                 @default(false)
+    allowsLocalVerifyFallback  Boolean                 @default(true)
+    autoMergeEligible          Boolean                 @default(false)
+    blockingSuites             Json?
+    localVerifyCommands        Json?
+    createdAt                  DateTime                @default(now())
+    updatedAt                  DateTime                @updatedAt
+
+    @@unique([repositoryConnectionId])
+    @@index([accountId, repositoryKey])
+}
+
+model VerificationAttempt {
+    id              String                     @id @default(cuid())
+    accountId       String
+    account         Account                    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    sessionRunId    String
+    sessionRun      SessionRun                 @relation(fields: [sessionRunId], references: [id], onDelete: Cascade)
+    source          VerificationSource
+    lifecycleState  VerificationLifecycleState
+    startedAt       DateTime?
+    finishedAt      DateTime?
+    summary         String?
+    rawExternalId   String?
+    providerRunId   String?
+    subjectHeadSha  String?
+    createdAt       DateTime                   @default(now())
+    updatedAt       DateTime                   @updatedAt
+    suiteResults    VerificationSuiteResult[]
+
+    @@index([sessionRunId, createdAt])
+    @@index([accountId, providerRunId])
+    @@index([accountId, subjectHeadSha])
+}
+
+model VerificationSuiteResult {
+    id                    String                   @id @default(cuid())
+    verificationAttemptId String
+    verificationAttempt   VerificationAttempt      @relation(fields: [verificationAttemptId], references: [id], onDelete: Cascade)
+    suiteKey              String
+    conclusion            VerificationConclusion
+    durationMs            Int?
+    artifactUrl           String?
+    summary               String?
+
+    @@unique([verificationAttemptId, suiteKey])
+    @@index([suiteKey, conclusion])
+}
+
+model VerificationProjection {
+    id             String                        @id @default(cuid())
+    accountId      String
+    account        Account                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    sessionRunId   String                        @unique
+    sessionRun     SessionRun                    @relation(fields: [sessionRunId], references: [id], onDelete: Cascade)
+    headline       VerificationProjectionHeadline
+    blockingState  VerificationBlockingState
+    subjectHeadSha String?
+    suiteSummary   Json?
+    createdAt      DateTime                      @default(now())
+    updatedAt      DateTime                      @updatedAt
+
+    @@index([accountId, headline, updatedAt])
+}
+
+model MergeabilityProjection {
+    id                        String              @id @default(cuid())
+    accountId                 String
+    account                   Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    sessionRunId              String              @unique
+    sessionRun                SessionRun          @relation(fields: [sessionRunId], references: [id], onDelete: Cascade)
+    mergeabilityState         MergeabilityState
+    requiredChecksOutstanding Int                 @default(0)
+    requiredReviewsRemaining  Int                 @default(0)
+    subjectHeadSha            String?
+    rawProjection             Json?
+    createdAt                 DateTime            @default(now())
+    updatedAt                 DateTime            @updatedAt
+
+    @@index([accountId, mergeabilityState, updatedAt])
+}
+
+model ExternalIssueSyncCursor {
+    id                     String                 @id @default(cuid())
+    accountId              String
+    account                Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    repositoryConnectionId String
+    repositoryConnection   RepositoryConnection   @relation(fields: [repositoryConnectionId], references: [id], onDelete: Cascade)
+    cursorKind             String
+    cursorValue            String
+    observedAt             DateTime               @default(now())
+    updatedAt              DateTime               @updatedAt
+
+    @@unique([repositoryConnectionId, cursorKind])
+    @@index([accountId, observedAt])
+    @@index([observedAt])
+}
+
+model ProviderEventReceipt {
+    id                     String                 @id @default(cuid())
+    accountId              String
+    account                Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    repositoryConnectionId String
+    repositoryConnection   RepositoryConnection   @relation(fields: [repositoryConnectionId], references: [id], onDelete: Cascade)
+    externalIssueRefId     String?
+    externalIssueRef       ExternalIssueRef?      @relation(fields: [externalIssueRefId], references: [id], onDelete: SetNull)
+    provider               RepositoryProviderKind
+    receiptKey             String
+    eventKind              String
+    firstSeenAt            DateTime               @default(now())
+    updatedAt              DateTime               @updatedAt
+
+    @@unique([repositoryConnectionId, receiptKey])
+    @@index([accountId, firstSeenAt])
 }
 
 enum AutomationScheduleKind {
