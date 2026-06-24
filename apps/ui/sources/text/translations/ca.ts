@@ -824,7 +824,7 @@ export const ca: TranslationStructure = {
         ...promptLibraryUxRefinementTranslationExtension.ca,
     },
 
-    runs: {
+  runs: {
         title: 'Execucions',
         empty: 'Encara no hi ha execucions.',
         groupLabel: ({ groupId }: { groupId: string }) => `Grup ${groupId}`,
@@ -882,10 +882,39 @@ export const ca: TranslationStructure = {
             interruptLabel: 'Interrompre',
             interruptHelp: 'Cancel·la el torn actual i envia el missatge com un torn nou.',
             promptLabel: "Indicació",
-        },
     },
+  },
 
-    sessionLog: {
+  externalIssues: {
+    title: 'External issues',
+    detailTitle: 'External issue',
+    fallbackIssueTitle: 'External issue',
+    empty: 'No external issues',
+    unknown: 'unknown',
+    unknownRepository: 'unknown repository',
+    workflowUnknown: 'workflow unknown',
+    workflow: 'Workflow',
+    sessionRun: 'Session run',
+    providerActions: 'Provider actions',
+    noLatestRun: 'no latest run',
+    noActiveRun: 'no active run',
+    noActivePrimaryRun: 'no active primary run',
+    noProviderActions: 'no provider actions',
+    noProviderResult: 'no provider result',
+    generation: ({ generation }: { generation: number }) => `generation ${generation}`,
+    generationUnknown: 'generation unknown',
+    latestRunState: ({ state }: { state: string }) => `latest run ${state}`,
+    claimedByMachine: ({ machineId }: { machineId: string }) => `claimed by ${machineId}`,
+    unclaimed: 'unclaimed',
+    missingIssueRefId: 'Missing issue reference.',
+    a11y: {
+      openList: 'External issues',
+      refreshList: 'Refresh external issues',
+      refreshDetail: 'Refresh external issue',
+    },
+  },
+
+  sessionLog: {
         title: 'Registre de la sessió',
         devModeRequiredTitle: 'Cal el mode desenvolupador',
         devModeRequiredBody: 'Activa el mode desenvolupador a la configuració per veure els registres de sessió.',

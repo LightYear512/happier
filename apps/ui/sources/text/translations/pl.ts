@@ -894,7 +894,7 @@ export const pl: TranslationStructure = {
         ...promptLibraryUxRefinementTranslationExtension.pl,
   },
 
-    runs: {
+  runs: {
       title: "Uruchomienia",
       empty: "Brak uruchomień.",
         showFinished: "Pokaż zakończone",
@@ -952,10 +952,39 @@ export const pl: TranslationStructure = {
           interruptLabel: "Przerwij",
           interruptHelp: "Anuluj bieżącą turę, a następnie wyślij wiadomość jako nową turę.",
           promptLabel: "Polecenie",
-        },
     },
+  },
 
-    sessionLog: {
+  externalIssues: {
+    title: 'External issues',
+    detailTitle: 'External issue',
+    fallbackIssueTitle: 'External issue',
+    empty: 'No external issues',
+    unknown: 'unknown',
+    unknownRepository: 'unknown repository',
+    workflowUnknown: 'workflow unknown',
+    workflow: 'Workflow',
+    sessionRun: 'Session run',
+    providerActions: 'Provider actions',
+    noLatestRun: 'no latest run',
+    noActiveRun: 'no active run',
+    noActivePrimaryRun: 'no active primary run',
+    noProviderActions: 'no provider actions',
+    noProviderResult: 'no provider result',
+    generation: ({ generation }: { generation: number }) => `generation ${generation}`,
+    generationUnknown: 'generation unknown',
+    latestRunState: ({ state }: { state: string }) => `latest run ${state}`,
+    claimedByMachine: ({ machineId }: { machineId: string }) => `claimed by ${machineId}`,
+    unclaimed: 'unclaimed',
+    missingIssueRefId: 'Missing issue reference.',
+    a11y: {
+      openList: 'External issues',
+      refreshList: 'Refresh external issues',
+      refreshDetail: 'Refresh external issue',
+    },
+  },
+
+  sessionLog: {
       title: "Dziennik sesji",
       devModeRequiredTitle: "Wymagany jest tryb deweloperski",
       devModeRequiredBody:

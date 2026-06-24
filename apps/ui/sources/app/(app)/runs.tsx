@@ -108,6 +108,16 @@ export default function RunsScreen() {
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={t('externalIssues.a11y.openList')}
+          onPress={() => router.push('/external-issues')}
+          testID="external-issues-header-action"
+          hitSlop={10}
+          style={({ pressed }) => ({ padding: 4, opacity: pressed ? 0.7 : 1 })}
+        >
+          <Ionicons name="git-pull-request-outline" size={20} color={headerTint} />
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
           accessibilityLabel={t('runs.a11y.toggleFinished')}
           onPress={() => setShowFinished((value) => !value)}
           hitSlop={10}

@@ -1010,7 +1010,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
       activityEmpty: "目前的 QA 工作階段尚未擷取到語音活動。",
     },
 
-    runs: {
+  runs: {
         title: '執行',
         empty: '暫無執行記錄。',
         showFinished: '顯示已完成',
@@ -1067,10 +1067,39 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
             interruptLabel: '中斷',
             interruptHelp: '取消目前回合，然後以新回合傳送你的訊息。',
             promptLabel: '提示',
-        },
     },
+  },
 
-    sessionLog: {
+  externalIssues: {
+    title: "外部議題",
+    detailTitle: "外部議題",
+    fallbackIssueTitle: "外部議題",
+    empty: "暫無外部議題",
+    unknown: "未知",
+    unknownRepository: "未知儲存庫",
+    workflowUnknown: "工作流程未知",
+    workflow: "工作流程",
+    sessionRun: "工作階段執行",
+    providerActions: "提供者操作",
+    noLatestRun: "暫無最新執行",
+    noActiveRun: "暫無作用中執行",
+    noActivePrimaryRun: "暫無作用中主要執行",
+    noProviderActions: "暫無提供者操作",
+    noProviderResult: "暫無提供者結果",
+    generation: ({ generation }: { generation: number }) => `第 ${generation} 代`,
+    generationUnknown: "代數未知",
+    latestRunState: ({ state }: { state: string }) => `最新執行 ${state}`,
+    claimedByMachine: ({ machineId }: { machineId: string }) => `由 ${machineId} 領取`,
+    unclaimed: "未領取",
+    missingIssueRefId: "缺少議題參照。",
+    a11y: {
+      openList: "外部議題",
+      refreshList: "重新整理外部議題",
+      refreshDetail: "重新整理外部議題",
+    },
+  },
+
+  sessionLog: {
         title: '工作階段日誌',
         devModeRequiredTitle: '需要開發者模式',
         devModeRequiredBody: '若要查看工作階段日誌，請在設定中啟用開發者模式。',

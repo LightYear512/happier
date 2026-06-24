@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     flushHookEffects,
+    pressTestInstance,
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
@@ -154,6 +155,16 @@ describe('Runs screen', () => {
         const headerRightScreen = await renderHeaderRight();
         expect(headerRightScreen.findByProps({ accessibilityLabel: 'runs.a11y.refresh' })).toBeTruthy();
         expect(headerRightScreen.findByProps({ accessibilityLabel: 'runs.a11y.toggleFinished' })).toBeTruthy();
+    });
+
+    it('opens external issue execution state from the header', async () => {
+        await renderRunsScreen();
+
+        const headerRightScreen = await renderHeaderRight();
+        const externalIssuesAction = headerRightScreen.findByProps({ accessibilityLabel: 'externalIssues.a11y.openList' });
+        pressTestInstance(externalIssuesAction, 'external-issues-header-action');
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/external-issues');
     });
 
     it('renders runs inside the constrained route content wrapper', async () => {
