@@ -68,6 +68,48 @@ const harness = vi.hoisted(() => {
   const automationWorkerRefreshAssignments = vi.fn(async () => {});
   const automationWorkerPause = vi.fn();
   const automationWorkerResume = vi.fn();
+  const externalIssueSessionRunWorkerStop = vi.fn();
+  const externalIssueSessionRunWorkerRefresh = vi.fn(async () => {});
+  const externalIssueSessionRunWorkerPause = vi.fn();
+  const externalIssueSessionRunWorkerResume = vi.fn();
+  const repositoryConnectionCheckoutWorkerStop = vi.fn();
+  const repositoryConnectionCheckoutWorkerRefresh = vi.fn(async () => {});
+  const repositoryConnectionCheckoutWorkerPause = vi.fn();
+  const repositoryConnectionCheckoutWorkerResume = vi.fn();
+  const repositoryConnectionPollerWorkerStop = vi.fn();
+  const repositoryConnectionPollerWorkerRefresh = vi.fn(async () => {});
+  const repositoryConnectionPollerWorkerPause = vi.fn();
+  const repositoryConnectionPollerWorkerResume = vi.fn();
+  const providerActionWorkerStop = vi.fn();
+  const providerActionWorkerRefresh = vi.fn(async () => {});
+  const providerActionWorkerPause = vi.fn();
+  const providerActionWorkerResume = vi.fn();
+  const startExternalIssueSessionRunWorker = vi.fn(() => ({
+    stop: externalIssueSessionRunWorkerStop,
+    refresh: externalIssueSessionRunWorkerRefresh,
+    pause: externalIssueSessionRunWorkerPause,
+    resume: externalIssueSessionRunWorkerResume,
+    handleServerUpdate: vi.fn(),
+  }));
+  const startRepositoryConnectionCheckoutWorker = vi.fn(() => ({
+    stop: repositoryConnectionCheckoutWorkerStop,
+    refresh: repositoryConnectionCheckoutWorkerRefresh,
+    pause: repositoryConnectionCheckoutWorkerPause,
+    resume: repositoryConnectionCheckoutWorkerResume,
+  }));
+  const startRepositoryConnectionPollerWorker = vi.fn(() => ({
+    stop: repositoryConnectionPollerWorkerStop,
+    refresh: repositoryConnectionPollerWorkerRefresh,
+    pause: repositoryConnectionPollerWorkerPause,
+    resume: repositoryConnectionPollerWorkerResume,
+  }));
+  const startProviderActionWorker = vi.fn(() => ({
+    stop: providerActionWorkerStop,
+    refresh: providerActionWorkerRefresh,
+    pause: providerActionWorkerPause,
+    resume: providerActionWorkerResume,
+    handleServerUpdate: vi.fn(),
+  }));
   const startAutomationWorker = vi.fn(() => {
     if (autoShutdownAfterAutomationStart && requestShutdownRef) {
       setTimeout(() => requestShutdownRef?.('happier-cli'), 0);
@@ -153,6 +195,26 @@ const harness = vi.hoisted(() => {
     automationWorkerRefreshAssignments,
     automationWorkerPause,
     automationWorkerResume,
+    startExternalIssueSessionRunWorker,
+    externalIssueSessionRunWorkerStop,
+    externalIssueSessionRunWorkerRefresh,
+    externalIssueSessionRunWorkerPause,
+    externalIssueSessionRunWorkerResume,
+    startRepositoryConnectionCheckoutWorker,
+    repositoryConnectionCheckoutWorkerStop,
+    repositoryConnectionCheckoutWorkerRefresh,
+    repositoryConnectionCheckoutWorkerPause,
+    repositoryConnectionCheckoutWorkerResume,
+    startRepositoryConnectionPollerWorker,
+    repositoryConnectionPollerWorkerStop,
+    repositoryConnectionPollerWorkerRefresh,
+    repositoryConnectionPollerWorkerPause,
+    repositoryConnectionPollerWorkerResume,
+    startProviderActionWorker,
+    providerActionWorkerStop,
+    providerActionWorkerRefresh,
+    providerActionWorkerPause,
+    providerActionWorkerResume,
     apiMachine,
     lockHandle,
     startConnectedServiceQuotasLoop,
@@ -437,6 +499,22 @@ vi.mock('./automation/automationWorker', () => ({
   startAutomationWorker: harness.startAutomationWorker,
 }));
 
+vi.mock('./externalIssues/externalIssueSessionRunWorker', () => ({
+  startExternalIssueSessionRunWorker: harness.startExternalIssueSessionRunWorker,
+}));
+
+vi.mock('./externalIssues/repositoryConnectionCheckoutWorker', () => ({
+  startRepositoryConnectionCheckoutWorker: harness.startRepositoryConnectionCheckoutWorker,
+}));
+
+vi.mock('./externalIssues/repositoryConnectionPollerWorker', () => ({
+  startRepositoryConnectionPollerWorker: harness.startRepositoryConnectionPollerWorker,
+}));
+
+vi.mock('./externalIssues/providerActionWorker', () => ({
+  startProviderActionWorker: harness.startProviderActionWorker,
+}));
+
 vi.mock('./connectedServices/quotas/ConnectedServiceQuotasCoordinator', () => ({
   ConnectedServiceQuotasCoordinator: vi.fn(),
 }));
@@ -709,6 +787,34 @@ describe('startDaemon automation wiring (integration)', () => {
       );
 
       expect(harness.startAutomationWorker).toHaveBeenCalledTimes(1);
+      expect(harness.startExternalIssueSessionRunWorker).toHaveBeenCalledTimes(1);
+      expect(harness.startRepositoryConnectionCheckoutWorker).toHaveBeenCalledTimes(1);
+      expect(harness.startRepositoryConnectionPollerWorker).toHaveBeenCalledTimes(1);
+      expect(harness.startProviderActionWorker).toHaveBeenCalledTimes(1);
+      expect(harness.startExternalIssueSessionRunWorker).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'token-automation',
+          machineId: 'machine-automation',
+        }),
+      );
+      expect(harness.startRepositoryConnectionCheckoutWorker).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'token-automation',
+          machineId: 'machine-automation',
+        }),
+      );
+      expect(harness.startRepositoryConnectionPollerWorker).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'token-automation',
+          machineId: 'machine-automation',
+        }),
+      );
+      expect(harness.startProviderActionWorker).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'token-automation',
+          machineId: 'machine-automation',
+        }),
+      );
       expect(harness.startAutomationWorker).toHaveBeenCalledWith(
         expect.objectContaining({
           token: 'token-automation',
@@ -719,7 +825,15 @@ describe('startDaemon automation wiring (integration)', () => {
       expect(harness.apiMachine.connect).toHaveBeenCalledTimes(1);
       expect(harness.apiMachine.updateMachineMetadata).toHaveBeenCalledTimes(1);
       expect(harness.automationWorkerRefreshAssignments).toHaveBeenCalledTimes(2);
+      expect(harness.externalIssueSessionRunWorkerRefresh).toHaveBeenCalledTimes(2);
+      expect(harness.repositoryConnectionCheckoutWorkerRefresh).toHaveBeenCalledTimes(2);
+      expect(harness.repositoryConnectionPollerWorkerRefresh).toHaveBeenCalledTimes(2);
+      expect(harness.providerActionWorkerRefresh).toHaveBeenCalledTimes(2);
       expect(harness.automationWorkerStop).toHaveBeenCalledTimes(1);
+      expect(harness.externalIssueSessionRunWorkerStop).toHaveBeenCalledTimes(1);
+      expect(harness.repositoryConnectionCheckoutWorkerStop).toHaveBeenCalledTimes(1);
+      expect(harness.repositoryConnectionPollerWorkerStop).toHaveBeenCalledTimes(1);
+      expect(harness.providerActionWorkerStop).toHaveBeenCalledTimes(1);
       expect(exitSpy).toHaveBeenCalledWith(0);
     } finally {
       exitSpy.mockRestore();
@@ -1021,6 +1135,22 @@ describe('startDaemon automation wiring (integration)', () => {
         () => harness.apiMachine.onConnectionStateChange.mock.calls.length >= 1,
         'Expected machine connection listener to be registered after bootstrap',
       );
+      await waitForCondition(
+        () => harness.startExternalIssueSessionRunWorker.mock.calls.length >= 1,
+        'Expected external issue session run worker to start after bootstrap',
+      );
+      await waitForCondition(
+        () => harness.startRepositoryConnectionCheckoutWorker.mock.calls.length >= 1,
+        'Expected repository connection checkout worker to start after bootstrap',
+      );
+      await waitForCondition(
+        () => harness.startRepositoryConnectionPollerWorker.mock.calls.length >= 1,
+        'Expected repository connection poller worker to start after bootstrap',
+      );
+      await waitForCondition(
+        () => harness.startProviderActionWorker.mock.calls.length >= 1,
+        'Expected provider action worker to start after bootstrap',
+      );
 
       expect(harness.apiMachine.onConnectionStateChange).toHaveBeenCalledTimes(1);
 
@@ -1035,6 +1165,14 @@ describe('startDaemon automation wiring (integration)', () => {
       });
 
       expect(harness.automationWorkerPause).toHaveBeenCalledTimes(1);
+      await waitForCondition(
+        () => harness.externalIssueSessionRunWorkerPause.mock.calls.length >= 1,
+        'Expected external issue session run worker to pause after connectivity goes idle',
+      );
+      expect(harness.externalIssueSessionRunWorkerPause).toHaveBeenCalledTimes(1);
+      expect(harness.repositoryConnectionCheckoutWorkerPause).toHaveBeenCalledTimes(1);
+      expect(harness.repositoryConnectionPollerWorkerPause).toHaveBeenCalledTimes(1);
+      expect(harness.providerActionWorkerPause).toHaveBeenCalledTimes(1);
 
       harness.emitMachineConnectionState({
         phase: 'online',
@@ -1047,6 +1185,14 @@ describe('startDaemon automation wiring (integration)', () => {
       });
 
       expect(harness.automationWorkerResume).toHaveBeenCalledTimes(1);
+      await waitForCondition(
+        () => harness.externalIssueSessionRunWorkerResume.mock.calls.length >= 1,
+        'Expected external issue session run worker to resume after connectivity goes online',
+      );
+      expect(harness.externalIssueSessionRunWorkerResume).toHaveBeenCalledTimes(1);
+      expect(harness.repositoryConnectionCheckoutWorkerResume).toHaveBeenCalledTimes(1);
+      expect(harness.repositoryConnectionPollerWorkerResume).toHaveBeenCalledTimes(1);
+      expect(harness.providerActionWorkerResume).toHaveBeenCalledTimes(1);
 
       harness.requestShutdown('happier-cli');
       await run;

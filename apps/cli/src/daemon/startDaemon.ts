@@ -158,6 +158,22 @@ import { createSpawnConcurrencyGate } from './spawn/createSpawnConcurrencyGate';
 import { computeDaemonSpawnRequestKey, createSpawnRequestCoalescer } from './spawn/spawnRequestCoalescer';
 import { normalizeSpawnSessionDirectory } from '@/rpc/handlers/spawnSessionOptionsContract';
 import { startAutomationWorker, type AutomationWorkerHandle } from './automation/automationWorker';
+import {
+  startExternalIssueSessionRunWorker,
+  type ExternalIssueSessionRunWorkerHandle,
+} from './externalIssues/externalIssueSessionRunWorker';
+import {
+  startRepositoryConnectionCheckoutWorker,
+  type RepositoryConnectionCheckoutWorkerHandle,
+} from './externalIssues/repositoryConnectionCheckoutWorker';
+import {
+  startRepositoryConnectionPollerWorker,
+  type RepositoryConnectionPollerWorkerHandle,
+} from './externalIssues/repositoryConnectionPollerWorker';
+import {
+  startProviderActionWorker,
+  type ProviderActionWorkerHandle,
+} from './externalIssues/providerActionWorker';
 import { startMemoryWorker, type MemoryWorkerHandle } from './memory/memoryWorker';
 import { createDaemonConnectivityCoordinator } from './connection/createDaemonConnectivityCoordinator';
 import {
@@ -1912,6 +1928,10 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
       });
       let apiMachineForSessions: ApiMachineClient | null = null;
       let automationWorker: AutomationWorkerHandle | null = null;
+      let externalIssueSessionRunWorker: ExternalIssueSessionRunWorkerHandle | null = null;
+      let repositoryConnectionCheckoutWorker: RepositoryConnectionCheckoutWorkerHandle | null = null;
+      let repositoryConnectionPollerWorker: RepositoryConnectionPollerWorkerHandle | null = null;
+      let providerActionWorker: ProviderActionWorkerHandle | null = null;
       let memoryWorker: MemoryWorkerHandle | null = null;
       let stopSessionDevPreviewSocketRelay: (() => void) | null = null;
       let apiMachine: ApiMachineClient | null = null;
@@ -5868,6 +5888,23 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                 spawnSession,
               });
             }
+            externalIssueSessionRunWorker = startExternalIssueSessionRunWorker({
+              token: credentials.token,
+              machineId,
+              spawnSession,
+            });
+            repositoryConnectionCheckoutWorker = startRepositoryConnectionCheckoutWorker({
+              token: credentials.token,
+              machineId,
+            });
+            repositoryConnectionPollerWorker = startRepositoryConnectionPollerWorker({
+              token: credentials.token,
+              machineId,
+            });
+            providerActionWorker = startProviderActionWorker({
+              token: credentials.token,
+              machineId,
+            });
 
             memoryWorker = await (async () => {
               try {
@@ -6038,10 +6075,20 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               });
 
               connectedApiMachine.onUpdate((update) => {
-                if (!automationWorker) return false;
                 const t = (update?.body as any)?.t;
                 if (t === 'automation-assignment-updated' || t === 'automation-run-updated') {
+                  if (!automationWorker) return false;
                   automationWorker.handleServerUpdate(update);
+                  return true;
+                }
+                if (t === 'session-run-updated') {
+                  if (!externalIssueSessionRunWorker) return false;
+                  externalIssueSessionRunWorker.handleServerUpdate(update);
+                  return true;
+                }
+                if (t === 'provider-action-updated') {
+                  if (!providerActionWorker) return false;
+                  providerActionWorker.handleServerUpdate(update);
                   return true;
                 }
                 return false;
@@ -6071,6 +6118,34 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                       name: 'automationWorker',
                       pause: () => automationWorker!.pause(),
                       resume: () => automationWorker!.resume(),
+                    }]
+                    : []),
+                  ...(externalIssueSessionRunWorker
+                    ? [{
+                      name: 'externalIssueSessionRunWorker',
+                      pause: () => externalIssueSessionRunWorker!.pause(),
+                      resume: () => externalIssueSessionRunWorker!.resume(),
+                    }]
+                    : []),
+                  ...(repositoryConnectionCheckoutWorker
+                    ? [{
+                      name: 'repositoryConnectionCheckoutWorker',
+                      pause: () => repositoryConnectionCheckoutWorker!.pause(),
+                      resume: () => repositoryConnectionCheckoutWorker!.resume(),
+                    }]
+                    : []),
+                  ...(repositoryConnectionPollerWorker
+                    ? [{
+                      name: 'repositoryConnectionPollerWorker',
+                      pause: () => repositoryConnectionPollerWorker!.pause(),
+                      resume: () => repositoryConnectionPollerWorker!.resume(),
+                    }]
+                    : []),
+                  ...(providerActionWorker
+                    ? [{
+                      name: 'providerActionWorker',
+                      pause: () => providerActionWorker!.pause(),
+                      resume: () => providerActionWorker!.resume(),
                     }]
                     : []),
                   ...(connectedServiceQuotasLoopHandle
@@ -6114,6 +6189,26 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   if (automationWorker) {
                     await automationWorker.refreshAssignments().catch((error) => {
                       logger.warn('[DAEMON RUN] Failed to refresh automation assignments on machine reconnect', error);
+                    });
+                  }
+                  if (externalIssueSessionRunWorker) {
+                    await externalIssueSessionRunWorker.refresh().catch((error) => {
+                      logger.warn('[DAEMON RUN] Failed to refresh external issue session runs on machine reconnect', error);
+                    });
+                  }
+                  if (repositoryConnectionCheckoutWorker) {
+                    await repositoryConnectionCheckoutWorker.refresh().catch((error) => {
+                      logger.warn('[DAEMON RUN] Failed to refresh repository checkout bindings on machine reconnect', error);
+                    });
+                  }
+                  if (repositoryConnectionPollerWorker) {
+                    await repositoryConnectionPollerWorker.refresh().catch((error) => {
+                      logger.warn('[DAEMON RUN] Failed to refresh repository poller on machine reconnect', error);
+                    });
+                  }
+                  if (providerActionWorker) {
+                    await providerActionWorker.refresh().catch((error) => {
+                      logger.warn('[DAEMON RUN] Failed to refresh provider actions on machine reconnect', error);
                     });
                   }
 
@@ -6316,6 +6411,18 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
       }
       if (automationWorker) {
         automationWorker.stop();
+      }
+      if (externalIssueSessionRunWorker) {
+        externalIssueSessionRunWorker.stop();
+      }
+      if (repositoryConnectionCheckoutWorker) {
+        repositoryConnectionCheckoutWorker.stop();
+      }
+      if (repositoryConnectionPollerWorker) {
+        repositoryConnectionPollerWorker.stop();
+      }
+      if (providerActionWorker) {
+        providerActionWorker.stop();
       }
       if (memoryWorker) {
         memoryWorker.stop();
