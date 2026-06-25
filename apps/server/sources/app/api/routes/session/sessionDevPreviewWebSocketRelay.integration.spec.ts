@@ -303,6 +303,9 @@ describe('session dev preview websocket relay (integration)', () => {
   it('relays websocket preview frames through a host-based preview origin', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'http://app.example.test',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
     });
     const fixture = await createFixture();
     const upstream = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: () => 'vite-hmr' });

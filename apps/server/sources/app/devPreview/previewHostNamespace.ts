@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 
+import { resolveHostPreviewBaseDomain } from './hostPreviewBaseDomainResolution';
 import type { PreviewRouteContext } from './previewRoutePaths';
 
 const HOST_LABEL_PREFIX = 'hp';
@@ -11,15 +12,8 @@ const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 function readBaseDomain(env: NodeJS.ProcessEnv): string | null {
-  const raw = (env.HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN ?? '').trim().toLowerCase();
-  if (!raw) {
-    return null;
-  }
-  const normalized = raw.replace(/^\.+|\.+$/g, '');
-  if (!isValidBaseDomain(normalized)) {
-    return null;
-  }
-  return normalized;
+  const resolution = resolveHostPreviewBaseDomain(env);
+  return resolution.enabled ? resolution.baseDomain : null;
 }
 
 function isValidBaseDomain(value: string): boolean {

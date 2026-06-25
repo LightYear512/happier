@@ -10,6 +10,7 @@ const DevPreviewRelayHostSchema = z.object({
   configured: z.boolean(),
   baseDomain: z.string().nullable().default(null),
   suggestedBaseDomain: z.string().nullable().default(null),
+  source: z.enum(['explicit', 'derived']).nullable().default(null),
   reason: z.string().optional(),
 });
 
@@ -124,6 +125,7 @@ export const FeatureGatesSchema = z.object({
                 configured: false,
                 baseDomain: null,
                 suggestedBaseDomain: null,
+                source: null,
               }),
               path: DevPreviewRelayPathSchema.optional().default({ enabled: false }),
             })
@@ -135,6 +137,7 @@ export const FeatureGatesSchema = z.object({
                 configured: false,
                 baseDomain: null,
                 suggestedBaseDomain: null,
+                source: null,
               },
               path: { enabled: false },
             }),
@@ -149,6 +152,7 @@ export const FeatureGatesSchema = z.object({
               configured: false,
               baseDomain: null,
               suggestedBaseDomain: null,
+              source: null,
             },
             path: { enabled: false },
           },
@@ -174,6 +178,7 @@ export const FeatureGatesSchema = z.object({
             configured: false,
             baseDomain: null,
             suggestedBaseDomain: null,
+            source: null,
           },
           path: { enabled: false },
         },

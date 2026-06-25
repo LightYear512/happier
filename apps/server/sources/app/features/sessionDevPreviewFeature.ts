@@ -17,6 +17,7 @@ export function resolveSessionDevPreviewFeature(env: NodeJS.ProcessEnv): Feature
                             configured: featureConfig.hostConfigured,
                             baseDomain: featureConfig.hostBaseDomain,
                             suggestedBaseDomain: featureConfig.suggestedHostBaseDomain,
+                            source: featureConfig.hostSource,
                             ...(featureConfig.disabledReason ? { reason: featureConfig.disabledReason } : {}),
                         },
                         path: {

@@ -14,6 +14,7 @@ import {
   parseHostNamespacePreviewHost,
   resolvePreviewHostHeader,
 } from '@/app/devPreview/previewHostNamespace';
+import { resolveHostPreviewBaseDomain } from '@/app/devPreview/hostPreviewBaseDomainResolution';
 import {
   buildPreviewRuntimeLimitationDocument,
   PREVIEW_LIMITATION_DOCUMENT_CSP,
@@ -180,11 +181,15 @@ export function buildHostNamespacePreviewUrl(params: Readonly<{
   routeContext: PreviewRouteContext;
   previewToken: string;
 }>): string | null {
+  const resolution = resolveHostPreviewBaseDomain(process.env);
+  if (!resolution.enabled) {
+    return null;
+  }
   const previewHost = buildHostNamespacePreviewHost(params.routeContext, process.env);
   if (!previewHost) {
     return null;
   }
-  const origin = new URL(resolveRequestOrigin(params.request));
+  const origin = new URL(resolution.effectiveWebUrl);
   origin.hostname = previewHost;
   if (origin.hostname !== previewHost) {
     return null;

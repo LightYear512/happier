@@ -171,20 +171,52 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.sessions.folders.enabled).toBe(false);
     });
 
-    it("disables session dev preview relay by default outside development when no host base is configured", () => {
+    it("derives session dev preview host base domain from an explicit public web URL", () => {
         const payload = resolveServerFeaturePayload({
             HAPPIER_PUBLIC_SERVER_URL: "https://app.example.com",
         } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
 
         expect(payload.features.sessions.enabled).toBe(true);
         expect(payload.features.sessions.devPreview.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+        expect(payload.features.sessions.devPreview.relay.host).toEqual({
+            enabled: true,
+            configured: false,
+            baseDomain: "app.example.com",
+            suggestedBaseDomain: null,
+            source: "derived",
+        });
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
+    });
+
+    it("derives session dev preview host source from a served local UI URL", () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_PUBLIC_SERVER_URL: "https://stack.example.com/base",
+            HAPPIER_SERVER_UI_DIR: "/tmp/ui",
+            HAPPIER_SERVER_UI_PREFIX: "/ui",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.devPreview.relay.host).toEqual({
+            enabled: true,
+            configured: false,
+            baseDomain: "stack.example.com",
+            suggestedBaseDomain: null,
+            source: "derived",
+        });
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
+    });
+
+    it("does not derive session dev preview host base domain from the default web URL fallback", () => {
+        const payload = resolveServerFeaturePayload({} as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
         expect(payload.features.sessions.devPreview.relay.enabled).toBe(false);
         expect(payload.features.sessions.devPreview.relay.host).toEqual({
             enabled: false,
             configured: false,
             baseDomain: null,
-            suggestedBaseDomain: "app.example.com",
-            reason: "missing_env",
+            suggestedBaseDomain: null,
+            source: "derived",
+            reason: "default_web_url_not_derivable",
         });
         expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
     });
@@ -201,6 +233,7 @@ describe("resolveServerFeaturePayload", () => {
     it("enables session dev preview relay when a valid host base is configured", () => {
         const payload = resolveServerFeaturePayload({
             HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: "preview.example.com",
+            HAPPIER_PUBLIC_SERVER_URL: "https://app.example.com",
         } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
 
         expect(payload.features.sessions.enabled).toBe(true);
@@ -208,6 +241,25 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.sessions.devPreview.relay.enabled).toBe(true);
         expect(payload.features.sessions.devPreview.relay.host.enabled).toBe(true);
         expect(payload.features.sessions.devPreview.relay.host.baseDomain).toBe("preview.example.com");
+        expect(payload.features.sessions.devPreview.relay.host.source).toBe("explicit");
+        expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
+    });
+
+    it("exposes fatal host preview diagnostics for cross-site explicit domains", () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_PUBLIC_SERVER_URL: "https://app.example.com",
+            HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: "preview.other.test",
+        } as NodeJS.ProcessEnv, [resolveSessionDevPreviewFeature]);
+
+        expect(payload.features.sessions.devPreview.relay.enabled).toBe(false);
+        expect(payload.features.sessions.devPreview.relay.host).toEqual({
+            enabled: false,
+            configured: true,
+            baseDomain: null,
+            suggestedBaseDomain: null,
+            source: "explicit",
+            reason: "cross_site_preview_base_domain",
+        });
         expect(payload.features.sessions.devPreview.relay.path.enabled).toBe(false);
     });
 
@@ -262,6 +314,7 @@ describe("resolveServerFeaturePayload", () => {
         const payload = resolveServerFeaturePayload(
             {
                 HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: "preview.example.com",
+                HAPPIER_PUBLIC_SERVER_URL: "https://app.example.com",
             } as NodeJS.ProcessEnv,
             [resolveSessionDevPreviewFeature, resolveSessionHandoffFeature],
         );

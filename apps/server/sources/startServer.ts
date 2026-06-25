@@ -51,6 +51,7 @@ import { inferAndApplyTailscaleServePublicServerUrl } from '@/app/integrations/t
 import { startRetentionWorker } from '@/app/retention/runtime/startRetentionWorker';
 import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath';
 import { initializeServerIdentityCache } from '@/app/serverIdentity/serverIdentity';
+import { validateHostPreviewStartupConfig } from '@/app/devPreview/hostPreviewStartupValidation';
 
 export type ServerFlavor = 'full' | 'light';
 export type ServerRole = 'all' | 'api' | 'worker';
@@ -91,6 +92,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         applyPackagedLightRuntimeSqliteDefaults(process.env);
         await ensureHandyMasterSecret(process.env);
     }
+    validateHostPreviewStartupConfig(process.env);
 
     if (dbProvider === 'postgres') {
         // initDbPostgres is synchronous (unlike other provider initializers).

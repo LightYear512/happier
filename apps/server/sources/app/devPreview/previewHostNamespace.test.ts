@@ -20,6 +20,7 @@ describe('previewHostNamespace', () => {
   it('round trips a preview route context through a host namespace', () => {
     const env = {
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: '.Preview.Example.Test.',
+      HAPPIER_PUBLIC_SERVER_URL: 'https://app.example.test',
       HANDY_MASTER_SECRET: 'preview-host-secret',
     };
 
@@ -49,6 +50,27 @@ describe('previewHostNamespace', () => {
       expect(parseHostNamespacePreviewHost('hp-abcdefghijklmnopqrstuvwxyz.preview.example.test', env)).toBeNull();
       expect(parseHostNamespacePreviewContext('anything.example.test', env)).toBeNull();
     }
+  });
+
+  it('builds host namespace from a derived same-site web URL', () => {
+    const env = {
+      HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1.nip.io:3005',
+      HANDY_MASTER_SECRET: 'preview-host-secret',
+    };
+
+    const host = buildHostNamespacePreviewHost(routeContext, env);
+
+    expect(host).toMatch(/^hp-[a-z2-7]{26}\.127\.0\.0\.1\.nip\.io$/);
+    expect(resolvePreviewHostBaseDomain(env)).toBe('127.0.0.1.nip.io');
+  });
+
+  it('does not build host namespace from the default web URL fallback', () => {
+    const env = {
+      HANDY_MASTER_SECRET: 'preview-host-secret',
+    };
+
+    expect(resolvePreviewHostBaseDomain(env)).toBeNull();
+    expect(buildHostNamespacePreviewHost(routeContext, env)).toBeNull();
   });
 
   it('suggests the public server host as the preview base domain', () => {

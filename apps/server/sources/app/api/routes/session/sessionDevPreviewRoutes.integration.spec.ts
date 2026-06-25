@@ -106,6 +106,10 @@ describe('session dev preview routes (integration)', () => {
   async function mintPreviewToken(app: DevPreviewRouteTestApp, fixture: DevPreviewRouteFixture): Promise<string> {
       harness.resetEnv({
         NODE_ENV: 'development',
+        HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:3005',
+        HAPPIER_WEBAPP_URL: undefined,
+        HAPPY_WEBAPP_URL: undefined,
+        HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: undefined,
         HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
       });
       const mint = await app.inject({
@@ -294,6 +298,8 @@ describe('session dev preview routes (integration)', () => {
   it('uses a host-based preview origin when the server has a preview host base domain configured', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'https://api.other.test:9999',
+      HAPPIER_WEBAPP_URL: 'https://stack.example.test:43210',
       HANDY_MASTER_SECRET: 'preview-host-secret',
     });
     const fixture = await createFixture();
@@ -419,6 +425,9 @@ describe('session dev preview routes (integration)', () => {
   it('serves host preview relay when UI is mounted at root', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'https://stack.example.test:43210',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
       HANDY_MASTER_SECRET: 'preview-host-secret',
       HAPPIER_SERVER_UI_DIR: '/tmp/ui',
       HAPPIER_SERVER_UI_PREFIX: '/',
@@ -542,6 +551,9 @@ describe('session dev preview routes (integration)', () => {
     harness.resetEnv({
       HAPPIER_BUILD_FEATURES_DENY: 'sessions.devPreview.relay',
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'https://stack.example.test',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
       HANDY_MASTER_SECRET: 'preview-host-secret',
     });
     const fixture = await createFixture();
@@ -633,6 +645,10 @@ describe('session dev preview routes (integration)', () => {
   it('keeps path namespace unavailable in production even when explicitly configured', async () => {
     harness.resetEnv({
       NODE_ENV: 'production',
+      HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:3005',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: undefined,
       HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
     });
     const fixture = await createFixture();
@@ -669,6 +685,9 @@ describe('session dev preview routes (integration)', () => {
   it('rejects preview host requests with a mismatched host id without falling back to UI', async () => {
     harness.resetEnv({
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'https://stack.example.test',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
       HANDY_MASTER_SECRET: 'preview-host-secret',
     });
     const fixture = await createFixture();
@@ -711,6 +730,9 @@ describe('session dev preview routes (integration)', () => {
   it('scrubs preview tokens from GET URLs before opening the daemon relay', async () => {
     harness.resetEnv({
       NODE_ENV: 'development',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: undefined,
       HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
     });
     const fixture = await createFixture();
@@ -1018,6 +1040,9 @@ describe('session dev preview routes (integration)', () => {
   it('rejects a preview token when the routeKey in the URL does not match the token scope', async () => {
     harness.resetEnv({
       NODE_ENV: 'development',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: undefined,
       HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
     });
     const fixture = await createFixture();

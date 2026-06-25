@@ -8,7 +8,7 @@ import {
 } from '@happier-dev/protocol';
 import { FEATURE_ENV_KEYS } from './featureEnvSchema';
 import { resolveEffectiveWebappBaseUrl } from '../../serverUrls/effectiveServerUrls';
-import { resolvePreviewHostBaseDomain, resolveSuggestedPreviewHostBaseDomain } from '../../devPreview/previewHostNamespace';
+import { resolveHostPreviewBaseDomain } from '../../devPreview/hostPreviewBaseDomainResolution';
 
 export type AutomationsFeatureEnv = Readonly<{
   enabled: boolean;
@@ -78,7 +78,9 @@ export type SessionDevPreviewFeatureEnv = Readonly<{
   hostEnabled: boolean;
   hostConfigured: boolean;
   hostBaseDomain: string | null;
+  hostSource: 'explicit' | 'derived' | null;
   suggestedHostBaseDomain: string | null;
+  hostFatal: boolean;
   pathEnabled: boolean;
   disabledReason?: string;
 }>;
@@ -332,20 +334,26 @@ export function readSessionFoldersFeatureEnv(env: NodeJS.ProcessEnv): SessionFol
 
 export function readSessionDevPreviewFeatureEnv(env: NodeJS.ProcessEnv): SessionDevPreviewFeatureEnv {
   const featureToggleEnabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayEnabled], true);
-  const hostBaseDomain = resolvePreviewHostBaseDomain(env);
+  const hostResolution = resolveHostPreviewBaseDomain(env);
+  const hostBaseDomain = hostResolution.enabled ? hostResolution.baseDomain : null;
   const pathEnabled = env.NODE_ENV === 'development'
     && parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDevPreviewRelayPathModeEnabled], true);
-  const hostEnabled = Boolean(hostBaseDomain);
-  const relayEnabled = featureToggleEnabled && (hostEnabled || pathEnabled);
+  const hostEnabled = featureToggleEnabled && hostResolution.enabled;
+  const hostFatal = !hostResolution.enabled && hostResolution.fatal;
+  const relayEnabled = featureToggleEnabled && (hostEnabled || (pathEnabled && !hostFatal));
   return {
     featureToggleEnabled,
     relayEnabled,
-    hostEnabled: featureToggleEnabled && hostEnabled,
-    hostConfigured: Boolean(hostBaseDomain),
+    hostEnabled,
+    hostConfigured: Boolean(String(env.HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN ?? '').trim()),
     hostBaseDomain,
-    suggestedHostBaseDomain: hostBaseDomain ? null : resolveSuggestedPreviewHostBaseDomain(env),
-    pathEnabled: featureToggleEnabled && pathEnabled,
-    disabledReason: relayEnabled ? undefined : 'missing_env',
+    hostSource: hostResolution.enabled
+      ? hostResolution.source
+      : hostResolution.source === 'none' ? null : hostResolution.source,
+    suggestedHostBaseDomain: null,
+    hostFatal,
+    pathEnabled: featureToggleEnabled && pathEnabled && !hostFatal,
+    disabledReason: hostResolution.enabled ? undefined : hostResolution.reason,
   };
 }
 
