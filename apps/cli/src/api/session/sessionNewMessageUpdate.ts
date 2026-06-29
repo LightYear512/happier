@@ -119,9 +119,15 @@ export function handleSessionNewMessageUpdate(params: {
         };
     }
 
+    const localId = readNonEmptyString(params.update.body.message.localId);
+    const isPendingQueueMaterializedLocalId = Boolean(localId && params.hasPendingQueueMaterializedLocalId(localId));
     const messageId = params.update.body.message.id;
     if (typeof messageId === 'string' && messageId.length > 0) {
-        if (params.receivedMessageIds.has(messageId) && params.allowReprocessReceivedMessageIds !== true) {
+        if (
+            params.receivedMessageIds.has(messageId)
+            && params.allowReprocessReceivedMessageIds !== true
+            && !isPendingQueueMaterializedLocalId
+        ) {
             return {
                 handled: true,
                 lastObservedMessageSeq: params.lastObservedMessageSeq,
@@ -138,10 +144,8 @@ export function handleSessionNewMessageUpdate(params: {
         nextLastObservedMessageSeq = Math.max(nextLastObservedMessageSeq, msgSeq);
     }
 
-    const localId = readNonEmptyString(params.update.body.message.localId);
     const isSelfEchoSuppressedLocalId = Boolean(localId && params.hasSelfEchoSuppressedLocalId(localId));
     const isAgentQueueEchoSuppressedLocalId = Boolean(localId && params.hasAgentQueueEchoSuppressedLocalId(localId));
-    const isPendingQueueMaterializedLocalId = Boolean(localId && params.hasPendingQueueMaterializedLocalId(localId));
     if (localId && (isSelfEchoSuppressedLocalId || isPendingQueueMaterializedLocalId)) {
         // We observed the broadcast for a message we materialized; cancel any recovery path.
         params.deleteMaterializedLocalId(localId);

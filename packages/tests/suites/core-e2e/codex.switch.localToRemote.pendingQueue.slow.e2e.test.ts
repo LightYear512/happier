@@ -112,7 +112,7 @@ async function runLocalToRemotePendingSwitchScenario(params: Readonly<{
         createdAt: Date.now(),
         permissionMode: 'default',
         permissionModeUpdatedAt: 1000,
-        ...(params.remoteBackend === 'appServer' ? { codexBackendMode: 'appServer' } : {}),
+        codexBackendMode: params.remoteBackend,
       },
       secret,
     );
@@ -207,6 +207,7 @@ setInterval(() => {}, 1000);
       HAPPIER_ACTIVE_SERVER_ID: '',
       HAPPIER_WEBAPP_URL: serverBaseUrl,
       HAPPIER_SESSION_ATTACH_FILE: attachFile,
+      HAPPIER_CODEX_BACKEND_MODE: params.remoteBackend,
       HAPPIER_CODEX_TUI_BIN: fakeCodexPath,
       HAPPIER_CODEX_SESSIONS_DIR: codexSessionsDir,
       HAPPIER_E2E_CODEX_SESSION_ID: codexSessionId,

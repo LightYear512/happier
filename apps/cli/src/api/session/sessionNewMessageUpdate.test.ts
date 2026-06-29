@@ -686,6 +686,63 @@ describe('handleSessionNewMessageUpdate', () => {
     expect(emitted.some((e: any) => e.event === 'user-message')).toBe(true);
   });
 
+  it('delivers materialized pending queue messages when their message id was already observed', () => {
+    const deliveredMessages: any[] = [];
+    const emitted: any[] = [];
+    const materializedLocalIds = new Set(['pending-1']);
+
+    const update = {
+      id: 'pending-materialized-m1',
+      createdAt: Date.now(),
+      body: {
+        t: 'new-message',
+        sid: 'sess_1',
+        message: {
+          id: 'm1',
+          seq: 1,
+          content: {
+            t: 'plain',
+            v: {
+              role: 'user',
+              content: { type: 'text', text: 'queued prompt' },
+              localId: 'pending-1',
+              meta: { source: 'ui', sentFrom: 'web' },
+            },
+          },
+          localId: 'pending-1',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      },
+    } as unknown as Update;
+
+    handleSessionNewMessageUpdate({
+      update,
+      sessionId: 'sess_1',
+      encryptionKey: new Uint8Array(32),
+      encryptionVariant: 'legacy',
+      receivedMessageIds: new Set<string>(['m1']),
+      lastObservedMessageSeq: 0,
+      lastObservedUserMessageSeq: 0,
+      hasSelfEchoSuppressedLocalId: () => false,
+      hasAgentQueueEchoSuppressedLocalId: () => false,
+      markAgentQueueEchoSuppressedLocalId: () => void 0,
+      hasPendingQueueMaterializedLocalId: (localId) => materializedLocalIds.has(localId),
+      deleteMaterializedLocalId: (localId) => materializedLocalIds.delete(localId),
+      pendingMessageCallback: (message) => deliveredMessages.push(message),
+      pendingMessages: [],
+      emit: (event, payload) => emitted.push({ event, payload }),
+      debug: () => void 0,
+      debugLargeJson: () => void 0,
+    });
+
+    expect(deliveredMessages).toHaveLength(1);
+    expect(deliveredMessages[0]?.content?.type).toBe('text');
+    expect(deliveredMessages[0]?.content?.text).toBe('queued prompt');
+    expect(emitted.some((e: any) => e.event === 'user-message')).toBe(true);
+    expect(materializedLocalIds.has('pending-1')).toBe(false);
+  });
+
   function buildUserMessageUpdate(content: unknown, seq: number | null = 5): Update {
     return {
       id: 'u-delivered',
