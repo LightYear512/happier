@@ -53,6 +53,7 @@ describe('core e2e: Codex ACP in-flight steer (mid-turn)', () => {
         createdAt: Date.now(),
         permissionMode: 'default',
         permissionModeUpdatedAt: 1000,
+        codexBackendMode: 'acp',
       },
       secret,
     );
@@ -162,7 +163,7 @@ new acp.AgentSideConnection((conn) => new FakeAgent(conn), stream);
       HAPPIER_WEBAPP_URL: serverBaseUrl,
       HAPPIER_SESSION_ATTACH_FILE: attachFile,
       HAPPIER_E2E_PROVIDERS: '1',
-      HAPPIER_EXPERIMENTAL_CODEX_ACP: '1',
+      HAPPIER_CODEX_BACKEND_MODE: 'acp',
       // Prefer PATH stub to avoid relying on npx / installs.
       HAPPIER_CODEX_ACP_BIN: fakeAgentPath,
       HAPPIER_E2E_ACP_SDK_ENTRY: sdkEntry,

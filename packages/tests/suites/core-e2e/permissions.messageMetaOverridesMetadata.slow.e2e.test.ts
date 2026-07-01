@@ -52,6 +52,7 @@ describe('core e2e: message meta permission overrides session metadata for that 
         createdAt: Date.now(),
         permissionMode: 'yolo',
         permissionModeUpdatedAt: 1000,
+        codexBackendMode: 'acp',
       },
       secret,
     );
@@ -145,7 +146,7 @@ new acp.AgentSideConnection((conn) => new FakeAgent(conn), stream);
       HAPPIER_SESSION_ATTACH_FILE: attachFile,
       HAPPIER_SESSION_AUTOSTART_DAEMON: '0',
       HAPPIER_E2E_PROVIDERS: '1',
-      HAPPIER_EXPERIMENTAL_CODEX_ACP: '1',
+      HAPPIER_CODEX_BACKEND_MODE: 'acp',
       HAPPIER_CODEX_ACP_BIN: fakeAgentPath,
       HAPPIER_CODEX_ACP_ALLOW_NPX: '0',
       HAPPIER_E2E_ACP_SDK_ENTRY: resolve(repoRootDir(), 'apps/cli/node_modules/@agentclientprotocol/sdk/dist/acp.js'),
