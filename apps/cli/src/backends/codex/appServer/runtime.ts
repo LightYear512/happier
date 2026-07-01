@@ -739,6 +739,10 @@ function isCodexAppServerConnectedServiceAuthTransportInvalidatedTurn(
     return error instanceof CodexAppServerConnectedServiceAuthTransportInvalidatedTurn;
 }
 
+function isCodexAppServerClientDisposedError(error: unknown): boolean {
+    return error instanceof Error && error.message === 'Codex app-server client has been disposed';
+}
+
 function readModelId(value: unknown): string | null {
     const record = readRecord(value);
     return record ? trimStringValue(record.model) : null;
@@ -4049,7 +4053,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     clearPendingProviderPrompt(pendingProviderPrompt);
                     return;
                 } catch (error) {
-                    const failure = error instanceof Error ? error : new Error(String(error));
+                    const failure = connectedServiceAuthTransportInvalidationRecoveryPromise && isCodexAppServerClientDisposedError(error)
+                        ? new CodexAppServerConnectedServiceAuthTransportInvalidatedTurn()
+                        : error instanceof Error ? error : new Error(String(error));
                     const failedTurnHadMeaningfulActivity = activeTurnHasMeaningfulContextWindowRecoveryActivity;
                     await finishPendingTurn({ error: failure, flushReason: 'abort' });
                     if (isCodexAppServerConnectedServiceAuthTransportInvalidatedTurn(failure)) {
