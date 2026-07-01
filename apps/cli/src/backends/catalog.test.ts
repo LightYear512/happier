@@ -204,7 +204,7 @@ describe('AGENTS', () => {
       providerId: 'claude',
       serviceIds: expect.arrayContaining(['claude-subscription']),
       spawnPreflightOauthRefresh: { mode: 'force' },
-      refreshedCredentialApplication: { mode: 'restart_required' },
+      refreshedCredentialApplication: { mode: 'no_restart_required' },
     });
     await expect(resolveDescriptor('pi')).resolves.toMatchObject({
       providerId: 'pi',

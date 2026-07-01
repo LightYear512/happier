@@ -20,6 +20,7 @@ vi.mock('@/configuration', () => ({
     happyHomeDir: '/tmp/happier-test-home',
     logsDir: '/tmp',
     isDaemonProcess: false,
+    daemonReattachCatchUpConcurrency: 4,
   },
 }));
 

@@ -74,6 +74,7 @@ vi.mock('@/configuration', () => ({
     publicServerUrl: 'https://proxyapi.layaair.com',
     webappUrl: 'https://proxyapi.layaair.com',
     logsDir: '/path/that/does/not/exist',
+    daemonReattachCatchUpConcurrency: 4,
   },
 }));
 

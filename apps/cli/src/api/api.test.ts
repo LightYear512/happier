@@ -50,7 +50,8 @@ vi.mock('./encryption', () => ({
 // Mock configuration
 vi.mock('@/configuration', () => ({
     configuration: {
-        apiServerUrl: 'https://api.example.com'
+        apiServerUrl: 'https://api.example.com',
+        daemonReattachCatchUpConcurrency: 4
     }
 }));
 

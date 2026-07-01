@@ -60,9 +60,18 @@ describe('dispatchProviderNativeFork', () => {
           provider: expect.objectContaining({
             backendMode: 'appServer',
             vendorSessionId: 'codex_child_1',
+            home: 'connectedService',
             connectedServiceId: 'openai-codex',
             connectedServiceProfileId: 'work',
-            homePath: '/tmp/connected-codex-home',
+            providerExtra: expect.objectContaining({
+              runtimeAffinity: {
+                backendMode: 'appServer',
+                vendorSessionId: 'codex_child_1',
+                home: 'connectedService',
+                connectedServiceId: 'openai-codex',
+                connectedServiceProfileId: 'work',
+              },
+            }),
           }),
         }),
       },

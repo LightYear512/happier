@@ -14,6 +14,7 @@ vi.mock('@/configuration', () => ({
     apiServerUrl: 'https://example.test',
     socketForceWebsocketOnly: false,
     socketIoTransports: ['polling', 'websocket'],
+    daemonReattachCatchUpConcurrency: 4,
   },
 }));
 

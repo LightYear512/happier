@@ -623,8 +623,12 @@ describe('detectCliSnapshotOnDaemonPath', () => {
       writeFileSync(
         join(credentialsDir, '.credentials.json'),
         JSON.stringify({
-          accessToken: 'claude-access-token',
-          expiresAt: '2099-01-01T00:00:00.000Z',
+          claudeAiOauth: {
+            accessToken: 'claude-access-token',
+            refreshToken: 'claude-refresh-token',
+            expiresAt: Date.parse('2099-01-01T00:00:00.000Z'),
+            scopes: [],
+          },
           email: 'tester@example.com',
         }),
         'utf8',
