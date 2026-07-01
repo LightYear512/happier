@@ -22,6 +22,7 @@ import { enqueuePendingQueueV2 } from '../../src/testkit/pendingQueueV2';
 import { requestSessionSwitchRpc } from '../../src/testkit/sessionSwitchRpc';
 import { writeCliSessionAttachFile } from '../../src/testkit/cliAttachFile';
 import { seedCliAuthForServer } from '../../src/testkit/cliAuth';
+import { writeFakeCodexAppServerScript } from '../../src/testkit/codexAppServerRemoteHarness';
 const run = createRunDirs({ runLabel: 'core' });
 
 type DecryptedAgentState = Readonly<{
@@ -111,6 +112,10 @@ async function runRemoteToLocalFailClosedPendingScenario(): Promise<void> {
   const testDir = run.testDir(testName);
   const startedAt = new Date().toISOString();
   const localCodex = await createLocalSwitchBlockerCodexStub({ testDir });
+  const fakeAppServerPath = await writeFakeCodexAppServerScript({
+    dir: testDir,
+    requestLogPath: resolve(join(testDir, 'fake-codex-app-server.requests.jsonl')),
+  });
 
   let server: StartedServer | null = null;
   let proc: SpawnedProcess | null = null;
@@ -136,6 +141,7 @@ async function runRemoteToLocalFailClosedPendingScenario(): Promise<void> {
         host: 'e2e',
         name: 'codex-switch-fail-closed',
         createdAt: now,
+        codexBackendMode: 'appServer',
       },
       secret,
     );
@@ -170,7 +176,9 @@ async function runRemoteToLocalFailClosedPendingScenario(): Promise<void> {
       HAPPIER_SERVER_URL: serverBaseUrl,
       HAPPIER_WEBAPP_URL: serverBaseUrl,
       HAPPIER_SESSION_ATTACH_FILE: attachFile,
-      HAPPIER_EXPERIMENTAL_CODEX_ACP: '1',
+      HAPPIER_CODEX_BACKEND_MODE: 'appServer',
+      HAPPIER_CODEX_APP_SERVER_BIN: fakeAppServerPath,
+      HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS: '2000',
       HAPPIER_CODEX_TUI_BIN: localCodex.fakeCodexPath,
       HAPPIER_CODEX_SESSIONS_DIR: localCodex.codexSessionsDir,
     };
