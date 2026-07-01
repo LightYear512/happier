@@ -7,6 +7,8 @@ import {
 import type { AgentState } from '@/api/types';
 import { AgentStateRequestStore } from './agentStateRequestStore';
 
+type CompletedAgentStateRequest = NonNullable<AgentState['completedRequests']>[string];
+
 class FakeSession {
     sessionId = 'session-test';
     agentState: AgentState = {
@@ -100,6 +102,40 @@ describe('AgentStateRequestStore', () => {
         expect(session.agentState.completedRequests!['req-2']).toEqual(
             expect.objectContaining({ status: 'canceled', reason: 'Session ended', decision: 'abort' }),
         );
+    });
+
+    it('publishes a same-id live request over an older completed request', () => {
+        const session = new FakeSession();
+        const olderCompletedRequest: CompletedAgentStateRequest = {
+            tool: 'Bash',
+            kind: 'permission',
+            arguments: { command: ['bash', '-lc', 'echo old'] },
+            createdAt: 1,
+            completedAt: 10,
+            status: 'approved',
+            decision: 'approved',
+        };
+        session.agentState.completedRequests!.toolu_test = olderCompletedRequest;
+        const store = new AgentStateRequestStore({
+            session,
+            logPrefix: '[Test]',
+        });
+
+        store.publishRequest({
+            requestId: 'toolu_test',
+            toolName: 'Bash',
+            toolInput: { command: ['bash', '-lc', 'echo new'] },
+            createdAt: 20,
+        });
+
+        expect(session.agentState.requests!.toolu_test).toEqual(
+            expect.objectContaining({
+                tool: 'Bash',
+                arguments: { command: ['bash', '-lc', 'echo new'] },
+                createdAt: 20,
+            }),
+        );
+        expect(session.agentState.completedRequests!.toolu_test).toBeUndefined();
     });
 
     it('skips publishing a generated local-bridge request covered by a recent canonical bridge cancellation', () => {

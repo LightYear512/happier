@@ -23,6 +23,16 @@ describe('isAgentStateRequestCoveredByCompletedRequests', () => {
         })).toBe(true);
     });
 
+    it('does not cover same-id requests with different arguments', () => {
+        expect(isAgentStateRequestCoveredByCompletedRequests({
+            requestId: 'req-1',
+            request: { tool: 'Write', arguments: { file: 'new.txt' }, createdAt: 10 },
+            completedRequests: {
+                'req-1': { tool: 'Write', arguments: { file: 'old.txt' }, completedAt: 20 },
+            },
+        })).toBe(false);
+    });
+
     it('covers fresh generated local-bridge requests when a canonical bridge cancellation has the same payload', () => {
         const question = { questions: [{ question: 'Proceed?', options: [{ label: 'Yes' }] }] };
 

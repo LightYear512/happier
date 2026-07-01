@@ -116,7 +116,13 @@ export function isAgentStateRequestCoveredByCompletedRequests(params: Readonly<{
 
     const createdAt = readNumber(request.createdAt) ?? 0;
     const sameIdCompleted = completedRequests[params.requestId];
-    if (sameIdCompleted && createdAt <= readAgentStateRequestCompletedAt(sameIdCompleted)) {
+    const sameIdCompletedRecord = readRecord(sameIdCompleted);
+    if (
+        sameIdCompletedRecord
+        && createdAt <= readAgentStateRequestCompletedAt(sameIdCompletedRecord)
+        && readString(request.tool) === readString(sameIdCompletedRecord.tool)
+        && areJsonValuesEquivalent(request.arguments, sameIdCompletedRecord.arguments)
+    ) {
         return true;
     }
 
