@@ -35,6 +35,40 @@ export async function postPlainUiTextMessage(params: Readonly<{
     }
 }
 
+export async function enqueuePlainPendingUiTextMessage(params: Readonly<{
+    baseUrl: string;
+    token: string;
+    sessionId: string;
+    text: string;
+    localId: string;
+}>): Promise<void> {
+    const response = await fetchJson<{ didWrite?: boolean }>(`${params.baseUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${params.token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            localId: params.localId,
+            messageRole: 'user',
+            content: {
+                t: 'plain',
+                v: {
+                    role: 'user',
+                    content: {
+                        type: 'text',
+                        text: params.text,
+                    },
+                },
+            },
+        }),
+        timeoutMs: 15_000,
+    });
+    if (response.status !== 200 || response.data?.didWrite !== true) {
+        throw new Error(`Failed to enqueue plaintext pending UI message for session ${params.sessionId} (status=${response.status})`);
+    }
+}
+
 export async function fakeClaudeLogContainsUserText(logPath: string, text: string): Promise<boolean> {
     const raw = await readFile(logPath, 'utf8').catch(() => '');
     if (!raw) return false;

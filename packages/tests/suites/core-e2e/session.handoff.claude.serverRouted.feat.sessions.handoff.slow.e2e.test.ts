@@ -13,7 +13,7 @@ import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
 import { fetchJson } from '../../src/testkit/http';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { createRunDirs } from '../../src/testkit/runDir';
-import { fakeClaudeLogContainsUserText, postPlainUiTextMessage } from '../../src/testkit/sessionHandoffUiMessages';
+import { enqueuePlainPendingUiTextMessage, fakeClaudeLogContainsUserText, postPlainUiTextMessage } from '../../src/testkit/sessionHandoffUiMessages';
 import { createUserScopedSocketCollector, type SocketCollector } from '../../src/testkit/socketClient';
 import { createDataKeyRpcClient, unwrapDataKeyRpcResult } from '../../src/testkit/syntheticAgent/rpcClient';
 import { waitFor } from '../../src/testkit/timing';
@@ -1282,19 +1282,19 @@ describe('core e2e: session handoff via server-routed transfer', () => {
             manifestHash: expect.any(String),
         }));
 
+        await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === false, {
+            timeoutMs: 30_000,
+            intervalMs: 100,
+            context: 'source daemon session removed before server-routed late prompt delivery proof',
+        });
+
         const latePrompt = 'after-cutover-start-server-routed-proof';
-        await postPlainUiTextMessage({
+        await enqueuePlainPendingUiTextMessage({
             baseUrl: server.baseUrl,
             token: auth.token,
             sessionId,
             text: latePrompt,
             localId: 'late-cutover-after-start-server-routed',
-        });
-
-        await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === false, {
-            timeoutMs: 30_000,
-            intervalMs: 100,
-            context: 'source daemon session removed after server-routed late prompt delivery started',
         });
 
         await waitFor(async () => {
