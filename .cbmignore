@@ -1,0 +1,14 @@
+# Low-signal generated/data-heavy content for codebase-memory-mcp indexing.
+apps/ui/sources/text/translations/
+apps/ui/sources/theme.gen.ts
+apps/ui/sources/theme.*.json
+apps/ui/release-notes/
+
+# Test baselines and transient fixture trash.
+packages/tests/baselines/
+packages/tests/src/trash/
+
+# CI/config docs are noisy for code call-graph queries.
+.github/
+*.md
+*.mdx

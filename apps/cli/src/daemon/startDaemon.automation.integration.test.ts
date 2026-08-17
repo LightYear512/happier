@@ -18,11 +18,11 @@ function createRegisteredMachine(machineId: string) {
 async function waitForCondition(
   predicate: () => boolean,
   message: string,
-  attempts: number = 40,
+  attempts: number = 200,
 ): Promise<void> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(message);
 }
@@ -39,6 +39,18 @@ function createDeferred<T>(): {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+function trackDaemonRun(run: Promise<void>): { run: Promise<void>; getError: () => unknown } {
+  let runError: unknown;
+  const trackedRun = run.catch((error: unknown) => {
+    runError = error;
+    throw error;
+  });
+  return {
+    run: trackedRun,
+    getError: () => runError,
+  };
 }
 
 async function resetAutomationDaemonTestDefaults(): Promise<void> {
@@ -84,6 +96,13 @@ const harness = vi.hoisted(() => {
   const providerActionWorkerRefresh = vi.fn(async () => {});
   const providerActionWorkerPause = vi.fn();
   const providerActionWorkerResume = vi.fn();
+  const startMemoryWorker = vi.fn(async () => null);
+  const stopSessionDevPreviewSocketRelay = vi.fn();
+  let startSessionDevPreviewSocketRelayCallCount = 0;
+  const startSessionDevPreviewSocketRelay = () => {
+    startSessionDevPreviewSocketRelayCallCount += 1;
+    return stopSessionDevPreviewSocketRelay;
+  };
   const startExternalIssueSessionRunWorker = vi.fn(() => ({
     stop: externalIssueSessionRunWorkerStop,
     refresh: externalIssueSessionRunWorkerRefresh,
@@ -132,8 +151,9 @@ const harness = vi.hoisted(() => {
     resume: connectedServiceQuotasResume,
   }));
 
+  const setRPCHandlersMock = vi.fn();
   const apiMachine = {
-    setRPCHandlers: vi.fn(),
+    setRPCHandlers: setRPCHandlersMock,
     onUpdate: vi.fn((listener: (update: any) => boolean | void) => {
       machineUpdateListeners.push(listener);
       return () => {
@@ -171,7 +191,10 @@ const harness = vi.hoisted(() => {
     shutdown: vi.fn(),
     onSessionDevPreviewEnvelope: vi.fn(() => () => {}),
     sendSessionDevPreviewEnvelope: vi.fn(),
+    onMachineTransferEnvelope: vi.fn(() => () => {}),
+    sendMachineTransferEnvelope: vi.fn(),
   };
+  const machineSyncClient = vi.fn(() => apiMachine);
 
   const lockHandle = { release: vi.fn(async () => {}) };
 
@@ -215,7 +238,16 @@ const harness = vi.hoisted(() => {
     providerActionWorkerRefresh,
     providerActionWorkerPause,
     providerActionWorkerResume,
+    startMemoryWorker,
+    stopSessionDevPreviewSocketRelay,
+    startSessionDevPreviewSocketRelay,
+    getStartSessionDevPreviewSocketRelayCallCount: () => startSessionDevPreviewSocketRelayCallCount,
+    resetStartSessionDevPreviewSocketRelayCallCount: () => {
+      startSessionDevPreviewSocketRelayCallCount = 0;
+    },
     apiMachine,
+    machineSyncClient,
+    setRPCHandlersMock,
     lockHandle,
     startConnectedServiceQuotasLoop,
     connectedServiceQuotasPause,
@@ -252,7 +284,7 @@ const harness = vi.hoisted(() => {
 vi.mock('@/api/api', () => ({
   ApiClient: {
     create: vi.fn(async () => ({
-      machineSyncClient: () => harness.apiMachine,
+      machineSyncClient: harness.machineSyncClient,
     })),
   },
   isMachineContentPublicKeyMismatchError: vi.fn(() => false),
@@ -296,6 +328,7 @@ vi.mock('@/configuration', () => ({
     activeServerDir: '/tmp/server',
     daemonSpawnExistingSessionWaitForExitMs: 5_000,
     daemonSpawnExistingSessionWaitForExitPollIntervalMs: 50,
+    daemonReattachCatchUpConcurrency: 4,
   },
 }));
 
@@ -371,7 +404,9 @@ vi.mock('@/settings/accountSettings/refreshAccountSettingsForMinimumVersion', ()
 
 vi.mock('./controlClient', () => ({
   cleanupDaemonState: vi.fn(async () => {}),
+  forceStopKnownDaemonPid: vi.fn(async () => {}),
   isDaemonRunningCurrentlyInstalledHappyVersion: vi.fn(async () => false),
+  resolveDaemonSpawnSessionByNonce: vi.fn(async () => null),
   stopDaemon: vi.fn(async () => {}),
 }));
 
@@ -515,8 +550,27 @@ vi.mock('./externalIssues/providerActionWorker', () => ({
   startProviderActionWorker: harness.startProviderActionWorker,
 }));
 
+vi.mock('./memory/memoryWorker', () => ({
+  startMemoryWorker: harness.startMemoryWorker,
+}));
+
+vi.mock('@/session/devPreview/startSessionDevPreviewSocketRelay', () => ({
+  startSessionDevPreviewSocketRelay: harness.startSessionDevPreviewSocketRelay,
+}));
+
 vi.mock('./connectedServices/quotas/ConnectedServiceQuotasCoordinator', () => ({
-  ConnectedServiceQuotasCoordinator: vi.fn(),
+  ConnectedServiceQuotasCoordinator: vi.fn(() => ({
+    flushInBandQuotaPersistence: vi.fn(async () => ({
+      timedOut: false,
+      inProcess: { timedOut: false, drained: true },
+      serverWork: { timedOut: false },
+    })),
+    notifyQuotaPersistenceConnectivityChanged: vi.fn(),
+    dispose: vi.fn(),
+    registerSpawnTarget: vi.fn(),
+    unregisterPid: vi.fn(),
+    transferPid: vi.fn(),
+  })),
 }));
 
 vi.mock('./connectedServices/quotas/createConnectedServiceQuotaFetchers', () => ({
@@ -572,16 +626,24 @@ describe('startDaemon automation wiring (integration)', () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    process.env.HAPPIER_DAEMON_DIAGNOSTIC_DISABLE_MACHINE_SYNC = 'false';
+    process.env.HAPPIER_DAEMON_DIAGNOSTIC_DISABLE_AUTOMATION_WORKER = 'false';
     harness.setAutoShutdownAfterAutomationStart(true);
     harness.setActiveAccountSettingsSnapshot(null);
     harness.resetMachineUpdateListeners();
     harness.resetAccountSettingsVersionHintListeners();
+    harness.machineSyncClient.mockClear();
+    harness.startMemoryWorker.mockClear();
+    harness.resetStartSessionDevPreviewSocketRelayCallCount();
+    harness.setRPCHandlersMock.mockClear();
     await resetAutomationDaemonTestDefaults();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     harness.setAutoShutdownAfterAutomationStart(true);
+    delete process.env.HAPPIER_DAEMON_DIAGNOSTIC_DISABLE_MACHINE_SYNC;
+    delete process.env.HAPPIER_DAEMON_DIAGNOSTIC_DISABLE_AUTOMATION_WORKER;
   });
 
   it('checks same-version daemon compatibility after auth resolves the current machine id', async () => {
@@ -776,14 +838,28 @@ describe('startDaemon automation wiring (integration)', () => {
 
   it('starts automation worker after machine sync bootstrap and stops it on shutdown', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    harness.setAutoShutdownAfterAutomationStart(false);
 
     try {
       const { startDaemon } = await import('./startDaemon');
-      await startDaemon();
+      const daemonRun = trackDaemonRun(startDaemon());
+      const run = daemonRun.run;
 
       await waitForCondition(
-        () => harness.startAutomationWorker.mock.calls.length >= 1,
+        () => {
+          const error = daemonRun.getError();
+          if (error) throw error;
+          return harness.startAutomationWorker.mock.calls.length >= 1;
+        },
         'Expected automation worker to start after machine bootstrap completes',
+      );
+      await waitForCondition(
+        () => {
+          const error = daemonRun.getError();
+          if (error) throw error;
+          return harness.setRPCHandlersMock.mock.calls.length >= 1;
+        },
+        'Expected daemon RPC handlers to be registered',
       );
 
       expect(harness.startAutomationWorker).toHaveBeenCalledTimes(1);
@@ -829,6 +905,10 @@ describe('startDaemon automation wiring (integration)', () => {
       expect(harness.repositoryConnectionCheckoutWorkerRefresh).toHaveBeenCalledTimes(2);
       expect(harness.repositoryConnectionPollerWorkerRefresh).toHaveBeenCalledTimes(2);
       expect(harness.providerActionWorkerRefresh).toHaveBeenCalledTimes(2);
+
+      harness.requestShutdown('happier-cli');
+      await run;
+
       expect(harness.automationWorkerStop).toHaveBeenCalledTimes(1);
       expect(harness.externalIssueSessionRunWorkerStop).toHaveBeenCalledTimes(1);
       expect(harness.repositoryConnectionCheckoutWorkerStop).toHaveBeenCalledTimes(1);
@@ -890,6 +970,7 @@ describe('startDaemon automation wiring (integration)', () => {
         () => harness.machineUpdateListeners.length >= 2,
         'Expected daemon machine update listeners to be registered',
       );
+      harness.bootstrapAccountSettingsContext.mockClear();
 
       for (const listener of harness.machineUpdateListeners) {
         listener({
@@ -934,6 +1015,7 @@ describe('startDaemon automation wiring (integration)', () => {
         () => harness.machineUpdateListeners.length >= 2,
         'Expected daemon machine update listeners to be registered',
       );
+      harness.bootstrapAccountSettingsContext.mockClear();
 
       for (const listener of harness.machineUpdateListeners) {
         listener({

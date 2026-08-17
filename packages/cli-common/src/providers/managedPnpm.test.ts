@@ -54,7 +54,7 @@ vi.mock('../process/runCommandStreaming.js', async () => {
 
 function currentPnpmReleaseAssetName(): string {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'pnpm-darwin-arm64.tar.gz';
-  if (process.platform === 'darwin' && process.arch === 'x64') return 'pnpm-macos-x64';
+  if (process.platform === 'darwin' && process.arch === 'x64') return 'pnpm-darwin-x64.tar.gz';
   if (process.platform === 'linux' && process.arch === 'arm64') return 'pnpm-linux-arm64-musl.tar.gz';
   if (process.platform === 'linux' && process.arch === 'x64') return 'pnpm-linux-x64-musl.tar.gz';
   if (process.platform === 'win32' && process.arch === 'arm64') return 'pnpm-win32-arm64.zip';

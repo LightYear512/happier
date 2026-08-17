@@ -35,6 +35,32 @@ const harness = vi.hoisted(() => {
         refreshAssignments: vi.fn(async () => {}),
         handleServerUpdate: vi.fn(),
     }));
+    const startExternalIssueSessionRunWorker = vi.fn(() => ({
+        stop: vi.fn(),
+        refresh: vi.fn(async () => {}),
+        pause: vi.fn(),
+        resume: vi.fn(),
+        handleServerUpdate: vi.fn(),
+    }));
+    const startRepositoryConnectionCheckoutWorker = vi.fn(() => ({
+        stop: vi.fn(),
+        refresh: vi.fn(async () => {}),
+        pause: vi.fn(),
+        resume: vi.fn(),
+    }));
+    const startRepositoryConnectionPollerWorker = vi.fn(() => ({
+        stop: vi.fn(),
+        refresh: vi.fn(async () => {}),
+        pause: vi.fn(),
+        resume: vi.fn(),
+    }));
+    const startProviderActionWorker = vi.fn(() => ({
+        stop: vi.fn(),
+        refresh: vi.fn(async () => {}),
+        pause: vi.fn(),
+        resume: vi.fn(),
+        handleServerUpdate: vi.fn(),
+    }));
     const apiMachine = {
         setRPCHandlers: vi.fn(),
         onUpdate: vi.fn(),
@@ -52,6 +78,13 @@ const harness = vi.hoisted(() => {
         sendMachineTransferEnvelope: vi.fn(),
         onSessionDevPreviewEnvelope: vi.fn(() => () => {}),
         sendSessionDevPreviewEnvelope: vi.fn(),
+    };
+    const logger = {
+        debug: vi.fn(),
+        debugLargeJson: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        logFilePath: '/tmp/happier-daemon.log',
     };
     const lockHandle = { release: vi.fn(async () => {}) };
     const createDaemonShutdownController = vi.fn(() => {
@@ -76,7 +109,12 @@ const harness = vi.hoisted(() => {
             sizeBytes: 0,
         })),
         startAutomationWorker,
+        startExternalIssueSessionRunWorker,
+        startRepositoryConnectionCheckoutWorker,
+        startRepositoryConnectionPollerWorker,
+        startProviderActionWorker,
         apiMachine,
+        logger,
         lockHandle,
         createDaemonShutdownController,
     };
@@ -100,13 +138,7 @@ vi.mock('@/api/machine/ensureMachineRegistered', () => ({
 }));
 
 vi.mock('@/ui/logger', () => ({
-    logger: {
-        debug: vi.fn(),
-        debugLargeJson: vi.fn(),
-        info: vi.fn(),
-        warn: vi.fn(),
-        logFilePath: '/tmp/happier-daemon.log',
-    },
+    logger: harness.logger,
 }));
 
 vi.mock('@/ui/auth', () => ({
@@ -162,8 +194,18 @@ vi.mock('@/persistence', () => ({
 
 vi.mock('./controlClient', () => ({
     cleanupDaemonState: vi.fn(async () => {}),
+    forceStopKnownDaemonPid: vi.fn(async () => {}),
     isDaemonRunningCurrentlyInstalledHappyVersion: vi.fn(async () => false),
+    resolveDaemonSpawnSessionByNonce: vi.fn(async () => null),
     stopDaemon: vi.fn(async () => {}),
+}));
+
+vi.mock('./connectedServices/runtimeAuth/reportOutbox/runtimeAuthFailureReportOutboxDrain', () => ({
+    drainRuntimeAuthFailureReportOutboxToDaemon: vi.fn(async () => ({
+        delivered: 0,
+        dropped: 0,
+        retried: 0,
+    })),
 }));
 
 vi.mock('@/daemon/ownership/evaluateCurrentDaemonOwner', () => ({
@@ -295,6 +337,22 @@ vi.mock('./automation/automationWorker', () => ({
     startAutomationWorker: harness.startAutomationWorker,
 }));
 
+vi.mock('./externalIssues/externalIssueSessionRunWorker', () => ({
+    startExternalIssueSessionRunWorker: harness.startExternalIssueSessionRunWorker,
+}));
+
+vi.mock('./externalIssues/repositoryConnectionCheckoutWorker', () => ({
+    startRepositoryConnectionCheckoutWorker: harness.startRepositoryConnectionCheckoutWorker,
+}));
+
+vi.mock('./externalIssues/repositoryConnectionPollerWorker', () => ({
+    startRepositoryConnectionPollerWorker: harness.startRepositoryConnectionPollerWorker,
+}));
+
+vi.mock('./externalIssues/providerActionWorker', () => ({
+    startProviderActionWorker: harness.startProviderActionWorker,
+}));
+
 vi.mock('./memory/memoryWorker', () => ({
     startMemoryWorker: vi.fn(async () => null),
 }));
@@ -369,9 +427,17 @@ vi.mock('@/machines/transfer/directPeerTransport', async () => {
     };
 });
 
+async function waitForRegisteredRpcHandlers() {
+    await vi.waitFor(() => {
+        expect(harness.apiMachine.setRPCHandlers).toHaveBeenCalled();
+    }, { timeout: 10_000 });
+    return harness.apiMachine.setRPCHandlers.mock.calls.at(-1)?.[0];
+}
+
 describe('startDaemon session handoff wiring (integration)', () => {
     beforeEach(() => {
         vi.resetModules();
+        process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
     });
 
     afterEach(() => {
@@ -382,6 +448,7 @@ describe('startDaemon session handoff wiring (integration)', () => {
         harness.requestDirectPeerTransferToFile.mockClear();
         delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_SERVER_ENABLED;
         delete process.env.HAPPIER_FEATURE_MACHINES_TRANSFER_DIRECT_PEER__ENABLED;
+        delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     });
 
     it('forwards file-backed direct-peer publish requests into the daemon registry without inline fallback', async () => {
@@ -390,9 +457,11 @@ describe('startDaemon session handoff wiring (integration)', () => {
         try {
             const { startDirectPeerTransferServer } = await import('@/machines/transfer/directPeerTransport');
             const { startDaemon } = await import('./startDaemon');
-            await startDaemon();
+            const daemonRun = startDaemon();
 
-            expect(startDirectPeerTransferServer).toHaveBeenCalledTimes(1);
+            await vi.waitFor(() => {
+                expect(startDirectPeerTransferServer).toHaveBeenCalledTimes(1);
+            });
             const startedArgs = (startDirectPeerTransferServer as unknown as { mock: { calls: unknown[][] } }).mock.calls.at(0)?.[0] as {
                 resolveOnDemandTransfer?: (input: { transferId: string; transferToken: string; requestBody: unknown }) => Promise<unknown>;
             } | undefined;
@@ -400,7 +469,7 @@ describe('startDaemon session handoff wiring (integration)', () => {
             await startedArgs?.resolveOnDemandTransfer?.({ transferId: 'on-demand-1', transferToken: 'token_1', requestBody: { ok: true } });
             expect(harness.directPeerRegistry.resolveOnDemandTransferOnOpen).toHaveBeenCalledTimes(1);
 
-            const handlers = harness.apiMachine.setRPCHandlers.mock.calls[0]?.[0];
+            const handlers = await waitForRegisteredRpcHandlers();
             expect(handlers?.directPeerTransfer).toBeDefined();
             expect(handlers?.directPeerTransfer.requestPayloadFile).toEqual(expect.any(Function));
             const payloadSource = {
@@ -440,6 +509,7 @@ describe('startDaemon session handoff wiring (integration)', () => {
                     expiresAt: 30_000,
                 },
             ]);
+            await daemonRun;
         } finally {
             exitSpy.mockRestore();
         }
@@ -452,12 +522,13 @@ describe('startDaemon session handoff wiring (integration)', () => {
         try {
             const { startDirectPeerTransferServer } = await import('@/machines/transfer/directPeerTransport');
             const { startDaemon } = await import('./startDaemon');
-            await startDaemon();
+            const daemonRun = startDaemon();
 
             expect(startDirectPeerTransferServer).toHaveBeenCalledTimes(0);
 
-            const handlers = harness.apiMachine.setRPCHandlers.mock.calls[0]?.[0];
+            const handlers = await waitForRegisteredRpcHandlers();
             expect(handlers?.directPeerTransfer).toBeUndefined();
+            await daemonRun;
         } finally {
             exitSpy.mockRestore();
         }
@@ -470,12 +541,13 @@ describe('startDaemon session handoff wiring (integration)', () => {
         try {
             const { startDirectPeerTransferServer } = await import('@/machines/transfer/directPeerTransport');
             const { startDaemon } = await import('./startDaemon');
-            await startDaemon();
+            const daemonRun = startDaemon();
 
             expect(startDirectPeerTransferServer).toHaveBeenCalledTimes(0);
 
-            const handlers = harness.apiMachine.setRPCHandlers.mock.calls[0]?.[0];
+            const handlers = await waitForRegisteredRpcHandlers();
             expect(handlers?.directPeerTransfer).toBeUndefined();
+            await daemonRun;
         } finally {
             exitSpy.mockRestore();
         }
@@ -486,9 +558,9 @@ describe('startDaemon session handoff wiring (integration)', () => {
 
         try {
             const { startDaemon } = await import('./startDaemon');
-            await startDaemon();
+            const daemonRun = startDaemon();
 
-            const handlers = harness.apiMachine.setRPCHandlers.mock.calls[0]?.[0];
+            const handlers = await waitForRegisteredRpcHandlers();
             expect(handlers?.directPeerTransfer?.requestPayloadFile).toEqual(expect.any(Function));
 
             const endpointCandidates = [
@@ -513,6 +585,7 @@ describe('startDaemon session handoff wiring (integration)', () => {
                 destinationPath: '/tmp/handoff-timeout-bridge.bin',
                 timeoutMs: 23_456,
             });
+            await daemonRun;
         } finally {
             exitSpy.mockRestore();
         }
@@ -538,9 +611,9 @@ describe('startDaemon session handoff wiring (integration)', () => {
             });
 
             const { startDaemon } = await import('./startDaemon');
-            await startDaemon();
+            const daemonRun = startDaemon();
 
-            const handlers = harness.apiMachine.setRPCHandlers.mock.calls[0]?.[0] as {
+            const handlers = await waitForRegisteredRpcHandlers() as {
                 loadLocalSessionMetadata?: (sessionId: string) => Promise<unknown>;
             } | undefined;
 
@@ -616,6 +689,7 @@ describe('startDaemon session handoff wiring (integration)', () => {
                 }),
             );
             await expect(handlers?.loadLocalSessionMetadata?.('missing_session')).resolves.toBeNull();
+            await daemonRun;
         } finally {
             exitSpy.mockRestore();
         }
@@ -626,9 +700,9 @@ describe('startDaemon session handoff wiring (integration)', () => {
 
         try {
             const { startDaemon } = await import('./startDaemon');
-            await startDaemon();
+            const daemonRun = startDaemon();
 
-            const handlers = harness.apiMachine.setRPCHandlers.mock.calls[0]?.[0];
+            const handlers = await waitForRegisteredRpcHandlers();
             expect(handlers?.directPeerTransfer).toBeDefined();
 
             expect(() => handlers.directPeerTransfer.publishTransfer({
@@ -642,6 +716,7 @@ describe('startDaemon session handoff wiring (integration)', () => {
                 },
             })).toThrow('Direct peer handoff publish requires a file-backed payload source');
             expect(harness.directPeerRegistry.publishTransfer).not.toHaveBeenCalled();
+            await daemonRun;
         } finally {
             exitSpy.mockRestore();
         }

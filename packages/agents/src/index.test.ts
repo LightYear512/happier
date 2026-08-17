@@ -48,8 +48,8 @@ describe('agents package exports', () => {
   it('re-exports the agent-state request coverage helper from the package root', () => {
     expect(isAgentStateRequestCoveredByCompletedRequests({
       requestId: 'req',
-      request: { tool: 'Write', createdAt: 1 },
-      completedRequests: { req: { completedAt: 2 } },
+      request: { tool: 'Write', arguments: {}, createdAt: 1 },
+      completedRequests: { req: { tool: 'Write', arguments: {}, completedAt: 2 } },
     })).toBe(true);
   });
 

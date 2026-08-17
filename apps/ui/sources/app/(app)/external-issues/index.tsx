@@ -126,15 +126,15 @@ export default function ExternalIssueListScreen() {
         </Pressable>
     ), [headerTint, load]);
 
+    const screenOptions = React.useMemo(() => ({
+        headerShown: true,
+        headerTitle: t('externalIssues.title'),
+        headerRight,
+    }), [headerRight]);
+
     return (
         <View testID="external-issues-screen" style={{ flex: 1, backgroundColor: theme.colors.background?.canvas ?? theme.colors.surface.base }}>
-            <Stack.Screen
-                options={{
-                    headerShown: true,
-                    headerTitle: t('externalIssues.title'),
-                    headerRight,
-                }}
-            />
+            <Stack.Screen options={screenOptions} />
             <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 12 }}>
                 <ConstrainedScreenContent style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
                     {state.status === 'loading' ? (

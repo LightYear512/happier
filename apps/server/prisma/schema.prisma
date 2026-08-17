@@ -474,9 +474,9 @@ model SessionSystemRecord {
     account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
     session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-    @@unique([accountId, sessionId, namespace, localId])
-    @@index([accountId, sessionId, namespace, kind, updatedAt(sort: Desc), id(sort: Desc)])
-    @@index([sessionId, namespace, kind, updatedAt(sort: Desc), id(sort: Desc)])
+    @@unique([accountId, sessionId, namespace, localId], map: "SSR_account_session_namespace_local_key")
+    @@index([accountId, sessionId, namespace, kind, updatedAt(sort: Desc), id(sort: Desc)], map: "SSR_account_session_namespace_kind_updated_id_idx")
+    @@index([sessionId, namespace, kind, updatedAt(sort: Desc), id(sort: Desc)], map: "SSR_session_namespace_kind_updated_id_idx")
 }
 
 model GithubOrganization {
@@ -1278,7 +1278,7 @@ model ConnectedServiceAuthGroupMember {
     group      ConnectedServiceAuthGroup @relation(fields: [groupDbId], references: [id], onDelete: Cascade)
     credential ServiceAccountToken @relation("ConnectedServiceCredentialMembers", fields: [accountId, vendor, profileId], references: [accountId, vendor, profileId], onDelete: Cascade, onUpdate: Cascade)
 
-    @@unique([accountId, vendor, groupId, profileId])
+    @@unique([accountId, vendor, groupId, profileId], map: "CSAuthGroupMember_account_vendor_group_profile_key")
     @@index([groupDbId])
     @@index([accountId, vendor, profileId])
 }

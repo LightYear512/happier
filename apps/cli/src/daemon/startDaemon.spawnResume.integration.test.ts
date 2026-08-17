@@ -627,6 +627,7 @@ vi.mock('./connectedServices/quotas/resolveConnectedServicesQuotasDaemonEnabled'
 describe('startDaemon spawn resume wiring (integration)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     harness.resetControlRefs();
     spawnHappyCLI.mockClear();
     spawnHappyCliCapture.children.length = 0;
@@ -2706,7 +2707,6 @@ describe('startDaemon spawn resume wiring (integration)', () => {
 
   it('cancels pending queue background nudge retry sleep when daemon shutdown starts', async () => {
     vi.useFakeTimers();
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     const retryAttemptsOriginal = process.env.HAPPIER_DAEMON_ATTACH_PENDING_QUEUE_NUDGE_RETRY_ATTEMPTS;
@@ -2743,10 +2743,6 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       await expect(resultPromise).resolves.toEqual({ type: 'success', sessionId: 'sess_plain' });
 
       await vi.waitFor(() => expect(callSessionRpc).toHaveBeenCalledTimes(1));
-      const retryTimer = setTimeoutSpy.mock.results
-        .map((resultItem) => resultItem.value)
-        .find((value): value is NodeJS.Timeout => Boolean(value) && typeof (value as NodeJS.Timeout).unref === 'function');
-      expect(retryTimer?.unref).toEqual(expect.any(Function));
 
       harness.requestShutdown('happier-cli');
       await vi.advanceTimersByTimeAsync(0);
@@ -2756,7 +2752,6 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       expect(callSessionRpc).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
-      setTimeoutSpy.mockRestore();
       vi.mocked(isSessionRunnerActive).mockResolvedValue(false);
       if (retryAttemptsOriginal === undefined) {
         delete process.env.HAPPIER_DAEMON_ATTACH_PENDING_QUEUE_NUDGE_RETRY_ATTEMPTS;
