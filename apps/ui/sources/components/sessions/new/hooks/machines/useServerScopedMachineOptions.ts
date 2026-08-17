@@ -4,12 +4,12 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import { listServerProfiles, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { useMachineListByServerId, useMachineListStatusByServerId } from '@/sync/domains/state/storage';
 import { isMachineVisibleForLaunchSelection } from '@/sync/domains/machines/identity/filterVisibleMachines';
-import { resolveMachineSpawnReadiness, type MachineSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
+
+import { useStableValueBySignature } from '@/hooks/ui/useStableValueBySignature';
 
 export type ServerScopedMachine = Machine & Readonly<{
     serverId: string;
     serverName: string;
-    spawnReadinessStatus: MachineSpawnReadiness['status'];
 }>;
 
 export type ServerScopedMachineGroup = Readonly<{
@@ -44,20 +44,10 @@ function buildServerScopedMachine(machine: Machine, params: Readonly<{ serverId:
         ...machine,
         serverId: params.serverId,
         serverName: params.serverName,
-        spawnReadinessStatus: resolveMachineSpawnReadiness({
-            selectedMachineId: machine.id,
-            machine,
-            requireExactSpawnReadiness: true,
-        }).status,
     };
 }
 
 function buildMachineOptionSignature(machine: Machine): string {
-    const readinessStatus = resolveMachineSpawnReadiness({
-        selectedMachineId: machine.id,
-        machine,
-        requireExactSpawnReadiness: true,
-    }).status;
     const metadata = machine.metadata;
     return [
         machine.id,
@@ -65,7 +55,6 @@ function buildMachineOptionSignature(machine: Machine): string {
         String(machine.activeAt ?? ''),
         String(machine.updatedAt ?? ''),
         String(machine.daemonStateVersion ?? ''),
-        readinessStatus,
         String(machine.revokedAt ?? ''),
         String(machine.replacedByMachineId ?? ''),
         String(metadata?.displayName ?? ''),
@@ -105,14 +94,6 @@ function buildServerProfilesSignature(profilesById: ReadonlyMap<string, ServerPr
         ].join('|'))
         .sort()
         .join('\n');
-}
-
-function useStableValueBySignature<Value>(value: Value, signature: string): Value {
-    const stableRef = React.useRef<Readonly<{ signature: string; value: Value }> | null>(null);
-    if (!stableRef.current || stableRef.current.signature !== signature) {
-        stableRef.current = { signature, value };
-    }
-    return stableRef.current.value;
 }
 
 export function useServerScopedMachineOptions(params: UseServerScopedMachineOptionsParams): ServerScopedMachineGroup[] {

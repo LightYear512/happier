@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { ConnectedServiceAuthGroupPolicyV1Schema } from '@happier-dev/protocol';
+
 import {
   DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1,
+  hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason,
   isConnectedServiceAuthGroupSoftSwitchCandidateMeaningfullyBetter,
   reconcileMemberRuntimeStateWithFreshQuotaEvidence,
+  reconcileMemberRuntimeStateWithPositiveEvidence,
   selectConnectedServiceAuthGroupCandidate,
   type ConnectedServiceAuthGroupMemberRuntimeState,
 } from './selectConnectedServiceAuthGroupCandidate';
@@ -18,6 +22,17 @@ function member(profileId: string, priority: number, createdAtMs: number) {
     enabled: true,
   };
 }
+
+describe('DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1', () => {
+  it('is derived from the protocol schema default and stays in lockstep with it', () => {
+    // Split-brain hygiene: the daemon default must not diverge from the protocol schema default.
+    // The protocol default strategy is `least_limited`; a hardcoded `priority` literal is drift.
+    expect(DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1.strategy).toBe('least_limited');
+    expect(DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1).toEqual(
+      ConnectedServiceAuthGroupPolicyV1Schema.parse({}),
+    );
+  });
+});
 
 describe('selectConnectedServiceAuthGroupCandidate', () => {
   it('does not treat the active profile as a meaningfully better soft-switch target', () => {
@@ -89,6 +104,297 @@ describe('selectConnectedServiceAuthGroupCandidate', () => {
     });
 
     expect(result.selected?.profileId).toBe('high');
+  });
+
+  it('restores the priority-primary member once its limit reset has landed when autoRestorePrimaryWhenReset is enabled', () => {
+    // We soft-switched away from the priority-primary earlier because it hit a usage limit. Its
+    // provider reset has now landed (providerResetsAtMs <= now) and a fresh healthy snapshot proves
+    // headroom. The current `backup` is above the soft-switch threshold, so without restore the
+    // group would stay on `backup`; restore must override that and re-pin the recovered primary.
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', {
+        providerResetsAtMs: 500,
+        lastFailureKind: 'usage_limit',
+        lastObservedAtMs: 400,
+        quotaSnapshot: {
+          capturedAtMs: 900,
+          effectiveMeterId: 'weekly',
+          effectiveRemainingPercent: 60,
+          meters: [{
+            meterId: 'weekly',
+            limitCategory: 'usage_limit',
+            remainingPct: 60,
+            resetAtMs: null,
+            providerLimitId: 'weekly',
+          }],
+        },
+      }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 80 } }],
+      ['other', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 90 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      allowCurrentProfileRetry: true,
+      policy: { ...basePolicy, strategy: 'priority', autoRestorePrimaryWhenReset: true, softSwitchRemainingPercent: 15 },
+      members: [member('primary', 10, 1), member('backup', 20, 2), member('other', 30, 3)],
+      memberStatesByProfileId: states,
+    });
+
+    expect(result.selected?.profileId).toBe('primary');
+  });
+
+  it('does not restore the primary when autoRestorePrimaryWhenReset is disabled (default)', () => {
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', {
+        providerResetsAtMs: 500,
+        lastFailureKind: 'usage_limit',
+        lastObservedAtMs: 400,
+        quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 60 },
+      }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 80 } }],
+      ['other', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 90 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      allowCurrentProfileRetry: true,
+      policy: { ...basePolicy, strategy: 'priority', softSwitchRemainingPercent: 15 },
+      members: [member('primary', 10, 1), member('backup', 20, 2), member('other', 30, 3)],
+      memberStatesByProfileId: states,
+    });
+
+    // Restore disabled → the above-threshold current `backup` is retained (no re-pin to primary).
+    expect(result.selected?.profileId).toBe('backup');
+  });
+
+  it('F3: does not restore-pin the primary under least_limited strategy (headroom ranking wins)', () => {
+    // Under least_limited there is no fixed "primary"; enabling autoRestore must NOT convert the
+    // pool into oldest/lowest-priority pinning over a higher-headroom candidate.
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', {
+        providerResetsAtMs: 500,
+        lastFailureKind: 'usage_limit',
+        lastObservedAtMs: 400,
+        quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 60 },
+      }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 40 } }],
+      ['other', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 90 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      policy: { ...basePolicy, strategy: 'least_limited', autoRestorePrimaryWhenReset: true, softSwitchRemainingPercent: 15, cooldownMs: 100 },
+      members: [member('primary', 10, 1), member('backup', 20, 2), member('other', 30, 3)],
+      memberStatesByProfileId: states,
+    });
+
+    expect(result.selected?.profileId).toBe('other');
+  });
+
+  it('F2: does not restore-revert a manual choice when the primary was never limited', () => {
+    // Priority strategy, autoRestore on, but the primary carries no landed provider reset / limiter
+    // history — the user simply made `backup` active. Restore must NOT bounce that choice back.
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 60 } }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 80 } }],
+      ['other', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 90 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      allowCurrentProfileRetry: true,
+      policy: { ...basePolicy, strategy: 'priority', autoRestorePrimaryWhenReset: true, softSwitchRemainingPercent: 15 },
+      members: [member('primary', 10, 1), member('backup', 20, 2), member('other', 30, 3)],
+      memberStatesByProfileId: states,
+    });
+
+    expect(result.selected?.profileId).toBe('backup');
+  });
+
+  it('F2: does not restore-revert to the primary while its limit reset has not yet landed', () => {
+    // Primary was limited but its provider reset is still in the future (has not landed): it is not
+    // yet a safe restore target, so the above-threshold current member is retained.
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', {
+        providerResetsAtMs: 5_000,
+        lastFailureKind: 'usage_limit',
+        lastObservedAtMs: 400,
+        quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 60 },
+      }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 80 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      allowCurrentProfileRetry: true,
+      policy: { ...basePolicy, strategy: 'priority', autoRestorePrimaryWhenReset: true, softSwitchRemainingPercent: 15 },
+      members: [member('primary', 10, 1), member('backup', 20, 2)],
+      memberStatesByProfileId: states,
+    });
+
+    expect(result.selected?.profileId).toBe('backup');
+  });
+
+  it('F1: fails closed and does not restore a primary whose headroom is unknown (stale/missing snapshot)', () => {
+    // Primary was limited and its reset landed, but there is no fresh snapshot, so its headroom is
+    // unknown. Restoring on unknown evidence risks an immediate soft-switch-away (flap); treat
+    // unknown as not-safe-to-restore and retain the above-threshold current member.
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', {
+        providerResetsAtMs: 500,
+        lastFailureKind: 'usage_limit',
+        lastObservedAtMs: 400,
+      }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 80 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      allowCurrentProfileRetry: true,
+      policy: { ...basePolicy, strategy: 'priority', autoRestorePrimaryWhenReset: true, softSwitchRemainingPercent: 15, cooldownMs: 100 },
+      members: [member('primary', 10, 1), member('backup', 20, 2)],
+      memberStatesByProfileId: states,
+    });
+
+    expect(result.selected?.profileId).toBe('backup');
+  });
+
+  it('does not restore a primary that is at/below the soft-switch threshold (avoids restore-then-flap)', () => {
+    const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+      ['primary', {
+        providerResetsAtMs: 500,
+        lastFailureKind: 'usage_limit',
+        lastObservedAtMs: 400,
+        quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 5 },
+      }],
+      ['backup', { quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'weekly', effectiveRemainingPercent: 80 } }],
+    ]);
+
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'backup',
+      allowCurrentProfileRetry: true,
+      policy: { ...basePolicy, strategy: 'priority', autoRestorePrimaryWhenReset: true, softSwitchRemainingPercent: 15 },
+      members: [member('primary', 10, 1), member('backup', 20, 2)],
+      memberStatesByProfileId: states,
+    });
+
+    expect(result.selected?.profileId).toBe('backup');
+  });
+
+  it('does not let quota headroom erase unrelated auth, capacity, plan, or validation failures', () => {
+    const state = {
+      credentialHealthStatus: 'needs_reauth' as const,
+      authInvalidUntilMs: 10_000,
+      capacityLimitedUntilMs: 10_000,
+      planUnavailableUntilMs: 10_000,
+      validationBlockedUntilMs: 10_000,
+      cooldownStartedAtMs: 900,
+      cooldownUntilMs: 10_000,
+      exhaustedUntilMs: 10_000,
+      quotaExhaustedUntilMs: 10_000,
+      rateLimitedUntilMs: 10_000,
+      providerResetsAtMs: 10_000,
+      lastFailureKind: 'auth_expired',
+      lastObservedAtMs: 900,
+    };
+    const reconciled = reconcileMemberRuntimeStateWithFreshQuotaEvidence({
+      state,
+      quotaSnapshot: {
+        capturedAtMs: 1_000,
+        effectiveMeterId: 'daily',
+        effectiveRemainingPercent: 80,
+        meters: [
+          { meterId: 'daily', limitCategory: 'usage_limit', remainingPct: 80, resetAtMs: null, providerLimitId: 'daily' },
+          { meterId: 'minute', limitCategory: 'rate_limit', remainingPct: 80, resetAtMs: null, providerLimitId: 'minute' },
+        ],
+      },
+      policy: basePolicy,
+      nowMs: 1_000,
+    });
+
+    expect(reconciled).toBe(state);
+  });
+
+  it('does not make reconnect-required credentials selectable from quota headroom alone', () => {
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'active',
+      policy: { ...basePolicy, strategy: 'least_limited' },
+      members: [
+        member('low-no-window', 1, 1),
+        member('high-stale-window', 1, 2),
+      ],
+      memberStatesByProfileId: new Map([
+        ['low-no-window', {
+          quotaSnapshot: { capturedAtMs: 900, effectiveMeterId: 'daily', effectiveRemainingPercent: 25 },
+        }],
+        ['high-stale-window', {
+          credentialHealthStatus: 'needs_reauth',
+          authInvalidUntilMs: 10_000,
+          cooldownUntilMs: 10_000,
+          lastFailureKind: 'auth_expired',
+          lastObservedAtMs: 900,
+          quotaSnapshot: { capturedAtMs: 1_000, effectiveMeterId: 'daily', effectiveRemainingPercent: 90 },
+        }],
+      ]),
+    });
+
+    expect(result.selected?.profileId).toBe('low-no-window');
+    expect(result.excluded).toContainEqual(expect.objectContaining({
+      profileId: 'high-stale-window',
+      reason: 'auth_invalid',
+    }));
+  });
+
+  it('clears reconnect-required state only from matching credential-refresh evidence', () => {
+    const reconciled = reconcileMemberRuntimeStateWithPositiveEvidence({
+      state: {
+        credentialHealthStatus: 'needs_reauth',
+        authInvalidUntilMs: 10_000,
+        capacityLimitedUntilMs: 10_000,
+        planUnavailableUntilMs: 10_000,
+        validationBlockedUntilMs: 10_000,
+        cooldownStartedAtMs: 900,
+        cooldownUntilMs: 10_000,
+        exhaustedUntilMs: 10_000,
+        quotaExhaustedUntilMs: 10_000,
+        rateLimitedUntilMs: 10_000,
+        providerResetsAtMs: 10_000,
+        lastFailureKind: 'auth_expired',
+        lastObservedAtMs: 900,
+      },
+      evidence: {
+        kind: 'credential_refresh',
+        observedAtMs: 1_000,
+      },
+      policy: basePolicy,
+      nowMs: 1_000,
+    });
+
+    expect(reconciled).toEqual({
+      capacityLimitedUntilMs: 10_000,
+      planUnavailableUntilMs: 10_000,
+      quotaExhaustedUntilMs: 10_000,
+      rateLimitedUntilMs: 10_000,
+      validationBlockedUntilMs: 10_000,
+      providerResetsAtMs: 10_000,
+    });
   });
 
   it('ranks least-limited candidates by generic effective meter headroom', () => {
@@ -571,6 +877,124 @@ describe('selectConnectedServiceAuthGroupCandidate', () => {
     });
   });
 
+  it('emits candidate-level decision traces when stale source quota blocks automatic selection', () => {
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 61_100,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'active',
+      policy: { ...basePolicy, strategy: 'least_limited', softSwitchRemainingPercent: 15 },
+      members: [
+        member('active', 1, 1),
+        member('backup', 2, 2),
+      ],
+      memberStatesByProfileId: new Map([
+        ['active', {
+          quotaSnapshot: {
+            capturedAtMs: 1,
+            effectiveMeterId: 'weekly',
+            effectiveRemainingPercent: 2,
+          },
+        }],
+        ['backup', {
+          quotaSnapshot: {
+            capturedAtMs: 61_090,
+            effectiveMeterId: 'weekly',
+            effectiveRemainingPercent: 80,
+          },
+        }],
+      ]),
+      allowCurrentProfileRetry: true,
+    });
+
+    expect(result.selected?.profileId).toBe('active');
+    expect(result).toMatchObject({
+      decisionTrace: expect.objectContaining({
+        activeProfileId: 'active',
+        reason: 'selected',
+        candidates: expect.arrayContaining([
+          expect.objectContaining({
+            profileId: 'active',
+            decision: 'selected',
+            quotaEvidence: expect.objectContaining({
+              status: 'stale_or_missing',
+            }),
+          }),
+          expect.objectContaining({
+            profileId: 'backup',
+            decision: 'eligible',
+            quotaEvidence: expect.objectContaining({
+              status: 'fresh',
+              remainingPercent: 80,
+            }),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  it('allows quota-unknown targets only for hard usage-limit recovery', () => {
+    const emptyStates = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>();
+
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'usage_limit',
+      profileId: 'fallback',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: emptyStates,
+    })).toBe(true);
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'same_provider_account_exhausted',
+      profileId: 'fallback',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: emptyStates,
+    })).toBe(true);
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'soft_threshold',
+      profileId: 'fallback',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: emptyStates,
+    })).toBe(false);
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'auth_expired',
+      profileId: 'fallback',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: emptyStates,
+    })).toBe(false);
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'same_provider_account_exhausted',
+      profileId: 'fallback',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: new Map([
+        ['fallback', {
+          quotaSnapshot: {
+            capturedAtMs: 900,
+            effectiveMeterId: 'weekly',
+            effectiveRemainingPercent: 0,
+          },
+        }],
+      ]),
+    })).toBe(false);
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'usage_limit',
+      profileId: 'fallback',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: new Map([
+        ['fallback', {
+          quotaSnapshot: {
+            capturedAtMs: 900,
+            effectiveMeterId: 'weekly',
+            effectiveRemainingPercent: 0,
+          },
+        }],
+      ]),
+    })).toBe(false);
+  });
+
   it('applies policy fallback cooldowns to recent rate-limit and capacity failures without provider timing', () => {
     const result = selectConnectedServiceAuthGroupCandidate({
       nowMs: 1_000,
@@ -694,6 +1118,72 @@ describe('selectConnectedServiceAuthGroupCandidate', () => {
       profileId: 'reauth',
       reason: 'auth_invalid',
     });
+  });
+
+  it('reports reconnect-required credential health before current-active masking', () => {
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'reauth',
+      policy: { ...basePolicy, strategy: 'priority' },
+      members: [
+        member('reauth', 1, 1),
+        member('healthy', 2, 2),
+      ],
+      memberStatesByProfileId: new Map([
+        ['reauth', {
+          credentialHealthStatus: 'needs_reauth',
+        }],
+      ]),
+    });
+
+    expect(result.selected?.profileId).toBe('healthy');
+    expect(result.excluded).toContainEqual({
+      profileId: 'reauth',
+      reason: 'auth_invalid',
+    });
+    expect(result.excluded).not.toContainEqual({
+      profileId: 'reauth',
+      reason: 'current_active',
+    });
+    expect(result.decisionTrace.candidates).toContainEqual(expect.objectContaining({
+      profileId: 'reauth',
+      decision: 'excluded',
+      exclusionReason: 'auth_invalid',
+      quotaEvidence: {
+        status: 'stale_or_missing',
+      },
+    }));
+  });
+
+  it('keeps retryable credential-health states selectable while excluding reconnect-required health', () => {
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'active',
+      policy: { ...basePolicy, strategy: 'priority' },
+      members: [
+        member('refreshing', 1, 1),
+        member('retryable-refresh-failed', 2, 2),
+        member('reauth', 3, 3),
+        member('healthy', 4, 4),
+      ],
+      memberStatesByProfileId: new Map([
+        ['refreshing', { credentialHealthStatus: 'refreshing' }],
+        ['retryable-refresh-failed', { credentialHealthStatus: 'refresh_failed_retryable' }],
+        ['reauth', { credentialHealthStatus: 'needs_reauth' }],
+        ['healthy', { credentialHealthStatus: 'connected' }],
+      ]),
+    });
+
+    expect(result.selected?.profileId).toBe('refreshing');
+    expect(result.excluded).toEqual(expect.arrayContaining([
+      { profileId: 'reauth', reason: 'auth_invalid' },
+    ]));
+    expect(result.excluded).not.toEqual(expect.arrayContaining([
+      { profileId: 'refreshing', reason: 'auth_invalid' },
+      { profileId: 'retryable-refresh-failed', reason: 'auth_invalid' },
+    ]));
   });
 
   it('excludes snapshot-level eligibility blockers from candidate selection', () => {

@@ -30,7 +30,9 @@ export function createMachineSocketTransport(params: Readonly<{
 }> {
   const socket = io(params.serverUrl, {
     ...(params.transports ? { transports: params.transports } : null),
-    auth: buildMachineScopedSocketAuth(params),
+    auth: {
+      ...buildMachineScopedSocketAuth(params),
+    },
     path: '/v1/updates',
     reconnection: false,
     withCredentials: true,
@@ -38,7 +40,5 @@ export function createMachineSocketTransport(params: Readonly<{
     ...getSocketIoProxyOptions({ targetUrl: params.serverUrl, env: params.env }),
   });
 
-  const transport = createSocketTransportAdapter(socket);
-
-  return { socket, transport };
+  return { socket, transport: createSocketTransportAdapter(socket) };
 }

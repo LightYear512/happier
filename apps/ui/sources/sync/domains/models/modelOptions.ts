@@ -2,13 +2,12 @@ import type { ModelMode } from '../permissions/permissionTypes';
 import { t } from '@/text';
 import { getAgentCore, type AgentId } from '@/agents/catalog/catalog';
 import type { Metadata } from '../state/storageTypes';
-import type { AcpConfigOption } from '@/sync/acp/configOptionsControl';
+import type { SessionConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
 import {
     getAgentStaticModels,
-    LEGACY_ACP_SESSION_MODELS_STATE_KEY,
-    readMetadataAliasValue,
-    SESSION_MODELS_STATE_KEY,
 } from '@happier-dev/agents';
+import { readNonBlankSessionControlIdentifier } from '@/sync/domains/sessionControl/opaqueIdentifiers';
+import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 
 export type AgentType = AgentId;
 
@@ -23,7 +22,7 @@ export type ModelOption = Readonly<{
      * `value` and this variant through the regular model-override pipeline.
      */
     extendedContextModelId?: string;
-    modelOptions?: readonly AcpConfigOption[];
+    modelOptions?: readonly SessionConfigOption[];
 }>;
 
 /**
@@ -31,15 +30,50 @@ export type ModelOption = Readonly<{
  * id (e.g. `claude-sonnet-4-6[1m]`) as its base option so model-scoped controls stay visible
  * while the variant is selected.
  */
-export function findModelOptionForEffectiveModelId(
-    options: readonly ModelOption[],
+export function findModelOptionForEffectiveModelId<Option extends Readonly<{
+    value: string;
+    extendedContextModelId?: string;
+}>>(
+    options: readonly Option[],
     effectiveModelId: string,
-): ModelOption | null {
-    return (
+): Option | null {
+    const directMatch = (
         options.find((option) => option.value === effectiveModelId)
         ?? options.find((option) => option.extendedContextModelId === effectiveModelId)
         ?? null
     );
+    if (directMatch) return directMatch;
+
+    // Some runtimes accept an unqualified model id while advertising the canonical
+    // provider-qualified identity (for example `gpt-5.6-luna` versus
+    // `openai-codex/gpt-5.6-luna`). Resolve that shorthand only when exactly one
+    // option owns it. Ambiguous and genuinely custom ids must remain freeform values.
+    if (!effectiveModelId || effectiveModelId.includes('/')) return null;
+    let matched: Option | null = null;
+    for (const option of options) {
+        const separatorIndex = option.value.indexOf('/');
+        if (separatorIndex <= 0 || separatorIndex === option.value.length - 1) continue;
+        if (option.value.slice(separatorIndex + 1) !== effectiveModelId) continue;
+        if (matched) return null;
+        matched = option;
+    }
+    return matched;
+}
+
+/**
+ * Return the advertised identity for a uniquely resolved unqualified model alias.
+ * Exact ids and extended-context variants retain their original identity.
+ */
+export function resolveCanonicalModelOptionId(
+    options: readonly Readonly<{ value: string; extendedContextModelId?: string }>[],
+    selectedModelId: string,
+): string {
+    const option = findModelOptionForEffectiveModelId(options, selectedModelId);
+    if (!option) return selectedModelId;
+    if (option.value === selectedModelId || option.extendedContextModelId === selectedModelId) {
+        return selectedModelId;
+    }
+    return option.value;
 }
 
 export type PreflightModelList = Readonly<{
@@ -48,20 +82,37 @@ export type PreflightModelList = Readonly<{
         name: string;
         description?: string;
         contextWindowTokens?: number;
-        modelOptions?: readonly AcpConfigOption[];
+        extendedContextModelId?: string;
+        modelOptions?: readonly SessionConfigOption[];
     }>>;
     supportsFreeform: boolean;
 }>;
 
+type DynamicModelRowInput = Readonly<{
+    id: unknown;
+    name: unknown;
+    description?: unknown;
+    contextWindowTokens?: unknown;
+    extendedContextModelId?: unknown;
+    modelOptions?: unknown;
+}>;
+
 type SessionModelListState = Readonly<{
     provider?: string;
-    availableModels?: Array<{
-        id?: unknown;
-        name?: unknown;
-        description?: unknown;
-        modelOptions?: unknown;
-    }>;
+    availableModels?: DynamicModelRowInput[];
 }>;
+
+/**
+ * Normalize a catalog- or session-declared extended-context variant id.
+ *
+ * One owner for the rule, because the value now flows through the preflight parse, the probe cache,
+ * and both dynamic row builders — four places that must agree on what counts as present.
+ */
+export function readExtendedContextModelId(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function dedupeModelOptionsByValue(options: readonly ModelOption[]): readonly ModelOption[] {
     const seen = new Set<string>();
@@ -69,6 +120,23 @@ function dedupeModelOptionsByValue(options: readonly ModelOption[]): readonly Mo
         if (seen.has(option.value)) return false;
         seen.add(option.value);
         return true;
+    });
+}
+
+function projectDynamicModelRows(rows: readonly DynamicModelRowInput[]): ModelOption[] {
+    return rows.flatMap((row) => {
+        if (!row || typeof row.id !== 'string' || typeof row.name !== 'string') return [];
+        const extendedContextModelId = readExtendedContextModelId(row.extendedContextModelId);
+        const modelOptions = Array.isArray(row.modelOptions) && row.modelOptions.length > 0
+            ? row.modelOptions as readonly SessionConfigOption[]
+            : null;
+        return [{
+            value: String(row.id),
+            label: String(row.name),
+            description: typeof row.description === 'string' ? row.description : '',
+            ...(extendedContextModelId ? { extendedContextModelId } : {}),
+            ...(modelOptions ? { modelOptions } : {}),
+        }];
     });
 }
 
@@ -80,10 +148,17 @@ function mergeDynamicModelOptionWithCatalog(
     if (!catalog) return option;
     const hasModelOptions = Array.isArray(option.modelOptions) && option.modelOptions.length > 0;
     const hasDescription = typeof option.description === 'string' && option.description.trim().length > 0;
+    const hasExtendedContext = typeof option.extendedContextModelId === 'string'
+        && option.extendedContextModelId.trim().length > 0;
     return {
         ...option,
         ...(!hasDescription && catalog.description ? { description: catalog.description } : {}),
         ...(!hasModelOptions && catalog.modelOptions ? { modelOptions: catalog.modelOptions } : {}),
+        // Without this a curated model arriving through the dynamic path loses its extended-context
+        // variant, and the 1M toggle disappears for a model that still supports it.
+        ...(!hasExtendedContext && catalog.extendedContextModelId
+            ? { extendedContextModelId: catalog.extendedContextModelId }
+            : {}),
     };
 }
 
@@ -115,7 +190,7 @@ function appendSelectedFreeformModelOption(params: Readonly<{
 }>): readonly ModelOption[] {
     if (!params.supportsFreeform) return params.options;
     if (!params.selectedModelId) return params.options;
-    if (params.options.some((option) => option.value === params.selectedModelId)) return params.options;
+    if (findModelOptionForEffectiveModelId(params.options, params.selectedModelId)) return params.options;
     return [
         ...params.options,
         { value: params.selectedModelId, label: params.selectedModelId, description: '' },
@@ -123,16 +198,12 @@ function appendSelectedFreeformModelOption(params: Readonly<{
 }
 
 function readSessionModelListState(metadata: Metadata | null | undefined): SessionModelListState | null {
-    return readMetadataAliasValue<SessionModelListState>(
-        (metadata as any) ?? {},
-        SESSION_MODELS_STATE_KEY,
-        LEGACY_ACP_SESSION_MODELS_STATE_KEY,
-    ) ?? null;
+    return readSessionModelsState(metadata);
 }
 
 function readSelectedModelOverrideId(metadata: Metadata | null | undefined): string {
     const metadataModelOverrideRaw = (metadata as any)?.modelOverrideV1 as { modelId?: unknown } | undefined;
-    return typeof metadataModelOverrideRaw?.modelId === 'string' ? metadataModelOverrideRaw.modelId.trim() : '';
+    return readNonBlankSessionControlIdentifier(metadataModelOverrideRaw?.modelId) ?? '';
 }
 
 function supportsDynamicSessionModelList(agentType: AgentType): boolean {
@@ -140,14 +211,7 @@ function supportsDynamicSessionModelList(agentType: AgentType): boolean {
 }
 
 export function getModelOptionsForPreflightModelList(list: PreflightModelList): readonly ModelOption[] {
-    const dynamic = (list.availableModels ?? [])
-        .filter((m) => m && typeof m.id === 'string' && typeof m.name === 'string')
-        .map((m) => ({
-            value: String(m.id),
-            label: String(m.name),
-            description: typeof m.description === 'string' ? m.description : '',
-            ...(Array.isArray(m.modelOptions) && m.modelOptions.length > 0 ? { modelOptions: m.modelOptions } : {}),
-        }));
+    const dynamic = projectDynamicModelRows(list.availableModels ?? []);
 
     const withDefault: ModelOption[] = [
         { value: 'default', label: getModelLabel('default'), description: '' },
@@ -264,22 +328,7 @@ function resolveModelOptionsForSession(agentType: AgentType, metadata: Metadata 
     if (state && state.provider === agentType && Array.isArray(state.availableModels) && state.availableModels.length > 0) {
         const catalogOptions = getModelOptionsForAgentType(agentType);
 
-        const dynamic = state.availableModels
-            .filter((m) => m && typeof m.id === 'string' && typeof m.name === 'string')
-            .map((m) => {
-                const value = String(m.id);
-                const description = typeof m.description === 'string' ? m.description : '';
-                const modelOptionsRaw = Array.isArray(m.modelOptions) && m.modelOptions.length > 0
-                    ? (m.modelOptions as readonly AcpConfigOption[])
-                    : null;
-
-                return {
-                    value,
-                    label: String(m.name),
-                    description,
-                    ...(modelOptionsRaw ? { modelOptions: modelOptionsRaw } : {}),
-                };
-            });
+        const dynamic = projectDynamicModelRows(state.availableModels);
 
         return appendSelectedFreeformModelOption({
             options: mergeModelOptionsWithCatalog({
@@ -309,11 +358,11 @@ export function getSelectableModelIdsForSession(agentType: AgentType, metadata: 
 }
 
 export function isModelSelectableForSession(agentType: AgentType, metadata: Metadata | null | undefined, modelId: string): boolean {
-    const normalized = typeof modelId === 'string' ? modelId.trim() : '';
+    const normalized = readNonBlankSessionControlIdentifier(modelId) ?? '';
     if (!normalized) return false;
 
-    const allowed = getSelectableModelIdsForSession(agentType, metadata);
-    if ((allowed as readonly string[]).includes(normalized)) return true;
+    const options = resolveModelOptionsForSession(agentType, metadata);
+    if (findModelOptionForEffectiveModelId(options, normalized)) return true;
     return supportsFreeformModelSelectionForSession(agentType, metadata);
 }
 

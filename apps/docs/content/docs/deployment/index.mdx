@@ -27,14 +27,14 @@ This section describes how to deploy **your own Happier Server** (the sync backe
 ## Quick decision (recommended)
 
 - Want a **managed service** on a host/VPS: use **Self-host runtime** (`happier relay host install`).
-- Already using a supervisor (Docker/Compose/k8s/Nomad/systemd): use **Docker** or the **runner** (`@happier-dev/relay-server`) and update on restart.
+- Already using a supervisor (Docker/Compose/k8s/Nomad/systemd): use **Docker** for image-pull updates, or the **runner** (`@happier-dev/relay-server`) for artifact downloads on restart.
 - Developing or customizing from source: use **repo-local mode** (or `hstack setup-from-source` for stack-based local workflows).
 
 ## Server flavors (high level)
 
 Happier Server supports two “flavors” that share the same API + internal logic; the difference is which storage backends are used:
 
-- **Full**: external Postgres (default) or MySQL 8+ + S3/Minio-compatible storage (default) or local files (`HAPPIER_FILES_BACKEND=local`); optional Redis for multi-replica realtime.
+- **Full**: external Postgres (default) or MySQL 8.0.16+ + S3/Minio-compatible storage (default) or local files (`HAPPIER_FILES_BACKEND=local`); optional Redis for multi-replica realtime.
 - **Light**: SQLite (default) or embedded Postgres (PGlite) stored on disk; local file storage served by the server at `GET /files/*`.
 
 If you’re deploying a shared server for multiple users/devices, you likely want **full**. If you want the easiest single-node setup, start with **light**.

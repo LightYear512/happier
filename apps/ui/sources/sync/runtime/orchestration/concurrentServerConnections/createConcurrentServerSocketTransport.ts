@@ -5,6 +5,7 @@ import type {
 } from '@happier-dev/connection-supervisor';
 
 import { resolveSocketIoTransports } from '@/sync/runtime/socketIoTransports';
+import { applyUiClientUpgradeRequired } from '@/sync/runtime/clientCompatibility/uiClientUpgradeRequired';
 
 export type ConcurrentServerSocket = Socket;
 
@@ -52,6 +53,7 @@ export function createConcurrentServerSocketTransport(params: Readonly<{
     });
 
     socket.on('connect_error', (error: unknown) => {
+        if (applyUiClientUpgradeRequired(error)) return;
         errorListeners.forEach((listener) => listener(error));
     });
 

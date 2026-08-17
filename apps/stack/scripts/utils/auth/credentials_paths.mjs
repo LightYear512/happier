@@ -146,8 +146,17 @@ function resolveActiveServerIdOverride(env = process.env) {
   return sanitizeServerIdForFilesystem(raw, '');
 }
 
+function resolveDaemonLifecycleScopeIdOverride(env = process.env) {
+  const raw = String(env?.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID ?? '').trim();
+  if (!raw) return '';
+  const sanitized = sanitizeServerIdForFilesystem(raw, '');
+  return sanitized === raw ? sanitized : '';
+}
+
 function hasExplicitServerContext({ serverUrl = '', env = process.env }) {
-  return normalizeServerUrl(serverUrl) !== '' || resolveActiveServerIdOverride(env) !== '';
+  return normalizeServerUrl(serverUrl) !== ''
+    || resolveDaemonLifecycleScopeIdOverride(env) !== ''
+    || resolveActiveServerIdOverride(env) !== '';
 }
 
 function deriveServerIdFromUrl(url) {
@@ -193,11 +202,15 @@ export function resolveStackCredentialPaths({ cliHomeDir, serverUrl = '', env = 
   );
   const hostPortServerId = deriveLoopbackHostPortServerId(normalizedServerUrl);
   const stableScopeServerId = resolveActiveServerIdOverride(env);
+  const daemonLifecycleScopeId = resolveDaemonLifecycleScopeIdOverride(env);
   const settingsServerId = resolvePreferredStackServerIdFromCliSettings({ cliHomeDir: home, serverUrl: normalizedServerUrl, env });
-  const activeServerId = settingsServerId || stableScopeServerId || urlHashServerId;
+  // Runtime identity follows the explicit stack scope. A matching settings profile is only a
+  // credential migration source; letting it become active also changes the CLI machine-id scope.
+  const activeServerId = stableScopeServerId || daemonLifecycleScopeId || urlHashServerId;
   const serverScopedPath = join(home, 'servers', activeServerId, 'access.key');
   const aliasServerIds = [
-    stableScopeServerId && stableScopeServerId !== activeServerId ? stableScopeServerId : null,
+    settingsServerId && settingsServerId !== activeServerId ? settingsServerId : null,
+    daemonLifecycleScopeId && daemonLifecycleScopeId !== activeServerId ? daemonLifecycleScopeId : null,
     urlHashServerId && urlHashServerId !== activeServerId ? urlHashServerId : null,
     hostPortServerId && hostPortServerId !== activeServerId && hostPortServerId !== urlHashServerId ? hostPortServerId : null,
   ]
@@ -211,6 +224,7 @@ export function resolveStackCredentialPaths({ cliHomeDir, serverUrl = '', env = 
   return {
     activeServerId,
     settingsServerId,
+    daemonLifecycleScopeId,
     stableScopeServerId,
     urlHashServerId,
     hostPortServerId,
@@ -232,15 +246,16 @@ export function resolveStackDaemonStatePaths({ cliHomeDir, serverUrl = '', env =
   );
   const hostPortServerId = deriveLoopbackHostPortServerId(normalizedServerUrl);
   const stableScopeServerId = resolveActiveServerIdOverride(env);
-  const settingsServerId = resolvePreferredStackServerIdFromCliSettings({ cliHomeDir: home, serverUrl: normalizedServerUrl, env });
-  const activeServerId = settingsServerId || stableScopeServerId || urlHashServerId;
+  const daemonLifecycleScopeId = resolveDaemonLifecycleScopeIdOverride(env);
+  // Daemon state is lifecycle state, not a credential-profile artifact. Settings profiles may
+  // select HAPPIER_ACTIVE_SERVER_ID for credentials, but never select or alias daemon state.
+  const activeServerId = daemonLifecycleScopeId || stableScopeServerId || urlHashServerId;
 
   const legacyStatePath = join(home, 'daemon.state.json');
   const legacyLockPath = join(home, 'daemon.state.json.lock');
   const serverScopedStatePath = join(home, 'servers', activeServerId, 'daemon.state.json');
   const serverScopedLockPath = join(home, 'servers', activeServerId, 'daemon.state.json.lock');
   const aliasServerIds = [
-    stableScopeServerId && stableScopeServerId !== activeServerId ? stableScopeServerId : null,
     urlHashServerId && urlHashServerId !== activeServerId ? urlHashServerId : null,
     hostPortServerId && hostPortServerId !== activeServerId && hostPortServerId !== urlHashServerId ? hostPortServerId : null,
   ]
@@ -257,7 +272,7 @@ export function resolveStackDaemonStatePaths({ cliHomeDir, serverUrl = '', env =
 
   return {
     activeServerId,
-    settingsServerId,
+    daemonLifecycleScopeId,
     stableScopeServerId,
     urlHashServerId,
     hostPortServerId,
@@ -371,11 +386,8 @@ export function findAnyDaemonStatePairInCliHome({ cliHomeDir }) {
 export function findExistingStackCredentialPath({ cliHomeDir, serverUrl = '', env = process.env }) {
   const resolved = resolveStackCredentialPaths({ cliHomeDir, serverUrl, env });
   if (fileHasContent(resolved.serverScopedPath)) return resolved.serverScopedPath;
-  if (resolved.hostPortServerScopedPath && fileHasContent(resolved.hostPortServerScopedPath)) {
-    return resolved.hostPortServerScopedPath;
-  }
-  if (resolved.urlHashServerScopedPath && fileHasContent(resolved.urlHashServerScopedPath)) {
-    return resolved.urlHashServerScopedPath;
+  for (const aliasPath of resolved.aliasServerScopedPaths) {
+    if (fileHasContent(aliasPath)) return aliasPath;
   }
   if (fileHasContent(resolved.legacyPath)) return resolved.legacyPath;
   return null;

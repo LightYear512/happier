@@ -1,4 +1,5 @@
-import { normalizeAcpConfigOptionsArray, type AcpConfigOption } from '@/sync/acp/configOptionsControl';
+import { readExtendedContextModelId } from './modelOptions';
+import { normalizeSessionConfigOptionsArray, type SessionConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
 import type { PreflightModelList } from '@/sync/domains/models/modelOptions';
 import type { ProbedResourceSnapshot } from '@happier-dev/protocol';
 
@@ -33,8 +34,8 @@ function normalizePersistedModelList(input: unknown): PreflightModelList | null 
     const supportsFreeformRaw = inputRecord.supportsFreeform;
     if (!Array.isArray(modelsRaw)) return null;
 
-    const normalizeModelOptions = (value: unknown): readonly AcpConfigOption[] | undefined => {
-        const normalized = normalizeAcpConfigOptionsArray(value);
+    const normalizeModelOptions = (value: unknown): readonly SessionConfigOption[] | undefined => {
+        const normalized = normalizeSessionConfigOptionsArray(value);
         return normalized && normalized.length > 0 ? normalized : undefined;
     };
 
@@ -47,6 +48,9 @@ function normalizePersistedModelList(input: unknown): PreflightModelList | null 
             id: modelRecord.id,
             name: modelRecord.name,
             ...(typeof modelRecord.description === 'string' ? { description: modelRecord.description } : {}),
+            ...(readExtendedContextModelId(modelRecord.extendedContextModelId)
+                ? { extendedContextModelId: readExtendedContextModelId(modelRecord.extendedContextModelId) }
+                : {}),
             ...(typeof modelRecord.contextWindowTokens === 'number' && Number.isFinite(modelRecord.contextWindowTokens) && modelRecord.contextWindowTokens > 0
                 ? { contextWindowTokens: Math.trunc(modelRecord.contextWindowTokens) }
                 : {}),

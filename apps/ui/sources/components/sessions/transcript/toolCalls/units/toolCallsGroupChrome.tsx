@@ -1,13 +1,12 @@
 import * as React from 'react';
 import { Pressable, View, type StyleProp, type ViewStyle } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import type { TranscriptToolChromeCommon } from '@/components/sessions/transcript/transcriptSessionCommon';
 
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { Typography } from '@/constants/Typography';
@@ -15,7 +14,9 @@ import { layout } from '@/components/ui/layout/layout';
 import { resolveInactiveSessionToolCallFailure } from '@/components/tools/shell/permissions/resolveInactiveSessionToolCallFailure';
 import { resolveToolStatusIndicatorKind } from '@/components/tools/shell/presentation/resolveToolStatusIndicatorKind';
 
-import type { GroupedToolCallChromeMode } from './groupedToolCallRowContent';
+import type { GroupedToolCallChromeMode } from './groupedToolCallRowRenderDecision';
+import { Icon } from '@/components/ui/icons/Icon';
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
 
 export type ToolCallsGroupChromeVariant = 'cards' | 'feed' | 'feed_background';
 export type ToolCallsGroupUnitPosition = 'header' | 'middle' | 'footer';
@@ -154,7 +155,7 @@ export const ToolCallsGroupHeaderChrome = React.memo(function ToolCallsGroupHead
             ]}
         >
             <View style={chromeStyles.headerGutter}>
-                <Ionicons name="layers-outline" size={16} color={theme.colors.text.secondary} />
+                <Icon name="stack-simple" size={16} color={theme.colors.text.secondary} />
             </View>
             <Text style={chromeStyles.title}>
                 {t('session.toolCalls')}
@@ -163,16 +164,16 @@ export const ToolCallsGroupHeaderChrome = React.memo(function ToolCallsGroupHead
             <View style={chromeStyles.headerRight}>
                 <View style={chromeStyles.statusIconRight}>
                     {props.status === 'running' ? (
-                        <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+                        <ActivitySpinner size={iconMatchedSpinnerSize(GROUP_STATUS_ICON_SIZE_PX)} color={theme.colors.text.secondary} />
                     ) : props.status === 'error' ? (
-                        <Ionicons name="alert-circle" size={16} color={theme.colors.state.danger.foreground} />
+                        <Icon name="warning-circle" size={GROUP_STATUS_ICON_SIZE_PX} color={theme.colors.state.danger.foreground} />
                     ) : (
-                        <Ionicons name="checkmark-circle" size={16} color={theme.colors.state.success.foreground} />
+                        <Icon name="check-circle" size={GROUP_STATUS_ICON_SIZE_PX} color={theme.colors.state.success.foreground} />
                     )}
                 </View>
                 {props.expanded ? (
-                    <Ionicons
-                        name="chevron-up-outline"
+                    <Icon
+                        name="caret-up"
                         size={16}
                         color={theme.colors.text.secondary}
                     />
@@ -202,6 +203,8 @@ export const ToolCallsGroupExpandMoreChrome = React.memo(function ToolCallsGroup
         </Pressable>
     );
 });
+
+const GROUP_STATUS_ICON_SIZE_PX = ICON_SIZE.sm;
 
 const chromeStyles = StyleSheet.create((theme) => ({
     header: {
@@ -238,7 +241,7 @@ const chromeStyles = StyleSheet.create((theme) => ({
         gap: 8,
     },
     statusIconRight: {
-        width: 18,
+        width: GROUP_STATUS_ICON_SIZE_PX,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -279,13 +282,13 @@ const unitStyles = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.inset ?? theme.colors.surface.base,
     },
     unitCardsHeaderCap: {
-        borderTopLeftRadius: 14,
-        borderTopRightRadius: 14,
+        borderTopLeftRadius: theme.borderRadius.xl,
+        borderTopRightRadius: theme.borderRadius.xl,
         overflow: 'hidden',
     },
     unitCardsFooterCap: {
-        borderBottomLeftRadius: 14,
-        borderBottomRightRadius: 14,
+        borderBottomLeftRadius: theme.borderRadius.xl,
+        borderBottomRightRadius: theme.borderRadius.xl,
         overflow: 'hidden',
     },
     unitFeed: {
@@ -296,14 +299,14 @@ const unitStyles = StyleSheet.create((theme) => ({
         paddingHorizontal: 10,
     },
     unitFeedBackgroundHeaderCap: {
-        borderTopLeftRadius: 14,
-        borderTopRightRadius: 14,
+        borderTopLeftRadius: theme.borderRadius.xl,
+        borderTopRightRadius: theme.borderRadius.xl,
         overflow: 'hidden',
         paddingTop: 6,
     },
     unitFeedBackgroundFooterCap: {
-        borderBottomLeftRadius: 14,
-        borderBottomRightRadius: 14,
+        borderBottomLeftRadius: theme.borderRadius.xl,
+        borderBottomRightRadius: theme.borderRadius.xl,
         overflow: 'hidden',
         paddingBottom: 6,
     },

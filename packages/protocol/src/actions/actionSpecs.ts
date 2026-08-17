@@ -8,7 +8,7 @@ import { MemorySearchQueryV1Schema } from '../memory/memorySearch.js';
 import { ApprovalRequestCreatedBySchema, ApprovalRequestOriginV1Schema } from '../approvals/approvalRequestV1.js';
 import { PromptRegistryConfiguredSourceV1Schema } from '../promptLibrary/promptRegistriesV1.js';
 import { PromptAssetInstallModeV1Schema, PromptAssetScopeV1Schema } from '../promptLibrary/promptAssetsV1.js';
-import { BackendTargetKeySchema, BackendTargetRefSchema, parseBackendTargetKey } from '../backendTargets/backendTargetRef.js';
+import { BackendTargetKeySchema, BackendTargetRefSchema, buildBackendTargetKey, parseBackendTargetKey } from '../backendTargets/backendTargetRef.js';
 import { ExecutionRunListRequestSchema } from '../executionRunListRequest.js';
 import { ExecutionRunStartRequestSchema } from '../executionRunStartRequest.js';
 import { SessionRollbackTargetSchema } from '../sessionRollback.js';
@@ -29,8 +29,25 @@ import {
   SessionUsageLimitWaitResumeEnableRequestV1Schema,
 } from '../sessionWorkState/sessionWorkStateRpc.js';
 import { SessionTerminalComposerClearRequestV1Schema } from '../sessionControl/sessionTerminalComposerClearV1.js';
+import { SessionPendingInputInterruptAndRunRequestV1Schema } from '../sessionControl/sessionPendingInputInterruptAndRunV1.js';
+import { PendingRequestedActionV1Schema } from '../sessionMessages/pendingRequestedActionV1.js';
 import { SessionWorkStateStatusV1Schema } from '../sessionWorkState/sessionWorkStateV1.js';
 import { FEATURE_ID_ENUM, type FeatureId } from '../features/catalog.js';
+import { STRUCTURED_QUESTION_LIMITS } from '../tools/structuredQuestionAnswersV1.js';
+import { AcpConfigOptionOverridesV1Schema } from '../sessionMetadata/metadataOverridesV1.js';
+import { SessionPermissionModeInputSchema } from '../sessionMetadata/sessionPermissionModes.js';
+import { AgentRuntimeDescriptorV1Schema } from '../sessionMetadata/agentRuntimeDescriptorV1.js';
+import { SessionMcpSelectionV1Schema } from '../mcpServers/sessionSelectionV1.js';
+import { ConnectedServiceBindingsV1Schema } from '../connect/connectedServiceBindings.js';
+import {
+  SpawnConfigOptionValueSchema,
+  findSpawnConfigOptionAliasConflicts,
+} from './sessionSpawnConfigOptions.js';
+import {
+  EXECUTION_RUN_ACTION_PERMISSION_MODES,
+  EXECUTION_RUN_ACTION_PERMISSION_MODE_DESCRIPTION,
+  ExecutionRunActionPermissionModeSchema,
+} from './executionRunActionPermissionMode.js';
 
 export {
   ActionApprovalFlowSchema,
@@ -234,7 +251,7 @@ const SessionPermissionModeSetInputSchema = z.object({
 
 const SessionModelSetInputSchema = z.object({
   sessionId: z.string().min(1),
-  modelId: z.string().trim().min(1),
+  modelId: z.string().refine((value) => value.trim().length > 0, { message: 'Model ID must not be blank' }),
 }).passthrough();
 
 const SessionStatusGetInputSchema = z.object({
@@ -536,28 +553,45 @@ const IntentStartCommonSchema = z.object({
   sessionId: z.string().min(1).optional(),
   backendTargetKeys: z.array(BackendTargetKeySchema).min(1),
   instructions: z.string().trim().min(1),
-  permissionMode: z.string().min(1).optional(),
+  permissionMode: ExecutionRunActionPermissionModeSchema.optional(),
   retentionPolicy: z.enum(['ephemeral', 'resumable']).optional(),
   runClass: z.enum(['bounded', 'long_lived']).optional(),
   ioMode: z.enum(['request_response', 'streaming']).optional(),
+  // Optional model selection for every fanned-out run, using the SAME canonical shape as
+  // session spawn (`session.spawn_new`'s `modelId`). Omit to use each backend's default model.
+  modelId: z.string().min(1).optional(),
+  // Optional config-option overrides applied to every fanned-out run, using the SAME canonical
+  // vocabulary as session spawn. Reasoning effort is the `reasoning_effort` option. Provide either
+  // the canonical `sessionConfigOptionOverrides` object or the agent-friendly `configOptions`
+  // shorthand (e.g. { reasoning_effort: "high" }); they are merged at the action boundary and a
+  // conflicting value in both forms is a typed rejection.
+  sessionConfigOptionOverrides: AcpConfigOptionOverridesV1Schema.optional(),
+  configOptions: z.record(z.string().min(1), SpawnConfigOptionValueSchema).optional(),
+  // Optional connected-services selection applied to every fanned-out target. Accepts the simple
+  // string form (e.g. "openai-codex:group:happier" or "openai-codex:team") or a full bindings
+  // object; normalized at the action boundary. Omit to use each account's default.
+  connectedServices: z.unknown().optional(),
+  // Optional per-target override keyed by backend target key (e.g. { "agent:codex": "openai-codex:team" }).
+  // A per-target entry wins over the blanket `connectedServices` for that target.
+  connectedServicesByBackendTargetKey: z.record(z.string().min(1), z.unknown()).optional(),
 }).passthrough();
 
 const PlanStartInputSchema = IntentStartCommonSchema.extend({
-  permissionMode: z.string().min(1).default('read_only'),
+  permissionMode: ExecutionRunActionPermissionModeSchema.default('read_only'),
   retentionPolicy: z.enum(['ephemeral', 'resumable']).default('ephemeral'),
   runClass: z.enum(['bounded', 'long_lived']).default('bounded'),
   ioMode: z.enum(['request_response', 'streaming']).default('request_response'),
 }).passthrough();
 
 const DelegateStartInputSchema = IntentStartCommonSchema.extend({
-  permissionMode: z.string().min(1).default('workspace_write'),
+  permissionMode: ExecutionRunActionPermissionModeSchema.default('workspace_write'),
   retentionPolicy: z.enum(['ephemeral', 'resumable']).default('ephemeral'),
   runClass: z.enum(['bounded', 'long_lived']).default('bounded'),
   ioMode: z.enum(['request_response', 'streaming']).default('request_response'),
 }).passthrough();
 
 const VoiceAgentStartInputSchema = IntentStartCommonSchema.extend({
-  permissionMode: z.string().min(1).default('read_only'),
+  permissionMode: ExecutionRunActionPermissionModeSchema.default('read_only'),
   retentionPolicy: z.enum(['ephemeral', 'resumable']).default('ephemeral'),
   runClass: z.enum(['bounded', 'long_lived']).default('long_lived'),
   ioMode: z.enum(['request_response', 'streaming']).default('streaming'),
@@ -579,8 +613,23 @@ const ExecutionRunStartInputSchema = z.object({
   runClass: z.enum(['bounded', 'long_lived']),
   ioMode: z.enum(['request_response', 'streaming']),
   initialContextMode: z.enum(['bootstrap', 'first_turn']).optional(),
+  // Optional model selection for the run's backend — SAME canonical shape as session spawn's
+  // `modelId`. Omit to use the backend's default model.
+  modelId: z.string().min(1).optional(),
+  // Optional config-option overrides for the run, using the SAME canonical vocabulary as session
+  // spawn. Reasoning effort is the `reasoning_effort` option. Provide either the canonical
+  // `sessionConfigOptionOverrides` object or the `configOptions` shorthand; they are merged at the
+  // action boundary and a conflicting value in both forms is a typed rejection.
+  sessionConfigOptionOverrides: AcpConfigOptionOverridesV1Schema.optional(),
+  configOptions: z.record(z.string().min(1), SpawnConfigOptionValueSchema).optional(),
   resumeHandle: z.unknown().nullable().optional(),
   replay: z.unknown().optional(),
+  // Optional connected-services selection binding the run's backend to a specific account/pool
+  // instead of the runner's inherited account. Accepts the simple string form
+  // (e.g. "openai-codex:group:happier" or "openai-codex:team") or a full bindings object; normalized
+  // at the action boundary. Omit to use the account's configured default exactly as stored (literal:
+  // a profile default binds to that profile, a pool default binds to that pool — no silent upgrade).
+  connectedServices: z.unknown().optional(),
 }).passthrough();
 
 const ExecutionRunGetInputSchema = ExecutionRunIdInputSchema.extend({
@@ -631,16 +680,123 @@ const SessionHandoffInputSchema = z.object({
   workspaceTransfer: SessionHandoffWorkspaceTransferSchema.optional(),
 }).passthrough();
 
+const SessionSpawnTerminalInputSchema = z.object({
+  mode: z.enum(['plain', 'tmux', 'windows_terminal', 'windows_console']).optional(),
+  tmux: z.object({
+    sessionName: z.string().optional(),
+    isolated: z.boolean().optional(),
+    tmpDir: z.string().nullable().optional(),
+  }).strict().optional(),
+}).strict();
+
+function normalizeSpawnTargetAlias(value: string): string {
+  const trimmed = value.trim();
+  if (BackendTargetKeySchema.safeParse(trimmed).success) return trimmed;
+  return trimmed === 'customAcp' ? trimmed : `agent:${trimmed}`;
+}
+
 const SessionSpawnNewInputSchema = z.object({
   tag: z.string().min(1).optional(),
-  agentId: z.string().min(1).optional(),
+  tags: z.array(z.string().min(1)).optional(),
+  agentId: z.string().trim().min(1).optional(),
+  backend: z.string().trim().min(1).optional(),
+  target: z.string().trim().min(1).optional(),
   modelId: z.string().min(1).optional(),
-  backendTargetKey: z.string().min(1).optional(),
+  backendTargetKey: BackendTargetKeySchema.optional(),
+  backendTarget: BackendTargetRefSchema.optional(),
   title: z.string().min(1).optional(),
   path: z.string().min(1).optional(),
+  directory: z.string().min(1).optional(),
   host: z.string().min(1).optional(),
+  machineId: z.string().min(1).optional(),
+  prompt: z.string().min(1).optional(),
+  initialPrompt: z.string().min(1).optional(),
   initialMessage: z.string().min(1).optional(),
-}).passthrough();
+  permissionMode: SessionPermissionModeInputSchema.optional(),
+  agentModeId: z.string().min(1).optional(),
+  sessionConfigOptionOverrides: AcpConfigOptionOverridesV1Schema.optional(),
+  configOptions: z.record(z.string().min(1), SpawnConfigOptionValueSchema).optional(),
+  profileId: z.string().min(1).optional(),
+  environmentVariables: z.record(z.string().min(1), z.string()).optional(),
+  connectedServices: ConnectedServiceBindingsV1Schema.optional(),
+  connectedServicesUpdatedAt: z.number().int().optional(),
+  mcpSelection: SessionMcpSelectionV1Schema.optional(),
+  transcriptStorage: z.enum(['persisted', 'direct']).optional(),
+  terminal: SessionSpawnTerminalInputSchema.optional(),
+  windowsRemoteSessionLaunchMode: z.enum(['hidden', 'windows_terminal', 'console']).optional(),
+  windowsRemoteSessionConsole: z.enum(['hidden', 'visible']).optional(),
+  windowsTerminalWindowName: z.string().min(1).optional(),
+  codexBackendMode: z.enum(['mcp', 'acp', 'appServer']).optional(),
+  agentRuntimeDescriptorV1: AgentRuntimeDescriptorV1Schema.optional(),
+}).strict().superRefine((value, ctx) => {
+  const record = value as Record<string, unknown>;
+  const rejectConflictingAliases = (fields: readonly string[]) => {
+    const defined = fields
+      .map((field) => ({ field, value: record[field] }))
+      .filter((entry): entry is { field: string; value: string } => typeof entry.value === 'string');
+    if (defined.length < 2) return;
+    const first = defined[0]?.value;
+    if (defined.every((entry) => entry.value === first)) return;
+    for (const entry of defined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${fields.join('/')} aliases must agree`,
+        path: [entry.field],
+      });
+    }
+  };
+  const rejectConflictingTargetAliases = () => {
+    const aliases: { field: string; value: string }[] = [];
+    if (typeof value.agentId === 'string') aliases.push({ field: 'agentId', value: normalizeSpawnTargetAlias(value.agentId) });
+    if (typeof value.backend === 'string') aliases.push({ field: 'backend', value: normalizeSpawnTargetAlias(value.backend) });
+    if (typeof value.target === 'string') aliases.push({ field: 'target', value: normalizeSpawnTargetAlias(value.target) });
+    if (typeof value.backendTargetKey === 'string') {
+      aliases.push({ field: 'backendTargetKey', value: value.backendTargetKey });
+    }
+    if (value.backendTarget) {
+      aliases.push({ field: 'backendTarget', value: buildBackendTargetKey(value.backendTarget) });
+    }
+    const concreteValues = aliases.map((alias) => alias.value).filter((alias) => alias !== 'customAcp');
+    const hasCustomAcpAlias = aliases.some((alias) => alias.value === 'customAcp');
+    if (aliases.length < 2 && !hasCustomAcpAlias) return;
+
+    const hasConflictingConcreteTargets = new Set(concreteValues).size > 1;
+    const hasBuiltInTarget = concreteValues.some((alias) => alias.startsWith('agent:'));
+    const hasConcreteAcpTarget = concreteValues.some((alias) => alias.startsWith('acpBackend:'));
+    if (!hasConflictingConcreteTargets && !(hasCustomAcpAlias && hasBuiltInTarget) && !(hasCustomAcpAlias && !hasConcreteAcpTarget)) return;
+
+    for (const alias of aliases) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'spawn target aliases must agree',
+        path: [alias.field],
+      });
+    }
+  };
+  const rejectConflictingConfigAliases = () => {
+    for (const conflict of findSpawnConfigOptionAliasConflicts({
+      sessionConfigOptionOverrides: value.sessionConfigOptionOverrides,
+      configOptions: value.configOptions,
+    })) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'configOptions must agree with sessionConfigOptionOverrides',
+        path: ['configOptions', conflict.optionId],
+      });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'sessionConfigOptionOverrides must agree with configOptions',
+        path: ['sessionConfigOptionOverrides', 'overrides', conflict.optionId, 'value'],
+      });
+    }
+  };
+
+  rejectConflictingAliases(['path', 'directory']);
+  rejectConflictingAliases(['prompt', 'initialPrompt', 'initialMessage']);
+  rejectConflictingTargetAliases();
+  rejectConflictingConfigAliases();
+});
+export type SessionSpawnNewInput = z.infer<typeof SessionSpawnNewInputSchema>;
 
 const SessionSpawnPickerInputSchema = z.object({
   tag: z.string().min(1).optional(),
@@ -705,6 +861,63 @@ const AgentsModelsListInputSchema = z.object({
   }
 });
 
+const AgentsSessionModesListInputSchema = AgentsModelsListInputSchema;
+const AgentsConfigOptionsListInputSchema = AgentsModelsListInputSchema;
+
+const SpawnDiscoveryAgentContextInputSchema = z.object({
+  agentId: z.string().min(1).optional(),
+  backendTargetKey: BackendTargetKeySchema.optional(),
+  includeDisabled: z.boolean().optional(),
+  includeUnavailable: z.boolean().optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (value.agentId && value.backendTargetKey) {
+    const parsedTarget = parseBackendTargetKey(value.backendTargetKey);
+    const derivedAgentId = parsedTarget.kind === 'builtInAgent' ? parsedTarget.agentId : 'customAcp';
+    if (value.agentId !== derivedAgentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'agentId must match backendTargetKey when both are provided',
+        path: ['agentId'],
+      });
+    }
+  }
+});
+
+const SessionsSpawnProfilesListInputSchema = SpawnDiscoveryAgentContextInputSchema;
+const SessionsSpawnConnectedServicesListInputSchema = SpawnDiscoveryAgentContextInputSchema;
+
+const SessionsSpawnMcpServersPreviewInputSchema = z.object({
+  agentId: z.string().min(1).optional(),
+  backendTargetKey: BackendTargetKeySchema.optional(),
+  machineId: z.string().min(1).optional(),
+  serverId: z.string().min(1).optional(),
+  path: z.string().min(1).optional(),
+  directory: z.string().min(1).optional(),
+  mcpSelection: SessionMcpSelectionV1Schema.optional(),
+  selection: SessionMcpSelectionV1Schema.optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (value.agentId && value.backendTargetKey) {
+    const parsedTarget = parseBackendTargetKey(value.backendTargetKey);
+    const derivedAgentId = parsedTarget.kind === 'builtInAgent' ? parsedTarget.agentId : 'customAcp';
+    if (value.agentId !== derivedAgentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'agentId must match backendTargetKey when both are provided',
+        path: ['agentId'],
+      });
+    }
+  }
+  if (value.path && value.directory && value.path !== value.directory) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'path and directory aliases must agree',
+      path: ['directory'],
+    });
+  }
+});
+
 const ActionSpecSearchInputSchema = z.object({
   query: z.string().trim().optional(),
   limit: z.number().int().min(1).max(100).optional(),
@@ -737,8 +950,12 @@ const ActionOptionsResolveInputSchema = z.object({
 const SessionSendMessageInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   message: z.string().min(1),
+  requestedAction: PendingRequestedActionV1Schema.optional(),
   permissionModeOverride: z.string().trim().min(1).optional(),
-  modelOverride: z.union([z.string().trim().min(1), z.null()]).optional(),
+  modelOverride: z.union([
+    z.string().refine((value) => value.trim().length > 0, { message: 'Model override must not be blank' }),
+    z.null(),
+  ]).optional(),
   wait: z.boolean().optional(),
   timeoutSeconds: z.number().int().min(1).max(3600).optional(),
 }).passthrough();
@@ -750,20 +967,50 @@ const SessionPermissionRespondInputSchema = z.object({
 }).passthrough();
 
 const SessionUserActionAnswerItemSchema = z.object({
-  question: z.string().trim().min(1),
-  answer: z.string().trim().min(1),
-}).strict();
+  question: z.string()
+    .min(1)
+    .max(STRUCTURED_QUESTION_LIMITS.maxStringLength)
+    .refine((value) => value.trim().length > 0, { message: 'question must not be blank' }),
+  values: z.array(z.string().max(STRUCTURED_QUESTION_LIMITS.maxStringLength))
+    .min(1)
+    .max(STRUCTURED_QUESTION_LIMITS.maxAnswersPerQuestion)
+    .optional(),
+  answer: z.string().min(1).max(STRUCTURED_QUESTION_LIMITS.maxStringLength).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.answer !== undefined && value.values !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'answer and values cannot both be provided' });
+  }
+  if (value.answer === undefined && value.values === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'answer or values is required' });
+  }
+});
 
 const SessionUserActionAnswerInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   requestId: z.string().min(1).optional(),
   decision: z.enum(['approve', 'reject', 'request_changes']).optional(),
   reason: z.string().trim().min(1).optional(),
-  answers: z.array(SessionUserActionAnswerItemSchema).min(1).optional(),
+  answers: z.array(SessionUserActionAnswerItemSchema)
+    .min(1)
+    .max(STRUCTURED_QUESTION_LIMITS.maxQuestions)
+    .optional(),
   updatedPermissions: z.unknown().optional(),
 }).passthrough().superRefine((value, ctx) => {
   const hasAnswers = Array.isArray(value.answers) && value.answers.length > 0;
+  const seenQuestions = new Set<string>();
+  for (const [index, entry] of (value.answers ?? []).entries()) {
+    if (seenQuestions.has(entry.question)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'duplicate question', path: ['answers', index, 'question'] });
+    }
+    seenQuestions.add(entry.question);
+    if (entry.values && new Set(entry.values).size !== entry.values.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'duplicate answer value', path: ['answers', index, 'values'] });
+    }
+  }
   const decision = typeof value.decision === 'string' ? value.decision : null;
+  if (hasAnswers && decision && decision !== 'approve') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'answers cannot accompany a rejecting decision', path: ['decision'] });
+  }
   if (!hasAnswers && !decision) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -1135,6 +1382,33 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
           widget: 'textarea',
           required: true,
         },
+        {
+          path: 'modelId',
+          title: 'Model',
+          description: 'Optional. Model id for the run(s), using the SAME shape as session spawn. Applies to every target; omit to use each backend\'s default model. Enumerate valid ids with the agents.models.available options source.',
+          widget: 'text',
+          optionsSourceId: 'agents.models.available',
+        },
+        {
+          path: 'configOptions',
+          title: 'Config options (e.g. reasoning effort)',
+          description: 'Optional. Per-run config options using the SAME vocabulary as session spawn, e.g. { "reasoning_effort": "high" }. Reasoning effort is the reasoning_effort option (values are backend-specific, e.g. Codex low|medium|high|xhigh). Merged with sessionConfigOptionOverrides; a conflicting value in both forms is rejected.',
+          widget: 'text',
+        },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (account/pool)',
+          description: 'Optional. Bind these runs to a connected account or pool instead of the runner\'s inherited account. Simple form: "openai-codex:group:<poolId>" (a pool — auto-rotates when autoSwitch is enabled), "openai-codex:<profileId>" (a single account), "openai-codex:native" (opt out), or a full { v:1, bindingsByServiceId } object. Applies to every target; omit to use each account\'s configured default exactly as stored (literal: a profile default binds to that profile, a pool default to that pool — no silent upgrade; to rotate, store a pool default or pass a pool selection).',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target',
+          description: 'Optional per-target override, e.g. { "agent:codex": "openai-codex:group:<poolId>" }. A per-target entry wins over connectedServices for that target.',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
       ],
     },
     examples: {
@@ -1179,6 +1453,40 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
           widget: 'textarea',
           required: true,
         },
+        {
+          path: 'permissionMode',
+          title: 'Permission mode',
+          description: EXECUTION_RUN_ACTION_PERMISSION_MODE_DESCRIPTION,
+          widget: 'select',
+          options: EXECUTION_RUN_ACTION_PERMISSION_MODES.map((value) => ({ value, label: value })),
+        },
+        {
+          path: 'modelId',
+          title: 'Model',
+          description: 'Optional. Model id for the run(s), using the SAME shape as session spawn. Applies to every target; omit to use each backend\'s default model. Enumerate valid ids with the agents.models.available options source.',
+          widget: 'text',
+          optionsSourceId: 'agents.models.available',
+        },
+        {
+          path: 'configOptions',
+          title: 'Config options (e.g. reasoning effort)',
+          description: 'Optional. Per-run config options using the SAME vocabulary as session spawn, e.g. { "reasoning_effort": "high" }. Reasoning effort is the reasoning_effort option (values are backend-specific, e.g. Codex low|medium|high|xhigh). Merged with sessionConfigOptionOverrides; a conflicting value in both forms is rejected.',
+          widget: 'text',
+        },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (account/pool)',
+          description: 'Optional. Bind these runs to a connected account or pool instead of the runner\'s inherited account. Simple form: "openai-codex:group:<poolId>" (a pool — auto-rotates when autoSwitch is enabled), "openai-codex:<profileId>" (a single account), "openai-codex:native" (opt out), or a full { v:1, bindingsByServiceId } object. Applies to every target; omit to use each account\'s configured default exactly as stored (literal: a profile default binds to that profile, a pool default to that pool — no silent upgrade; to rotate, store a pool default or pass a pool selection).',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target',
+          description: 'Optional per-target override, e.g. { "agent:codex": "openai-codex:group:<poolId>" }. A per-target entry wins over connectedServices for that target.',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
       ],
     },
     examples: {
@@ -1222,6 +1530,20 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
           widget: 'textarea',
           required: true,
         },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (account/pool)',
+          description: 'Optional. Bind the run to a connected account or pool instead of the runner\'s inherited account. Simple form: "openai-codex:group:<poolId>" (a pool — auto-rotates when autoSwitch is enabled), "openai-codex:<profileId>" (a single account), "openai-codex:native" (opt out), or a full { v:1, bindingsByServiceId } object. Omit to use the account\'s configured default exactly as stored (literal: a profile default binds to that profile, a pool default to that pool — no silent upgrade; to rotate, store a pool default or pass a pool selection).',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target',
+          description: 'Optional per-target override, e.g. { "agent:codex": "openai-codex:group:<poolId>" }. A per-target entry wins over connectedServices for that target.',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
       ],
     },
     examples: {
@@ -1232,7 +1554,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ui_slash_command: false,
       voice_tool: true,
       voice_action_block: true,
-      session_agent: true,
+      session_agent: false,
       mcp: true,
       cli: true,
     },
@@ -1272,6 +1594,32 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
         { path: 'runClass', title: 'Run class', widget: 'text', required: true },
         { path: 'ioMode', title: 'IO mode', widget: 'text', required: true },
         { path: 'initialContextMode', title: 'Initial context mode', widget: 'text' },
+        {
+          path: 'modelId',
+          title: 'Model',
+          description: 'Optional. Model id for the run\'s backend, using the SAME shape as session spawn. Omit to use the backend\'s default model. Enumerate valid ids with the agents.models.available options source.',
+          widget: 'text',
+          optionsSourceId: 'agents.models.available',
+        },
+        {
+          path: 'configOptions',
+          title: 'Config options (e.g. reasoning effort)',
+          description: 'Optional. Per-run config options using the SAME vocabulary as session spawn, e.g. { "reasoning_effort": "high" }. Reasoning effort is the reasoning_effort option (values are backend-specific, e.g. Codex low|medium|high|xhigh). Merged with sessionConfigOptionOverrides; a conflicting value in both forms is rejected.',
+          widget: 'text',
+        },
+        {
+          path: 'sessionConfigOptionOverrides',
+          title: 'Config option overrides (canonical json)',
+          description: 'Optional. Canonical AcpConfigOptionOverridesV1 object (same shape session spawn uses). Prefer the configOptions shorthand for simple cases like reasoning effort.',
+          widget: 'textarea',
+        },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (account/pool)',
+          description: 'Optional. Bind the run to a connected account or pool instead of the runner\'s inherited account. Simple form: "openai-codex:group:<poolId>" (a pool — auto-rotates when autoSwitch is enabled), "openai-codex:<profileId>" (a single account), "openai-codex:native" (opt out), or a full { v:1, bindingsByServiceId } object. Omit to use the account\'s configured default exactly as stored (literal: a profile default binds to that profile, a pool default to that pool — no silent upgrade; to rotate, store a pool default or pass a pool selection).',
+          widget: 'text',
+          optionsSourceId: 'execution.runs.connected_services.available',
+        },
       ],
     },
     inputSchema: ExecutionRunStartInputSchema,
@@ -1337,7 +1685,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ui_slash_command: false,
       voice_tool: true,
       voice_action_block: true,
-      session_agent: true,
+      session_agent: false,
       mcp: true,
       cli: true,
     },
@@ -2056,25 +2404,32 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     examples: {
       voice: { argsExample: '{"tag":"voice-qa","agentId":"claude","modelId":"default","initialMessage":"Help me inspect this workspace."}' },
     },
-	    surfaces: {
-	      ui_button: true,
-	      ui_slash_command: false,
-	      voice_tool: true,
-	      voice_action_block: true,
-	      session_agent: false,
-	      mcp: true,
-	      cli: true,
-	    },
-	    inputHints: {
-	      title: 'Create a new session',
-	      fields: [
-	        { path: 'tag', title: 'Tag', widget: 'text' },
+    surfaces: {
+      ui_button: true,
+      ui_slash_command: false,
+      voice_tool: true,
+      voice_action_block: true,
+      session_agent: true,
+      mcp: true,
+      cli: true,
+    },
+    inputHints: {
+      title: 'Create a new session',
+      fields: [
+        { path: 'tag', title: 'Tag', widget: 'text' },
         { path: 'agentId', title: 'Agent id', widget: 'text' },
-        { path: 'modelId', title: 'Model id', widget: 'text' },
-        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text' },
+        { path: 'modelId', title: 'Model id', widget: 'text', optionsSourceId: 'agents.models.available' },
+        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text', optionsSourceId: 'agents.backends.enabled' },
         { path: 'title', title: 'Title', widget: 'text' },
-        { path: 'path', title: 'Path', widget: 'text' },
+        { path: 'path', title: 'Path', widget: 'text', optionsSourceId: 'sessions.spawn.paths.recent' },
+        { path: 'machineId', title: 'Machine id', widget: 'text', optionsSourceId: 'sessions.spawn.machines.available' },
         { path: 'host', title: 'Host', widget: 'text' },
+        { path: 'permissionMode', title: 'Permission mode', widget: 'text' },
+        { path: 'agentModeId', title: 'Agent mode id', widget: 'text', optionsSourceId: 'agents.session_modes.available' },
+        { path: 'sessionConfigOptionOverrides', title: 'Config option overrides', widget: 'text', optionsSourceId: 'agents.config_options.available' },
+        { path: 'profileId', title: 'Profile id', widget: 'text', optionsSourceId: 'sessions.spawn.profiles.available' },
+        { path: 'connectedServices', title: 'Connected services', widget: 'text', optionsSourceId: 'sessions.spawn.connected_services.available' },
+        { path: 'mcpSelection', title: 'MCP selection', widget: 'text', optionsSourceId: 'sessions.spawn.mcp_servers.preview' },
         { path: 'initialMessage', title: 'Initial message', widget: 'textarea' },
       ],
     },
@@ -2128,7 +2483,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ui_slash_command: false,
       voice_tool: true,
       voice_action_block: true,
-      session_agent: false,
+      session_agent: true,
       mcp: true,
       cli: true,
     },
@@ -2157,9 +2512,9 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ui_slash_command: false,
       voice_tool: true,
       voice_action_block: true,
-      session_agent: false,
-      mcp: false,
-      cli: false,
+      session_agent: true,
+      mcp: true,
+      cli: true,
     },
     inputHints: {
       title: 'List machines',
@@ -2183,9 +2538,9 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ui_slash_command: false,
       voice_tool: true,
       voice_action_block: true,
-      session_agent: false,
-      mcp: false,
-      cli: false,
+      session_agent: true,
+      mcp: true,
+      cli: true,
     },
     inputHints: {
       title: 'List servers',
@@ -2283,6 +2638,168 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       ],
     },
     inputSchema: AgentsModelsListInputSchema,
+  },
+  {
+    id: 'agents.session_modes.list',
+    title: 'List agent session modes',
+    description: 'List available session modes for an agent backend.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_REQUIRED,
+    placements: ['voice_panel'],
+    prompting: { voiceHotPath: true },
+    bindings: { voiceClientToolName: 'listAgentSessionModes', mcpToolName: 'agents_session_modes_list' },
+    examples: {
+      voice: { argsExample: '{"backendTargetKey":"agent:claude","limit":10}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: true,
+      voice_action_block: true,
+      session_agent: true,
+      mcp: true,
+      cli: true,
+    },
+    inputHints: {
+      title: 'List agent session modes',
+      fields: [
+        { path: 'agentId', title: 'Agent id', widget: 'text' },
+        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text' },
+        { path: 'machineId', title: 'Machine id (optional)', widget: 'text' },
+        { path: 'limit', title: 'Max results', widget: 'text' },
+      ],
+    },
+    inputSchema: AgentsSessionModesListInputSchema,
+  },
+  {
+    id: 'agents.config_options.list',
+    title: 'List agent config options',
+    description: 'List configurable session options for an agent backend without exposing secret values.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_REQUIRED,
+    placements: ['voice_panel'],
+    prompting: { voiceHotPath: true },
+    bindings: { voiceClientToolName: 'listAgentConfigOptions', mcpToolName: 'agents_config_options_list' },
+    examples: {
+      voice: { argsExample: '{"backendTargetKey":"agent:claude","limit":10}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: true,
+      voice_action_block: true,
+      session_agent: true,
+      mcp: true,
+      cli: true,
+    },
+    inputHints: {
+      title: 'List agent config options',
+      fields: [
+        { path: 'agentId', title: 'Agent id', widget: 'text' },
+        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text' },
+        { path: 'machineId', title: 'Machine id (optional)', widget: 'text' },
+        { path: 'limit', title: 'Max results', widget: 'text' },
+      ],
+    },
+    inputSchema: AgentsConfigOptionsListInputSchema,
+  },
+  {
+    id: 'sessions.spawn.profiles.list',
+    title: 'List spawn profiles',
+    description: 'List backend profiles available for creating a new session without exposing environment values or secret bindings.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_REQUIRED,
+    placements: ['voice_panel'],
+    prompting: { voiceHotPath: true },
+    bindings: { voiceClientToolName: 'listSpawnProfiles', mcpToolName: 'sessions_spawn_profiles_list' },
+    examples: {
+      voice: { argsExample: '{"backendTargetKey":"agent:claude","limit":10}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: true,
+      voice_action_block: true,
+      session_agent: true,
+      mcp: true,
+      cli: true,
+    },
+    inputHints: {
+      title: 'List spawn profiles',
+      fields: [
+        { path: 'agentId', title: 'Agent id', widget: 'text' },
+        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text' },
+        { path: 'includeDisabled', title: 'Include incompatible', widget: 'toggle' },
+        { path: 'limit', title: 'Max results', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionsSpawnProfilesListInputSchema,
+  },
+  {
+    id: 'sessions.spawn.connected_services.list',
+    title: 'List spawn connected services',
+    description: 'List non-secret connected-service profile and group choices available for creating a new session.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_REQUIRED,
+    placements: ['voice_panel'],
+    prompting: { voiceHotPath: true },
+    bindings: { voiceClientToolName: 'listSpawnConnectedServices', mcpToolName: 'sessions_spawn_connected_services_list' },
+    examples: {
+      voice: { argsExample: '{"backendTargetKey":"agent:claude","includeUnavailable":false}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: true,
+      voice_action_block: true,
+      session_agent: true,
+      mcp: true,
+      cli: true,
+    },
+    inputHints: {
+      title: 'List spawn connected services',
+      fields: [
+        { path: 'agentId', title: 'Agent id', widget: 'text' },
+        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text' },
+        { path: 'includeUnavailable', title: 'Include unavailable', widget: 'toggle' },
+        { path: 'limit', title: 'Max results', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionsSpawnConnectedServicesListInputSchema,
+  },
+  {
+    id: 'sessions.spawn.mcp_servers.preview',
+    title: 'Preview spawn MCP servers',
+    description: 'Preview the sanitized MCP server set that would be available to a new session.',
+    safety: 'safe',
+    approval: APPROVAL_RESULT_REQUIRED,
+    placements: ['voice_panel'],
+    prompting: { voiceHotPath: true },
+    bindings: { voiceClientToolName: 'previewSpawnMcpServers', mcpToolName: 'sessions_spawn_mcp_servers_preview' },
+    examples: {
+      voice: { argsExample: '{"agentId":"claude","machineId":"{{machineId}}","path":"{{path}}"}' },
+    },
+    surfaces: {
+      ui_button: false,
+      ui_slash_command: false,
+      voice_tool: true,
+      voice_action_block: true,
+      session_agent: true,
+      mcp: true,
+      cli: true,
+    },
+    inputHints: {
+      title: 'Preview spawn MCP servers',
+      fields: [
+        { path: 'agentId', title: 'Agent id', widget: 'text' },
+        { path: 'backendTargetKey', title: 'Backend target key', widget: 'text' },
+        { path: 'machineId', title: 'Machine id', widget: 'text' },
+        { path: 'serverId', title: 'Server id', widget: 'text' },
+        { path: 'path', title: 'Path', widget: 'text' },
+        { path: 'mcpSelection', title: 'MCP selection', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionsSpawnMcpServersPreviewInputSchema,
   },
   {
     id: 'session.message.send',
@@ -2647,6 +3164,32 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     inputSchema: SessionTerminalComposerClearRequestV1Schema,
   },
   {
+    id: 'session.pendingInput.interruptAndRun',
+    title: 'Interrupt and run now',
+    description: 'Interrupt the live provider turn so its exact native queued prompt can run now.',
+    safety: 'danger',
+    approval: APPROVAL_RESULT_REQUIRED,
+    placements: [],
+    surfaces: {
+      ui_button: true,
+      ui_slash_command: false,
+      voice_tool: false,
+      voice_action_block: false,
+      session_agent: false,
+      mcp: false,
+      cli: true,
+    },
+    inputHints: {
+      title: 'Interrupt and run now',
+      fields: [
+        { path: 'sessionId', title: 'Session id', widget: 'text', required: true },
+        { path: 'localId', title: 'Pending message local id', widget: 'text', required: true },
+        { path: 'expectedStateAtMs', title: 'Expected state timestamp', widget: 'text' },
+      ],
+    },
+    inputSchema: SessionPendingInputInterruptAndRunRequestV1Schema,
+  },
+  {
     id: 'session.usageLimit.waitResume.enable',
     title: 'Enable usage-limit wait/resume',
     description: 'Arm a durable intent to continue a session when a provider usage limit is lifted.',
@@ -2686,7 +3229,9 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     placements: [],
     bindings: { mcpToolName: 'session_usage_limit_wait_resume_cancel' },
     examples: {
-      mcp: { argsExample: '{"sessionId":"{{sessionId}}"}' },
+      mcp: {
+        argsExample: '{"sessionId":"{{sessionId}}","issueFingerprint":"{{issueFingerprint}}","armedAtMs":1700000000000,"runtimeAuthRecoveryAttemptId":"{{runtimeAuthRecoveryAttemptId}}"}',
+      },
     },
     surfaces: {
       ui_button: false,
@@ -2702,6 +3247,8 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
       fields: [
         { path: 'sessionId', title: 'Session id', widget: 'text', required: true },
         { path: 'issueFingerprint', title: 'Issue fingerprint', widget: 'text' },
+        { path: 'armedAtMs', title: 'Recovery armed timestamp', widget: 'text' },
+        { path: 'runtimeAuthRecoveryAttemptId', title: 'Runtime recovery attempt id', widget: 'text' },
       ],
     },
     inputSchema: SessionUsageLimitWaitResumeCancelRequestV1Schema,
@@ -3131,7 +3678,7 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
     examples: {
       voice: {
         argsExample:
-          '{"sessionId":"{{sessionId}}","answers":[{"question":"Continue?","answer":"Yes"}]}',
+          '{"sessionId":"{{sessionId}}","answers":[{"question":"Continue?","values":["Yes"]}]}',
       },
     },
     surfaces: {
@@ -3185,9 +3732,9 @@ export const ACTION_SPECS: readonly ActionSpec[] = Object.freeze([
           required: true,
         },
         {
-          path: 'answers.[].answer',
-          title: 'Answer',
-          description: 'The answer text to send back for that question.',
+          path: 'answers.[].values',
+          title: 'Answer values',
+          description: 'The exact ordered answer values to send back for that question.',
           widget: 'text',
           required: true,
         },

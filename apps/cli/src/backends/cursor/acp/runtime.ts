@@ -9,8 +9,10 @@ import {
   resolveCursorSessionConfigOptionUpdate,
   resolveCursorSessionModelConfigUpdate,
 } from '@/backends/cursor/acp/cursorModelConfig';
-import { maybeUpdateCursorSessionIdMetadata } from '@/backends/cursor/utils/cursorSessionIdMetadata';
 import type { MessageBuffer } from '@/ui/ink/messageBuffer';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
+
+import { resolveCursorGeneratedMediaRoot } from './resolveCursorGeneratedMediaRoot';
 
 export function createCursorAcpRuntime(params: {
   directory: string;
@@ -25,9 +27,8 @@ export function createCursorAcpRuntime(params: {
   env?: NodeJS.ProcessEnv;
   startupOverrides?: Parameters<typeof createCatalogProviderAcpRuntime>[0]['startupOverrides'];
   pendingQueueDrainMaxPopPerWake?: number;
+  providerInputConsumer: SessionProviderInputConsumer<unknown, unknown>;
 }) {
-  const lastPublishedCursorSessionId = { value: null as string | null };
-
   return createCatalogProviderAcpRuntime<CursorBackendOptions>({
     provider: 'cursor',
     loggerLabel: 'CursorACP',
@@ -36,6 +37,7 @@ export function createCursorAcpRuntime(params: {
     messageBuffer: params.messageBuffer,
     mcpServers: params.mcpServers,
     permissionHandler: params.permissionHandler,
+    sessionIdentity: { kind: 'manifest-metadata' },
     backendOptions: params.env ? { env: params.env } : undefined,
     onThinkingChange: params.onThinkingChange,
     memoryRecallGuidance: {
@@ -45,15 +47,13 @@ export function createCursorAcpRuntime(params: {
     startupOverrides: params.startupOverrides,
     getPermissionMode: params.getPermissionMode,
     pendingQueueDrainMaxPopPerWake: params.pendingQueueDrainMaxPopPerWake,
+    providerInputConsumer: params.providerInputConsumer,
     resolveSessionModelConfigUpdate: resolveCursorSessionModelConfigUpdate,
     deriveSessionModelsFromConfigOptions: buildCursorSessionModelsFromConfigOptions,
     resolveSessionConfigOptionUpdate: resolveCursorSessionConfigOptionUpdate,
-    onSessionIdChange: (nextSessionId) => {
-      maybeUpdateCursorSessionIdMetadata({
-        getCursorSessionId: () => nextSessionId,
-        updateHappySessionMetadata: (updater) => params.session.updateMetadata(updater),
-        lastPublished: lastPublishedCursorSessionId,
-      });
-    },
+    sessionMediaProviderRoots: [resolveCursorGeneratedMediaRoot({
+      directory: params.directory,
+      env: params.env,
+    })],
   });
 }

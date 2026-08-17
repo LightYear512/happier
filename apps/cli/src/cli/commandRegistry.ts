@@ -3,6 +3,7 @@ import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFla
 import { AGENTS, type AgentCatalogEntry } from '@/backends/catalog';
 
 import { handleAttachCliCommand } from './commands/attach';
+import { handleAutomationCliCommand } from './commands/automation';
 import { handleAuthCliCommand } from './commands/auth';
 import { handleBugReportCliCommand } from './commands/bugReport';
 import { handleCapabilitiesCliCommand } from './commands/capabilities';
@@ -15,6 +16,7 @@ import { handleMachineCliCommand } from './commands/machine';
 import { handleMcpCliCommand } from './commands/mcp';
 import { handleNotifyCliCommand } from './commands/notify';
 import { handleProfilesCliCommand } from './commands/profiles';
+import { handlePluginsCompatibilityCliCommand } from './commands/pluginsCompatibility';
 import { handleRelayCliCommand } from './commands/relay';
 import { handleResumeCliCommand } from './commands/resume';
 import { handleSessionCliCommand } from './commands/session/index';
@@ -50,6 +52,8 @@ function buildAgentCommandRegistry(): Readonly<Record<string, CommandHandler>> {
 
 export const commandRegistry: Readonly<Record<string, CommandHandler>> = {
   attach: handleAttachCliCommand,
+  automation: handleAutomationCliCommand,
+  automations: handleAutomationCliCommand,
   'acp-catalog': handleConfiguredAcpCatalogCliCommand,
   auth: handleAuthCliCommand,
   'bug-report': handleBugReportCliCommand,
@@ -65,12 +69,14 @@ export const commandRegistry: Readonly<Record<string, CommandHandler>> = {
   machine: handleMachineCliCommand,
   mcp: handleMcpCliCommand,
   notify: handleNotifyCliCommand,
+  plugins: handlePluginsCompatibilityCliCommand,
   profile: handleProfilesCliCommand,
   profiles: handleProfilesCliCommand,
   relay: handleRelayCliCommand,
   resume: handleResumeCliCommand,
   service: handleServiceCliCommand,
   session: handleSessionCliCommand,
+  // Backwards-compatible plural alias; keep the singular command canonical in help.
   sessions: handleSessionCliCommand,
   server: handleServerCliCommand,
   self: handleSelfCliCommand,

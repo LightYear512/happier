@@ -26,9 +26,11 @@ import { LocalServicePreviewMessageCard } from '@/components/sessions/devPreview
 import { SimulatorPreviewMessageCard } from '@/components/sessions/simulatorPreview/SimulatorPreviewMessageCard';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { ReviewCommentAnchor, ReviewCommentSource } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
+import { readStructuredUserMessageText } from '@/components/sessions/transcript/structured/readStructuredUserMessageText';
 import { ParticipantMessageCard } from '@/components/sessions/participants/messages/ParticipantMessageCard';
 import { SubagentLaunchMessageCard } from '@/components/sessions/subagents/messages/SubagentLaunchMessageCard';
 import { SubagentCommandMessageCard } from '@/components/sessions/subagents/messages/SubagentCommandMessageCard';
+import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 
 export type StructuredMessageKind =
     | 'participant_message.v1'
@@ -48,8 +50,17 @@ export type StructuredMessageKind =
 
 export type StructuredMessageRendererParams = Readonly<{
     sessionId: string;
-    message: Message;
-    onJumpToAnchor: (target: { filePath: string; source: ReviewCommentSource; anchor: ReviewCommentAnchor }) => void;
+    /**
+     * The transcript message the envelope arrived on, when there is one.
+     *
+     * Optional because the same envelopes also reach these renderers from the execution-run
+     * registry (`sessionExecutionRunGet(..., { includeStructured: true })`), where no message
+     * exists. Only the kinds that quote the user's own text need it, and they already render
+     * nothing when there is no text to quote.
+     */
+    message?: Message;
+    interaction: TranscriptInteraction;
+    onJumpToAnchor?: (target: { filePath: string; source: ReviewCommentSource; anchor: ReviewCommentAnchor }) => void;
 }>;
 
 export type StructuredMessageRegistryEntry<T> = Readonly<{
@@ -58,21 +69,42 @@ export type StructuredMessageRegistryEntry<T> = Readonly<{
     render: (payload: T, params: StructuredMessageRendererParams) => React.ReactElement | null;
 }>;
 
+// A structured card that quotes the message body only exists when the message carries one
+// (a `subagent_launch.v1` envelope can ride a tool call, which has no user text). Callers read
+// `renderStructuredMessage(...) != null` to decide whether the structured card *replaces* the
+// surrounding chrome, so that emptiness has to be decided here, before an element exists — a
+// card that returns null from its own body still yields a non-null element and would suppress
+// the chrome in favour of a row that paints nothing.
+function renderUserTextStructuredCard(
+    params: StructuredMessageRendererParams,
+    renderCard: (messageText: string) => React.ReactElement,
+): React.ReactElement | null {
+    const messageText = params.message ? readStructuredUserMessageText(params.message) : null;
+    if (!messageText) return null;
+    return renderCard(messageText);
+}
+
 const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<any>[] = [
     {
         kind: 'participant_message.v1',
         schema: ParticipantMessageV1Schema,
-        render: (payload, params) => <ParticipantMessageCard payload={payload} message={params.message} />,
+        render: (payload, params) => renderUserTextStructuredCard(params, (messageText) => (
+            <ParticipantMessageCard payload={payload} messageText={messageText} />
+        )),
     },
     {
         kind: 'subagent_launch.v1',
         schema: SubagentLaunchV1Schema,
-        render: (payload, params) => <SubagentLaunchMessageCard payload={payload} message={params.message} />,
+        render: (payload, params) => renderUserTextStructuredCard(params, (messageText) => (
+            <SubagentLaunchMessageCard payload={payload} messageText={messageText} />
+        )),
     },
     {
         kind: 'subagent_command.v1',
         schema: SubagentCommandV1Schema,
-        render: (payload, params) => <SubagentCommandMessageCard payload={payload} message={params.message} />,
+        render: (payload, params) => renderUserTextStructuredCard(params, (messageText) => (
+            <SubagentCommandMessageCard payload={payload} messageText={messageText} />
+        )),
     },
     {
         kind: 'review_comments.v1',
@@ -85,14 +117,22 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
         kind: 'review_findings.v1',
         schema: ReviewFindingsV1Schema,
         render: (payload, params) => (
-            <ReviewFindingsMessageCard payload={payload} sessionId={params.sessionId} />
+            <ReviewFindingsMessageCard
+                payload={payload}
+                sessionId={params.sessionId}
+                canSendMessages={params.interaction.canSendMessages === true}
+            />
         ),
     },
     {
         kind: 'review_findings.v2',
         schema: ReviewFindingsV2Schema,
         render: (payload, params) => (
-            <ReviewFindingsMessageCard payload={payload} sessionId={params.sessionId} />
+            <ReviewFindingsMessageCard
+                payload={payload}
+                sessionId={params.sessionId}
+                canSendMessages={params.interaction.canSendMessages === true}
+            />
         ),
     },
     {
@@ -104,7 +144,11 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
         kind: 'plan_output.v1',
         schema: PlanOutputV1Schema,
         render: (payload, params) => (
-            <PlanOutputMessageCard payload={payload} sessionId={params.sessionId} />
+            <PlanOutputMessageCard
+                payload={payload}
+                sessionId={params.sessionId}
+                canSendMessages={params.interaction.canSendMessages === true}
+            />
         ),
     },
     {

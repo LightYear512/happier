@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  BINARY_PUBLISH_TARGETS,
   BINARY_PUBLISH_PRODUCT_IDS,
   getBinaryPublishProductSpec,
 } from '../pipeline/release/publishing/product-specs.mjs';
@@ -26,6 +27,8 @@ test('binary publish product specs expose the canonical per-product release meta
     releaseTitleBase: 'Happier CLI',
     rollingNotesSubject: 'CLI binaries',
     versionNotesSubject: 'CLI',
+    notarizationEvidenceSuffix: 'cli',
+    artifactTargets: BINARY_PUBLISH_TARGETS,
   });
 
   assert.deepEqual(getBinaryPublishProductSpec('hstack'), {
@@ -45,6 +48,8 @@ test('binary publish product specs expose the canonical per-product release meta
     releaseTitleBase: 'Happier Stack',
     rollingNotesSubject: 'hstack binaries',
     versionNotesSubject: 'hstack',
+    notarizationEvidenceSuffix: 'hstack',
+    artifactTargets: BINARY_PUBLISH_TARGETS,
   });
 
   assert.deepEqual(getBinaryPublishProductSpec('server'), {
@@ -64,6 +69,8 @@ test('binary publish product specs expose the canonical per-product release meta
     releaseTitleBase: 'Happier Server',
     rollingNotesSubject: 'server runtime release',
     versionNotesSubject: 'Server runtime',
+    notarizationEvidenceSuffix: 'server',
+    artifactTargets: BINARY_PUBLISH_TARGETS,
   });
 });
 

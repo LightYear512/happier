@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { hstackBinPath, runNodeCapture } from './testkit/auth_testkit.mjs';
 import { createHappierCliMonorepoFixture } from './testkit/happier_cli_monorepo_testkit.mjs';
 import { buildStackStableScopeId } from './utils/auth/stable_scope_id.mjs';
+import { sanitizeStackTestRunnerEnv } from './utils/test/test_env.mjs';
 
 async function createMonorepoFixture(t, { prefix }) {
   return createHappierCliMonorepoFixture(t, {
@@ -75,6 +77,46 @@ test('hstack happier defaults to hosted cloud when no CLI settings exist', async
   assert.equal(parsed.homeDir, homeDir);
 });
 
+async function holdEphemeralLoopbackPort(t) {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  };
+  t.after(release);
+  return { port: address.port, release };
+}
+
+function buildHappierFixtureEnv({ rootDir, fixtureDir, homeDir, extra = {} }) {
+  const env = {
+    ...sanitizeStackTestRunnerEnv(process.env, {
+      isolatedStackRoot: join(fixtureDir, '.stack-root'),
+      repoDir: fixtureDir,
+    }),
+    HAPPIER_STACK_STACK: 'test-stack',
+    // Storage is already isolated above; leave the explicit pointer unset so this fixture does not
+    // model the now-invalid contract of a configured path that does not exist.
+    HAPPIER_STACK_ENV_FILE: '',
+    HAPPIER_STACK_SYNC_BUNDLED_WORKSPACES: '0',
+    HAPPIER_HOME_DIR: homeDir,
+    ...extra,
+  };
+  delete env.HAPPIER_PUBLIC_SERVER_URL;
+  delete env.HAPPIER_LOCAL_SERVER_URL;
+  return env;
+}
+
 test('hstack happier defaults serverUrl/webappUrl from existing CLI settings (no localServerUrl)', async (t) => {
   const rootDir = stackRootDirFromMeta(import.meta.url);
   const fixture = await createMonorepoFixture(t, { prefix: 'hstack-happier-settings-defaults-' });
@@ -102,17 +144,7 @@ test('hstack happier defaults serverUrl/webappUrl from existing CLI settings (no
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
+  const env = buildHappierFixtureEnv({ rootDir, fixtureDir: fixture.dir, homeDir });
 
   const res = await runNodeCapture([hstackBinPath(rootDir), 'happier'], { cwd: rootDir, env });
   assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
@@ -127,6 +159,7 @@ test('hstack happier defaults serverUrl/webappUrl from existing CLI settings (no
 test('hstack happier prefers existing CLI settings over stack defaults even when stack env is pinned', async (t) => {
   const rootDir = stackRootDirFromMeta(import.meta.url);
   const fixture = await createMonorepoFixture(t, { prefix: 'hstack-happier-settings-cloud-over-stack-' });
+  const pinnedPortReservation = await holdEphemeralLoopbackPort(t);
 
   const homeDir = join(fixture.dir, '.happy-home');
   await mkdir(homeDir, { recursive: true });
@@ -151,19 +184,13 @@ test('hstack happier prefers existing CLI settings over stack defaults even when
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_SERVER_PORT: '53288',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
-  delete env.HAPPIER_ACTIVE_SERVER_ID;
+  const env = buildHappierFixtureEnv({
+    rootDir,
+    fixtureDir: fixture.dir,
+    homeDir,
+    extra: { HAPPIER_STACK_SERVER_PORT: String(pinnedPortReservation.port) },
+  });
+  await pinnedPortReservation.release();
 
   const res = await runNodeCapture([hstackBinPath(rootDir), 'happier'], { cwd: rootDir, env });
   assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
@@ -202,17 +229,7 @@ test('hstack happier defaults serverUrl via localServerUrl when present in setti
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
+  const env = buildHappierFixtureEnv({ rootDir, fixtureDir: fixture.dir, homeDir });
 
   const res = await runNodeCapture([hstackBinPath(rootDir), 'happier'], { cwd: rootDir, env });
   assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
@@ -250,18 +267,7 @@ test('hstack happier treats non-prefix --server as explicit server selection', a
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
-  delete env.HAPPIER_ACTIVE_SERVER_ID;
+  const env = buildHappierFixtureEnv({ rootDir, fixtureDir: fixture.dir, homeDir });
 
   const res = await runNodeCapture(
     [hstackBinPath(rootDir), 'happier', 'doctor', '--server', 'example'],
@@ -301,18 +307,7 @@ test('hstack happier honors explicit --server-url even when other top-level flag
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
-  delete env.HAPPIER_ACTIVE_SERVER_ID;
+  const env = buildHappierFixtureEnv({ rootDir, fixtureDir: fixture.dir, homeDir });
 
   const res = await runNodeCapture(
     [hstackBinPath(rootDir), 'happier', '--json', '--server-url=https://override.example'],
@@ -355,18 +350,7 @@ test('hstack happier honors explicit --server-url after a forwarded subcommand',
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
-  delete env.HAPPIER_ACTIVE_SERVER_ID;
+  const env = buildHappierFixtureEnv({ rootDir, fixtureDir: fixture.dir, homeDir });
 
   const res = await runNodeCapture(
     [hstackBinPath(rootDir), 'happier', 'auth', 'login', '--server-url=https://override.example'],
@@ -409,18 +393,7 @@ test('hstack happier treats auth subcommand --server as explicit server selectio
     'utf-8',
   );
 
-  const env = {
-    ...process.env,
-    HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
-    HAPPIER_STACK_REPO_DIR: fixture.dir,
-    HAPPIER_HOME_DIR: homeDir,
-  };
-  delete env.HAPPIER_SERVER_URL;
-  delete env.HAPPIER_PUBLIC_SERVER_URL;
-  delete env.HAPPIER_LOCAL_SERVER_URL;
-  delete env.HAPPIER_WEBAPP_URL;
-  delete env.HAPPIER_ACTIVE_SERVER_ID;
+  const env = buildHappierFixtureEnv({ rootDir, fixtureDir: fixture.dir, homeDir });
 
   const res = await runNodeCapture(
     [hstackBinPath(rootDir), 'happier', 'auth', 'login', '--server', 'example'],

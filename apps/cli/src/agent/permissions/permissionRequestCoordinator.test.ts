@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { InvalidAskUserQuestionInputError } from '@/agent/questions/normalizeAskUserQuestionInput';
 
 import type { AgentState } from '@/api/types';
 import { AgentStateRequestStore } from './agentStateRequestStore';
@@ -60,6 +61,110 @@ async function settledState<T>(promise: Promise<T>): Promise<'pending' | 'fulfil
 }
 
 describe('PermissionRequestCoordinator', () => {
+    it('rejects invalid AskUserQuestion input before request publication or waiter insertion', async () => {
+        const { coordinator, session } = createHarness();
+        const invalid = {
+            requestId: 'invalid-question',
+            toolName: 'ask_user_question',
+            toolInput: { questions: [{ question: 'x'.repeat(16_385), options: [] }] },
+            createdAt: 1,
+        };
+
+        expect(() => coordinator.requestDecision(invalid)).toThrow(InvalidAskUserQuestionInputError);
+        expect(session.agentState.requests!['invalid-question']).toBeUndefined();
+        expect(coordinator.getResponseContext('invalid-question')).toBeNull();
+
+        const valid = coordinator.requestDecision({
+            ...invalid,
+            toolInput: { questions: [{ question: 'Choose?', options: [{ label: 'A' }] }] },
+        });
+        expect(coordinator.getResponseContext('invalid-question')).toEqual(expect.objectContaining({ status: 'live' }));
+        coordinator.cancelRequest('invalid-question', 'test complete');
+        await expect(valid).rejects.toThrow('test complete');
+    });
+
+    it('rolls back the pending record when publication rejects a second-pass input check', async () => {
+        let rejectPublication = true;
+        let publishCount = 0;
+        const coordinator = createPermissionRequestCoordinator<TestPermissionResult>({
+            store: {
+                publishRequest: () => {
+                    publishCount += 1;
+                    if (rejectPublication) throw new InvalidAskUserQuestionInputError();
+                },
+                completeRequest: () => {},
+                hasOutstandingRequest: () => false,
+                isOutstandingRequestClaimed: () => false,
+                readOutstandingRequest: () => null,
+            },
+        });
+        const request = {
+            requestId: 'second-pass-invalid',
+            toolName: 'ask_user_question',
+            toolInput: { questions: [{ question: 'Choose?', options: [{ label: 'A' }] }] },
+            createdAt: 1,
+        };
+
+        expect(() => coordinator.requestDecision(request)).toThrow(InvalidAskUserQuestionInputError);
+        expect(coordinator.getResponseContext(request.requestId)).toBeNull();
+
+        rejectPublication = false;
+        const retry = coordinator.requestDecision(request);
+        expect(publishCount).toBe(2);
+        expect(coordinator.getResponseContext(request.requestId)).toEqual(expect.objectContaining({ status: 'live' }));
+        coordinator.cancelRequest(request.requestId, 'test complete');
+        await expect(retry).rejects.toThrow('test complete');
+    });
+
+    it('fences opaque claims from persisted and already-live coordinator response paths', async () => {
+        const { coordinator, session } = createHarness();
+        const opaqueClaim = { malformed: [true, { unexpected: 'shape' }] };
+
+        const claimedRequest: NonNullable<AgentState['requests']>[string] & Record<'permissionResponseClaimV1', unknown> = {
+            tool: 'Bash',
+            kind: 'permission',
+            arguments: bashRequest.toolInput,
+            createdAt: 1,
+            permissionResponseClaimV1: opaqueClaim,
+        };
+        session.agentState.requests!.persisted = claimedRequest;
+
+        expect(coordinator.getResponseContext('persisted')).toBeNull();
+        await expect(coordinator.requestDecision({ ...bashRequest, requestId: 'persisted' })).rejects.toThrow(/reserved/i);
+        expect(coordinator.handleResponse({
+            requestId: 'persisted',
+            buildCompletion: () => ({
+                result: approve('persisted'),
+                completedRequest: { status: 'approved', decision: 'approved_for_session', allowedTools: ['Bash(*)'] },
+            }),
+        })).toBe(false);
+        expect(session.agentState.completedRequests!.persisted).toBeUndefined();
+
+        const controller = new AbortController();
+        const live = coordinator.requestDecision({ ...bashRequest, requestId: 'live-claim' }, { signal: controller.signal });
+        const staleContext = coordinator.getResponseContext('live-claim');
+        expect(staleContext).not.toBeNull();
+        (session.agentState.requests!['live-claim'] as Record<string, unknown>).permissionResponseClaimV1 = opaqueClaim;
+
+        expect(coordinator.getResponseContext('live-claim')).toBeNull();
+        expect(coordinator.completeResponse({
+            context: staleContext!,
+            completion: {
+                result: approve('live-claim'),
+                completedRequest: { status: 'approved', decision: 'approved_for_session', allowedTools: ['Bash(*)'] },
+            },
+        })).toBe(false);
+
+        controller.abort();
+        await expect(live).rejects.toThrow('Permission request aborted');
+        coordinator.cancelAll('reset after claim');
+
+        const retained = session.agentState.requests!['live-claim'] as Record<string, unknown>;
+        expect(Object.prototype.hasOwnProperty.call(retained, 'permissionResponseClaimV1')).toBe(true);
+        expect(retained.permissionResponseClaimV1).toBe(opaqueClaim);
+        expect(session.agentState.completedRequests!['live-claim']).toBeUndefined();
+    });
+
     it('attaches duplicate request ids to one UI request and resolves every live waiter', async () => {
         const { coordinator, session } = createHarness();
 
@@ -132,6 +237,24 @@ describe('PermissionRequestCoordinator', () => {
         ).toBe(true);
 
         await expect(second).resolves.toEqual(approve());
+    });
+
+    it('exposes structured-response ownership only while a local waiter is live', async () => {
+        const { coordinator } = createHarness();
+        const abort = new AbortController();
+        const pending = coordinator.requestDecision(bashRequest, { signal: abort.signal });
+
+        expect(coordinator.getLocallyOwnedLiveResponseContext(bashRequest.requestId)).toEqual(
+            expect.objectContaining({
+                requestId: bashRequest.requestId,
+                correlation: 'record',
+                status: 'live',
+            }),
+        );
+
+        abort.abort();
+        await expect(pending).rejects.toThrow('Permission request aborted');
+        expect(coordinator.getLocallyOwnedLiveResponseContext(bashRequest.requestId)).toBeNull();
     });
 
     it('retains all-aborted requests as detached and satisfies a compatible same-id retry after late approval', async () => {
@@ -319,7 +442,7 @@ describe('PermissionRequestCoordinator', () => {
         store.publishRequest({
             requestId: 'agent-state-only',
             toolName: 'AskUserQuestion',
-            toolInput: { questions: [{ id: 'q1' }] },
+            toolInput: { questions: [{ id: 'q1', question: 'q1' }] },
             createdAt: 500,
             kind: 'user_action',
         });

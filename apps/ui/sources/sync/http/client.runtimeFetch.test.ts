@@ -34,7 +34,9 @@ describe('serverFetch runtime fetch override', () => {
         const client = await import('./client');
         expect((client as unknown as { setRuntimeFetch?: unknown }).setRuntimeFetch).toBeTypeOf('function');
 
-        const overrideFetch = vi.fn(async () => new Response(null, { status: 200, headers: new Headers() }));
+        const overrideFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+            new Response(null, { status: 200, headers: new Headers() })
+        ));
         (client as unknown as {
             setRuntimeFetch: (next: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) => void;
         }).setRuntimeFetch(overrideFetch);
@@ -46,6 +48,10 @@ describe('serverFetch runtime fetch override', () => {
         );
         expect(resp.status).toBe(200);
         expect(overrideFetch).toHaveBeenCalledTimes(1);
+        const requestInit = overrideFetch.mock.calls[0]?.[1];
+        const headers = new Headers(requestInit?.headers);
+        expect(headers.has('x-happier-session-sync-protocol')).toBe(false);
+        expect(headers.has('x-happier-client-kind')).toBe(false);
         expect(globalFetchMock).not.toHaveBeenCalled();
     });
 });

@@ -1,29 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createDeferred } from '@/dev/testkit';
 
 // C6/D3 (reactive deferred-newer drain): the deferred-forward-loading backlog (mechanism B)
 // must have a sync-owned reactive drain — not depend solely on ChatList.onScroll. A sync-owned
 // `maybeDrainDeferredNewerMessages(sessionId, { isPinned, distanceFromBottomPx })` drains when
 // pinned or near the bottom, and onSessionVisible fires it for reopen-at-bottom.
-
-const kvStore = vi.hoisted(() => new Map<string, string>());
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            return kvStore.get(key);
-        }
-        set(key: string, value: string) {
-            kvStore.set(key, value);
-        }
-        delete(key: string) {
-            kvStore.delete(key);
-        }
-        clearAll() {
-            kvStore.clear();
-        }
-    }
-
-    return { MMKV };
-});
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -166,7 +147,6 @@ async function seedDeferredNewerSession(): Promise<{ sync: typeof import('./sync
 describe('sync reactive deferred-newer drain (C6/D3)', () => {
     beforeEach(() => {
         storage.setState(initialStorageState, true);
-        kvStore.clear();
         requestMock.mockReset();
         markSessionHidden(SESSION_ID);
     });
@@ -209,6 +189,27 @@ describe('sync reactive deferred-newer drain (C6/D3)', () => {
         await Promise.resolve();
         expect(messagesRequestPaths()).toHaveLength(0);
         expect(sync.hasDeferredNewerMessages(SESSION_ID)).toBe(true);
+        markSessionHidden(SESSION_ID);
+    });
+
+    it('dedupes repeated near-bottom drain attempts while the newer page request is in flight', async () => {
+        const { sync } = await seedDeferredNewerSession();
+        const response = createDeferred<Response>();
+        requestMock.mockImplementation(() => response.promise);
+
+        sync.maybeDrainDeferredNewerMessages(SESSION_ID, { isPinned: false, distanceFromBottomPx: 10 });
+        sync.maybeDrainDeferredNewerMessages(SESSION_ID, { isPinned: false, distanceFromBottomPx: 10 });
+
+        await vi.waitFor(() => {
+            expect(messagesRequestPaths()).toHaveLength(1);
+        });
+        expect(sync.hasDeferredNewerMessages(SESSION_ID)).toBe(true);
+
+        response.resolve(emptyMessagesResponse());
+
+        await vi.waitFor(() => {
+            expect(sync.hasDeferredNewerMessages(SESSION_ID)).toBe(false);
+        });
         markSessionHidden(SESSION_ID);
     });
 });

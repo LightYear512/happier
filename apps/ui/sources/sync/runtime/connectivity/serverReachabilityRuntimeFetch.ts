@@ -7,6 +7,7 @@ import {
 } from './serverReachabilitySupervisorPool';
 import { isAuthenticationResponseStatus } from './authErrors';
 import { readServerReachabilityWaitTimeoutMs } from './serverReachabilityTuning';
+import { observeUiClientUpgradeRequiredResponse } from '@/sync/runtime/clientCompatibility/uiClientUpgradeRequired';
 
 function tryParseUrl(raw: string, base?: string): URL | null {
     try {
@@ -88,7 +89,8 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
     });
 
     try {
-        const response = await runtimeFetch(params.url, params.init);
+        const response = await runtimeFetch(params.url, { ...params.init, headers });
+        await observeUiClientUpgradeRequiredResponse(response);
         if (hasAuth && isAuthenticationResponseStatus(response.status)) {
             reportServerAuthFailed(params.serverUrl, response.status);
         }

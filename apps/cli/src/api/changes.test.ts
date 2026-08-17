@@ -1,12 +1,39 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
-import { fetchChanges } from './changes';
-import { HttpStatusError } from './client/httpStatusError';
 
 vi.mock('axios');
 
 describe('fetchChanges', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('uses the canonical active server endpoint loaded by configuration', async () => {
+    vi.stubEnv('HAPPIER_SERVER_URL', 'http://127.0.0.1:41001');
+    vi.stubEnv('HAPPIER_LOCAL_SERVER_URL', '');
+    vi.stubEnv('HAPPIER_PUBLIC_SERVER_URL', '');
+    await import('@/configuration');
+
+    vi.stubEnv('HAPPIER_SERVER_URL', 'http://127.0.0.1:52002');
+    (axios.get as any).mockResolvedValue({
+      status: 200,
+      data: {
+        changes: [],
+        nextCursor: 0,
+      },
+    });
+
+    const { fetchChanges } = await import('./changes');
+
+    await fetchChanges({ token: 't', after: 0 });
+
+    expect((axios.get as any).mock.calls[0]?.[0]).toBe('http://127.0.0.1:41001/v2/changes');
+  });
+
   it('parses ok response', async () => {
+    const { fetchChanges } = await import('./changes');
     (axios.get as any).mockResolvedValue({
       status: 200,
       data: {
@@ -22,7 +49,23 @@ describe('fetchChanges', () => {
     expect(result.response.changes).toHaveLength(1);
   });
 
+  it('does not send retired connection-wide compatibility headers', async () => {
+    const { fetchChanges } = await import('./changes');
+    (axios.get as any).mockResolvedValue({ status: 200, data: { changes: [], nextCursor: 0 } });
+
+    await fetchChanges({ token: 't', after: 0, clientKind: 'daemon' });
+
+    const headers = (axios.get as any).mock.calls[0]?.[1]?.headers;
+    expect(headers).toMatchObject({
+      Authorization: 'Bearer t',
+      'Content-Type': 'application/json',
+    });
+    expect(headers).not.toHaveProperty('x-happier-client-kind');
+    expect(headers).not.toHaveProperty('x-happier-client-declaration-v1');
+  });
+
   it('parses cursor-gone (410)', async () => {
+    const { fetchChanges } = await import('./changes');
     (axios.get as any).mockResolvedValue({
       status: 410,
       data: { error: 'cursor-gone', currentCursor: 42 },
@@ -33,6 +76,7 @@ describe('fetchChanges', () => {
   });
 
   it('returns error when /v2/changes is missing (e.g. old server 404)', async () => {
+    const { fetchChanges } = await import('./changes');
     (axios.get as any).mockResolvedValue({
       status: 404,
       data: { error: 'not-found' },
@@ -43,6 +87,10 @@ describe('fetchChanges', () => {
   });
 
   it.each([401, 403] as const)('returns canonical not_authenticated error for auth status %i', async (status) => {
+    const [{ fetchChanges }, { HttpStatusError }] = await Promise.all([
+      import('./changes'),
+      import('./client/httpStatusError'),
+    ]);
     (axios.get as any).mockResolvedValue({
       status,
       data: { error: 'not-authenticated' },

@@ -4,7 +4,7 @@ import { isAuthenticationError } from '@/api/client/httpStatusError';
 import { encodeBase64 } from '@/api/encryption';
 import { configuration } from '@/configuration';
 import { resolveVendorResumeIdForExistingSession } from '@/daemon/spawn/resolveVendorResumeIdForExistingSession';
-import { createSpawnConcurrencyGate } from '@/daemon/spawn/createSpawnConcurrencyGate';
+import { createSpawnConcurrencyGate, type SpawnConcurrencyGate } from '@/daemon/spawn/createSpawnConcurrencyGate';
 import {
   resolveSessionEncryptionContextFromCredentials,
   resolveSessionStoredContentEncryptionMode,
@@ -13,10 +13,6 @@ import {
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
 import type { SessionSnapshotRefreshReasonInput } from '@/api/session/sessionSnapshotRefreshReason';
 import { tryParseJsonRecord } from '@/utils/tryParseJsonRecord';
-import {
-  clampAttachCursorToDeliveredUserMessageSeq,
-  readDeliveredUserMessageSeqV1,
-} from '@/api/session/deliveredUserMessageSeq';
 
 export type ExistingSessionAttachContext = Readonly<{
   ok: true;
@@ -24,8 +20,6 @@ export type ExistingSessionAttachContext = Readonly<{
   vendorResumeId: string | null;
   sessionPath: string | null;
   metadata: Record<string, unknown> | null;
-  /** Owed-delivery watermark from session metadata (A-F2/D15b); null for legacy sessions. */
-  deliveredUserMessageSeq: number | null;
 }>;
 
 export type ExistingSessionAttachContextFailureReason =
@@ -46,7 +40,12 @@ function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-const existingSessionAttachLookupGate = createSpawnConcurrencyGate(configuration.daemonReattachCatchUpConcurrency);
+let existingSessionAttachLookupGate: SpawnConcurrencyGate | null = null;
+
+function getExistingSessionAttachLookupGate(): SpawnConcurrencyGate {
+  existingSessionAttachLookupGate ??= createSpawnConcurrencyGate(configuration.daemonReattachCatchUpConcurrency);
+  return existingSessionAttachLookupGate;
+}
 
 function resolveLastObservedMessageSeq(rawSession: Readonly<{ seq?: unknown }>): number | undefined {
   const seq = rawSession.seq;
@@ -70,7 +69,12 @@ function resolveExistingSessionPath(metadata: Record<string, unknown> | null): s
 }
 
 function buildExistingSessionAttachContext(params: Readonly<{
-  rawSession: Readonly<{ metadata?: unknown; dataEncryptionKey?: unknown; encryptionMode?: unknown; seq?: unknown }>;
+  rawSession: Readonly<{
+    metadata?: unknown;
+    dataEncryptionKey?: unknown;
+    encryptionMode?: unknown;
+    seq?: unknown;
+  }>;
   agent: unknown;
   credentials: Credentials | null;
 }>): ExistingSessionAttachContext | ExistingSessionAttachContextFailure {
@@ -80,13 +84,7 @@ function buildExistingSessionAttachContext(params: Readonly<{
   });
   const sessionPath = resolveExistingSessionPath(metadata);
   const mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
-  // Owed-delivery clamp (A-F2/D15b): never synthesize a catch-up cursor past the highest user row
-  // actually delivered to the runner, or rows committed while the runner was down are skipped forever.
-  const deliveredUserMessageSeq = readDeliveredUserMessageSeqV1(metadata);
-  const lastObservedMessageSeq = clampAttachCursorToDeliveredUserMessageSeq(
-    resolveLastObservedMessageSeq(params.rawSession),
-    deliveredUserMessageSeq,
-  );
+  const lastObservedMessageSeq = resolveLastObservedMessageSeq(params.rawSession);
   if (mode === 'plain') {
     return {
       ok: true,
@@ -102,7 +100,6 @@ function buildExistingSessionAttachContext(params: Readonly<{
       }),
       sessionPath,
       metadata,
-      deliveredUserMessageSeq,
     };
   }
 
@@ -127,7 +124,6 @@ function buildExistingSessionAttachContext(params: Readonly<{
     }),
     sessionPath,
     metadata,
-    deliveredUserMessageSeq,
   };
 }
 
@@ -144,7 +140,7 @@ export async function resolveExistingSessionAttachContext(_params: Readonly<{
   if (!token) return { ok: false, reason: 'missingToken' };
 
   try {
-    const raw = await existingSessionAttachLookupGate.run(() =>
+    const raw = await getExistingSessionAttachLookupGate().run(() =>
       fetchSessionByIdCompat({
         token,
         sessionId,

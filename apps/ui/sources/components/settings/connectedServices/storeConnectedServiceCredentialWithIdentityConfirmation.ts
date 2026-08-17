@@ -22,6 +22,12 @@ function isProviderIdentityMismatchError(error: unknown): boolean {
   return error instanceof Error && error.message === PROVIDER_IDENTITY_MISMATCH_ERROR;
 }
 
+function readExpectedCredentialRevision(error: unknown): string | null | undefined {
+  if (!error || typeof error !== 'object' || !('expectedCredentialRevision' in error)) return undefined;
+  const revision = (error as { expectedCredentialRevision?: unknown }).expectedCredentialRevision;
+  return typeof revision === 'string' || revision === null ? revision : undefined;
+}
+
 function runStoredEffects(
   onStored: StoreConnectedServiceCredentialWithIdentityConfirmationOptions['onStored'],
   params: StoredConnectedServiceCredentialParams,
@@ -44,12 +50,14 @@ export async function storeConnectedServiceCredentialWithIdentityConfirmation(
   params: StoredConnectedServiceCredentialParams,
   options: StoreConnectedServiceCredentialWithIdentityConfirmationOptions = {},
 ): Promise<boolean> {
+  let expectedCredentialRevision: string | null | undefined;
   try {
     await storeConnectedServiceCredentialForAccount(credentials, params);
     runStoredEffects(options.onStored, params);
     return true;
   } catch (error) {
     if (!isProviderIdentityMismatchError(error)) throw error;
+    expectedCredentialRevision = readExpectedCredentialRevision(error);
   }
 
   const confirmed = await Modal.confirm(
@@ -64,6 +72,7 @@ export async function storeConnectedServiceCredentialWithIdentityConfirmation(
 
   await storeConnectedServiceCredentialForAccount(credentials, params, {
     allowProviderIdentityChange: true,
+    ...(expectedCredentialRevision !== undefined ? { expectedCredentialRevision } : {}),
   });
   runStoredEffects(options.onStored, params);
   return true;

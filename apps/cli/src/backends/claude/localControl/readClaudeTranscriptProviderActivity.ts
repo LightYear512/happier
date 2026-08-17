@@ -1,13 +1,14 @@
-import { isTerminalClaudeAgentSdkProviderTaskStatus } from '@/backends/claude/providerActivity/createClaudeProviderActivityLedger';
+import {
+  isTerminalClaudeAgentSdkProviderTaskStatus,
+  normalizeClaudeAgentSdkProviderTaskId,
+  normalizeClaudeAgentSdkProviderTaskStatus,
+} from '@/backends/claude/providerActivity/createClaudeProviderActivityLedger';
+import { parseClaudeTaskNotificationXml } from '@/backends/claude/taskNotifications/claudeTaskNotificationXml';
 import type { RawJSONLines } from '@/backends/claude/types';
 
-const TASK_NOTIFICATION_PREFIX_PATTERN = /^\s*<task-notification\b/i;
-const TASK_ID_TAG_PATTERN = /<task-id>([^<]+)<\/task-id>/i;
-const TASK_STATUS_TAG_PATTERN = /<status>([^<]+)<\/status>/i;
-
 export type ClaudeTranscriptProviderActivity =
-  | Readonly<{ type: 'async_agent_started'; taskId: string }>
-  | Readonly<{ type: 'task_notification'; taskId: string | null; terminal: boolean }>;
+  | Readonly<{ type: 'task_notification'; taskId: string | null; toolUseId: string | null; terminal: boolean }>
+  | Readonly<{ type: 'task_notification_unknown'; taskId: string | null; toolUseId: string | null }>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null;
@@ -17,62 +18,45 @@ function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function readMessageRecord(value: unknown): Record<string, unknown> | null {
-  return asRecord(asRecord(value)?.message);
-}
-
-function firstTextContent(value: unknown): string | null {
-  if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return null;
-  for (const item of value) {
-    const text = normalizeString(asRecord(item)?.text);
-    if (text) return text;
-  }
-  return null;
-}
-
 function readOriginKind(message: RawJSONLines): string {
   return normalizeString(asRecord(asRecord(message)?.origin)?.kind);
 }
 
-function readTaskNotificationText(message: RawJSONLines): string | null {
-  const text = firstTextContent(readMessageRecord(message)?.content);
-  if (text && TASK_NOTIFICATION_PREFIX_PATTERN.test(text)) return text;
-  return null;
+function readTaskNotificationOrigin(message: RawJSONLines): Readonly<{
+  taskId: string | null;
+  toolUseId: string | null;
+  status: string | null;
+}> | null {
+  const origin = asRecord(asRecord(message)?.origin);
+  if (normalizeString(origin?.kind) !== 'task-notification') return null;
+  const taskId = normalizeClaudeAgentSdkProviderTaskId(origin?.taskId ?? origin?.task_id);
+  const toolUseId = normalizeClaudeAgentSdkProviderTaskId(origin?.toolUseId ?? origin?.tool_use_id);
+  const status = normalizeClaudeAgentSdkProviderTaskStatus(origin?.status);
+  return { taskId, toolUseId, status };
 }
 
 export function isClaudeTranscriptTaskNotification(message: RawJSONLines): boolean {
-  return readOriginKind(message) === 'task-notification' || readTaskNotificationText(message) !== null;
-}
-
-function readXmlTag(pattern: RegExp, text: string): string | null {
-  const value = normalizeString(pattern.exec(text)?.[1]);
-  return value || null;
+  return readOriginKind(message) === 'task-notification' || parseClaudeTaskNotificationXml(message) !== null;
 }
 
 function readTaskNotificationActivity(message: RawJSONLines): ClaudeTranscriptProviderActivity | null {
   if (!isClaudeTranscriptTaskNotification(message)) return null;
-  const text = readTaskNotificationText(message);
-  const taskId = text ? readXmlTag(TASK_ID_TAG_PATTERN, text) : null;
-  const status = text ? readXmlTag(TASK_STATUS_TAG_PATTERN, text) : null;
+  const origin = readTaskNotificationOrigin(message);
+  const parsed = parseClaudeTaskNotificationXml(message);
+  const taskId = origin?.taskId ?? parsed?.taskId ?? null;
+  const toolUseId = origin?.toolUseId ?? parsed?.toolUseId ?? null;
+  const status = origin?.status ?? parsed?.status ?? null;
+  if (status === null) {
+    return { type: 'task_notification_unknown', taskId, toolUseId };
+  }
   return {
     type: 'task_notification',
     taskId,
+    toolUseId,
     terminal: isTerminalClaudeAgentSdkProviderTaskStatus(status),
   };
 }
 
-function readAsyncAgentStartedActivity(message: RawJSONLines): ClaudeTranscriptProviderActivity | null {
-  const record = asRecord(message);
-  const toolUseResult = asRecord(record?.toolUseResult) ?? asRecord(record?.tool_use_result);
-  if (!toolUseResult) return null;
-  if (toolUseResult.isAsync !== true) return null;
-  if (normalizeString(toolUseResult.status).toLowerCase() !== 'async_launched') return null;
-  const taskId = normalizeString(toolUseResult.agentId) || normalizeString(toolUseResult.agent_id);
-  if (!taskId) return null;
-  return { type: 'async_agent_started', taskId };
-}
-
 export function readClaudeTranscriptProviderActivity(message: RawJSONLines): ClaudeTranscriptProviderActivity | null {
-  return readAsyncAgentStartedActivity(message) ?? readTaskNotificationActivity(message);
+  return readTaskNotificationActivity(message);
 }

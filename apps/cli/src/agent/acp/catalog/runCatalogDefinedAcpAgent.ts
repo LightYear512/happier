@@ -1,12 +1,12 @@
 import React from 'react';
 
 import type { AgentId } from '@happier-dev/agents';
-import { getProviderCliRuntimeSpec } from '@happier-dev/agents';
+import { AGENTS_CORE, getProviderCliRuntimeSpec } from '@happier-dev/agents';
 
 import type { Credentials } from '@/persistence';
 import type { PermissionMode } from '@/api/types';
 import { logger } from '@/ui/logger';
-import { initialMachineMetadata } from '@/daemon/startDaemon';
+import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import { formatProviderPromptErrorMessage } from '@/agent/runtime/formatProviderPromptErrorMessage';
 import { runStandardAcpProvider, type StandardAcpProviderRunOptions } from '@/agent/runtime/runStandardAcpProvider';
 import { createCatalogProviderAcpRuntime } from '@/agent/acp/runtime/createCatalogProviderAcpRuntime';
@@ -53,6 +53,7 @@ export async function runCatalogDefinedAcpAgent(
       getPermissionMode,
       memoryRecallGuidanceEnabled,
       pendingQueueDrainMaxPopPerWake,
+      providerInputConsumer,
     }) =>
       createCatalogProviderAcpRuntime({
         provider: agentId,
@@ -62,6 +63,9 @@ export async function runCatalogDefinedAcpAgent(
         messageBuffer,
         mcpServers,
         permissionHandler,
+        sessionIdentity: AGENTS_CORE[agentId].resume.vendorResume === 'unsupported'
+          ? { kind: 'runtime-only', reason: 'vendor-resume-unsupported' }
+          : { kind: 'manifest-metadata' },
         onThinkingChange: setThinking,
         getPermissionMode,
         memoryRecallGuidance: {
@@ -69,6 +73,7 @@ export async function runCatalogDefinedAcpAgent(
           machineId,
         },
         pendingQueueDrainMaxPopPerWake,
+        providerInputConsumer,
       }),
     onAttachMetadataSnapshotMissing: (error) => {
       logger.debug(

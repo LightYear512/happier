@@ -11,9 +11,8 @@ import { executeClaimedRun, type ClaimableRunPayload } from './automationRunExec
 import { resolveAutomationPollingConfig } from './automationScheduler';
 import type { AutomationTemplateEncryption } from './automationTemplateExecution';
 import { logAutomationInfo, logAutomationWarn } from './automationTelemetry';
-import type { AutomationClaimRunResponse } from './automationTypes';
+import type { AutomationClaimRunResponse, AutomationDaemonAssignmentsResponse } from './automationTypes';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
-import { startSingleFlightIntervalLoop, type SingleFlightIntervalLoopHandle } from '@/daemon/lifecycle/singleFlightIntervalLoop';
 import type { Update } from '@/api/types';
 
 export type AutomationWorkerHandle = Readonly<{
@@ -23,6 +22,20 @@ export type AutomationWorkerHandle = Readonly<{
   pause: () => void;
   resume: () => void;
 }>;
+
+export function resolveNextAutomationClaimAtMs(
+  rows: AutomationDaemonAssignmentsResponse['assignments'],
+): number | null {
+  let next: number | null = null;
+  for (const row of rows) {
+    const candidate = row.automation.nextClaimAt ?? row.automation.nextRunAt;
+    if (typeof candidate !== 'number' || !Number.isFinite(candidate)) continue;
+    if (next === null || candidate < next) {
+      next = candidate;
+    }
+  }
+  return next;
+}
 
 function toClaimableRunPayload(claimResult: AutomationClaimRunResponse): ClaimableRunPayload | null {
   if (!claimResult.run || !claimResult.automation) {
@@ -105,7 +118,6 @@ export function startAutomationWorker(params: {
   let noWorkCooldownUntil = 0;
   let pendingQueuedWake = false;
 
-  let assignmentsLoop: SingleFlightIntervalLoopHandle | null = null;
   let claimTimer: NodeJS.Timeout | null = null;
   let claimTimerAt = 0;
   let claimInFlight = false;
@@ -160,16 +172,7 @@ export function startAutomationWorker(params: {
   }
 
   function getNextAssignedRunAtMs(): number | null {
-    const rows = assignments.getAll();
-    let next: number | null = null;
-    for (const row of rows) {
-      const candidate = row.automation.nextRunAt;
-      if (typeof candidate !== 'number' || !Number.isFinite(candidate)) continue;
-      if (next === null || candidate < next) {
-        next = candidate;
-      }
-    }
-    return next;
+    return resolveNextAutomationClaimAtMs(assignments.getAll());
   }
 
   function rescheduleClaim(reason: string) {
@@ -189,9 +192,7 @@ export function startAutomationWorker(params: {
 
     const nextRunAt = getNextAssignedRunAtMs();
     if (nextRunAt === null) {
-      // If the server isn't providing a nextRunAt (invalid schedule, etc), avoid tight polling but keep a
-      // periodic safety check for missed socket hints / reconnect gaps.
-      scheduleClaimAt(now + Math.max(scheduler.leaseDurationMs, scheduler.assignmentsRefreshMs), `${reason}:safety`);
+      clearClaimTimer();
       return;
     }
 
@@ -206,7 +207,6 @@ export function startAutomationWorker(params: {
   const stopWorker = (reason: 'manual' | 'unsupported-endpoint') => {
     if (stopped) return;
     stopped = true;
-    assignmentsLoop?.stop();
     clearClaimTimer();
     if (refreshSoonTimer) {
       clearTimeout(refreshSoonTimer);
@@ -356,16 +356,14 @@ export function startAutomationWorker(params: {
     }
   };
 
-  assignmentsLoop = startSingleFlightIntervalLoop({
-    intervalMs: scheduler.assignmentsRefreshMs,
-    task: refreshAssignments,
+  void refreshAssignments().catch((error) => {
+    logAutomationWarn('Failed to refresh automation assignments on worker start', error, {
+      machineId: params.machineId,
+    });
   });
-
-  assignmentsLoop.trigger();
 
   logAutomationInfo('Automation worker started', {
     machineId: params.machineId,
-    assignmentsRefreshMs: scheduler.assignmentsRefreshMs,
     leaseDurationMs: scheduler.leaseDurationMs,
     heartbeatMs: scheduler.heartbeatMs,
   });
@@ -383,12 +381,10 @@ export function startAutomationWorker(params: {
         clearTimeout(refreshSoonTimer);
         refreshSoonTimer = null;
       }
-      assignmentsLoop?.pause();
     },
     resume: () => {
       if (stopped || !paused) return;
       paused = false;
-      assignmentsLoop?.resume();
     },
     handleServerUpdate: (update: Update) => {
       if (stopped) return;

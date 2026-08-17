@@ -1,40 +1,51 @@
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 import {
   buildBackendTargetKey,
   getActionSpec,
   listNativeReviewEngines,
-  parseBackendTargetKey,
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
   SessionUsageLimitRecoveryV1Schema,
+  buildStructuredQuestionAnswerPayload,
   type ActionExecutorDeps,
   type BackendTargetRefV1,
-  type ConnectedServiceBindingsV1,
+  type FeatureId,
   type SessionUsageLimitRecoveryV1,
 } from '@happier-dev/protocol';
 import {
   AGENT_IDS,
-  DEFAULT_AGENT_ID,
-  LEGACY_ACP_SESSION_MODELS_STATE_KEY,
   LEGACY_ACP_SESSION_MODES_STATE_KEY,
-  SESSION_MODELS_STATE_KEY,
   SESSION_MODES_STATE_KEY,
+  assertNonEscalatingPermissionMode,
   getProviderCliRuntimeSpec,
   parsePermissionIntentAlias,
   readMetadataAliasValue,
+  resolvePermissionPrivilegeFromSessionMetadata,
   type AgentId,
   type PermissionIntent,
 } from '@happier-dev/agents';
 import { createCliApprovalsArtifactStore } from '@/approvals/cliApprovalsArtifactStore';
+import { fetchAccountProfile } from '@/api/accountProfile';
 import { getPreferredHostName } from '@/daemon/machine/metadata';
 import type { Credentials } from '@/persistence';
 import { readSettings } from '@/persistence';
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { createSpawnedSession } from '@/session/services/createSpawnedSession';
 import {
-  agentSupportsSpawnConnectedServicesDefaults,
-  resolveSpawnConnectedServicesDefaults,
-} from '@/session/services/spawnConnectedServicesDefaults';
+  normalizeSessionAgentSpawnActionRequest,
+  resolveSessionAgentSpawnPolicy,
+} from '@/session/services/spawn/normalizeSessionAgentSpawnActionRequest';
+import { createCliActionOptionProviderRegistry } from '@/session/actions/options/actionOptionProviderRegistry';
+import {
+  listRecentSpawnPathItems,
+  listSpawnMachineItems,
+  listSpawnServerItems,
+} from '@/session/actions/options/spawnTargetDiscovery';
+import { listSpawnProfileItems } from '@/session/actions/options/spawnProfileDiscovery';
+import { listSpawnConnectedServiceItems } from '@/session/actions/options/spawnConnectedServiceDiscovery';
+import { previewSpawnMcpServers } from '@/session/actions/options/spawnMcpServerDiscovery';
 import { getSessionEvents } from '@/session/services/getSessionEvents';
 import { getSessionHistory } from '@/session/services/getSessionHistory';
 import { getSessionRecentMessages } from '@/session/services/getSessionRecentMessages';
@@ -42,6 +53,7 @@ import { getSessionStatus } from '@/session/services/getSessionStatus';
 import { getSessionTranscript } from '@/session/services/getSessionTranscript';
 import { listSessions } from '@/session/services/listSessions';
 import { requestSessionStop } from '@/session/services/requestSessionStop';
+import { requestInactiveSessionResume } from '@/session/services/requestInactiveSessionResume';
 import { sendSessionMessage } from '@/session/services/sendSessionMessage';
 import { setSessionArchivedState } from '@/session/services/setSessionArchivedState';
 import { setSessionModel } from '@/session/services/setSessionModel';
@@ -79,6 +91,8 @@ import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import { routeSessionCatalogControl } from '@/session/catalogControls/sessionCatalogControlRouter';
 import { routeSessionGoalControl } from '@/session/goalControls/sessionGoalControlRouter';
+import { resolveCliFeatureDecisionForServer } from '@/features/featureDecisionService';
+import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 import { buildRoutedResumePromptTierSources } from '@/session/usageLimitRecoveryControls/buildRoutedResumePromptTierSources';
 import {
   routeSessionUsageLimitRecoveryCheckNow,
@@ -109,6 +123,9 @@ export type ScheduleInactiveSessionUsageLimitRecoveryCheck = (input: Readonly<{
 
 export type CancelInactiveSessionUsageLimitRecoveryCheck = (input: Readonly<{
   sessionId: string;
+  issueFingerprint: string;
+  armedAtMs: number;
+  runtimeAuthRecoveryAttemptId?: string;
 }>) => void;
 
 /**
@@ -119,6 +136,7 @@ export type CancelInactiveSessionUsageLimitRecoveryCheck = (input: Readonly<{
  */
 export type CancelConnectedServiceRuntimeAuthRecovery = (input: Readonly<{
   sessionId: string;
+  attemptId: string;
 }>) => Promise<unknown> | unknown;
 
 export type NotifyConnectedServiceRuntimeAuthFailure = NotifyRuntimeAuthFailure;
@@ -132,6 +150,12 @@ type CurrentMachineControlIdentity = Readonly<{
   host: string | null;
   homeDir: string | null;
 }>;
+
+function normalizeActionToolExposureSurface(surface: unknown): 'session_agent' | 'mcp' | 'cli' {
+  return surface === 'session_agent' || surface === 'mcp' || surface === 'cli'
+    ? surface
+    : 'cli';
+}
 
 function notSupported(): never {
   throw new Error('action_not_supported_in_cli');
@@ -147,6 +171,31 @@ function normalizeString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildPermissionEscalationDeniedResult(decision: Extract<
+  ReturnType<typeof assertNonEscalatingPermissionMode>,
+  { ok: false }
+>) {
+  return {
+    ok: false as const,
+    errorCode: 'permission_escalation_denied' as const,
+    error: 'permission_escalation_denied' as const,
+    details: {
+      requestedMode: decision.requestedMode,
+      requestedOrdinal: decision.requestedOrdinal,
+      callerMode: decision.callerMode,
+      callerOrdinal: decision.callerOrdinal,
+    },
+  };
+}
+
+function buildInvalidParametersResult() {
+  return {
+    ok: false as const,
+    errorCode: 'invalid_parameters' as const,
+    error: 'invalid_parameters' as const,
+  };
 }
 
 function readSessionMetadata(params: Readonly<{
@@ -176,6 +225,30 @@ function readSessionMetadata(params: Readonly<{
   }
 }
 
+function readRawSessionMetadata(params: Readonly<{
+  rawSession?: Readonly<{ metadata?: unknown }> | null;
+  mode?: SessionStoredContentEncryptionMode;
+  ctx: SessionEncryptionContext;
+}>): Record<string, unknown> | null {
+  return readSessionMetadata({
+    rawSession: params.rawSession,
+    mode: params.mode,
+    ctx: params.ctx,
+  });
+}
+
+async function readLiveActionAccountSettings(credentials?: Credentials): Promise<Readonly<Record<string, unknown>>> {
+  if (!credentials) return {};
+  return await bootstrapAccountSettingsContext({
+    credentials,
+    mode: 'blocking',
+    refresh: 'auto',
+    honorAccountSettingsModeEnv: false,
+  })
+    .then((ctx) => ctx.settings as Readonly<Record<string, unknown>>)
+    .catch(() => ({}));
+}
+
 type PendingAgentRequestKind = 'permission' | 'user_action';
 
 function readSessionAgentState(params: Readonly<{
@@ -203,6 +276,23 @@ function readSessionAgentState(params: Readonly<{
   } catch {
     return null;
   }
+}
+
+type CliAgentStateCapability =
+  | 'modelScopedConfigTombstonesV1'
+  | 'structuredQuestionAnswersV1Supported';
+
+function hasLiteralAgentStateCapability(
+  agentState: Record<string, unknown> | null,
+  capability: CliAgentStateCapability,
+): boolean {
+  const capabilities = agentState?.capabilities;
+  return Boolean(
+    capabilities
+    && typeof capabilities === 'object'
+    && !Array.isArray(capabilities)
+    && (capabilities as Record<string, unknown>)[capability] === true,
+  );
 }
 
 function resolveOnlyPendingRequestId(params: Readonly<{
@@ -320,21 +410,6 @@ function readSessionModesState(metadata: Record<string, unknown> | null): Readon
   }> | null;
 }
 
-function readSessionModelsState(metadata: Record<string, unknown> | null): Readonly<{
-  provider?: string;
-  availableModels?: readonly Readonly<{ id?: string; name?: string; description?: string }>[];
-}> | null {
-  if (!metadata) return null;
-  return readMetadataAliasValue(
-    metadata,
-    SESSION_MODELS_STATE_KEY,
-    LEGACY_ACP_SESSION_MODELS_STATE_KEY,
-  ) as Readonly<{
-    provider?: string;
-    availableModels?: readonly Readonly<{ id?: string; name?: string; description?: string }>[];
-  }> | null;
-}
-
 function buildAgentBackendItems(params: Readonly<{ limit?: unknown }>): readonly Readonly<{
   targetKey: string;
   label: string;
@@ -351,46 +426,14 @@ function buildAgentBackendItems(params: Readonly<{ limit?: unknown }>): readonly
   return limit ? items.slice(0, limit) : items;
 }
 
-async function resolveSpawnConnectedServicesDefaultPayload(params: Readonly<{
-  backendTarget: BackendTargetRefV1;
-  credentials: Credentials;
-}>): Promise<Readonly<{
-  connectedServices: ConnectedServiceBindingsV1;
-  connectedServicesUpdatedAt: number;
-}> | null> {
-  if (params.backendTarget.kind !== 'builtInAgent') return null;
-  const agentId = params.backendTarget.agentId;
-  if (!AGENT_IDS.includes(agentId as AgentId)) return null;
-  if (!agentSupportsSpawnConnectedServicesDefaults(agentId as AgentId)) return null;
-
-  try {
-    const accountSettingsContext = await bootstrapAccountSettingsContext({
-      credentials: params.credentials,
-      mode: 'blocking',
-      deps: { applySideEffects: () => undefined },
-    });
-    const connectedServices = resolveSpawnConnectedServicesDefaults({
-      accountSettings: accountSettingsContext.settings,
-      agentId: agentId as AgentId,
-    });
-    if (!connectedServices) return null;
-    return {
-      connectedServices,
-      connectedServicesUpdatedAt: Date.now(),
-    };
-  } catch {
-    return null;
-  }
-}
-
 export function createCliActionInventoryDeps(params: Readonly<{
   token: string;
   credentials?: Credentials;
   sessionId: string;
   ctx: SessionEncryptionContext;
   mode?: SessionStoredContentEncryptionMode;
-  rawSession?: Readonly<{ metadata?: unknown }> | null;
-}>): Pick<ActionExecutorDeps, 'reviewEnginesList' | 'agentsBackendsList' | 'agentsModelsList' | 'sessionModesList'> {
+  rawSession?: Readonly<{ metadata?: unknown; path?: unknown }> | null;
+}>): Pick<ActionExecutorDeps, 'reviewEnginesList' | 'agentsBackendsList' | 'agentsModelsList' | 'agentsConfigOptionsList' | 'agentsSessionModesList' | 'sessionModesList'> {
   const metadataCache = new Map<string, Record<string, unknown> | null>();
   const seededMetadata = readSessionMetadata({
     rawSession: params.rawSession,
@@ -398,6 +441,13 @@ export function createCliActionInventoryDeps(params: Readonly<{
     ctx: params.ctx,
   });
   metadataCache.set(params.sessionId, seededMetadata);
+  const rawPath = typeof params.rawSession?.path === 'string' ? params.rawSession.path.trim() : '';
+  const metadataPath = typeof seededMetadata?.path === 'string' ? seededMetadata.path.trim() : '';
+  const createOptionRegistry = async () => createCliActionOptionProviderRegistry({
+    cwd: rawPath || metadataPath || process.cwd(),
+    credentials: params.credentials ?? null,
+    accountSettings: await readLiveActionAccountSettings(params.credentials),
+  });
 
   const readSessionMetadataForId = async (sessionId: string): Promise<Record<string, unknown> | null> => {
     const normalizedSessionId = String(sessionId ?? '').trim();
@@ -444,47 +494,52 @@ export function createCliActionInventoryDeps(params: Readonly<{
       const agentId = args.agentId;
       const limit = (args as { limit?: unknown }).limit;
       const normalizedAgentId = String(agentId ?? '').trim();
-      const modelState = readSessionModelsState(await readSessionMetadataForId(params.sessionId));
-      const provider = typeof modelState?.provider === 'string' ? modelState.provider.trim() : '';
-      const availableModels = Array.isArray(modelState?.availableModels) ? modelState.availableModels : [];
-      const items = provider && provider !== normalizedAgentId
-        ? [{ id: 'default', label: 'Default' }]
-        : [
-            { id: 'default', label: 'Default' },
-            ...availableModels
-              .map((entry) => {
-                const modelId = typeof entry?.id === 'string' ? entry.id.trim() : '';
-                if (!modelId) return null;
-                const label = typeof entry?.name === 'string' && entry.name.trim().length > 0
-                  ? entry.name.trim()
-                  : modelId;
-                const description = typeof entry?.description === 'string' && entry.description.trim().length > 0
-                  ? entry.description.trim()
-                  : undefined;
-                return {
-                  id: modelId,
-                  label,
-                  ...(description ? { description } : {}),
-                };
-              })
-              .filter(Boolean),
-          ];
-      const dedupedItems = items.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
-        .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index);
-      const bounded = normalizeLimit(limit);
-      return {
+      const backendTargetKey = typeof (args as { backendTargetKey?: unknown }).backendTargetKey === 'string'
+        ? (args as { backendTargetKey: string }).backendTargetKey
+        : undefined;
+      const optionRegistry = await createOptionRegistry();
+      return await optionRegistry.agentsModelsList({
         agentId: normalizedAgentId,
-        items: bounded ? dedupedItems.slice(0, bounded) : dedupedItems,
-        supportsFreeform: false,
-        source: provider && provider === normalizedAgentId ? 'session_metadata' : 'static',
-      };
+        ...(backendTargetKey ? { backendTargetKey } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
+    },
+    agentsConfigOptionsList: async (args) => {
+      const limit = (args as { limit?: unknown }).limit;
+      const normalizedAgentId = String(args.agentId ?? '').trim();
+      const backendTargetKey = typeof (args as { backendTargetKey?: unknown }).backendTargetKey === 'string'
+        ? (args as { backendTargetKey: string }).backendTargetKey
+        : undefined;
+      const modelId = typeof (args as { modelId?: unknown }).modelId === 'string'
+        ? readNonBlankSessionControlIdentifier((args as { modelId: string }).modelId) ?? ''
+        : '';
+      const optionRegistry = await createOptionRegistry();
+      return await optionRegistry.agentsConfigOptionsList({
+        agentId: normalizedAgentId,
+        ...(backendTargetKey ? { backendTargetKey } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
+    },
+    agentsSessionModesList: async (args) => {
+      const limit = (args as { limit?: unknown }).limit;
+      const normalizedAgentId = String(args.agentId ?? '').trim();
+      const backendTargetKey = typeof (args as { backendTargetKey?: unknown }).backendTargetKey === 'string'
+        ? (args as { backendTargetKey: string }).backendTargetKey
+        : undefined;
+      const optionRegistry = await createOptionRegistry();
+      return await optionRegistry.agentsSessionModesList({
+        agentId: normalizedAgentId,
+        ...(backendTargetKey ? { backendTargetKey } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
     },
     sessionModesList: async ({ sessionId }) => {
       const sessionModes = readSessionModesState(await readSessionMetadataForId(sessionId));
       const items = Array.isArray(sessionModes?.availableModes)
         ? sessionModes.availableModes
           .map((entry) => {
-            const modeId = typeof entry?.id === 'string' ? entry.id.trim() : '';
+            const modeId = readNonBlankSessionControlIdentifier(entry?.id) ?? '';
             if (!modeId) return null;
             const label = typeof entry?.name === 'string' && entry.name.trim().length > 0
               ? entry.name.trim()
@@ -517,6 +572,8 @@ export function createCliActionDeps(params: Readonly<{
     host?: unknown;
     machineId?: unknown;
   }> | null;
+  getCallerPermissionMode?: (() => string | null | undefined) | null;
+  getCurrentSessionBackendTarget?: (() => BackendTargetRefV1 | null | undefined) | null;
   resumeInactiveSessionWhenUsageLimitReady?: ResumeInactiveSessionWhenUsageLimitReady;
   scheduleInactiveSessionUsageLimitRecoveryCheck?: ScheduleInactiveSessionUsageLimitRecoveryCheck;
   cancelInactiveSessionUsageLimitRecoveryCheck?: CancelInactiveSessionUsageLimitRecoveryCheck;
@@ -540,10 +597,36 @@ export function createCliActionDeps(params: Readonly<{
 
   const sessionTransportCache = new Map<string, ResolvedSessionTransport>();
   let usageLimitRecoveryFeatureEnabledPromise: Promise<boolean> | null = null;
+  let accountProfilePromise: Promise<Awaited<ReturnType<typeof fetchAccountProfile>> | null> | null = null;
+  const actionFeatureDecisionPromises = new Map<FeatureId, Promise<boolean>>();
+  const ambiguousSpawnActionRequestIds = new Set<string>();
 
-  const readCurrentSessionMetadata = async (): Promise<Record<string, unknown> | null> => {
-    if (currentSessionMetadata) return currentSessionMetadata;
+  const resolveActionFeatureEnabled = async (featureId: FeatureId): Promise<boolean> => {
+    const cached = actionFeatureDecisionPromises.get(featureId);
+    if (cached) return await cached;
+    const promise = resolveCliFeatureDecisionForServer({
+      featureId,
+      env: process.env,
+      serverUrl: resolveServerHttpBaseUrl(),
+      timeoutMs: 800,
+    })
+      .then((resolved) => resolved.decision.state === 'enabled')
+      .catch(() => false);
+    actionFeatureDecisionPromises.set(featureId, promise);
+    return await promise;
+  };
 
+  const readActionAccountSettings = async (): Promise<Readonly<Record<string, unknown>>> => {
+    return await readLiveActionAccountSettings(params.credentials);
+  };
+
+  const readActionAccountProfile = async (): Promise<Awaited<ReturnType<typeof fetchAccountProfile>> | null> => {
+    if (!params.credentials) return null;
+    accountProfilePromise ??= fetchAccountProfile({ token: params.credentials.token }).catch(() => null);
+    return await accountProfilePromise;
+  };
+
+  const fetchCurrentSessionMetadata = async (): Promise<Record<string, unknown> | null> => {
     try {
       const rawSession = await fetchSessionById({ token: params.token, sessionId: params.sessionId });
       currentSessionMetadata = readSessionMetadata({
@@ -556,6 +639,54 @@ export function createCliActionDeps(params: Readonly<{
       currentSessionMetadata = null;
       return null;
     }
+  };
+
+  const readCurrentSessionMetadata = async (): Promise<Record<string, unknown> | null> => {
+    currentSessionMetadata ??= readRawSessionMetadata({
+      rawSession: params.rawSession,
+      mode: params.mode,
+      ctx: params.ctx,
+    });
+    if (currentSessionMetadata) return currentSessionMetadata;
+    return await fetchCurrentSessionMetadata();
+  };
+
+  const readFreshCurrentSessionMetadata = async (): Promise<Record<string, unknown> | null> => {
+    const rawSessionMetadata = readRawSessionMetadata({
+      rawSession: params.rawSession,
+      mode: params.mode,
+      ctx: params.ctx,
+    });
+    if (rawSessionMetadata) {
+      currentSessionMetadata = rawSessionMetadata;
+      return rawSessionMetadata;
+    }
+    return await fetchCurrentSessionMetadata();
+  };
+
+  const readValidPermissionMode = (value: unknown): string | null => {
+    const liveMode = normalizeString(value);
+    return liveMode && parsePermissionIntentAlias(liveMode) ? liveMode : null;
+  };
+
+  const readLiveCallerPermissionMode = (): string | null => readValidPermissionMode(params.getCallerPermissionMode?.());
+
+  const denyPermissionEscalationForRequestedMode = async (
+    requestedMode: unknown,
+  ): Promise<ReturnType<typeof buildPermissionEscalationDeniedResult> | ReturnType<typeof buildInvalidParametersResult> | null> => {
+    const normalizedRequestedMode = normalizeString(requestedMode);
+    if (!normalizedRequestedMode) return null;
+    if (!parsePermissionIntentAlias(normalizedRequestedMode)) {
+      return buildInvalidParametersResult();
+    }
+
+    const callerMode = readLiveCallerPermissionMode()
+      ?? resolvePermissionPrivilegeFromSessionMetadata(await readFreshCurrentSessionMetadata()).mode;
+    const permissionDecision = assertNonEscalatingPermissionMode({
+      requestedMode: normalizedRequestedMode,
+      callerMode,
+    });
+    return permissionDecision.ok ? null : buildPermissionEscalationDeniedResult(permissionDecision);
   };
 
   const resolveCurrentSessionValue = async (key: 'path' | 'host' | 'machineId'): Promise<string | null> => {
@@ -841,7 +972,6 @@ export function createCliActionDeps(params: Readonly<{
         credentials: params.credentials,
         metadata,
         rawSession: transport.rawSession,
-        requestProvider,
       }),
       ...(params.resumeInactiveSessionWhenUsageLimitReady
         ? { resumeInactiveSessionWhenReady: params.resumeInactiveSessionWhenUsageLimitReady }
@@ -920,12 +1050,19 @@ export function createCliActionDeps(params: Readonly<{
       return;
     }
     if (recovery.status === 'cancelled' || recovery.status === 'exhausted') {
-      params.cancelInactiveSessionUsageLimitRecoveryCheck?.({ sessionId });
+      params.cancelInactiveSessionUsageLimitRecoveryCheck?.({
+        sessionId,
+        issueFingerprint: recovery.issueFingerprint,
+        armedAtMs: recovery.armedAtMs,
+        ...(recovery.runtimeAuthRecoveryAttemptId
+          ? { runtimeAuthRecoveryAttemptId: recovery.runtimeAuthRecoveryAttemptId }
+          : {}),
+      });
     }
   };
 
   // Forward only a real per-operation choice as the explicit precedence tier;
-  // the routed owner resolves stored intent, account setting, group policy, and
+  // the routed owner resolves stored intent, group policy, account setting, and
   // provider config when no explicit value was requested (RD-REC-5).
   const readExplicitUsageLimitRecoveryResumePromptMode = (
     explicit?: 'standard' | 'off' | 'custom',
@@ -974,9 +1111,33 @@ export function createCliActionDeps(params: Readonly<{
 
   return {
     executionRunStart: async (sessionId, request) => {
+      const permissionDenied = await denyPermissionEscalationForRequestedMode(request.permissionMode);
+      if (permissionDenied) return permissionDenied;
+
       const transport = await resolveTransportForSession(sessionId);
       if (!transport.ok) {
         return { ok: false, code: transport.code, ...(transport.candidates ? { candidates: transport.candidates } : {}) };
+      }
+      if (transport.rawSession.active !== true) {
+        if (!params.credentials) {
+          return { ok: false, code: 'not_authenticated' };
+        }
+        const metadata = readSessionMetadata({ ...transport, rawSession: transport.rawSession }) ?? {};
+        const resumed = await requestInactiveSessionResume({
+          credentials: params.credentials,
+          sessionId: transport.sessionId,
+          localId: `execution.run.start:${randomUUID()}`,
+          rawSession: transport.rawSession,
+          metadata,
+          waitForReady: true,
+        });
+        if (!resumed.ok) {
+          return {
+            ok: false,
+            code: 'execution_run_target_unavailable',
+            message: resumed.message,
+          };
+        }
       }
       return await startExecutionRun({
         token: params.token,
@@ -1078,6 +1239,9 @@ export function createCliActionDeps(params: Readonly<{
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
 
+      const permissionDenied = await denyPermissionEscalationForRequestedMode(input.permissionMode);
+      if (permissionDenied) return permissionDenied;
+
       return await callResolvedSessionRpc(sessionId, SESSION_RPC_METHODS.SESSION_REVIEW_START_INLINE, input);
     },
 
@@ -1088,68 +1252,138 @@ export function createCliActionDeps(params: Readonly<{
     sessionOpen: async () => notSupported(),
     sessionFork: async () => notSupported(),
     sessionRollback: async () => notSupported(),
-    sessionSpawnNew: async ({ tag, agentId, modelId, backendTargetKey, title, path, host, initialMessage }) => {
+    sessionSpawnNew: async ({
+      tag,
+      agentId,
+      backend,
+      target,
+      modelId,
+      backendTargetKey,
+      backendTarget,
+      title,
+      path,
+      directory,
+      host,
+      machineId,
+      prompt,
+      initialPrompt,
+      initialMessage,
+      permissionMode,
+      agentModeId,
+      sessionConfigOptionOverrides,
+      configOptions,
+      profileId,
+      environmentVariables,
+      connectedServices,
+      connectedServicesUpdatedAt,
+      mcpSelection,
+      transcriptStorage,
+      terminal,
+      windowsRemoteSessionLaunchMode,
+      windowsRemoteSessionConsole,
+      windowsTerminalWindowName,
+      codexBackendMode,
+      agentRuntimeDescriptorV1,
+      surface,
+      callerSurface,
+      callerPermissionMode,
+      actionRequestId,
+      resumeActionRequest,
+    }) => {
       if (!params.credentials) {
         notSupported();
       }
 
-      const requestedHost = typeof host === 'string' ? host.trim() : '';
-      const currentHost = await resolveCurrentSessionValue('host');
-      const currentMachineId = await resolveCurrentSessionValue('machineId');
-
-      if (requestedHost) {
-        if (!currentHost || requestedHost !== currentHost || !currentMachineId) {
-          return { type: 'error', errorCode: 'host_not_found', errorMessage: 'host_not_found', host: requestedHost };
-        }
-      }
-
-      const directory = typeof path === 'string' && path.trim().length > 0
-        ? path.trim()
-        : await resolveCurrentSessionValue('path');
-      if (!directory) {
-        return { type: 'error', errorCode: 'spawn_target_missing', errorMessage: 'spawn_target_missing' };
-      }
-
-      const rawBackendTargetKey = typeof backendTargetKey === 'string' ? backendTargetKey.trim() : '';
-      const normalizedAgentId = typeof agentId === 'string' ? agentId.trim() : '';
-
-      const backendTarget = (() => {
-        if (rawBackendTargetKey) {
-          const parsed = parseBackendTargetKey(rawBackendTargetKey);
-          if (!parsed) return null;
-          return parsed;
-        }
-        if (normalizedAgentId) {
-          if (!AGENT_IDS.includes(normalizedAgentId as AgentId)) return null;
-          return { kind: 'builtInAgent', agentId: normalizedAgentId as AgentId } as const;
-        }
-        return { kind: 'builtInAgent', agentId: DEFAULT_AGENT_ID } as const;
-      })();
-      if (!backendTarget) {
-        return { type: 'error', errorCode: 'invalid_parameters', errorMessage: 'invalid_parameters' };
-      }
-      if (backendTarget.kind === 'builtInAgent' && normalizedAgentId && !AGENT_IDS.includes(normalizedAgentId as AgentId)) {
-        return { type: 'error', errorCode: 'agent_not_found', errorMessage: 'agent_not_found' };
-      }
-      const normalizedTitle = typeof title === 'string' ? title.trim() : '';
-      const connectedServicesDefaults = await resolveSpawnConnectedServicesDefaultPayload({
+      const toolSurface = normalizeActionToolExposureSurface(surface ?? callerSurface);
+      const currentCallerPermissionMode = toolSurface === 'session_agent'
+        ? readValidPermissionMode(callerPermissionMode) ?? readLiveCallerPermissionMode()
+        : null;
+      const spawnPolicy = toolSurface === 'session_agent'
+        ? await resolveSessionAgentSpawnPolicy({ credentials: params.credentials })
+        : null;
+      const normalized = await normalizeSessionAgentSpawnActionRequest({
         credentials: params.credentials,
-        backendTarget,
+        surface: toolSurface,
+        input: {
+          tag,
+          agentId,
+          backend,
+          target,
+          modelId,
+          backendTargetKey,
+          backendTarget,
+          title,
+          path,
+          directory,
+          host,
+          machineId,
+          prompt,
+          initialPrompt,
+          initialMessage,
+          permissionMode,
+          agentModeId,
+          sessionConfigOptionOverrides,
+          configOptions,
+          profileId,
+          environmentVariables,
+          connectedServices,
+          connectedServicesUpdatedAt,
+          mcpSelection,
+          transcriptStorage,
+          terminal,
+          windowsRemoteSessionLaunchMode,
+          windowsRemoteSessionConsole,
+          windowsTerminalWindowName,
+          codexBackendMode,
+          agentRuntimeDescriptorV1,
+        },
+        parentMetadata: await readFreshCurrentSessionMetadata(),
+        currentSession: {
+          path: await resolveCurrentSessionValue('path'),
+          host: await resolveCurrentSessionValue('host'),
+          machineId: await resolveCurrentSessionValue('machineId'),
+          backendTarget: params.getCurrentSessionBackendTarget?.() ?? null,
+          permissionMode: currentCallerPermissionMode,
+        },
+        spawnPolicy,
       });
+      if (!normalized.ok) return normalized.result;
 
-      const created = await createSpawnedSession({
-        credentials: params.credentials,
-        directory,
-        ...(currentMachineId ? { machineId: currentMachineId } : {}),
-        backendTarget,
-        ...(connectedServicesDefaults ?? {}),
-        ...(typeof tag === 'string' && tag.trim().length > 0 ? { tag: tag.trim() } : {}),
-        ...(normalizedTitle ? { title: normalizedTitle } : {}),
-        ...(typeof initialMessage === 'string' && initialMessage.trim().length > 0 ? { initialMessage: initialMessage.trim() } : {}),
-        ...(typeof modelId === 'string' && modelId.trim().length > 0 && modelId.trim() !== 'default'
-          ? { modelId: modelId.trim() }
-          : {}),
-      });
+      const normalizedActionRequestId = readNonBlankSessionControlIdentifier(actionRequestId);
+      const spawnNonce = normalizedActionRequestId
+        ? `session.spawn_new:${params.sessionId}:${normalizedActionRequestId}`
+        : null;
+      const resumeOnly = Boolean(
+        spawnNonce
+        && (resumeActionRequest === true || ambiguousSpawnActionRequestIds.has(spawnNonce)),
+      );
+      if (spawnNonce && !resumeOnly) {
+        ambiguousSpawnActionRequestIds.add(spawnNonce);
+      }
+
+      let created: Awaited<ReturnType<typeof createSpawnedSession>>;
+      try {
+        created = await createSpawnedSession({
+          ...normalized.createParams,
+          ...(spawnNonce ? { spawnNonce } : {}),
+          ...(resumeOnly ? { resumeOnly: true } : {}),
+        });
+      } catch (error) {
+        const details = error && typeof error === 'object'
+          ? (error as { details?: unknown }).details
+          : null;
+        const ambiguousNonce = details && typeof details === 'object'
+          && typeof (details as { spawnNonce?: unknown }).spawnNonce === 'string'
+          ? (details as { spawnNonce: string }).spawnNonce
+          : null;
+        if (spawnNonce && ambiguousNonce !== spawnNonce) {
+          ambiguousSpawnActionRequestIds.delete(spawnNonce);
+        }
+        throw error;
+      }
+      if (spawnNonce) {
+        ambiguousSpawnActionRequestIds.delete(spawnNonce);
+      }
 
       return {
         type: 'success',
@@ -1159,37 +1393,95 @@ export function createCliActionDeps(params: Readonly<{
       };
     },
     sessionSpawnPicker: async () => notSupported(),
-    pathsListRecent: async () => notSupported(),
-    machinesList: async () => notSupported(),
-    serversList: async () => notSupported(),
+    pathsListRecent: async ({ machineId, limit }) => {
+      if (!params.credentials) return { items: [] };
+      return await listRecentSpawnPathItems({ credentials: params.credentials, machineId, limit });
+    },
+    machinesList: async ({ limit }) => await listSpawnMachineItems({ limit }),
+    serversList: async ({ limit }) => await listSpawnServerItems({ limit }),
+    sessionsSpawnProfilesList: async ({ agentId, backendTargetKey, includeDisabled, limit }) => {
+      if (!params.credentials) return { items: [] };
+      return listSpawnProfileItems({
+        accountSettings: await readActionAccountSettings(),
+        ...(agentId ? { agentId } : {}),
+        ...(backendTargetKey ? { backendTargetKey } : {}),
+        includeDisabled: includeDisabled === true,
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
+    },
+    sessionsSpawnConnectedServicesList: async ({ agentId, includeUnavailable, limit }) => {
+      if (!params.credentials) return { items: [] };
+      const connectedServicesFeatureEnabled = await resolveActionFeatureEnabled('connectedServices');
+      if (!connectedServicesFeatureEnabled) return { items: [] };
+      const accountGroupsFeatureEnabled = await resolveActionFeatureEnabled('connectedServices.accountGroups');
+      const accountProfile = await readActionAccountProfile();
+      if (!accountProfile) return { items: [] };
+      return listSpawnConnectedServiceItems({
+        accountSettings: await readActionAccountSettings(),
+        accountProfile,
+        ...(agentId ? { agentId } : {}),
+        connectedServicesFeatureEnabled,
+        accountGroupsFeatureEnabled,
+        includeUnavailable: includeUnavailable === true,
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
+    },
+    sessionsSpawnMcpServersPreview: async ({ agentId, machineId, path, directory, mcpSelection, selection, limit }) => {
+      if (!params.credentials) {
+        return { ok: false, errorCode: 'internal_error', error: 'missing_credentials' };
+      }
+      const currentMachine = await readCurrentMachineControlIdentity();
+      const resolvedMachineId = normalizeString(machineId) ?? currentMachine.machineId;
+      const resolvedDirectory = normalizeString(directory) ?? normalizeString(path) ?? await resolveCurrentSessionValue('path') ?? process.cwd();
+      if (!resolvedMachineId) {
+        return { ok: false, errorCode: 'invalid_request', error: 'invalid_request' };
+      }
+      return await previewSpawnMcpServers({
+        accountSettings: await readActionAccountSettings(),
+        machineId: resolvedMachineId,
+        directory: resolvedDirectory,
+        ...(agentId ? { agentId } : {}),
+        selection: selection ?? mcpSelection ?? null,
+        ...(typeof limit === 'number' ? { limit } : {}),
+        env: process.env,
+      });
+    },
     ...(approvalsStore ?? {}),
     ...inventoryDeps,
-	    sessionSendMessage: async ({ sessionId, message, wait, timeoutSeconds, permissionModeOverride, modelOverride }) => {
-	      if (!params.credentials) {
-	        return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
-	      }
+    sessionSendMessage: async ({ sessionId, message, requestedAction, wait, timeoutSeconds, permissionModeOverride, modelOverride }) => {
+      if (!params.credentials) {
+        return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      }
 
-	      const normalizedWait = typeof wait === 'boolean' ? wait : false;
-	      const normalizedTimeoutSeconds =
-	        typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
-	          ? Math.min(3600, timeoutSeconds)
-	          : 300;
+      const normalizedWait = typeof wait === 'boolean' ? wait : false;
+      const normalizedTimeoutSeconds =
+        typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+          ? Math.min(3600, timeoutSeconds)
+          : 300;
+      const normalizedPermissionModeOverride = normalizeString(permissionModeOverride);
+      if (normalizedPermissionModeOverride) {
+        const permissionDenied = await denyPermissionEscalationForRequestedMode(normalizedPermissionModeOverride);
+        if (permissionDenied) {
+          return permissionDenied;
+        }
+      }
 
-	      const res = await sendSessionMessage({
-	        credentials: params.credentials,
-	        idOrPrefix: sessionId,
-	        message: String(message ?? ''),
-	        wait: normalizedWait,
-	        timeoutMs: normalizedTimeoutSeconds * 1000,
-	        ...(typeof permissionModeOverride === 'string' && permissionModeOverride.trim().length > 0
-	          ? { permissionModeOverride: permissionModeOverride.trim() }
-	          : {}),
-	        ...(modelOverride === null
-	          ? { modelOverride: null }
-	          : typeof modelOverride === 'string' && modelOverride.trim().length > 0
-	            ? { modelOverride: modelOverride.trim() }
-	            : {}),
-	      });
+      const res = await sendSessionMessage({
+        credentials: params.credentials,
+        idOrPrefix: sessionId,
+        message: String(message ?? ''),
+        requestedAction,
+        wait: normalizedWait,
+        timeoutMs: normalizedTimeoutSeconds * 1000,
+        ...(normalizedPermissionModeOverride
+          ? { permissionModeOverride: normalizedPermissionModeOverride }
+          : {}),
+        ...(modelOverride === null
+          ? { modelOverride: null }
+          : typeof modelOverride === 'string' && modelOverride.trim().length > 0
+            ? { modelOverride }
+            : {}),
+      });
       if (!res.ok) {
         return {
           ok: false,
@@ -1228,9 +1520,14 @@ export function createCliActionDeps(params: Readonly<{
       if (!params.credentials) {
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
-      const parsed = parsePermissionIntentAlias(String(permissionMode ?? '').trim());
+      const normalizedPermissionMode = String(permissionMode ?? '').trim();
+      const parsed = parsePermissionIntentAlias(normalizedPermissionMode);
       if (!parsed) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+      }
+      const permissionDenied = await denyPermissionEscalationForRequestedMode(normalizedPermissionMode);
+      if (permissionDenied) {
+        return permissionDenied;
       }
       const updatedAt = Date.now();
       const res = await setSessionPermissionMode({
@@ -1249,16 +1546,34 @@ export function createCliActionDeps(params: Readonly<{
       if (!params.credentials) {
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
-      const normalizedModelId = String(modelId ?? '').trim();
+      const normalizedModelId = readNonBlankSessionControlIdentifier(modelId) ?? '';
       if (!normalizedModelId) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
+      const transport = await resolveTransportForSession(sessionId);
+      if (!transport.ok) {
+        return {
+          ok: false,
+          errorCode: transport.code,
+          error: transport.code,
+          ...(transport.candidates ? { candidates: transport.candidates } : {}),
+        };
+      }
+      const agentState = readSessionAgentState({
+        rawSession: transport.rawSession,
+        mode: transport.mode,
+        ctx: transport.ctx,
+      });
       const updatedAt = Date.now();
       const res = await setSessionModel({
         credentials: params.credentials,
-        idOrPrefix: sessionId,
+        idOrPrefix: transport.sessionId,
         modelId: normalizedModelId,
         updatedAt,
+        retireModelScopedConfigOverrides: hasLiteralAgentStateCapability(
+          agentState,
+          'modelScopedConfigTombstonesV1',
+        ),
       });
       if (!res.ok) {
         return { ok: false, errorCode: res.code, error: res.code, ...(res.candidates ? { candidates: res.candidates } : {}) };
@@ -1307,6 +1622,14 @@ export function createCliActionDeps(params: Readonly<{
       });
     },
 
+    sessionPendingInputInterruptAndRun: async ({ sessionId, localId, expectedStateAtMs }) => {
+      return await callResolvedSessionRpc(sessionId, SESSION_RPC_METHODS.SESSION_PENDING_INPUT_INTERRUPT_AND_RUN, {
+        sessionId,
+        localId,
+        ...(typeof expectedStateAtMs === 'number' ? { expectedStateAtMs } : {}),
+      });
+    },
+
     sessionVendorPluginCatalogList: async ({ sessionId, cwd }) => {
       return await callRoutedSessionCatalogControl(sessionId, 'vendorPlugins', { cwd });
     },
@@ -1333,7 +1656,7 @@ export function createCliActionDeps(params: Readonly<{
       return result;
     },
 
-    sessionUsageLimitWaitResumeCancel: async ({ sessionId, issueFingerprint }) => {
+    sessionUsageLimitWaitResumeCancel: async ({ sessionId, issueFingerprint, armedAtMs, runtimeAuthRecoveryAttemptId }) => {
       if (!await usageLimitRecoveryFeatureEnabled()) {
         return usageLimitRecoveryFeatureDisabledResult({ sessionId });
       }
@@ -1345,20 +1668,37 @@ export function createCliActionDeps(params: Readonly<{
           : normalizedIssueFingerprint === null
             ? { issueFingerprint: null }
             : {}),
+        ...(typeof armedAtMs === 'number' && Number.isFinite(armedAtMs) ? { armedAtMs: Math.trunc(armedAtMs) } : {}),
+        ...(typeof runtimeAuthRecoveryAttemptId === 'string' && runtimeAuthRecoveryAttemptId.trim().length > 0
+          ? { runtimeAuthRecoveryAttemptId: runtimeAuthRecoveryAttemptId.trim() }
+          : {}),
       };
       const result = await callRoutedUsageLimitRecoveryControl(sessionId, 'cancel', request);
       const rawResult = result && typeof result === 'object' && !Array.isArray(result)
         ? result as Record<string, unknown>
         : null;
       if (rawResult?.ok === true) {
-        params.cancelInactiveSessionUsageLimitRecoveryCheck?.({ sessionId });
-        // QAE-1: also clear the daemon runtime-auth recovery store — a waiting
-        // intent left armed here resumes the session involuntarily at reset.
-        // Best-effort: store-cancel failures must not fail the user cancel.
-        try {
-          await params.cancelConnectedServiceRuntimeAuthRecovery?.({ sessionId });
-        } catch {
-          // non-fatal; the wiring owner logs its own failures
+        if (typeof normalizedIssueFingerprint !== 'string' || typeof armedAtMs !== 'number') return result;
+        const exactAttempt = {
+          sessionId,
+          issueFingerprint: normalizedIssueFingerprint,
+          armedAtMs: Math.trunc(armedAtMs),
+          ...(typeof runtimeAuthRecoveryAttemptId === 'string' && runtimeAuthRecoveryAttemptId.trim().length > 0
+            ? { runtimeAuthRecoveryAttemptId: runtimeAuthRecoveryAttemptId.trim() }
+            : {}),
+        };
+        params.cancelInactiveSessionUsageLimitRecoveryCheck?.(exactAttempt);
+        if (typeof runtimeAuthRecoveryAttemptId === 'string' && runtimeAuthRecoveryAttemptId.trim().length > 0) {
+          // Runtime-auth attempts have their own immutable identity. Their armedAt
+          // timestamp is sampled independently and is not an exact-match key.
+          try {
+            await params.cancelConnectedServiceRuntimeAuthRecovery?.({
+              sessionId,
+              attemptId: runtimeAuthRecoveryAttemptId.trim(),
+            });
+          } catch {
+            // non-fatal; the wiring owner logs its own failures
+          }
         }
       }
       return result;
@@ -1621,34 +1961,54 @@ export function createCliActionDeps(params: Readonly<{
         return permissionRequestNotFoundResult(transport.sessionId);
       }
 
-      const normalizedAnswers = Object.fromEntries(
-        (Array.isArray(answers) ? answers : [])
-          .map((entry: any) => ({
-            question: String(entry?.question ?? '').trim(),
-            answer: String(entry?.answer ?? '').trim(),
-          }))
-          .filter((entry) => entry.question.length > 0 && entry.answer.length > 0)
-          .map((entry) => [entry.question, entry.answer] as const),
-      );
+      const normalizedAnswers = Object.create(null) as Record<string, readonly string[]>;
+      for (const entry of Array.isArray(answers) ? answers : []) {
+        const question = String(entry?.question ?? '');
+        if (question.trim()) normalizedAnswers[question] = [...entry.values];
+      }
       if (!decision && Object.keys(normalizedAnswers).length === 0) {
         return { ok: false, errorCode: 'invalid_parameters', errorMessage: 'invalid_parameters', sessionId: transport.sessionId };
       }
 
       const approved = decision ? decision === 'approve' : true;
+      const agentState = readSessionAgentState({
+        rawSession: transport.rawSession,
+        mode: transport.mode,
+        ctx: transport.ctx,
+      });
+      const supportsV1 = hasLiteralAgentStateCapability(
+        agentState,
+        'structuredQuestionAnswersV1Supported',
+      );
+      const answerPayload = Object.keys(normalizedAnswers).length > 0
+        ? buildStructuredQuestionAnswerPayload(normalizedAnswers, supportsV1)
+        : null;
+      if (answerPayload?.kind === 'requires_cli_update') {
+        return {
+          ok: false,
+          errorCode: 'cli_update_required',
+          errorMessage: 'cli_update_required',
+          sessionId: transport.sessionId,
+        };
+      }
       try {
         return await callSessionRpc({
           token: params.credentials.token,
           sessionId: transport.sessionId,
           ctx: transport.ctx,
           mode: transport.mode,
-          method: `${transport.sessionId}:permission`,
-          request: {
-            id: reqId,
-            approved,
-            ...(Object.keys(normalizedAnswers).length > 0 ? { answers: normalizedAnswers } : {}),
-            ...(typeof reason === 'string' && reason.trim().length > 0 ? { reason: reason.trim() } : {}),
-            ...(typeof updatedPermissions !== 'undefined' ? { updatedPermissions } : {}),
-          },
+          method: `${transport.sessionId}:${answerPayload?.send.protocol === 'structured-question-v1'
+            ? SESSION_RPC_METHODS.SESSION_STRUCTURED_QUESTION_RESPOND_V1
+            : SESSION_RPC_METHODS.SESSION_PERMISSION_RESPOND_LEGACY}`,
+          request: answerPayload?.send.protocol === 'structured-question-v1'
+            ? { id: reqId, structuredAnswersV1: answerPayload.send.structuredAnswersV1 }
+            : {
+                id: reqId,
+                approved,
+                ...(answerPayload?.send.protocol === 'legacy-permission' ? { answers: answerPayload.send.answers } : {}),
+                ...(typeof reason === 'string' && reason.trim().length > 0 ? { reason: reason.trim() } : {}),
+                ...(typeof updatedPermissions !== 'undefined' ? { updatedPermissions } : {}),
+              },
         });
       } catch (error) {
         return {
@@ -1664,7 +2024,7 @@ export function createCliActionDeps(params: Readonly<{
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
 
-      const normalizedModeId = String(modeId ?? '').trim();
+      const normalizedModeId = readNonBlankSessionControlIdentifier(modeId) ?? '';
       const updatedAt = Date.now();
       const res = await setSessionMode({
         credentials: params.credentials,

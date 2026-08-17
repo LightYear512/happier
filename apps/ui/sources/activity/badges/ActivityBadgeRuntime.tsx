@@ -1,13 +1,11 @@
 import * as React from 'react';
 
 import { Platform } from 'react-native';
-import { useShallow } from 'zustand/react/shallow';
 
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useChangelog } from '@/hooks/inbox/useChangelog';
 import { useUpdates } from '@/hooks/inbox/useUpdates';
 import {
-    getStorage,
     useFriendRequests,
     useLocalSetting,
 } from '@/sync/domains/state/storage';
@@ -17,11 +15,8 @@ import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import { applyExpoNativeBadgeState } from './channels/applyExpoNativeBadgeState';
 import { applyTauriBadgeState } from './channels/applyTauriBadgeState';
-import {
-    createLocalActivityBadgeSnapshotSelector,
-    type ActivityBadgeSessionOptions,
-    type LocalActivityBadgeSnapshot,
-} from './createLocalActivityBadgeSnapshotSelector';
+import type { ActivityBadgeSessionOptions } from './createLocalActivityBadgeSnapshotSelector';
+import { useLocalActivityBadgeSnapshot } from './useLocalActivityBadgeSnapshot';
 
 type ServerBadgeSnapshot = Readonly<{
     count: number;
@@ -47,21 +42,6 @@ function canUseServerBadgeSnapshot(options: ActivityBadgeSessionOptions): boolea
     return options.showUnread
         && options.showPendingPermissionRequests
         && options.showPendingUserActionRequests;
-}
-
-function useLocalActivityBadgeSnapshot(params: Readonly<{
-    badgesEnabled: boolean;
-    friendRequestCount: number;
-    hasNonNumericInboxAttention: boolean;
-    sessionOptions: ActivityBadgeSessionOptions;
-}>): LocalActivityBadgeSnapshot {
-    const selector = React.useMemo(() => createLocalActivityBadgeSnapshotSelector(params), [
-        params.badgesEnabled,
-        params.friendRequestCount,
-        params.hasNonNumericInboxAttention,
-        params.sessionOptions,
-    ]);
-    return getStorage()(useShallow(selector));
 }
 
 export function ActivityBadgeRuntime(): React.ReactElement | null {

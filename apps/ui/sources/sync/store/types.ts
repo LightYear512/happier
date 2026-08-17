@@ -36,7 +36,7 @@ import type {
 import type { SessionActionDraft } from '../domains/sessionActions/sessionActionDraftTypes';
 import type { SessionActionDraftStatus } from '../domains/sessionActions/sessionActionDraftTypes';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
-import type { SessionFoldersDomain } from './domains/sessionFolders';
+import type { SessionOrganizationDomain } from './domains/sessionOrganization';
 
 export type KnownEntitlements = 'voice' | 'pro';
 export type SessionListItem = string | Session;
@@ -76,6 +76,14 @@ export interface SessionsDomainSlice {
     sessions: Record<string, Session>;
     sessionLocalStateScope: ServerAccountScope | null;
     sessionListRenderables: Record<string, SessionListRenderableSession>;
+    /**
+     * Ids this viewer has watched be deleted. Neither session map can answer "does this session
+     * exist" — both are list-scoped caches that an ordinary refresh evicts from — so anything
+     * holding a durable pointer to a session reads this rather than inferring gone-ness from a
+     * cache miss. Written only by `deleteSession`. See `SessionsDomain` for the full note.
+     */
+    deletedSessionIds: Record<string, true>;
+    sessionListRenderableDelta: SessionListRenderableDelta;
     sessionListViewData: SessionListViewItem[] | null;
     sessionListViewDataByServerId: Record<string, SessionListViewItem[] | null>;
     sessionScmStatus: Record<string, ScmStatus | null>;
@@ -124,12 +132,21 @@ export interface SessionsDomainSlice {
     clearSessionActionDrafts: (sessionId: string) => void;
     markSessionOptimisticThinking: (sessionId: string) => void;
     clearSessionOptimisticThinking: (sessionId: string) => void;
+    markSessionResuming: (sessionId: string) => void;
+    clearSessionResuming: (sessionId: string) => void;
     clearSessionThinkingGrace: (sessionId: string) => void;
     markSessionViewed: (sessionId: string) => void;
     updateSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void;
     updateSessionModelMode: (sessionId: string, mode: SessionModelMode) => void;
     deleteSession: (sessionId: string) => void;
 }
+
+export type SessionListRenderableDelta = Readonly<{
+    revision: number;
+    changedSessionIds: readonly string[];
+    removedSessionIds: readonly string[];
+    rebuiltSessionListViewData: boolean;
+}>;
 
 export interface MachinesDomainSlice {
     machines: Record<string, Machine>;
@@ -154,23 +171,32 @@ export interface MessagesDomainSlice {
     };
     applyMessagesLoaded: (sessionId: string) => void;
     resetSessionMessages: (sessionId: string) => void;
+    evictSessionMessages: (sessionId: string) => void;
     isMutableToolCall: (sessionId: string, callId: string) => boolean;
 }
 
 export interface PendingDomainSlice {
     sessionPending: Record<string, SessionPending>;
     applyPendingLoaded: (sessionId: string) => void;
+    applyPendingSnapshot: (sessionId: string, snapshot: Readonly<{
+        messages: PendingMessage[];
+        discarded: DiscardedPendingMessage[];
+    }>) => void;
     applyPendingMessages: (sessionId: string, messages: PendingMessage[]) => void;
     applyDiscardedPendingMessages: (sessionId: string, messages: DiscardedPendingMessage[]) => void;
+    pruneServerPendingMessages: (sessionId: string) => void;
     upsertPendingMessage: (sessionId: string, message: PendingMessage) => void;
     removePendingMessage: (sessionId: string, pendingId: string) => void;
 }
 
 export interface TranscriptLoadingDomainSlice {
     sessionCatchUpNewerInFlight: Record<string, number>;
+    sessionTailContiguousFloorSeq: Record<string, number>;
     isSessionCatchingUpNewer: (sessionId: string) => boolean;
     beginSessionCatchUpNewer: (sessionId: string) => void;
     endSessionCatchUpNewer: (sessionId: string) => void;
+    getSessionTailContiguousFloorSeq: (sessionId: string) => number | null;
+    setSessionTailContiguousFloorSeq: (sessionId: string, floorSeq: number | null) => void;
 }
 
 export interface RealtimeDomainSlice {
@@ -249,6 +275,13 @@ export interface ProjectDomainSlice {
         sessionId: string,
         error: import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null
     ) => void;
+    publishSessionProjectScmSnapshots: (
+        publishes: ReadonlyArray<Readonly<{
+            sessionId: string;
+            snapshot: ScmWorkingSnapshot;
+            status: ScmStatus | null;
+        }>>,
+    ) => void;
     getSessionProjectScmTouchedPaths: (sessionId: string) => string[];
     markSessionProjectScmTouchedPaths: (sessionId: string, paths: string[]) => void;
     pruneSessionProjectScmTouchedPaths: (sessionId: string, activePaths: Set<string>) => void;
@@ -307,7 +340,7 @@ export type StorageState = SettingsDomainSlice
     & ProfileDomainSlice
     & LegacySessionsSlice
     & SessionsDomainSlice
-    & SessionFoldersDomain
+    & SessionOrganizationDomain
     & MachinesDomainSlice
     & MessagesDomainSlice
     & PendingDomainSlice

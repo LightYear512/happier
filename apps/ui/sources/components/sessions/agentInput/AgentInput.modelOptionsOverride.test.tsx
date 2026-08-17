@@ -96,13 +96,12 @@ installAgentInputCommonModuleMocks({
 
 function findIconNode(
     tree: Awaited<ReturnType<typeof renderScreen>>['tree'] | { root: any } | { findAll: (predicate: (node: any) => boolean) => any[] },
-    type: 'Ionicons' | 'Octicons',
     name: string,
 ): any {
     const root = 'root' in tree ? tree.root : tree;
     return root.findAll((node: any) => (
         typeof node.type === 'string' &&
-        String(node.type) === type &&
+        String(node.type) === 'Icon' &&
         (node.props as any)?.name === name
     ))[0];
 }
@@ -135,6 +134,7 @@ vi.mock('@/agents/catalog/catalog', () => ({
         displayNameKey: 'agents.codex',
         toolRendering: { hideUnknownToolsByDefault: false },
         uiConnectedService: { serviceId: 'openai-codex', label: 'Codex', connectRoute: null },
+        ui: { agentPickerIconName: 'code-slash' },
         flavorAliases: [],
         availability: { experimental: false },
         model: {
@@ -182,11 +182,24 @@ vi.mock('@/sync/domains/models/modelOptions', () => ({
 }));
 
 vi.mock('@/sync/domains/models/describeEffectiveModelMode', () => ({
-    describeEffectiveModelMode: (params: { selectedModelId?: string | null }) => ({
-        effectiveModelId: params.selectedModelId?.trim() || 'default',
-        applyScope: 'spawn_only',
-        notes: [],
-    }),
+    describeEffectiveModelMode: (params: {
+        selectedModelId?: string | null;
+        agentType?: string | null;
+        metadata?: any;
+    }) => {
+        const selectedModelId = params.selectedModelId?.trim() || 'default';
+        const state = params.metadata?.sessionAppliedModelV1 ?? null;
+        const appliedModelId = state?.provider === params.agentType && typeof state?.modelId === 'string'
+            ? state.modelId
+            : null;
+        return {
+            selectedModelId,
+            appliedModelId,
+            effectiveModelId: selectedModelId,
+            applyScope: 'spawn_only',
+            notes: [],
+        };
+    },
 }));
 
 vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
@@ -220,10 +233,6 @@ vi.mock('@/components/ui/feedback/Shaker', () => ({
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: () => null,
-}));
-
-vi.mock('@/components/autocomplete/useActiveWord', () => ({
-    useActiveWord: () => ({ word: '', start: 0, end: 0 }),
 }));
 
 vi.mock('@/components/autocomplete/useActiveSuggestions', () => ({
@@ -314,15 +323,15 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
     useKeyboardHeight: () => 0,
 }));
 
-vi.mock('@/sync/acp/sessionModeControl', () => ({
+vi.mock('@/sync/domains/sessionControl/sessionModeControl', () => ({
     computeSessionModePickerControl: () => mockSessionModePickerControl,
 }));
 
-vi.mock('@/sync/acp/configOptionsControl', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/acp/configOptionsControl')>();
+vi.mock('@/sync/domains/sessionControl/configOptionsControl', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/sessionControl/configOptionsControl')>();
     return {
         ...actual,
-        computeAcpConfigOptionControls: () => null,
+        computeSessionConfigOptionControls: () => null,
     };
 });
 
@@ -351,7 +360,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -380,7 +389,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'codex',
             permissionMode: 'default',
@@ -411,7 +420,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -446,7 +455,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -491,7 +500,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     metadata,
@@ -528,7 +537,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     metadata,
@@ -574,7 +583,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     metadata: metadataLoading,
@@ -595,7 +604,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     metadata: metadataLoaded,
@@ -641,7 +650,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     metadata: metadataLoaded,
@@ -663,7 +672,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     metadata: metadataRefreshing,
@@ -688,7 +697,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'opencode',
             permissionMode: 'default',
@@ -722,7 +731,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'opencode',
             permissionMode: 'default',
@@ -756,7 +765,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'opencode',
                     permissionMode: 'default',
@@ -774,8 +783,8 @@ describe('AgentInput (modelOptionsOverride)', () => {
         const modeChip = screen.findByTestId('agent-input-session-mode-chip');
         expect(modeChip).toBeTruthy();
         expect(modeChip?.props.accessibilityLabel).toContain('Build');
-        expect(findIconNode(modeChip!, 'Octicons', 'rocket')).toBeTruthy();
-        expect(findIconNode(modeChip!, 'Ionicons', 'list-outline')).toBeUndefined();
+        expect(findIconNode(modeChip!, 'rocket-launch')).toBeTruthy();
+        expect(findIconNode(modeChip!, 'list')).toBeUndefined();
 
         await screen.pressByTestIdAsync('agent-input-session-mode-chip');
 
@@ -792,7 +801,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'opencode',
                     permissionMode: 'default',
@@ -809,8 +818,8 @@ describe('AgentInput (modelOptionsOverride)', () => {
         const modeChip = screen.findByTestId('agent-input-session-mode-chip');
         expect(modeChip).toBeTruthy();
         expect(modeChip?.props.accessibilityLabel).toContain('Plan');
-        expect(findIconNode(modeChip!, 'Ionicons', 'list-outline')).toBeTruthy();
-        expect(findIconNode(modeChip!, 'Octicons', 'rocket')).toBeUndefined();
+        expect(findIconNode(modeChip!, 'list')).toBeTruthy();
+        expect(findIconNode(modeChip!, 'rocket-launch')).toBeUndefined();
         expect(screen.findByTestId('agent-input-session-mode-chip-label:plan')).toBeTruthy();
     });
 
@@ -824,7 +833,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'opencode',
                     permissionMode: 'default',
@@ -862,7 +871,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -900,7 +909,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -937,7 +946,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -963,7 +972,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         placeholder: 'placeholder',
                         onChangeText: () => {},
                         onSend: () => {},
-                        autocompletePrefixes: [],
+                        autocompleteKinds: [],
                         autocompleteSuggestions: async () => [],
                         agentType: 'codex',
                         permissionMode: 'default',
@@ -993,7 +1002,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         placeholder: 'placeholder',
                         onChangeText: () => {},
                         onSend: () => {},
-                        autocompletePrefixes: [],
+                        autocompleteKinds: [],
                         autocompleteSuggestions: async () => [],
                         agentType: 'codex',
                         permissionMode: 'default',
@@ -1024,7 +1033,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'claude',
                     permissionMode: 'default',
@@ -1061,7 +1070,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'claude',
             permissionMode: 'default',
@@ -1092,7 +1101,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'claude',
             permissionMode: 'default',
@@ -1125,7 +1134,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'claude',
             permissionMode: 'default',
@@ -1156,7 +1165,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'claude',
                     permissionMode: 'default',
@@ -1192,7 +1201,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1228,7 +1237,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1267,6 +1276,101 @@ describe('AgentInput (modelOptionsOverride)', () => {
         expect(onModelModeChange).toHaveBeenCalledWith('session-model');
     });
 
+    it('marks the last-used applied model without moving selection away from the requested model', async () => {
+        const { AgentInput } = await import('./AgentInput');
+
+        lastModelPickerOverlayProps = null;
+
+        const screen = await renderScreen(React.createElement(AgentInput, {
+            value: 'hello',
+            placeholder: 'placeholder',
+            onChangeText: () => {},
+            onSend: () => {},
+            autocompleteKinds: [],
+            autocompleteSuggestions: async () => [],
+            agentType: 'codex',
+            metadata: {
+                sessionModelsV1: {
+                    v: 1,
+                    provider: 'codex',
+                    updatedAt: 10,
+                    currentModelId: 'session-model',
+                    availableModels: [{ id: 'session-model', name: 'Session Model' }],
+                },
+                sessionAppliedModelV1: {
+                    v: 1,
+                    provider: 'codex',
+                    updatedAt: 9,
+                    modelId: 'session-model',
+                },
+            },
+            sessionActive: false,
+            permissionMode: 'default',
+            onPermissionModeChange: () => {},
+            modelMode: 'default',
+            onModelModeChange: () => {},
+        } as any));
+
+        act(() => {
+            screen.pressByTestId('agent-input-agent-chip');
+        });
+
+        expect(lastModelPickerOverlayProps?.selectedValue).toBe('default');
+        const currentOption = lastModelPickerOverlayProps?.options?.find((option: any) => option.value === 'session-model');
+        expect(currentOption?.trailingStatusIcon?.props?.name).toBe('clock');
+        expect(currentOption?.icon).toBeUndefined();
+        expect(currentOption?.accessibilityLabel).toContain('agentInput.model.lastUsed');
+        expect(lastModelPickerOverlayProps?.summary).toContain('agentInput.model.lastUsed');
+        expect(lastModelPickerOverlayProps?.notes).toEqual(['agentInput.model.selectedForResume']);
+    });
+
+    it('keeps the check/background on the selected model while the running icon stays on the applied model', async () => {
+        const { AgentInput } = await import('./AgentInput');
+        lastModelPickerOverlayProps = null;
+
+        const screen = await renderScreen(React.createElement(AgentInput, {
+            value: 'hello',
+            placeholder: 'placeholder',
+            onChangeText: () => {},
+            onSend: () => {},
+            autocompleteKinds: [],
+            autocompleteSuggestions: async () => [],
+            agentType: 'codex',
+            metadata: {
+                sessionModelsV1: {
+                    v: 1,
+                    provider: 'codex',
+                    updatedAt: 11,
+                    currentModelId: 'default',
+                    availableModels: [{ id: 'session-model', name: 'Applied Model' }],
+                },
+                sessionAppliedModelV1: {
+                    v: 1,
+                    provider: 'codex',
+                    updatedAt: 10,
+                    modelId: 'session-model',
+                },
+            },
+            sessionActive: true,
+            permissionMode: 'default',
+            onPermissionModeChange: () => {},
+            modelMode: 'default',
+            onModelModeChange: () => {},
+        } as any));
+
+        act(() => {
+            screen.pressByTestId('agent-input-agent-chip');
+        });
+
+        expect(lastModelPickerOverlayProps?.selectedValue).toBe('default');
+        expect(lastModelPickerOverlayProps?.options?.map((option: any) => option.value)).toContain('session-model');
+        const appliedOption = lastModelPickerOverlayProps?.options?.find(
+            (option: any) => option.value === 'session-model',
+        );
+        expect(appliedOption?.trailingStatusIcon?.props?.name).toBe('play-circle');
+        expect(appliedOption?.accessibilityLabel).toContain('agentInput.model.running');
+    });
+
     it('renders the selected model label and provider logo in the engine chip', async () => {
         const { AgentInput } = await import('./AgentInput');
 
@@ -1275,7 +1379,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1315,7 +1419,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'pi',
                     permissionMode: 'default',
@@ -1333,7 +1437,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
         expect(logo?.type).toBe('SvgXml');
         expect(logo?.props.width).toBe(16);
         expect(logo?.props.height).toBe(16);
-        expect(logo?.props.style).toEqual({ transform: [{ scale: 0.9 }] });
+        expect(logo?.props.style.transform).toContainEqual({ scale: 0.9 });
     });
 
     it('reuses non-Pi picker-row scaling for the engine chip logo', async () => {
@@ -1344,7 +1448,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'opencode',
                     permissionMode: 'default',
@@ -1362,7 +1466,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
         expect(logo?.type).toBe('SvgXml');
         expect(logo?.props.width).toBe(16);
         expect(logo?.props.height).toBe(16);
-        expect(logo?.props.style).toEqual({ transform: [{ scale: 0.9 }] });
+        expect(logo?.props.style.transform).toContainEqual({ scale: 0.9 });
     });
 
     it('caps the engine popover at 570px when the rail is hidden in stacked layout', async () => {
@@ -1376,7 +1480,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1417,7 +1521,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         placeholder: 'placeholder',
                         onChangeText: () => {},
                         onSend: () => {},
-                        autocompletePrefixes: [],
+                        autocompleteKinds: [],
                         autocompleteSuggestions: async () => [],
                         agentType: 'codex',
                         permissionMode: 'default',
@@ -1480,7 +1584,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         placeholder: 'placeholder',
                         onChangeText: () => {},
                         onSend: () => {},
-                        autocompletePrefixes: [],
+                        autocompleteKinds: [],
                         autocompleteSuggestions: async () => [],
                         agentType: 'codex',
                         permissionMode: 'default',
@@ -1529,7 +1633,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'claude',
                     permissionMode: 'default',
@@ -1568,7 +1672,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'opencode',
                     permissionMode: 'default',
@@ -1599,14 +1703,14 @@ describe('AgentInput (modelOptionsOverride)', () => {
 
     it('renders preflight ACP config options in the agent picker and applies local overrides', async () => {
         const { AgentInput } = await import('./AgentInput');
-        const onAcpConfigOptionChange = vi.fn();
+        const onSessionConfigOptionChange = vi.fn();
 
         const screen = await renderScreen(React.createElement(AgentInput, {
                     value: 'hello',
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1632,7 +1736,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                             speed: { updatedAt: 123, value: 'fast' },
                         },
                     },
-                    onAcpConfigOptionChange,
+                    onSessionConfigOptionChange,
                 } as any));
         expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
@@ -1643,19 +1747,19 @@ describe('AgentInput (modelOptionsOverride)', () => {
 
         await screen.pressByTestIdAsync('agent-input-config-option-option:speed:fast');
 
-        expect(onAcpConfigOptionChange).toHaveBeenCalledWith('speed', 'fast');
+        expect(onSessionConfigOptionChange).toHaveBeenCalledWith('speed', 'fast');
     });
 
     it('routes Cursor model_config options through the selected model controls instead of generic config controls', async () => {
         const { AgentInput } = await import('./AgentInput');
-        const onAcpConfigOptionChange = vi.fn();
+        const onSessionConfigOptionChange = vi.fn();
 
         const screen = await renderScreen(React.createElement(AgentInput, {
                     value: 'hello',
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1733,7 +1837,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                             ],
                         },
                     ],
-                    onAcpConfigOptionChange,
+                    onSessionConfigOptionChange,
                 } as any));
         expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
@@ -1753,7 +1857,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1765,7 +1869,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         { value: 'gpt-5.4', label: 'GPT 5.4', description: 'Latest' },
                     ],
                     acpConfigOptionsOverrideProbe: { phase: 'loading', onRefresh: () => {} },
-                    onAcpConfigOptionChange: () => {},
+                    onSessionConfigOptionChange: () => {},
                 } as any));
         expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
@@ -1784,7 +1888,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     agentType: 'codex',
                     permissionMode: 'default',
@@ -1796,7 +1900,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         { value: 'gpt-5.4', label: 'GPT 5.4', description: 'Latest' },
                     ],
                     acpConfigOptionsOverrideProbe: { phase: 'idle', onRefresh },
-                    onAcpConfigOptionChange: () => {},
+                    onSessionConfigOptionChange: () => {},
                 } as any));
         expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
@@ -1836,7 +1940,7 @@ describe('AgentInput (extended-context model toggle)', () => {
     it('synthesizes the context toggle and routes it through the model-override pipeline', async () => {
         const { AgentInput } = await import('./AgentInput');
         const onModelModeChange = vi.fn();
-        const onAcpConfigOptionChange = vi.fn();
+        const onSessionConfigOptionChange = vi.fn();
         lastModelPickerOverlayProps = null;
 
         const screen = await renderScreen(React.createElement(AgentInput, {
@@ -1844,14 +1948,14 @@ describe('AgentInput (extended-context model toggle)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'claude',
             permissionMode: 'default',
             onPermissionModeChange: () => {},
             modelMode: 'claude-sonnet-4-6',
             onModelModeChange,
-            onAcpConfigOptionChange,
+            onSessionConfigOptionChange,
             modelOptionsOverride: sonnetOverrideOptions,
         } as any));
 
@@ -1870,13 +1974,13 @@ describe('AgentInput (extended-context model toggle)', () => {
         });
 
         expect(onModelModeChange).toHaveBeenCalledWith('claude-sonnet-4-6[1m]');
-        expect(onAcpConfigOptionChange).not.toHaveBeenCalled();
+        expect(onSessionConfigOptionChange).not.toHaveBeenCalled();
     });
 
     it('treats the [1m] variant as its base model and toggles back to the bare id', async () => {
         const { AgentInput } = await import('./AgentInput');
         const onModelModeChange = vi.fn();
-        const onAcpConfigOptionChange = vi.fn();
+        const onSessionConfigOptionChange = vi.fn();
         lastModelPickerOverlayProps = null;
 
         const screen = await renderScreen(React.createElement(AgentInput, {
@@ -1884,14 +1988,14 @@ describe('AgentInput (extended-context model toggle)', () => {
             placeholder: 'placeholder',
             onChangeText: () => {},
             onSend: () => {},
-            autocompletePrefixes: [],
+            autocompleteKinds: [],
             autocompleteSuggestions: async () => [],
             agentType: 'claude',
             permissionMode: 'default',
             onPermissionModeChange: () => {},
             modelMode: 'claude-sonnet-4-6[1m]',
             onModelModeChange,
-            onAcpConfigOptionChange,
+            onSessionConfigOptionChange,
             modelOptionsOverride: sonnetOverrideOptions,
         } as any));
 
@@ -1908,6 +2012,6 @@ describe('AgentInput (extended-context model toggle)', () => {
         });
 
         expect(onModelModeChange).toHaveBeenCalledWith('claude-sonnet-4-6');
-        expect(onAcpConfigOptionChange).not.toHaveBeenCalled();
+        expect(onSessionConfigOptionChange).not.toHaveBeenCalled();
     });
 });

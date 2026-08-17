@@ -9,8 +9,8 @@ import { createDeferred } from '@/testkit/async/deferred';
 import { waitForNextPermissionModeMessage } from './waitForNextPermissionModeMessage';
 
 type QueueMode = { permissionMode: PermissionMode };
-type PermissionModeSessionFixture = Pick<ApiSessionClient, 'popPendingMessage' | 'waitForMetadataUpdate'> & {
-  materializeNextPendingMessageSafely?: (opts?: {
+type PermissionModeSessionFixture = Pick<ApiSessionClient, 'popPendingMessage' | 'waitForPendingEligibilityUpdate'> & {
+  materializeNextPendingMessageSafely: (opts?: {
     reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
   }) => Promise<MaterializeNextPendingResult>;
 };
@@ -24,7 +24,7 @@ function asSessionClient(session: PermissionModeSessionFixture): ApiSessionClien
 }
 
 describe('waitForNextPermissionModeMessage', () => {
-  it('uses safe pending materialization before legacy pop fallback', async () => {
+  it('uses structured pending materialization without invoking boolean pop', async () => {
     const queue = createQueue();
     const popPendingMessage = vi.fn(async () => {
       queue.pushImmediate('from-legacy-pop', { permissionMode: 'default' });
@@ -43,7 +43,7 @@ describe('waitForNextPermissionModeMessage', () => {
     const session: PermissionModeSessionFixture = {
       popPendingMessage,
       materializeNextPendingMessageSafely,
-      async waitForMetadataUpdate() {
+      async waitForPendingEligibilityUpdate() {
         return false;
       },
     };
@@ -71,7 +71,7 @@ describe('waitForNextPermissionModeMessage', () => {
     const session: PermissionModeSessionFixture = {
       popPendingMessage,
       materializeNextPendingMessageSafely,
-      async waitForMetadataUpdate(abortSignal?: AbortSignal) {
+      async waitForPendingEligibilityUpdate(abortSignal?: AbortSignal) {
         waitingForMetadata.resolve();
         return await new Promise<boolean>((resolve) => {
           abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
@@ -105,7 +105,7 @@ describe('waitForNextPermissionModeMessage', () => {
     const session: PermissionModeSessionFixture = {
       popPendingMessage,
       materializeNextPendingMessageSafely,
-      async waitForMetadataUpdate() {
+      async waitForPendingEligibilityUpdate() {
         return false;
       },
     };
@@ -133,15 +133,18 @@ describe('waitForNextPermissionModeMessage', () => {
     let popCount = 0;
 
     const session: PermissionModeSessionFixture = {
-      async popPendingMessage() {
-        popCount += 1;
-        if (!pendingText) return false;
+      async materializeNextPendingMessageSafely() {
+        if (!pendingText) return { type: 'no_pending' };
         const text = pendingText;
         pendingText = null;
         queue.pushImmediate(text, { permissionMode: 'default' });
-        return true;
+        return { type: 'materialized', localId: 'local-pending', seq: 1, content: null };
       },
-      async waitForMetadataUpdate() {
+      async popPendingMessage() {
+        popCount += 1;
+        return false;
+      },
+      async waitForPendingEligibilityUpdate() {
         return await metadataUpdate.promise;
       },
     };
@@ -158,7 +161,7 @@ describe('waitForNextPermissionModeMessage', () => {
     metadataUpdate.resolve(true);
     const result = await resultPromise;
 
-    expect(popCount).toBeGreaterThanOrEqual(2);
+    expect(popCount).toBe(0);
     expect(result?.message).toBe('from-pending');
   });
 
@@ -166,10 +169,13 @@ describe('waitForNextPermissionModeMessage', () => {
     const queue = createQueue();
     const waitingForMetadata = createDeferred<void>();
     const session: PermissionModeSessionFixture = {
+      async materializeNextPendingMessageSafely() {
+        return { type: 'no_pending' };
+      },
       async popPendingMessage() {
         return false;
       },
-      async waitForMetadataUpdate(abortSignal?: AbortSignal) {
+      async waitForPendingEligibilityUpdate(abortSignal?: AbortSignal) {
         waitingForMetadata.resolve();
         return await new Promise<boolean>((resolve) => {
           abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
@@ -195,10 +201,13 @@ describe('waitForNextPermissionModeMessage', () => {
     const waitingForMetadata = createDeferred<void>();
     const onMetadataUpdate = vi.fn();
     const session: PermissionModeSessionFixture = {
+      async materializeNextPendingMessageSafely() {
+        return { type: 'no_pending' };
+      },
       async popPendingMessage() {
         return false;
       },
-      async waitForMetadataUpdate(abortSignal?: AbortSignal) {
+      async waitForPendingEligibilityUpdate(abortSignal?: AbortSignal) {
         waitingForMetadata.resolve();
         return await new Promise<boolean>((resolve) => {
           abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
@@ -225,10 +234,13 @@ describe('waitForNextPermissionModeMessage', () => {
     const queue = createQueue();
     const onMetadataUpdate = vi.fn();
     const session: PermissionModeSessionFixture = {
+      async materializeNextPendingMessageSafely() {
+        return { type: 'no_pending' };
+      },
       async popPendingMessage() {
         return false;
       },
-      async waitForMetadataUpdate() {
+      async waitForPendingEligibilityUpdate() {
         return false;
       },
     };
@@ -252,11 +264,14 @@ describe('waitForNextPermissionModeMessage', () => {
     let waitCount = 0;
 
     const session: PermissionModeSessionFixture = {
+      async materializeNextPendingMessageSafely() {
+        return { type: 'no_pending' };
+      },
       async popPendingMessage() {
         popCount += 1;
         return false;
       },
-      async waitForMetadataUpdate(abortSignal?: AbortSignal) {
+      async waitForPendingEligibilityUpdate(abortSignal?: AbortSignal) {
         waitCount += 1;
         waitingForMetadata.resolve();
         return await new Promise<boolean>((resolve) => {
@@ -276,7 +291,7 @@ describe('waitForNextPermissionModeMessage', () => {
     abortController.abort();
 
     await expect(resultPromise).resolves.toBeNull();
-    expect(popCount).toBe(1);
+    expect(popCount).toBe(0);
     expect(waitCount).toBe(1);
   });
 
@@ -286,14 +301,17 @@ describe('waitForNextPermissionModeMessage', () => {
     let metadataWaitCalls = 0;
 
     const session: PermissionModeSessionFixture = {
-      async popPendingMessage() {
-        if (!pendingText) return false;
+      async materializeNextPendingMessageSafely() {
+        if (!pendingText) return { type: 'no_pending' };
         const text = pendingText;
         pendingText = null;
         queue.pushImmediate(text, { permissionMode: 'default' });
-        return true;
+        return { type: 'materialized', localId: 'local-callback', seq: 2, content: null };
       },
-      async waitForMetadataUpdate(abortSignal?: AbortSignal) {
+      async popPendingMessage() {
+        return false;
+      },
+      async waitForPendingEligibilityUpdate(abortSignal?: AbortSignal) {
         metadataWaitCalls += 1;
         if (metadataWaitCalls === 1) return true;
         return await new Promise<boolean>((resolve) => {

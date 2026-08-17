@@ -1,5 +1,6 @@
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId, StartSessionResult } from '@/agent/core';
 import type { PermissionMode } from '@/api/types';
 import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
@@ -11,6 +12,8 @@ import type {
 } from '@/backends/codex/appServer/reviews/codexAppServerReviewTypes';
 import { resolveCodexAppServerNativeReviewRequest } from '@/backends/codex/appServer/reviews/resolveCodexAppServerNativeReviewRequest';
 import { parseSpecialCommand } from '@/cli/parsers/specialCommands';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import type { PermissionResult } from '@/agent/permissions/permissionResult';
 
 function isCodexProvider(provider: ACPProvider): boolean {
   return String(provider ?? '').trim().toLowerCase() === 'codex';
@@ -39,6 +42,15 @@ export type CodexAppServerExecutionRunTurnLiveness = Readonly<{
 
 export type CodexAppServerExecutionRunBackend = AgentBackend & Readonly<{
   probeTurnLiveness: () => Promise<CodexAppServerExecutionRunTurnLiveness>;
+  // Canonical apply-options seam: run modelId + config overrides (e.g. reasoning_effort) are applied
+  // through the app-server runtime setters after the session id is known (see
+  // withExecutionRunBackendModelOptions).
+  setSessionModel: (sessionId: SessionId, modelId: string) => Promise<void>;
+  setSessionConfigOption: (
+    sessionId: SessionId,
+    configId: string,
+    value: string | number | boolean | null,
+  ) => Promise<void>;
 }>;
 
 type PromptTurnState = {
@@ -96,11 +108,7 @@ export function createCodexAppServerExecutionRunBackend(args: Readonly<{
   permissionMode: PermissionMode;
   start?: ExecutionRunBackendStartContext | null;
   permissionHandler?: Readonly<{
-    handleToolCall: (toolCallId: string, toolName: string, input: unknown) => Promise<{
-      decision: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
-      execPolicyAmendment?: Readonly<{ command: string[] }>;
-      answers?: Record<string, string>;
-    }>;
+    handleToolCall: (toolCallId: string, toolName: string, input: unknown) => Promise<PermissionResult>;
   }> | null;
 }>): CodexAppServerExecutionRunBackend {
   const handlers = new Set<AgentMessageHandler>();
@@ -120,7 +128,7 @@ export function createCodexAppServerExecutionRunBackend(args: Readonly<{
   const emitCommittedTranscriptBody = (provider: ACPProvider, body: ACPMessageData, localId?: string): void => {
     if (!isCodexProvider(provider)) return;
     if (body.type === 'message') {
-      const assistantKey = String(localId ?? '').trim() || '__main__';
+      const assistantKey = readNonBlankOpaqueIdentifier(localId) ?? '__main__';
       const previousText = assistantTextByLocalId.get(assistantKey) ?? '';
       const nextFullText = body.message.startsWith(previousText)
         ? body.message
@@ -344,6 +352,20 @@ export function createCodexAppServerExecutionRunBackend(args: Readonly<{
           promptTurn = null;
         }
       }
+    },
+    async setSessionModel(_sessionId: SessionId, modelId: string): Promise<void> {
+      const opaqueModelId = readNonBlankSessionControlIdentifier(modelId);
+      if (opaqueModelId === null) return;
+      await runtime.setSessionModel(opaqueModelId);
+    },
+    async setSessionConfigOption(
+      _sessionId: SessionId,
+      configId: string,
+      value: string | number | boolean | null,
+    ): Promise<void> {
+      const opaqueConfigId = readNonBlankSessionControlIdentifier(configId);
+      if (opaqueConfigId === null) return;
+      await runtime.setSessionConfigOption(opaqueConfigId, value);
     },
     async cancel(_sessionId: SessionId): Promise<void> {
       await runtime.cancel();

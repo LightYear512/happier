@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
-import { createAcpRuntime } from '../createAcpRuntime';
+import { createTestAcpRuntime as createAcpRuntime } from '@/testkit/backends/acpRuntime';
 import type { AcpRuntimeBackend } from '../createAcpRuntime';
 import { createApprovedPermissionHandler } from '@/testkit/backends/permissionHandler';
 import { createSessionClientWithMetadata } from '@/testkit/backends/sessionFixtures';
@@ -43,11 +43,10 @@ describe('createAcpRuntime pending queue pump', () => {
       pendingQueue: {
         drainAfterStartOrLoad: true,
         inputConsumer: { drainPending },
-        waitForMetadataUpdate: async () => false,
       },
     });
 
-    await runtime.startOrLoad({ resumeId: 'resume-1', importHistory: false });
+    await runtime.startOrLoad({ resumeId: ' resume-1 ', importHistory: false });
 
     expect(drainPending).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(['load:resume-1', 'drain']);
@@ -85,7 +84,6 @@ describe('createAcpRuntime pending queue pump', () => {
       pendingQueue: {
         drainAfterStartOrLoad: true,
         inputConsumer: { drainPending },
-        waitForMetadataUpdate: async () => false,
       },
     });
 
@@ -133,7 +131,6 @@ describe('createAcpRuntime pending queue pump', () => {
       pendingQueue: {
         drainAfterStartOrLoad: true,
         inputConsumer: { drainPending },
-        waitForMetadataUpdate: async () => false,
       },
     });
 
@@ -164,11 +161,6 @@ describe('createAcpRuntime pending queue pump', () => {
       inFlightSteer: { enabled: true },
       pendingQueue: {
         inputConsumer: { drainPending },
-        waitForMetadataUpdate: async (abortSignal?: AbortSignal) =>
-          await new Promise<boolean>((resolve) => {
-            if (abortSignal?.aborted) return resolve(false);
-            abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
-          }),
       },
     });
 
@@ -191,6 +183,13 @@ describe('createAcpRuntime pending queue pump', () => {
       }
       return { materialized: 0, stoppedReason: 'no_pending' };
     });
+    const pumpPendingWhileActive = vi.fn(async (opts: { abortSignal: AbortSignal }) => {
+      await drainPending();
+      await new Promise<void>((resolve) => {
+        if (opts.abortSignal.aborted) return resolve();
+        opts.abortSignal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    });
     const runtime = createAcpRuntime({
       provider: 'codex',
       directory: '/tmp',
@@ -205,12 +204,7 @@ describe('createAcpRuntime pending queue pump', () => {
       inFlightSteer: { enabled: true },
       pendingQueue: {
         drainDuringTurn: true,
-        inputConsumer: { drainPending },
-        waitForMetadataUpdate: async (abortSignal?: AbortSignal) =>
-          await new Promise<boolean>((resolve) => {
-            if (abortSignal?.aborted) return resolve(false);
-            abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
-          }),
+        inputConsumer: { drainPending, pumpPendingWhileActive },
       },
     });
 
@@ -225,16 +219,19 @@ describe('createAcpRuntime pending queue pump', () => {
     await runtime.reset();
   });
 
-  it('drains newly enqueued pending messages even when there are no metadata wakeups', async () => {
+  it('delegates one active-turn lifecycle to the shared pump and elapsed time starts no poll', async () => {
+    vi.useFakeTimers();
     const { session } = createSessionClientWithMetadata();
 
-    let pending = 0;
-    const drainPending = vi.fn(async (): Promise<DrainPendingResult> => {
-      if (pending > 0) {
-        pending -= 1;
-        return { materialized: 1, stoppedReason: 'no_pending' };
-      }
-      return { materialized: 0, stoppedReason: 'no_pending' };
+    const drainPending = vi.fn(async (): Promise<DrainPendingResult> => ({
+      materialized: 0,
+      stoppedReason: 'no_pending',
+    }));
+    const pumpPendingWhileActive = vi.fn(async (opts: { abortSignal: AbortSignal }) => {
+      await new Promise<void>((resolve) => {
+        if (opts.abortSignal.aborted) return resolve();
+        opts.abortSignal.addEventListener('abort', () => resolve(), { once: true });
+      });
     });
     const runtime = createAcpRuntime({
       provider: 'codex',
@@ -250,29 +247,58 @@ describe('createAcpRuntime pending queue pump', () => {
       inFlightSteer: { enabled: true },
       pendingQueue: {
         drainDuringTurn: true,
-        pollIntervalMs: 5,
-        inputConsumer: { drainPending },
-        // Simulate a server that never publishes metadata wakeups for pending queue changes.
-        waitForMetadataUpdate: async (abortSignal?: AbortSignal) =>
-          await new Promise<boolean>((resolve) => {
-            if (abortSignal?.aborted) return resolve(false);
-            abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
-          }),
+        inputConsumer: { drainPending, pumpPendingWhileActive },
+      },
+    });
+
+    runtime.beginTurn();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
+    expect(drainPending).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
+    expect(drainPending).not.toHaveBeenCalled();
+
+    await runtime.reset();
+    vi.useRealTimers();
+  });
+
+  it('does not replace a completed shared pump with a timer-driven ACP pump', async () => {
+    const { session } = createSessionClientWithMetadata();
+
+    const drainPending = vi.fn(async (): Promise<DrainPendingResult> => ({
+      materialized: 0,
+      stoppedReason: 'no_pending',
+    }));
+    const pumpPendingWhileActive = vi.fn(async () => undefined);
+    const runtime = createAcpRuntime({
+      provider: 'codex',
+      directory: '/tmp',
+      session,
+      messageBuffer: new MessageBuffer(),
+      mcpServers: {},
+      permissionHandler: createApprovedPermissionHandler(),
+      onThinkingChange: () => {},
+      ensureBackend: async () => {
+        throw new Error('backend should not be created for pending pump test');
+      },
+      inFlightSteer: { enabled: true },
+      pendingQueue: {
+        drainDuringTurn: true,
+        inputConsumer: { drainPending, pumpPendingWhileActive },
       },
     });
 
     runtime.beginTurn();
     await nextTick();
 
-    // No pending at beginTurn, so the initial drain sees nothing.
-    expect(drainPending).toHaveBeenCalled();
+    expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
+    expect(drainPending).not.toHaveBeenCalled();
 
-    // Enqueue a pending message after the pump is already waiting. Without a polling fallback,
-    // this would be stranded until some unrelated metadata event.
-    pending = 1;
     await new Promise((resolve) => setTimeout(resolve, 25));
-
-    expect(pending).toBe(0);
+    expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
 
     await runtime.reset();
   });
@@ -284,6 +310,7 @@ describe('createAcpRuntime pending queue pump', () => {
       materialized: 0,
       stoppedReason: 'auth_failure',
     }));
+    const pumpPendingWhileActive = vi.fn(async () => undefined);
     const runtime = createAcpRuntime({
       provider: 'codex',
       directory: '/tmp',
@@ -298,20 +325,15 @@ describe('createAcpRuntime pending queue pump', () => {
       inFlightSteer: { enabled: true },
       pendingQueue: {
         drainDuringTurn: true,
-        pollIntervalMs: 5,
-        inputConsumer: { drainPending },
-        waitForMetadataUpdate: async (abortSignal?: AbortSignal) =>
-          await new Promise<boolean>((resolve) => {
-            if (abortSignal?.aborted) return resolve(false);
-            abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
-          }),
+        inputConsumer: { drainPending, pumpPendingWhileActive },
       },
     });
 
     runtime.beginTurn();
     await new Promise((resolve) => setTimeout(resolve, 25));
 
-    expect(drainPending).toHaveBeenCalledTimes(1);
+    expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
+    expect(drainPending).not.toHaveBeenCalled();
 
     await runtime.reset();
   });
@@ -328,6 +350,9 @@ describe('createAcpRuntime pending queue pump', () => {
       .fn<() => Promise<DrainPendingResult>>()
       .mockRejectedValueOnce(new Error('drain failed'))
       .mockResolvedValue({ materialized: 0, stoppedReason: 'no_pending' });
+    const pumpPendingWhileActive = vi.fn(async () => {
+      throw new Error('drain failed');
+    });
     const runtime = createAcpRuntime({
       provider: 'codex',
       directory: '/tmp',
@@ -342,13 +367,7 @@ describe('createAcpRuntime pending queue pump', () => {
       inFlightSteer: { enabled: true },
       pendingQueue: {
         drainDuringTurn: true,
-        pollIntervalMs: 5,
-        inputConsumer: { drainPending },
-        waitForMetadataUpdate: async (abortSignal?: AbortSignal) =>
-          await new Promise<boolean>((resolve) => {
-            if (abortSignal?.aborted) return resolve(false);
-            abortSignal?.addEventListener('abort', () => resolve(false), { once: true });
-          }),
+        inputConsumer: { drainPending, pumpPendingWhileActive },
       },
     });
 
@@ -356,7 +375,8 @@ describe('createAcpRuntime pending queue pump', () => {
       runtime.beginTurn();
       await new Promise((resolve) => setTimeout(resolve, 25));
 
-      expect(drainPending).toHaveBeenCalledTimes(1);
+      expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
+      expect(drainPending).not.toHaveBeenCalled();
       expect(unhandled).toEqual([]);
     } finally {
       process.off('unhandledRejection', onUnhandled);

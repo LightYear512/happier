@@ -27,6 +27,7 @@ import {
     planSessionListRenderableMerge,
     planSessionListRenderablePatches,
     planSessionListRenderableReplacement,
+    resolveSessionListRenderableRemovalWindow,
     type SessionListRenderablePatch,
     type SessionListRenderableStoreUpdatePlan,
 } from './sessionListRenderableStoreUpdate';
@@ -51,6 +52,7 @@ type ProjectLookupResult = {
 export type SessionListRenderableCommitState = Readonly<{
     sessions: Record<string, Session>;
     sessionListRenderables: Record<string, SessionListRenderableSession>;
+    sessionListRenderableDelta?: SessionListRenderableDelta;
     sessionListViewData: SessionListViewItem[] | null;
     sessionListViewDataByServerId: Record<string, SessionListViewItem[] | null>;
     machines: Record<string, Machine>;
@@ -58,6 +60,27 @@ export type SessionListRenderableCommitState = Readonly<{
     settings: SessionListRenderableCommitSettings;
     getProjectForSession?: (sessionId: string) => ProjectLookupResult;
 }>;
+
+export type SessionListRenderableDelta = Readonly<{
+    revision: number;
+    changedSessionIds: readonly string[];
+    removedSessionIds: readonly string[];
+    rebuiltSessionListViewData: boolean;
+}>;
+
+export function buildNextSessionListRenderableDelta(input: Readonly<{
+    previous: SessionListRenderableDelta | undefined;
+    changedSessionIds: readonly string[];
+    removedSessionIds: readonly string[];
+    rebuiltSessionListViewData: boolean;
+}>): SessionListRenderableDelta {
+    return {
+        revision: (input.previous?.revision ?? 0) + 1,
+        changedSessionIds: input.changedSessionIds,
+        removedSessionIds: input.removedSessionIds,
+        rebuiltSessionListViewData: input.rebuiltSessionListViewData,
+    };
+}
 
 type MeasureListRebuild = (compute: () => SessionListViewItem[]) => SessionListViewItem[];
 
@@ -161,6 +184,9 @@ export function planSessionListRenderableReplacementCommit(input: Readonly<{
     return planSessionListRenderableReplacement({
         previousRenderables: input.state.sessionListRenderables ?? {},
         incomingRenderables: input.incomingRenderables,
+        // A replacement response replaces the range it covers, not the whole store: rows
+        // the user paged in below that range survive the refresh.
+        removalWindow: resolveSessionListRenderableRemovalWindow(input.incomingRenderables),
         isSessionListViewDataUninitialized: input.state.sessionListViewData === null,
         rebuildOnAttentionPromotionFieldsChange:
             shouldRebuildOnSessionPlacementFieldsChange(input.state.settings),
@@ -215,6 +241,12 @@ export function applySessionListRenderableCommitPlan<S extends SessionListRender
     const nextStateBase = {
         ...input.state,
         sessionListRenderables: input.plan.nextRenderables,
+        sessionListRenderableDelta: buildNextSessionListRenderableDelta({
+            previous: input.state.sessionListRenderableDelta,
+            changedSessionIds: input.plan.changedSessionIds,
+            removedSessionIds: input.plan.removedSessionIds,
+            rebuiltSessionListViewData: input.plan.needsSessionListViewDataRebuild,
+        }),
     };
     const targetServerId = normalizeTargetServerId(input.targetServerId);
     const activeServerId = getActiveServerIdForSessionListCache();

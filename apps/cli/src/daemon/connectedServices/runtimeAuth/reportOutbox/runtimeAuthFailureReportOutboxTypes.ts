@@ -4,7 +4,12 @@ import type {
   ConnectedServiceRuntimeLimitCategory,
   ConnectedServiceRuntimeQuotaScope,
 } from '../types';
-import type { SessionUsageLimitRecoveryResumePromptModeV1 } from '@happier-dev/protocol';
+import type {
+  ConnectedServiceCredentialHealthStatusV1,
+  ConnectedServiceCredentialRevisionV1,
+  ProviderAccountUsageRecordId,
+  SessionUsageLimitRecoveryResumePromptModeV1,
+} from '@happier-dev/protocol';
 
 export type RuntimeAuthFailureReportOutboxAction = Readonly<{
   kind: 'open_url';
@@ -21,10 +26,20 @@ export type RuntimeAuthFailureReportOutboxClassification = Readonly<{
   serviceId: string;
   profileId: string | null;
   groupId: string | null;
+  groupGeneration?: number | null;
+  credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
+  activeProfileId?: string | null;
+  credentialHealthStatus?: ConnectedServiceCredentialHealthStatusV1 | null;
+  identityProofVersion?: number | null;
+  sourceKey?: string | null;
+  providerAccountUsageRecordId?: ProviderAccountUsageRecordId | null;
   resetsAtMs: number | null;
   retryAfterMs?: number | null;
   quotaScope?: ConnectedServiceRuntimeQuotaScope;
   providerLimitId?: string | null;
+  sourceProviderAccountId?: string | null;
+  sourceAccountLabel?: string | null;
+  failingAccessTokenFingerprint?: string | null;
   action?: RuntimeAuthFailureReportOutboxAction | null;
   planType: string | null;
   rateLimits: null;
@@ -33,6 +48,9 @@ export type RuntimeAuthFailureReportOutboxClassification = Readonly<{
 }>;
 
 export type RuntimeAuthFailureReportOutboxReport = Readonly<{
+  reportId?: string;
+  /** Accepted only when reading a legacy caller shape; ignored by the current writer. */
+  originDaemonExecutionGenerationV1?: string;
   sessionId: string;
   switchesThisTurn?: number;
   resumePromptMode?: unknown;
@@ -43,6 +61,7 @@ export type RuntimeAuthFailureReportOutboxItem = Readonly<{
   schemaVersion: 1;
   fileId: string;
   reportKey: string;
+  reportId: string;
   sessionId: string;
   switchesThisTurn: number;
   resumePromptMode?: SessionUsageLimitRecoveryResumePromptModeV1;

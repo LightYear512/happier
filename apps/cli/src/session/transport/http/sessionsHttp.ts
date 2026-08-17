@@ -21,6 +21,7 @@ import {
   buildSessionDetailRequestPurpose,
   type SessionSnapshotRefreshReasonInput,
 } from '@/api/session/sessionSnapshotRefreshReason';
+import { throwIfCliClientUpgradeRequired } from '@/api/clientCompatibility/cliClientCompatibility';
 
 export type RawSessionRecord = V2SessionByIdResponse['session'];
 export type RawSessionListRow = V2SessionListResponse['sessions'][number];
@@ -45,6 +46,10 @@ function throwUnexpectedHttpStatusError(status: number, message: string): never 
   throw createHttpStatusError(status, message);
 }
 
+function enforceSessionCompatibilityResponse(response: Readonly<{ status: number; data?: unknown }>): void {
+  throwIfCliClientUpgradeRequired(response.status, response.data);
+}
+
 type SessionByIdHttpResponse = AxiosResponse<unknown>;
 
 const sessionByIdInFlightRequests = new Map<string, Promise<SessionByIdHttpResponse>>();
@@ -61,10 +66,26 @@ async function getSessionByIdResponse(params: Readonly<{
   token: string;
   sessionId: string;
   reason?: SessionSnapshotRefreshReasonInput;
+  signal?: AbortSignal;
 }>): Promise<SessionByIdHttpResponse> {
   const serverUrl = resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
   const requestPurpose = buildSessionDetailRequestPurpose(params.reason ?? 'legacy-compat-proof');
+  const request = () => axios.get(`${serverUrl}/v2/sessions/${encodedSessionId}`, {
+    headers: {
+      Authorization: `Bearer ${params.token}`,
+      'Content-Type': 'application/json',
+      'X-Happier-Request-Purpose': requestPurpose,
+    },
+    timeout: configuration.sessionControlHttpTimeoutMs,
+    validateStatus: () => true,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+
+  // A caller-owned signal cannot safely share an in-flight request with callers
+  // that have a different cancellation lifecycle.
+  if (params.signal) return await request();
+
   const key = buildSessionByIdInFlightKey({
     serverUrl,
     token: params.token,
@@ -73,15 +94,7 @@ async function getSessionByIdResponse(params: Readonly<{
   const existing = sessionByIdInFlightRequests.get(key);
   if (existing) return await existing;
 
-  const promise = axios.get(`${serverUrl}/v2/sessions/${encodedSessionId}`, {
-    headers: {
-      Authorization: `Bearer ${params.token}`,
-      'Content-Type': 'application/json',
-      'X-Happier-Request-Purpose': requestPurpose,
-    },
-    timeout: configuration.sessionControlHttpTimeoutMs,
-    validateStatus: () => true,
-  });
+  const promise = request();
   sessionByIdInFlightRequests.set(key, promise);
   try {
     return await promise;
@@ -92,15 +105,16 @@ async function getSessionByIdResponse(params: Readonly<{
   }
 }
 
-export async function fetchSessionById(params: Readonly<{ token: string; sessionId: string; reason?: SessionSnapshotRefreshReasonInput }>): Promise<RawSessionRecord | null> {
+export async function fetchSessionById(params: Readonly<{ token: string; sessionId: string; reason?: SessionSnapshotRefreshReasonInput; signal?: AbortSignal }>): Promise<RawSessionRecord | null> {
   const response = await getSessionByIdResponse(params);
+  enforceSessionCompatibilityResponse(response);
 
   if (response.status === 404) return null;
   if (isAuthenticationStatus(response.status)) {
     throwAuthenticationStatusError(response.status);
   }
   if (response.status !== 200) {
-    throw new Error(`Unexpected status from /v2/sessions/${params.sessionId}: ${response.status}`);
+    throwUnexpectedHttpStatusError(response.status, `Unexpected status from /v2/sessions/${params.sessionId}: ${response.status}`);
   }
 
   return parseOrThrow<V2SessionByIdResponse>(V2SessionByIdResponseSchema, response.data, 'Unexpected /v2/sessions response shape').session;
@@ -123,6 +137,7 @@ function looksLikeMissingV2SessionRoute404(data: unknown, sessionId: string): bo
 
 export async function fetchSessionByIdCompat(params: Readonly<{ token: string; sessionId: string; reason?: SessionSnapshotRefreshReasonInput }>): Promise<RawSessionRecord | null> {
   const response = await getSessionByIdResponse(params);
+  enforceSessionCompatibilityResponse(response);
 
   if (response.status === 404) {
     if (!looksLikeMissingV2SessionRoute404(response.data, params.sessionId)) return null;
@@ -149,12 +164,81 @@ export async function fetchSessionByIdCompat(params: Readonly<{ token: string; s
   return parseOrThrow<V2SessionByIdResponse>(V2SessionByIdResponseSchema, response.data, 'Unexpected /v2/sessions response shape').session;
 }
 
+export async function patchSessionMetadata(params: Readonly<{
+  token: string;
+  sessionId: string;
+  ciphertext: string;
+  expectedVersion: number;
+}>): Promise<
+  | Readonly<{ success: true; version: number }>
+  | Readonly<{ success: false; error: 'version-mismatch'; current: { version: number; value: string | null } }>
+> {
+  const serverUrl = resolveServerHttpBaseUrl();
+  const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
+  const response = await axios.patch(`${serverUrl}/v2/sessions/${encodedSessionId}`, {
+    metadata: {
+      ciphertext: params.ciphertext,
+      expectedVersion: params.expectedVersion,
+    },
+  }, {
+    headers: {
+      Authorization: `Bearer ${params.token}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: configuration.sessionControlHttpTimeoutMs,
+    validateStatus: () => true,
+  });
+
+  if (isAuthenticationStatus(response.status)) {
+    throwAuthenticationStatusError(response.status);
+  }
+  if (response.status === 404) {
+    const error = new Error('Session not found');
+    (error as { code?: string }).code = 'session_not_found';
+    throw error;
+  }
+  if (response.status !== 200) {
+    throwUnexpectedHttpStatusError(response.status, `Unexpected status from /v2/sessions/${params.sessionId}: ${response.status}`);
+  }
+
+  const data = response.data;
+  if (data && typeof data === 'object') {
+    const body = data as {
+      success?: unknown;
+      error?: unknown;
+      metadata?: { version?: unknown; value?: unknown };
+    };
+    if (body.success === true && typeof body.metadata?.version === 'number' && Number.isFinite(body.metadata.version)) {
+      return { success: true, version: body.metadata.version };
+    }
+    if (
+      body.success === false
+      && body.error === 'version-mismatch'
+      && typeof body.metadata?.version === 'number'
+      && Number.isFinite(body.metadata.version)
+      && (typeof body.metadata.value === 'string' || body.metadata.value === null)
+    ) {
+      return {
+        success: false,
+        error: 'version-mismatch',
+        current: {
+          version: body.metadata.version,
+          value: body.metadata.value,
+        },
+      };
+    }
+  }
+
+  throw new Error(`Unexpected /v2/sessions/${params.sessionId} patch response shape`);
+}
+
 export async function fetchSessionsPage(params: Readonly<{
   token: string;
   cursor?: string;
   limit?: number;
   activeOnly?: boolean;
   archivedOnly?: boolean;
+  signal?: AbortSignal;
 }>): Promise<{
   sessions: RawSessionListRow[];
   nextCursor: string | null;
@@ -178,6 +262,7 @@ export async function fetchSessionsPage(params: Readonly<{
       : { ...(params.cursor ? { cursor: params.cursor } : {}), ...(limit ? { limit } : {}) },
     timeout: configuration.sessionControlHttpTimeoutMs,
     validateStatus: () => true,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 
   if (isAuthenticationStatus(response.status)) {

@@ -81,7 +81,7 @@ describe('runtimeFetchWithServerReachability', () => {
     it('returns the response once reachability is online', async () => {
         process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_WAIT_TIMEOUT_MS = '50';
 
-        const runtimeFetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const runtimeFetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
             const url = typeof input === 'string' ? input : String(input);
             if (url.endsWith('/health')) {
                 return new Response(null, { status: 200, headers: new Headers() });
@@ -111,8 +111,11 @@ describe('runtimeFetchWithServerReachability', () => {
         });
 
         expect(response.ok).toBe(true);
-        expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).endsWith('/health'))).toBe(true);
+        expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).endsWith('/v1/auth/ping'))).toBe(true);
         expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).endsWith('/v1/account/profile'))).toBe(true);
+        const profileCall = runtimeFetchMock.mock.calls.find(([input]) => String(input).endsWith('/v1/account/profile'));
+        const profileHeaders = new Headers(profileCall?.[1]?.headers);
+        expect(profileHeaders.get('x-happier-session-sync-protocol')).toBeNull();
     });
 
     it('uses the Bearer token from Authorization header for reachability probing when token param is null', async () => {
@@ -151,8 +154,10 @@ describe('runtimeFetchWithServerReachability', () => {
         });
 
         expect(response.ok).toBe(true);
-        expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).endsWith('/health'))).toBe(true);
+        // The probe only reaches the authenticated route when a token was resolved — here from the
+        // Authorization header — and the unauthenticated health check is skipped once one exists.
         expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).endsWith('/v1/auth/ping'))).toBe(true);
+        expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).endsWith('/health'))).toBe(false);
     });
 
     it('marks the server offline when the main request fails', async () => {

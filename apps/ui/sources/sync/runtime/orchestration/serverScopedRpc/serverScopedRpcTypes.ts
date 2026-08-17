@@ -1,3 +1,5 @@
+import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
+
 export type SocketRpcResult =
     | { ok: true; result: string }
     | { ok: false; error?: string; errorCode?: string };
@@ -9,6 +11,9 @@ export type ServerScopedMachineRpcParams<A> = Readonly<{
     serverId?: string | null;
     timeoutMs?: number;
     preferScoped?: boolean;
+    authorization?: SocketRpcAuthorizationContext;
+    /** Called immediately before a fully prepared transport emission. */
+    onIssued?: () => void;
 }>;
 
 export type ActiveServerRpcContext = Readonly<{

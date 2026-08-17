@@ -1,8 +1,22 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { spawnSpy } = vi.hoisted(() => ({
+  spawnSpy: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: spawnSpy,
+  };
+});
 
 import {
   verifyClaudeCodeNativeAuth,
@@ -31,9 +45,85 @@ describe('verifyClaudeCodeNativeAuth', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
+    spawnSpy.mockReset();
     if (ORIGINAL_PLATFORM_DESCRIPTOR) {
       Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM_DESCRIPTOR);
     }
+  });
+
+  function mockSecurityProcess(result: Readonly<{ status: number | null; stdout?: string; stderr?: string }>) {
+    const child = new EventEmitter() as EventEmitter & {
+      stdin: Writable;
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.stdin = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    queueMicrotask(() => {
+      if (result.stdout) child.stdout.write(result.stdout);
+      if (result.stderr) child.stderr.write(result.stderr);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', result.status);
+    });
+    return child;
+  }
+
+  it('does not consult a derived (managed-home) keychain item and stays ok despite a divergent legacy item', async () => {
+    const claudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-claude-native-auth-verify-derived-'));
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'file-access-placeholder',
+          refreshToken: 'file-refresh-placeholder',
+          expiresAt: FUTURE_EXPIRES_AT_MS,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+    });
+    const materializedPayload = JSON.parse(
+      await readFile(resolveClaudeCodeCredentialsFilePath(claudeConfigDir), 'utf8'),
+    );
+    await writeFile(
+      resolveClaudeConnectedServiceHomeProvenancePath(claudeConfigDir),
+      `${JSON.stringify({
+        v: 1,
+        serviceId: 'claude-subscription',
+        credentialProfileId: 'profile-a',
+        credentialCreatedAt: 1000,
+        credentialFingerprint: computeClaudeCodeCredentialFingerprint(materializedPayload),
+        selection: { kind: 'profile', profileId: 'profile-a' },
+      })}\n`,
+    );
+    Object.defineProperty(process, 'platform', { ...ORIGINAL_PLATFORM_DESCRIPTOR, value: 'darwin' });
+    // A stale legacy derived keychain item exists (divergent from the file). The reader must NOT
+    // consult it for a managed home, so verify must not enter a permanent fingerprint-mismatch loop.
+    spawnSpy.mockImplementation(() => mockSecurityProcess({
+      status: 0,
+      stdout: JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'stale-legacy-keychain-access-placeholder',
+          refreshToken: 'stale-legacy-keychain-refresh-placeholder',
+          expiresAt: FUTURE_EXPIRES_AT_MS,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      }),
+    }));
+
+    const result = await verifyClaudeCodeNativeAuth({ claudeConfigDir, now: NOW_MS });
+
+    expect(result.status).toBe('ok');
+    expect(
+      spawnSpy.mock.calls.some((call) => (call[1] as readonly string[])?.[0] === 'find-generic-password'),
+    ).toBe(false);
   });
 
   it('verifies an isolated Claude config dir with native Claude Code credentials', async () => {
@@ -141,7 +231,7 @@ describe('verifyClaudeCodeNativeAuth', () => {
     expect(await readFile(join(claudeConfigDir, '.credentials.json'), 'utf8')).toContain('secret-placeholder');
   });
 
-  it('fails closed on darwin when the matching keychain entry is missing the refresh token even if the file is healthy', async () => {
+  it('accepts access-token-only credentials on darwin when a matching keychain entry has no refresh token', async () => {
     const claudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-claude-native-auth-verify-'));
     await writeClaudeCodeCredentialsFile({
       claudeConfigDir,
@@ -173,7 +263,7 @@ describe('verifyClaudeCodeNativeAuth', () => {
     const result = await verifyUnderDarwin({ claudeConfigDir, now: NOW_MS });
 
     expect(result).toEqual({
-      status: 'missing_refresh_token',
+      status: 'ok',
       missingScopes: [],
       credentialPath: join(claudeConfigDir, '.credentials.json'),
     });
@@ -229,6 +319,7 @@ describe('verifyClaudeCodeNativeAuth', () => {
       },
     };
     await writeClaudeCodeCredentialsFile({ claudeConfigDir, payload: filePayload });
+    const materializedPayload = JSON.parse(await readFile(resolveClaudeCodeCredentialsFilePath(claudeConfigDir), 'utf8'));
     await writeFile(
       resolveClaudeConnectedServiceHomeProvenancePath(claudeConfigDir),
       `${JSON.stringify({
@@ -236,7 +327,7 @@ describe('verifyClaudeCodeNativeAuth', () => {
         serviceId: 'claude-subscription',
         credentialProfileId: 'profile-a',
         credentialCreatedAt: 1000,
-        credentialFingerprint: computeClaudeCodeCredentialFingerprint(filePayload),
+        credentialFingerprint: computeClaudeCodeCredentialFingerprint(materializedPayload),
         selection: { kind: 'profile', profileId: 'profile-a' },
       })}\n`,
     );

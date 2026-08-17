@@ -160,7 +160,10 @@ export const AGENTS_CORE = {
             supportedKindsByServiceId: {
                 'openai-codex': ['oauth'],
                 openai: ['token'],
-                'claude-subscription': ['token'],
+                // OpenCode brokers Claude subscription OAuth (browser login) + setup-token via the
+                // Happier daemon broker (Bearer + anthropic-beta), so both kinds are selectable.
+                // Anthropic stays token-only (Console API key, x-api-key).
+                'claude-subscription': ['oauth', 'token'],
                 anthropic: ['token'],
             },
         },
@@ -460,6 +463,33 @@ export const AGENTS_CORE = {
         handoff: { vendorStateTransfer: 'unsupported' },
         localControl: { supported: true, topology: 'exclusive', attachStrategy: 'unsupported' },
         tools: { delivery: 'shell_bridge', support: 'experimental' },
+        media: {
+            acceptsImageInput: 'unsupported',
+            emitsSessionMedia: 'supported',
+            nativeImageGeneration: 'supported',
+        },
+    },
+    grok: {
+        id: 'grok',
+        cliSubcommand: 'grok',
+        detectKey: providerDetectKey('grok'),
+        flavorAliases: ['grok-build', 'grok-cli'],
+        cloudConnect: null,
+        connectedServices: null,
+        resume: {
+            vendorResume: 'experimental',
+            vendorResumeIdField: 'grokSessionId',
+            experimentalResumePolicy: 'runtime_checked',
+        },
+        sessionStorage: { direct: true, persisted: true },
+        sessionCapabilities: {
+            sessionListing: 'unsupported',
+            sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
+            sessionRollback: { conversation: 'unsupported' },
+        },
+        handoff: { vendorStateTransfer: 'unsupported' },
+        localControl: { supported: true, topology: 'exclusive', attachStrategy: 'unsupported' },
+        tools: { delivery: 'native_mcp', support: 'experimental' },
         media: {
             acceptsImageInput: 'unsupported',
             emitsSessionMedia: 'unsupported',

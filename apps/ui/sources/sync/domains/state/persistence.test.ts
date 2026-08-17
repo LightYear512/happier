@@ -802,6 +802,33 @@ describe('persistence', () => {
     });
 
     describe('new session draft', () => {
+        it('rehydrates only a non-empty opaque launch user-attempt id', () => {
+            const base = {
+                input: 'prompt',
+                selectedMachineId: 'machine-a',
+                selectedPath: '/repo',
+                selectedProfileId: null,
+                agentType: 'claude',
+                permissionMode: 'default',
+                modelMode: 'default',
+                acpSessionModeId: null,
+                updatedAt: Date.now(),
+            };
+            store.set('new-session-draft-v1', JSON.stringify({
+                ...base,
+                launchUserAttemptId: '  opaque-attempt-a  ',
+            }));
+            expect(loadNewSessionDraft()?.launchUserAttemptId).toBe('opaque-attempt-a');
+
+            store.set('new-session-draft-v1', JSON.stringify({
+                ...base,
+                launchUserAttemptId: { prompt: 'must-not-be-accepted' },
+            }));
+            expect(loadNewSessionDraft()).not.toEqual(expect.objectContaining({
+                launchUserAttemptId: expect.anything(),
+            }));
+        });
+
         it('roundtrips acpSessionModeId when persisted', () => {
             store.set(
                 'new-session-draft-v1',
@@ -1144,6 +1171,46 @@ describe('persistence', () => {
 
             const draft = loadNewSessionDraft();
             expect((draft as any)?.agentNewSessionOptionStateByAgentId?.auggie?.allowIndexing).toBe(true);
+        });
+
+        it('preserves nested connected-service binding option state when hydrating drafts', () => {
+            store.set(
+                'new-session-draft-v1',
+                JSON.stringify({
+                    input: '',
+                    selectedMachineId: null,
+                    selectedPath: null,
+                    selectedProfileId: null,
+                    agentType: 'claude',
+                    permissionMode: 'default',
+                    modelMode: 'default',
+                    sessionType: 'simple',
+                    agentNewSessionOptionStateByAgentId: {
+                        claude: {
+                            connectedServicesBindingsByServiceId: {
+                                anthropic: { source: 'native' },
+                                linear: {
+                                    source: 'connected',
+                                    selection: 'profile',
+                                    profileId: 'profile-linear',
+                                },
+                            },
+                        },
+                    },
+                    updatedAt: Date.now(),
+                }),
+            );
+
+            expect((loadNewSessionDraft() as any)?.agentNewSessionOptionStateByAgentId?.claude).toEqual({
+                connectedServicesBindingsByServiceId: {
+                    anthropic: { source: 'native' },
+                    linear: {
+                        source: 'connected',
+                        selection: 'profile',
+                        profileId: 'profile-linear',
+                    },
+                },
+            });
         });
 
         it('clamps invalid permissionMode to default', () => {

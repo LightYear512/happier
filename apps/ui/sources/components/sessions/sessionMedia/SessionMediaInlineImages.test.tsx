@@ -12,6 +12,12 @@ import { installSessionAttachmentCommonModuleMocks } from '../attachments/sessio
 const flashListCompatMockState = vi.hoisted(() => ({
     mappingKeyCalls: [] as Array<Readonly<{ index: number; itemKey: string | number | bigint }>>,
 }));
+const useSessionImagePreviewSpy = vi.hoisted(() => vi.fn(() => ({
+    status: 'loaded' as const,
+    uri: 'blob:preview',
+    svgXml: null,
+    error: null,
+})));
 
 installSessionAttachmentCommonModuleMocks({
     reactNative: installReactNativeWebMock(),
@@ -32,12 +38,7 @@ vi.mock('@/components/sessions/attachments/preview/AttachmentImagePreviewModal',
 }));
 
 vi.mock('@/components/sessions/files/content/imagePreview/useSessionImagePreview', () => ({
-    useSessionImagePreview: () => ({
-        status: 'loaded',
-        uri: 'blob:preview',
-        svgXml: null,
-        error: null,
-    }),
+    useSessionImagePreview: useSessionImagePreviewSpy,
 }));
 
 vi.mock('@/components/ui/lists/flashListCompat/FlashListCompat', () => ({
@@ -60,6 +61,7 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 describe('SessionMediaInlineImages', () => {
     beforeEach(() => {
         flashListCompatMockState.mappingKeyCalls = [];
+        useSessionImagePreviewSpy.mockClear();
     });
 
     it('routes inline image keys through the FlashList mapping helper', async () => {
@@ -91,6 +93,8 @@ describe('SessionMediaInlineImages', () => {
                 sessionId="s1"
                 media={media}
                 onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
             />,
         );
 
@@ -118,6 +122,8 @@ describe('SessionMediaInlineImages', () => {
                 sessionId="s1"
                 media={[media]}
                 onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
             />,
         );
 
@@ -125,6 +131,59 @@ describe('SessionMediaInlineImages', () => {
 
         expect(tile).not.toBeNull();
         expect(tile?.props.accessibilityLabel).toBe('files.sessionMedia.generatedImageA11y:cat.png');
+    });
+
+    it('uses the generated description in the existing accessible image label', async () => {
+        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
+        const media = {
+            id: 'media-description',
+            name: 'diagram.png',
+            description: 'Architecture diagram',
+            path: '.happier/uploads/generated/message-1/diagram.png',
+            mimeType: 'image/png',
+            sizeBytes: 10,
+            category: 'generated' as const,
+            role: 'output' as const,
+        };
+
+        const screen = await renderScreen(
+            <SessionMediaInlineImages
+                sessionId="s1"
+                media={[media]}
+                onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
+            />,
+        );
+
+        expect(screen.findByTestId(`message-session-media-inline-image:${media.path}`)?.props.accessibilityLabel)
+            .toBe('files.sessionMedia.generatedImageA11y:Architecture diagram');
+    });
+
+    it('bounds generated descriptions used by assistive technology', async () => {
+        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
+        const media = {
+            id: 'media-long-description',
+            name: 'diagram.png',
+            description: 'a'.repeat(2_000),
+            path: '.happier/uploads/generated/message-1/long.png',
+            mimeType: 'image/png',
+            sizeBytes: 10,
+            category: 'generated' as const,
+            role: 'output' as const,
+        };
+        const screen = await renderScreen(
+            <SessionMediaInlineImages
+                sessionId="s1"
+                media={[media]}
+                onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
+            />,
+        );
+        const label = screen.findByTestId(`message-session-media-inline-image:${media.path}`)?.props.accessibilityLabel;
+
+        expect(label).toBe(`files.sessionMedia.generatedImageA11y:${'a'.repeat(512)}`);
     });
 
     it('uses attachment-specific accessibility labels for attachment image tiles', async () => {
@@ -145,6 +204,8 @@ describe('SessionMediaInlineImages', () => {
                 sessionId="s1"
                 media={[media]}
                 onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
             />,
         );
 
@@ -174,6 +235,8 @@ describe('SessionMediaInlineImages', () => {
                 sessionId="s1"
                 media={[media]}
                 onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
             />,
         );
 
@@ -205,6 +268,8 @@ describe('SessionMediaInlineImages', () => {
                 sessionId="s1"
                 media={[media]}
                 onOpenPath={() => {}}
+                fileOpenEnabled
+                mediaPreviewEnabled
             />,
         );
 
@@ -228,5 +293,37 @@ describe('SessionMediaInlineImages', () => {
             width: 90,
             height: 160,
         });
+    });
+
+    it('renders public media as inert metadata without invoking the preview hook', async () => {
+        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
+        const media = {
+            id: 'media-public',
+            name: 'public.png',
+            path: '.happier/uploads/generated/message-1/public.png',
+            mimeType: 'image/png',
+            sizeBytes: 10,
+            category: 'generated' as const,
+            role: 'output' as const,
+        };
+
+        const screen = await renderScreen(
+            <SessionMediaInlineImages
+                sessionId="public-session"
+                media={[media]}
+                onOpenPath={() => {
+                    throw new Error('public media must not open a file');
+                }}
+                fileOpenEnabled={false}
+                mediaPreviewEnabled={false}
+            />,
+        );
+
+        const tile = screen.findByTestId(`message-session-media-inline-image:${media.path}`);
+        expect(tile?.type).toBe('View');
+        expect(tile?.props.accessibilityRole).toBe('image');
+        expect(tile?.props.onPress).toBeUndefined();
+        expect(screen.findByTestId(`message-session-media-inline-image-preview:${media.path}`)).toBeNull();
+        expect(useSessionImagePreviewSpy).not.toHaveBeenCalled();
     });
 });

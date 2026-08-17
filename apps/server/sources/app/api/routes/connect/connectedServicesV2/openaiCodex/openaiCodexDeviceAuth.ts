@@ -1,6 +1,13 @@
 import { randomBytes as nodeRandomBytes } from "node:crypto";
 
 import {
+  OPENAI_CODEX_DEVICE_REDIRECT_URI,
+  OPENAI_CODEX_DEVICE_TOKEN_URL,
+  OPENAI_CODEX_DEVICE_USER_CODE_URL,
+  OPENAI_CODEX_DEVICE_VERIFICATION_URL,
+} from "@happier-dev/agents";
+
+import {
   BOX_BUNDLE_PUBLIC_KEY_BYTES,
   decodeBase64,
   encodeBase64,
@@ -15,10 +22,7 @@ import {
 } from "./openaiCodexIdTokenClaims";
 import { resolveOpenAiCodexOauthClientId, resolveOpenAiCodexOauthTokenUrl } from "../oauthConfig";
 
-const DEFAULT_OPENAI_ISSUER = "https://auth.openai.com";
-
-export const OPENAI_CODEX_DEVICE_VERIFICATION_URL = `${DEFAULT_OPENAI_ISSUER}/codex/device`;
-export const OPENAI_CODEX_DEVICE_REDIRECT_URI = `${DEFAULT_OPENAI_ISSUER}/deviceauth/callback`;
+export { OPENAI_CODEX_DEVICE_REDIRECT_URI, OPENAI_CODEX_DEVICE_VERIFICATION_URL };
 
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3_000;
 
@@ -35,20 +39,21 @@ type OauthExchangePayload = Readonly<{
   raw: unknown;
 }>;
 
-function resolveOpenAiDeviceUsercodeUrl(): string {
-  return `${DEFAULT_OPENAI_ISSUER}/api/accounts/deviceauth/usercode`;
-}
-
-function resolveOpenAiDeviceTokenUrl(): string {
-  return `${DEFAULT_OPENAI_ISSUER}/api/accounts/deviceauth/token`;
-}
-
 function parseRecipientPublicKey(publicKeyB64Url: string): Uint8Array {
   const bytes = decodeBase64(publicKeyB64Url, "base64url");
   if (bytes.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES) {
     throw new Error(`Invalid publicKey length: ${bytes.length}`);
   }
   return bytes;
+}
+
+export function isValidOpenAiCodexDeviceAuthRecipientPublicKey(publicKeyB64Url: string): boolean {
+  try {
+    parseRecipientPublicKey(publicKeyB64Url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export type OpenAiCodexDeviceAuthStartResult = Readonly<{
@@ -60,7 +65,7 @@ export type OpenAiCodexDeviceAuthStartResult = Readonly<{
 
 export async function startOpenAiCodexDeviceAuth(params: Readonly<{ fetcher?: typeof fetch }>): Promise<OpenAiCodexDeviceAuthStartResult> {
   const fetcher = params.fetcher ?? fetch;
-  const response = await fetcher(resolveOpenAiDeviceUsercodeUrl(), {
+  const response = await fetcher(OPENAI_CODEX_DEVICE_USER_CODE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: resolveOpenAiCodexOauthClientId(process.env) }),
@@ -91,7 +96,7 @@ export async function pollOpenAiCodexDeviceAuthOnce(params: Readonly<{
   intervalMs: number;
 }>): Promise<OpenAiCodexDeviceAuthPollResult> {
   const fetcher = params.fetcher ?? fetch;
-  const response = await fetcher(resolveOpenAiDeviceTokenUrl(), {
+  const response = await fetcher(OPENAI_CODEX_DEVICE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

@@ -13,6 +13,7 @@ import type { McpServerConfig } from '@/agent';
 import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { installClaudeProviderOwnedUserMessageEchoClassifier } from './utils/claudeProviderOwnedUserMessageEcho';
+import type { SessionRuntimeActivityContributionHandle } from '@/session/runtimeActivity/types';
 
 // Re-export permission mode type from api/types
 // Single unified type with 7 modes - Codex modes mapped at SDK boundary
@@ -53,6 +54,22 @@ export interface EnhancedMode {
      * never `--effort` or the SDK `effort` option. Only honored on xhigh-capable models.
      */
     ultracode?: boolean;
+    /**
+     * Effort tiers the selected model reports (Anthropic Models API), resolved once when the mode
+     * is built.
+     *
+     * Curated models carry their own static effort table; this supplies the same evidence for a
+     * discovered model. It is part of the mode — not read from a cache at spawn time — so
+     * launch-option hashing stays a pure function of the mode.
+     */
+    modelEffortLevels?: readonly string[];
+    /**
+     * The model `modelEffortLevels` was resolved for.
+     *
+     * Call sites can override the model (e.g. `--model` inside `claudeArgs`), so tiers are only
+     * evidence when they belong to the model actually being launched.
+     */
+    modelEffortLevelsModelId?: string | null;
 
     // Claude remote-mode (provider-scoped) settings forwarded via message meta.
     claudeRemoteAgentSdkEnabled?: boolean;
@@ -71,7 +88,6 @@ export interface EnhancedMode {
     claudeRemoteDebugCategories?: ReadonlyArray<'api' | 'mcp' | 'hooks' | 'file' | '1p'>;
     claudeRemoteAdvancedOptionsJson?: string;
 }
-
 interface LoopOptions {
     path: string
     model?: string
@@ -88,7 +104,7 @@ interface LoopOptions {
     accountSettingsSecretsReadKeys?: readonly Uint8Array[]
     claudeArgs?: string[]
     messageQueue: MessageQueue2<EnhancedMode>
-    onSessionReady?: (session: Session) => void
+    onSessionReady?: (session: Session) => Promise<void> | void
     /** Path to temporary settings file with non-hook config (required for session tracking) */
     hookSettingsPath: string
     /**
@@ -114,7 +130,19 @@ interface LoopOptions {
         sessionId: string;
         metadata: import('@/api/types').Metadata;
     }>) => Promise<void> | void
+    runtimeActivityContributions?: Readonly<{
+        activateProviderTasks(): Promise<Readonly<{
+            providerTasks: SessionRuntimeActivityContributionHandle;
+            isCurrentRuntime: () => boolean;
+        }>>;
+    }>
     initialClaudeUnifiedTerminalMode?: EnhancedMode
+    expectedExistingTerminalHostAttachmentId?: string
+    onTerminalHostReady?: ((params: Readonly<{
+        handle: import('@/integrations/terminalHost/_types').TerminalHostHandle;
+        terminal: NonNullable<import('@/api/types').Metadata['terminal']>;
+        destroyOwnedHostForExplicitStop: () => Promise<void>;
+    }>) => void | Promise<void>)
     signal?: AbortSignal
 }
 
@@ -124,6 +152,8 @@ export async function loop(opts: LoopOptions): Promise<number> {
 
     // Get log path for debug display
     const logPath = logger.logFilePath;
+    const runtimeActivityContributions =
+        await opts.runtimeActivityContributions?.activateProviderTasks();
     let session = new Session({
         client: opts.session,
         pushSender: opts.pushSender ?? null,
@@ -144,6 +174,7 @@ export async function loop(opts: LoopOptions): Promise<number> {
         defaultSystemPromptText: opts.defaultSystemPromptText,
         precomputedMcpBridge: opts.precomputedMcpBridge ?? null,
         reportSessionMetadataToDaemon: opts.reportSessionMetadataToDaemon ?? null,
+        runtimeActivityContributions,
     });
     session.claudeCodeExperimentalAgentTeamsEnabled = opts.claudeCodeExperimentalAgentTeamsEnabled === true;
 
@@ -159,7 +190,7 @@ export async function loop(opts: LoopOptions): Promise<number> {
         session.lastPermissionMode = opts.permissionMode ?? 'default';
         session.lastPermissionModeUpdatedAt = typeof opts.permissionModeUpdatedAt === 'number' ? opts.permissionModeUpdatedAt : 0;
     }
-    opts.onSessionReady?.(session)
+    await opts.onSessionReady?.(session)
 
     if (opts.claudeUnifiedTerminalEnabled === true) {
         const unifiedTerminalDecision = resolveCliFeatureDecision({
@@ -176,6 +207,8 @@ export async function loop(opts: LoopOptions): Promise<number> {
                 claudeUnifiedTerminalEnabled: true,
                 claudeCodeExperimentalAgentTeamsEnabled: opts.claudeCodeExperimentalAgentTeamsEnabled,
             },
+            expectedExistingTerminalHostAttachmentId: opts.expectedExistingTerminalHostAttachmentId,
+            onTerminalHostReady: opts.onTerminalHostReady,
             signal: opts.signal,
         });
         switch (result.type) {
@@ -214,7 +247,9 @@ export async function loop(opts: LoopOptions): Promise<number> {
             }
 
             case 'remote': {
-                const reason = await claudeRemoteLauncher(session);
+                const reason = await claudeRemoteLauncher(session, {
+                    initialMode: opts.initialClaudeUnifiedTerminalMode,
+                });
                 switch (reason) {
                     case 'exit':
                         return 0;

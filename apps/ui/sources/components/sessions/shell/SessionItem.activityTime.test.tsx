@@ -35,6 +35,7 @@ const AgentIconMock = 'AgentIcon' as unknown as React.ComponentType<{
     size?: number;
     testID?: string;
     color?: string;
+    style?: unknown;
 }>;
 let platformOs: 'ios' | 'android' | 'web' = 'web';
 let isTabletDevice = false;
@@ -115,7 +116,8 @@ vi.mock('@/agents/registry/AgentIcon', () => ({
 
 vi.mock('@/agents/catalog/catalog', () => ({
     DEFAULT_AGENT_ID: 'codex',
-    resolveAgentIdFromFlavor: (flavor: string | null | undefined) => flavor === 'claude' ? 'claude' : null,
+    resolveAgentIdFromFlavor: (flavor: string | null | undefined) => flavor === 'claude' || flavor === 'grok' ? flavor : null,
+    getAgentPickerIconScale: (agentId: string) => agentId === 'grok' ? 1.25 : 1,
 }));
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
@@ -278,6 +280,8 @@ function createSessionRowModel(overrides: Partial<SessionListRowModel> = {}): Se
         isActive: true,
         hasUnreadMessages: false,
         pendingCount: 0,
+        agentActivityLabel: null,
+        pendingBlockedCount: 0,
         tags: ['model-tag'],
         allKnownTags: ['model-tag', 'other-tag'],
         tagsEnabled: true,
@@ -288,6 +292,7 @@ function createSessionRowModel(overrides: Partial<SessionListRowModel> = {}): Se
         identityDisplay: 'avatar',
         activeColorMode: 'activityAndAttention',
         workingIndicatorMode: 'spinner',
+        workingIndicatorPaused: false,
         hideInactiveSessions: false,
     };
     return { ...model, ...overrides };
@@ -360,6 +365,7 @@ function createSessionRowModelForProps(props: SessionItemForTestProps): SessionL
         identityDisplay: mockSessionListIdentityDisplay,
         activeColorMode: mockSessionListActiveColorMode,
         workingIndicatorMode: mockNarrowWorkingIndicatorStyle,
+        workingIndicatorPaused: false,
         hideInactiveSessions: false,
     });
 }
@@ -511,6 +517,49 @@ describe('SessionItem activity time', () => {
         ]));
         expect(useSessionStatusSpy).not.toHaveBeenCalled();
         expect(useSettingSpy).not.toHaveBeenCalled();
+    });
+
+    it('renders background activity with the normal working spinner while retaining pending and unread row facts', async () => {
+        const { SessionItem } = await importSessionItemForTest();
+        const rowModel = createSessionRowModel({
+            status: {
+                state: 'background_active',
+                isConnected: true,
+                statusText: 'background activity',
+                shouldShowStatus: true,
+                statusColor: '#07f',
+                statusDotColor: '#0f0',
+                isPulsing: false,
+            },
+            attention: {
+                listState: 'pending',
+                rowState: 'pending',
+            },
+            presentation: resolveSessionRowPresentation({
+                attentionState: 'pending',
+                backgroundActive: true,
+                density: 'default',
+                requestedSecondaryLineMode: 'status',
+                hasPathSubtitle: true,
+            }),
+            hasUnreadMessages: true,
+            pendingCount: 2,
+            workingIndicatorPaused: false,
+        });
+
+        const screen = await renderScreen(
+            <SessionItem rowModel={rowModel} session={rowModel.session} />,
+        );
+
+        expect(rowModel.attention).toEqual({ listState: 'pending', rowState: 'pending' });
+        expect(rowModel.hasUnreadMessages).toBe(true);
+        expect(screen.findByTestId('session-list-status-subtitle-sess_row_model-pending')).toBeTruthy();
+        expect(screen.findByTestId('session-row-attention-indicator-spinner-sess_row_model-secondary')).toBeTruthy();
+        // The background line now renders the SESSION's status text, which is where the count
+        // lives, instead of a second key the row would have to re-interpolate.
+        expect(screen.findByTestId('session-list-status-subtitle-text-sess_row_model-pending')?.props.children)
+            .toBe('background activity');
+        expect(screen.getTextContent()).toContain('2');
     });
 
     it('renders the pending badge from the computed row-model pendingCount instead of the stale session value', async () => {
@@ -806,7 +855,7 @@ describe('SessionItem activity time', () => {
 
         const screen = await renderScreen(
             <SessionItem
-                session={createSession('sess_agent_logo_narrow', { flavor: 'claude' } as any)}
+                session={createSession('sess_agent_logo_narrow', { flavor: 'grok' } as any)}
                 serverId="server_a"
                 pinned={false}
                 selected={false}
@@ -821,8 +870,9 @@ describe('SessionItem activity time', () => {
 
         expect(screen.findAllByType(AvatarMock)).toHaveLength(0);
         expect(screen.findAllByType(AgentIconMock)[0].props).toMatchObject({
-            agentId: 'claude',
+            agentId: 'grok',
             size: 14,
+            style: { transform: [{ scale: 1.25 }] },
             testID: 'session-list-agent-logo-sess_agent_logo_narrow',
         });
         expect(findRowContentStyle(screen, 'sess_agent_logo_narrow').marginLeft).toBe(8);

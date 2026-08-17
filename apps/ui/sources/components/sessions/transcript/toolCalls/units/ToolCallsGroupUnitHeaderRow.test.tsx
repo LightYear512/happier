@@ -7,19 +7,20 @@ import { createTranscriptSessionCommonPropsFixture, flattenStyleProp } from './t
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Stamps a per-glyph testID so these assertions can name the glyph they expect, exactly as the
+// retired `@expo/vector-icons` mock did. The global setup mock renders `Icon` as a bare host
+// element, which carries props but no addressable id.
+vi.mock('@/components/ui/icons/Icon', () => ({
+    Icon: (props: any) => React.createElement('Icon', { ...props, testID: `icon:${props.name}` }),
+    ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
+}));
+
 installToolCallsGroupViewCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
             Platform: { OS: 'ios', select: (values: any) => values?.ios ?? values?.default ?? null },
         });
-    },
-    icons: async () => {
-        const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
-        return {
-            ...createExpoVectorIconsMock(),
-            Ionicons: (props: any) => React.createElement('Ionicons', { ...props, testID: `ionicons:${props.name}` }),
-        };
     },
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -49,6 +50,11 @@ async function renderHeaderRow(props: Record<string, unknown>) {
     } as any));
 }
 
+// The group cap's corner radius is the shared card token, not a number chosen here. Asserting the
+// literal made a design-system change look like a regression; asserting the token keeps the real
+// contract — top corners capped, bottom corners open — while letting the scale move.
+const GROUP_CAP_RADIUS_PX = 12; // theme.borderRadius.xl
+
 describe('ToolCallsGroupUnitHeaderRow', () => {
     it('shows the tool-calls title with count and a completed status icon when all tools completed', async () => {
         const screen = await renderHeaderRow({
@@ -60,9 +66,9 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
 
         expect(screen.getTextContent()).toContain('session.toolCalls');
         expect(screen.getTextContent()).toContain('2');
-        expect(screen.findByTestId('ionicons:checkmark-circle')).not.toBeNull();
-        expect(screen.findByTestId('ionicons:layers-outline')).not.toBeNull();
-        expect(screen.findByTestId('ionicons:chevron-up-outline')).toBeNull();
+        expect(screen.findByTestId('icon:check-circle')).not.toBeNull();
+        expect(screen.findByTestId('icon:stack-simple')).not.toBeNull();
+        expect(screen.findByTestId('icon:caret-up')).toBeNull();
     });
 
     it('derives a running status spinner when any tool is still running', async () => {
@@ -74,7 +80,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
         });
 
         expect(screen.findAllByType('ActivityIndicator' as any).length).toBeGreaterThan(0);
-        expect(screen.findByTestId('ionicons:checkmark-circle')).toBeNull();
+        expect(screen.findByTestId('icon:check-circle')).toBeNull();
     });
 
     it('derives an error status when any tool errored and none are running', async () => {
@@ -85,7 +91,53 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
             ],
         });
 
-        expect(screen.findByTestId('ionicons:alert-circle')).not.toBeNull();
+        expect(screen.findByTestId('icon:warning-circle')).not.toBeNull();
+    });
+
+    it('renders a failed aggregate when a completed delegate tool has a failed target result', async () => {
+        const screen = await renderHeaderRow({
+            toolMessages: [
+                createToolCallMessageFixture({
+                    id: 'm1',
+                    createdAt: 1,
+                    tool: {
+                        name: 'Bash',
+                        state: 'completed',
+                        result: {
+                            content: [{
+                                type: 'text',
+                                text: '{"v":1,"ok":true,"kind":"tools_call","data":{"source":"happier","tool":"subagents_delegate_start","isError":false,"output":{"intent":"delegate","sessionId":"cmst8oicm00xztmweb5hjqql6","results":[{"key":"agent:claude","ok":false,"error":"invalid_parameters","errorCode":"invalid_parameters"}]}}}\n',
+                            }],
+                            details: null,
+                        },
+                    } as any,
+                }),
+            ],
+        });
+
+        expect(screen.findByTestId('icon:warning-circle')).not.toBeNull();
+        expect(screen.findByTestId('icon:check-circle')).toBeNull();
+    });
+
+    it('renders a failed aggregate for an unavailable tool with a failed Happier envelope in stdout', async () => {
+        const screen = await renderHeaderRow({
+            toolMessages: [
+                createToolCallMessageFixture({
+                    id: 'm1',
+                    createdAt: 1,
+                    tool: {
+                        name: 'subagents.delegate.start',
+                        state: 'unavailable',
+                        result: {
+                            stdout: '{"v":1,"ok":false,"kind":"tools_call","error":{"code":"unknown_tool","message":"Unknown built-in Happier tool: subagents.delegate.start"}}\n',
+                        },
+                    } as any,
+                }),
+            ],
+        });
+
+        expect(screen.findByTestId('icon:warning-circle')).not.toBeNull();
+        expect(screen.findByTestId('icon:check-circle')).toBeNull();
     });
 
     it('stops reporting running for pending-permission tools in inactive sessions, like the grouped row', async () => {
@@ -108,7 +160,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
         // canceled permission resolves to 'permission_blocked' — not running, not error —
         // exactly as ToolCallsGroupRow derives the grouped status today.
         expect(screen.findAllByType('ActivityIndicator' as any)).toHaveLength(0);
-        expect(screen.findByTestId('ionicons:checkmark-circle')).not.toBeNull();
+        expect(screen.findByTestId('icon:check-circle')).not.toBeNull();
     });
 
     it('keeps the header non-pressable while collapsed and collapses via setExpanded(false) when expanded', async () => {
@@ -128,7 +180,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
             setExpanded,
         });
 
-        expect(expanded.findByTestId('ionicons:chevron-up-outline')).not.toBeNull();
+        expect(expanded.findByTestId('icon:caret-up')).not.toBeNull();
         await expanded.pressByTestIdAsync('transcript-tool-calls-header');
         expect(setExpanded).toHaveBeenCalledWith(false);
     });
@@ -144,8 +196,8 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
         const container = screen.findByTestId('transcript-tool-calls-unit-header') as any;
         const style = flattenStyleProp(container?.props.style);
         expect(style.marginHorizontal).toBe(16);
-        expect(style.borderTopLeftRadius).toBe(14);
-        expect(style.borderTopRightRadius).toBe(14);
+        expect(style.borderTopLeftRadius).toBe(GROUP_CAP_RADIUS_PX);
+        expect(style.borderTopRightRadius).toBe(GROUP_CAP_RADIUS_PX);
         expect(style.borderBottomLeftRadius).toBeUndefined();
         expect(style.backgroundColor).toBeTruthy();
         expect(style.marginBottom).toBeUndefined();
@@ -176,7 +228,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
         expect(style.paddingHorizontal).toBe(10);
         expect(style.paddingTop).toBe(6);
         expect(style.paddingBottom).toBeUndefined();
-        expect(style.borderTopLeftRadius).toBe(14);
+        expect(style.borderTopLeftRadius).toBe(GROUP_CAP_RADIUS_PX);
         expect(style.borderBottomLeftRadius).toBeUndefined();
         expect(style.backgroundColor).toBeTruthy();
     });

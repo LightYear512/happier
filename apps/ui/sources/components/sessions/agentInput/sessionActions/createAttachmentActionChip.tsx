@@ -1,6 +1,5 @@
-import { Ionicons } from '@expo/vector-icons';
 import * as React from 'react';
-import { InteractionManager, Pressable, View, Platform } from 'react-native';
+import { Pressable, View, Platform } from 'react-native';
 
 import type { AgentInputExtraActionChip, AgentInputExtraActionChipRenderContext } from '@/components/sessions/agentInput/agentInputContracts';
 import { Text } from '@/components/ui/text/Text';
@@ -8,6 +7,9 @@ import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeFor
 import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { t } from '@/text';
 import { blurActiveElementOnWeb } from '@/utils/platform/deferOnWeb';
+import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { AGENT_INPUT_CHIP_ICON_SIZE_PX, AGENT_INPUT_CHIP_ICON_STYLE, AGENT_INPUT_MENU_ICON_SIZE_PX } from '../definitions/agentInputChipIconMetrics';
 
 const WEB_PICKER_DOUBLE_OPEN_COOLDOWN_MS = 500;
 const NATIVE_PICKER_OPEN_AFTER_POPOVER_DISMISS_DELAY_MS = 250;
@@ -17,7 +19,11 @@ function runAfterNativePopoverDismiss(action: () => void): void {
         action();
         return;
     }
-    InteractionManager.runAfterInteractions(() => {
+    // On RN 0.81 New Arch this is a microtask, not a real deferral (see the helper's doc comment):
+    // InteractionManager is the no-op stub, so nothing can starve it and nothing waits for the
+    // popover's exit animation. The bounded `setTimeout` below is what actually lets the popover
+    // dismiss before the OS picker takes over the screen.
+    runAfterInteractionsWithFallback(() => {
         setTimeout(action, NATIVE_PICKER_OPEN_AFTER_POPOVER_DISMISS_DELAY_MS);
     });
 }
@@ -62,7 +68,7 @@ export function createAttachmentActionChip(params: Readonly<{
                 title: t('common.attach'),
                 label: t('common.attach'),
                 icon: (tint: string) =>
-                    normalizeNodeForView(<Ionicons name="attach-outline" size={16} color={tint} />),
+                    normalizeNodeForView(<Icon name="paperclip" size={AGENT_INPUT_MENU_ICON_SIZE_PX} color={tint} />),
                 renderContent: ({ requestClose }) => {
                     const pasteImage = params.onPasteImage;
                     return (
@@ -107,7 +113,7 @@ export function createAttachmentActionChip(params: Readonly<{
             collapsedAction: ({ tint, dismiss, blurInput }) => ({
                 id: 'attachments',
                 label: t('common.attach'),
-                icon: normalizeNodeForView(<Ionicons name="attach-outline" size={16} color={tint} />),
+                icon: normalizeNodeForView(<Icon name="paperclip" size={AGENT_INPUT_MENU_ICON_SIZE_PX} color={tint} />),
                 onPress: () => {
                     blurInput();
                     runPickerOpenWithWebCooldown(params.onPickFile);
@@ -130,7 +136,7 @@ export function createAttachmentActionChip(params: Readonly<{
                 style={({ pressed }) => ctx.chipStyle(Boolean(pressed))}
             >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    {normalizeNodeForView(<Ionicons name="attach-outline" size={18} color={ctx.iconColor} />)}
+                    {normalizeNodeForView(<Icon name="paperclip" size={AGENT_INPUT_CHIP_ICON_SIZE_PX} color={ctx.iconColor} style={AGENT_INPUT_CHIP_ICON_STYLE} />)}
                     {ctx.showLabel ? <Text style={ctx.textStyle}>{t('common.attach')}</Text> : null}
                 </View>
             </Pressable>

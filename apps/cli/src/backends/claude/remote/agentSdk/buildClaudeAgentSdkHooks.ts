@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 
 import { getProjectPath } from '@/backends/claude/utils/path';
-import { CLAUDE_AUTH_ENV_KEYS } from '@/backends/claude/auth/claudeAuthEnvKeys';
 import type { EnhancedMode } from '@/backends/claude/loop';
 import type { PermissionResult } from '@/backends/claude/sdk/types';
 
@@ -25,7 +24,13 @@ export function buildClaudeAgentSdkHooks(params: Readonly<{
   cwd: string;
   claudeConfigDir: string | null;
   getMode: () => EnhancedMode;
-  onSessionFound: (sessionId: string, data: { transcript_path: string; transcriptPath: string }) => void;
+  onSessionFound: (sessionId: string, data: {
+    transcript_path: string;
+    transcriptPath: string;
+    hook_event_name?: string;
+    source?: string;
+  }) => void;
+  onSessionHook: (data: Record<string, unknown>) => void;
   canCallTool: (
     toolName: string,
     input: unknown,
@@ -43,6 +48,16 @@ export function buildClaudeAgentSdkHooks(params: Readonly<{
   hooks: Record<string, unknown>;
   canUseTool: (toolName: string, input: Record<string, unknown>, options: any) => Promise<any>;
 }> {
+  const buildObservationHook = () => ({
+    hooks: [
+      async (input: any) => {
+        if (input && typeof input === 'object' && !Array.isArray(input)) {
+          params.onSessionHook(input as Record<string, unknown>);
+        }
+        return { continue: true, suppressOutput: true };
+      },
+    ],
+  });
   const hooks = {
     SessionStart: [
       {
@@ -63,109 +78,27 @@ export function buildClaudeAgentSdkHooks(params: Readonly<{
                     : undefined;
               const transcriptPathFallback =
                 transcriptRaw ?? join(getProjectPath(params.cwd, params.claudeConfigDir), `${sessionId}.jsonl`);
-              params.onSessionFound(sessionId, { transcript_path: transcriptPathFallback, transcriptPath: transcriptPathFallback });
+              const hookEventName = typeof input.hook_event_name === 'string'
+                ? input.hook_event_name
+                : typeof input.hookEventName === 'string'
+                  ? input.hookEventName
+                  : undefined;
+              const source = typeof input.source === 'string' ? input.source : undefined;
+              params.onSessionFound(sessionId, {
+                transcript_path: transcriptPathFallback,
+                transcriptPath: transcriptPathFallback,
+                ...(hookEventName ? { hook_event_name: hookEventName } : {}),
+                ...(source ? { source } : {}),
+              });
             }
             return { continue: true };
           },
         ],
       },
     ],
-    PreToolUse: [
-      {
-        hooks: [
-          async (input: any) => {
-            if (!input || typeof input !== 'object') {
-              return { continue: true, suppressOutput: true };
-            }
-
-            const toolName = typeof input.tool_name === 'string' ? input.tool_name : '';
-            if (toolName !== 'Bash') {
-              return { continue: true, suppressOutput: true };
-            }
-
-            const toolInput = (input as any).tool_input;
-            if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
-              return { continue: true, suppressOutput: true };
-            }
-
-            const command = typeof (toolInput as any).command === 'string' ? (toolInput as any).command : '';
-            if (!command.trim()) {
-              return { continue: true, suppressOutput: true };
-            }
-
-            const prefix = `unset ${CLAUDE_AUTH_ENV_KEYS.join(' ')}; `;
-            const nextCommand = command.startsWith(prefix) ? command : prefix + command;
-
-            return {
-              continue: true,
-              suppressOutput: true,
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                updatedInput: {
-                  ...(toolInput as Record<string, unknown>),
-                  command: nextCommand,
-                },
-              },
-            };
-          },
-        ],
-      },
-    ],
-    PermissionRequest: [
-      {
-        hooks: [
-          async (input: any, toolUseID: string | undefined, options: { signal: AbortSignal }) => {
-            if (!input || typeof input !== 'object') {
-              return { continue: true, suppressOutput: true };
-            }
-            const toolName = typeof input.tool_name === 'string' ? input.tool_name : '';
-            const toolInput = (input as any).tool_input;
-            if (!toolName) {
-              return { continue: true, suppressOutput: true };
-            }
-
-            const result = await params.canCallTool(toolName, toolInput, params.getMode(), {
-              signal: options.signal,
-              toolUseId: typeof toolUseID === 'string' ? toolUseID : null,
-              suggestions: (input as any).permission_suggestions,
-            });
-
-            if (result.behavior === 'allow') {
-              const updatedInput =
-                result.updatedInput && typeof result.updatedInput === 'object' && !Array.isArray(result.updatedInput)
-                  ? (result.updatedInput as Record<string, unknown>)
-                  : undefined;
-              const updatedPermissions = result.updatedPermissions;
-              return {
-                continue: true,
-                suppressOutput: true,
-                hookSpecificOutput: {
-                  hookEventName: 'PermissionRequest',
-                  decision: {
-                    behavior: 'allow',
-                    ...(updatedInput ? { updatedInput } : {}),
-                    ...(typeof updatedPermissions !== 'undefined' ? { updatedPermissions } : {}),
-                  },
-                },
-              };
-            }
-
-            return {
-              continue: true,
-              suppressOutput: true,
-              hookSpecificOutput: {
-                hookEventName: 'PermissionRequest',
-                decision: {
-                  behavior: 'deny',
-                  ...(typeof result.message === 'string' && result.message.length > 0 ? { message: result.message } : {}),
-                  ...(result.interrupt !== undefined ? { interrupt: result.interrupt } : {}),
-                },
-              },
-            };
-          },
-        ],
-      },
-    ],
+    PostToolUse: [buildObservationHook()],
+    SubagentStart: [buildObservationHook()],
+    SubagentStop: [buildObservationHook()],
   };
 
   const canUseTool = async (toolName: string, input: Record<string, unknown>, options: any) => {

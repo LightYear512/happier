@@ -1,11 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import process from 'node:process';
 import url from 'node:url';
 import { resolveUiPostinstallTasks } from './resolveUiPostinstallTasks.mjs';
 import { ensureNohoistPeerLinks } from './ensureNohoistPeerLinks.mjs';
+import { createFilteredPatchDir } from './postinstall/filteredPatchDirectory.mjs';
 import { runCommandBestEffort, runCommandOrExit } from './postinstall/runCommand.mjs';
+import { verifyNativePatchCompilation } from './postinstall/verifyNativePatchCompilation.mjs';
+import {
+    formatVendoredLegendPatchFailure,
+    verifyVendoredLegendPatchMarkers,
+} from './postinstall/verifyVendoredLegendPatchMarkers.mjs';
+import {
+    formatVendoredReanimatedPatchFailure,
+    verifyVendoredReanimatedPatchMarkers,
+} from './postinstall/verifyVendoredReanimatedPatchMarkers.mjs';
 
 // Yarn workspaces can execute this script via a symlinked path (e.g. repoRoot/node_modules/happy/...).
 // Resolve symlinks so repoRootDir/expoAppDir are computed from the real filesystem location.
@@ -64,32 +73,6 @@ if (!patchPackageCliPath) {
 const tasks = resolveUiPostinstallTasks({ env: process.env });
 const wants = (id) => tasks.includes(id);
 
-function listPatchFiles(dir) {
-    try {
-        return fs.readdirSync(dir, { withFileTypes: true })
-            .filter((entry) => entry.isFile() && entry.name.endsWith('.patch'))
-            .map((entry) => entry.name);
-    } catch {
-        return [];
-    }
-}
-
-function resolvePatchTargetPackageName(patchFileName) {
-    const raw = patchFileName.endsWith('.patch') ? patchFileName.slice(0, -'.patch'.length) : patchFileName;
-    const parts = raw.split('+').filter(Boolean);
-    if (parts.length < 2) return '';
-    if (parts[0].startsWith('@')) {
-        if (parts.length < 3) return '';
-        return `${parts[0]}/${parts[1]}`;
-    }
-    return parts[0];
-}
-
-function packageExists(nodeModulesDir, packageName) {
-    if (!nodeModulesDir || !packageName) return false;
-    return fs.existsSync(path.resolve(nodeModulesDir, packageName));
-}
-
 function findReactNativeEnrichedMarkdownPackageDirs() {
     return [
         path.resolve(repoRootNodeModulesDir, 'react-native-enriched-markdown'),
@@ -104,24 +87,6 @@ function findSentryReactNativePackageDirs() {
     ].filter((packageDir) => fs.existsSync(packageDir));
 }
 
-function createFilteredPatchDir({ patchDir: inputPatchDir, nodeModulesDir, label }) {
-    const patchFiles = listPatchFiles(inputPatchDir);
-    if (patchFiles.length === 0) return '';
-
-    const selected = patchFiles.filter((fileName) => {
-        const pkgName = resolvePatchTargetPackageName(fileName);
-        return packageExists(nodeModulesDir, pkgName);
-    });
-
-    if (selected.length === 0) return '';
-
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `happier-ui-patches-${label}-`));
-    for (const fileName of selected) {
-        fs.copyFileSync(path.resolve(inputPatchDir, fileName), path.resolve(tmpDir, fileName));
-    }
-    return tmpDir;
-}
-
 if (wants('patch-package')) {
     // Note: this repo uses Yarn workspaces, so some dependencies are hoisted to the repo root.
     // patch-package only patches packages present in the current working directory's
@@ -129,11 +94,15 @@ if (wants('patch-package')) {
     if (fs.existsSync(repoRootNodeModulesDir)) {
         const filteredPatchDir = createFilteredPatchDir({ patchDir, nodeModulesDir: repoRootNodeModulesDir, label: 'root' });
         if (filteredPatchDir) {
-            runCommandOrExit({
-                command: process.execPath,
-                args: [patchPackageCliPath, '--patch-dir', path.relative(repoRootDir, filteredPatchDir)],
-                options: { cwd: repoRootDir },
-            });
+            try {
+                runCommandOrExit({
+                    command: process.execPath,
+                    args: [patchPackageCliPath, '--patch-dir', path.relative(repoRootDir, filteredPatchDir)],
+                    options: { cwd: repoRootDir },
+                });
+            } finally {
+                fs.rmSync(filteredPatchDir, { recursive: true, force: true });
+            }
         }
     }
 
@@ -142,12 +111,87 @@ if (wants('patch-package')) {
     if (fs.existsSync(expoAppNodeModulesDir)) {
         const filteredPatchDir = createFilteredPatchDir({ patchDir, nodeModulesDir: expoAppNodeModulesDir, label: 'ui' });
         if (filteredPatchDir) {
-            runCommandOrExit({
-                command: process.execPath,
-                args: [patchPackageCliPath, '--patch-dir', path.relative(expoAppDir, filteredPatchDir)],
-                options: { cwd: expoAppDir },
-            });
+            try {
+                runCommandOrExit({
+                    command: process.execPath,
+                    args: [patchPackageCliPath, '--patch-dir', path.relative(expoAppDir, filteredPatchDir)],
+                    options: { cwd: expoAppDir },
+                });
+            } finally {
+                fs.rmSync(filteredPatchDir, { recursive: true, force: true });
+            }
         }
+    }
+}
+
+if (wants('verify-native-patch-compilation')) {
+    const { ok, errors, warnings } = verifyNativePatchCompilation({ uiDir: expoAppDir });
+    for (const warning of warnings) {
+        console.warn(`\n[native-patch-compilation] ${warning}\n`);
+    }
+    if (!ok) {
+        console.error(`\n${errors.join('\n\n')}\n`);
+        process.exit(1);
+    }
+}
+
+// The reanimated settled-updates fix is the one patch in this repository that NOTHING else can
+// observe: it lives in a dependency's C++, is reached through a native timer race, and when the hunk
+// is lost every first-party test still passes while animated values silently stick at stale
+// positions. It is verified right after `patch-package` runs, because that is the step that can drop
+// it — a regeneration against a partially-reverted tree rewrites the .patch file and exits 0.
+if (wants('verify-vendored-reanimated-patch')) {
+    const reanimatedPackageDirs = [
+        path.resolve(repoRootNodeModulesDir, 'react-native-reanimated'),
+        path.resolve(expoAppNodeModulesDir, 'react-native-reanimated'),
+    ];
+    const appPackageJsonPath = path.resolve(expoAppDir, 'package.json');
+
+    const failureReports = [];
+    for (const packageDir of reanimatedPackageDirs) {
+        const result = verifyVendoredReanimatedPatchMarkers({ packageDir, appPackageJsonPath });
+        // Every installed copy must carry the fix: Metro and the native build resolve independently,
+        // so a patched root copy does not vindicate an unpatched app-local one.
+        if (result.status === 'failed') {
+            failureReports.push(`${packageDir}\n${formatVendoredReanimatedPatchFailure(result)}`);
+        }
+    }
+
+    if (failureReports.length > 0) {
+        console.error(`\n${failureReports.join('\n\n')}\n`);
+        process.exit(1);
+    }
+}
+
+// Same failure mode as the reanimated guard above, and the reason this one exists at all: patch-package
+// regenerates silently and can drop hunks without a non-zero exit. Until now this check ran only inside
+// `yarn test`, so an install-time hunk drop stayed invisible for a ~27-minute suite — long enough to
+// build and ship a client from it.
+if (wants('verify-vendored-legend-patch')) {
+    const legendPackageDirs = [
+        path.resolve(repoRootNodeModulesDir, '@legendapp', 'list'),
+        path.resolve(expoAppNodeModulesDir, '@legendapp', 'list'),
+    ];
+
+    const failureReports = [];
+    for (const packageDir of legendPackageDirs) {
+        const result = verifyVendoredLegendPatchMarkers({ packageDir });
+        // Every installed copy must carry the markers: Metro and the native build resolve independently,
+        // so a patched root copy does not vindicate an unpatched app-local one.
+        //
+        // Fail on anything that is not explicitly OK or a legitimate skip, rather than matching a
+        // status name. This guard reports 'missing' where its reanimated sibling reports 'failed', and
+        // an `=== 'failed'` check copied across from that sibling passes a dropped marker silently —
+        // measured, not hypothetical. Allow-listing the safe outcomes also fails closed if a future
+        // status is added.
+        if (result.status !== 'ok' && result.status !== 'skipped') {
+            failureReports.push(`${packageDir}\n${formatVendoredLegendPatchFailure(result)}`);
+        }
+    }
+
+    if (failureReports.length > 0) {
+        console.error(`\n${failureReports.join('\n\n')}\n`);
+        process.exit(1);
     }
 }
 
@@ -228,11 +272,17 @@ if (wants('verify-react-native-enriched-markdown-web-streaming-patch')) {
             || !enrichedMarkdownTextContents.includes('streamingAnimation')
             || !enrichedMarkdownTextContents.includes('updateStreamingRevealRanges')
             || !parseMarkdownContents.includes('preloadMarkdownRuntime')
-            || !parseMarkdownContents.includes("['number', 'number', 'number']")
+            || !parseMarkdownContents.includes("import createMd4cModule from './wasm/md4c.js'")
+            || parseMarkdownContents.includes("import('./wasm/md4c")
+            || !parseMarkdownContents.includes("['number', 'number', 'number', 'number']")
+            || !parseMarkdownContents.includes('texMathBackslashDelimiters')
             || !parseMarkdownContents.includes('stringToUTF8(markdown')
             || !parseMarkdownContents.includes('parseCache.clear()')
             || !parseMarkdownSourceContents.includes('lengthBytesUTF8(markdown)')
+            || !parseMarkdownSourceContents.includes("import createMd4cModule from './wasm/md4c.js'")
+            || parseMarkdownSourceContents.includes("import('./wasm/md4c")
             || !parseMarkdownSourceContents.includes('parserPromise = null')
+            || !parseMarkdownSourceContents.includes('texMathBackslashDelimiters')
             || !enrichedMarkdownTextSourceContents.includes('lastChildStyles.paragraph')
             || enrichedMarkdownTextSourceContents.includes('<pre')
             || !wasmBuildScriptContents.includes('STACK_SIZE=8MB')
@@ -348,7 +398,28 @@ if (wants('verify-sentry-react-native-replay-post-init-patch')) {
 }
 
 if (wants('setup-skia-web')) {
-    runCommandOrExit({ command: 'npx', args: ['setup-skia-web', 'public'], options: { cwd: expoAppDir } });
+    const skiaSetupCliCandidatePaths = [
+        path.resolve(expoAppNodeModulesDir, '@shopify', 'react-native-skia', 'scripts', 'setup-canvaskit.js'),
+        path.resolve(repoRootNodeModulesDir, '@shopify', 'react-native-skia', 'scripts', 'setup-canvaskit.js'),
+    ];
+    const skiaSetupCliPath = skiaSetupCliCandidatePaths.find((candidatePath) =>
+        fs.existsSync(candidatePath),
+    );
+
+    if (!skiaSetupCliPath) {
+        console.error(
+            `Could not find the React Native Skia web setup CLI at:\n${skiaSetupCliCandidatePaths
+                .map((candidatePath) => `- ${candidatePath}`)
+                .join('\n')}`,
+        );
+        process.exit(1);
+    }
+
+    runCommandOrExit({
+        command: process.execPath,
+        args: [skiaSetupCliPath, 'public'],
+        options: { cwd: expoAppDir },
+    });
 }
 
 // Vendor Monaco static assets for web/desktop code editor. Metro can't bundle Monaco workers reliably, so we serve
@@ -476,5 +547,29 @@ if (wants('vendor-tiptap-webview-bundle')) {
         });
     } catch (e) {
         // Best-effort: the rich markdown editor is experimental and degrades to raw mode without it.
+    }
+}
+
+// Bundle Mermaid for the native transcript WebView. The committed generated
+// module is the runtime fallback if rebuilding is unavailable; product code has
+// no CDN or other runtime-network fallback.
+if (wants('vendor-mermaid-webview-bundle')) {
+    try {
+        const result = runCommandBestEffort({
+            command: process.execPath,
+            args: [path.resolve(expoAppDir, 'tools', 'mermaid', 'buildMermaidWebViewBundle.mjs')],
+            options: { cwd: expoAppDir },
+        });
+        if (!result.ok) {
+            console.warn(
+                `[postinstall] Mermaid WebView bundle refresh exited with status ${result.status}; `
+                + 'the committed bundle was retained and candidate verification will reject stale bytes.',
+            );
+        }
+    } catch (e) {
+        console.warn(
+            `[postinstall] Mermaid WebView bundle refresh failed: ${e instanceof Error ? e.message : String(e)}; `
+            + 'the committed bundle was retained and candidate verification will reject stale bytes.',
+        );
     }
 }

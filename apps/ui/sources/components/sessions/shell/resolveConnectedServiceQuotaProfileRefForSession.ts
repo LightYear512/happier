@@ -1,12 +1,14 @@
 import type { AccountProfile } from '@happier-dev/protocol';
 import {
     buildBackendTargetKey,
-    readConnectedServiceQuotaRefsFromMetadata,
+    isConnectedServiceCredentialHealthStatusUsable,
+    type ConnectedServiceCredentialHealthStatusV1,
 } from '@happier-dev/protocol';
 
 import { getAgentCore, isAgentId } from '@/agents/catalog/catalog';
 import type { ConnectedServiceQuotaProfileRefProvenance } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { parseConnectedServicesBindingsByServiceIdFromAgentOptionState } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
+import { resolveConnectedServiceCredentialHealthStatus } from '@/sync/domains/connectedServices/resolveConnectedServiceCredentialHealthStatus';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 
 type AccountProfileConnectedService = AccountProfile['connectedServicesV2'][number];
@@ -35,7 +37,9 @@ function resolveActiveGroupProfileId(params: Readonly<{
 
     const connectedProfileIds = new Set(
         service.profiles
-            .filter((profile) => profile.status === 'connected')
+            .filter((profile) =>
+                isConnectedServiceCredentialHealthStatusUsable(resolveConnectedServiceCredentialHealthStatus(profile.status))
+            )
             .map((profile) => profile.profileId.trim())
             .filter(Boolean),
     );
@@ -52,6 +56,17 @@ function resolveActiveGroupProfileId(params: Readonly<{
     }
 
     return null;
+}
+
+function resolveProfileCredentialHealthStatus(params: Readonly<{
+    services: ReadonlyArray<AccountProfileConnectedService>;
+    serviceId: string;
+    profileId: string;
+}>): ConnectedServiceCredentialHealthStatusV1 | null {
+    const service = params.services.find((candidate) => candidate.serviceId === params.serviceId) ?? null;
+    if (!service) return null;
+    const profile = service.profiles.find((candidate) => candidate.profileId.trim() === params.profileId) ?? null;
+    return profile ? resolveConnectedServiceCredentialHealthStatus(profile.status) : null;
 }
 
 function resolveBindingProfileId(params: Readonly<{
@@ -89,6 +104,7 @@ function resolveBindingProfileId(params: Readonly<{
 export type ConnectedServiceQuotaProfileRefForSession = Readonly<{
     serviceId: string;
     profileId: string;
+    credentialHealthStatus?: ConnectedServiceCredentialHealthStatusV1;
     provenance: ConnectedServiceQuotaProfileRefProvenance;
 }>;
 
@@ -131,20 +147,16 @@ export function resolveConnectedServiceQuotaProfileRefForSession(params: Readonl
             serviceId,
         });
         if (!binding) continue;
+        const credentialHealthStatus = resolveProfileCredentialHealthStatus({
+            services: params.accountProfileConnectedServicesV2,
+            serviceId,
+            profileId: binding.profileId,
+        });
         return {
             serviceId,
             profileId: binding.profileId,
+            ...(credentialHealthStatus ? { credentialHealthStatus } : {}),
             provenance: binding.selection === 'group' ? 'connected_binding_group' : 'connected_binding_profile',
-        };
-    }
-
-    const quotaRefs = readConnectedServiceQuotaRefsFromMetadata(metadata);
-    for (const ref of [...quotaRefs].reverse()) {
-        if (!supportedServiceIds.includes(ref.serviceId)) continue;
-        return {
-            serviceId: ref.serviceId,
-            profileId: ref.profileId,
-            provenance: 'published_quota_ref',
         };
     }
 

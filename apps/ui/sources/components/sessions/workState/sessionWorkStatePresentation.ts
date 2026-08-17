@@ -1,4 +1,7 @@
+import { SessionWorkStateStatusReasonV1Schema } from '@happier-dev/protocol';
+
 import type {
+    SessionWorkStateGoalCapabilities,
     SessionWorkStateItem,
     SessionWorkStateKind,
     SessionWorkStateOrigin,
@@ -57,7 +60,18 @@ function readNonNegativeNumber(value: unknown): number | null {
 }
 
 function readStatusReason(value: unknown): SessionWorkStateStatusReason | null {
-    return value === 'budgetLimited' ? value : null;
+    const parsed = SessionWorkStateStatusReasonV1Schema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+}
+
+function readGoalCapabilities(value: unknown): SessionWorkStateGoalCapabilities | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const raw = value as Record<string, unknown>;
+    const capabilities: { canEdit?: boolean; canStop?: boolean; canClear?: boolean } = {};
+    if (typeof raw.canEdit === 'boolean') capabilities.canEdit = raw.canEdit;
+    if (typeof raw.canStop === 'boolean') capabilities.canStop = raw.canStop;
+    if (typeof raw.canClear === 'boolean') capabilities.canClear = raw.canClear;
+    return Object.keys(capabilities).length > 0 ? capabilities : null;
 }
 
 function readItem(value: unknown): ReadItemResult {
@@ -74,6 +88,8 @@ function readItem(value: unknown): ReadItemResult {
     const title = readString(raw.title);
     const updatedAt = readNonNegativeNumber(raw.updatedAt);
     if (!id || !title || updatedAt === null) return { type: 'invalid' };
+    const statusReason = readStatusReason(raw.statusReason);
+    const goalCapabilities = readGoalCapabilities(raw.goalCapabilities);
 
     return {
         type: 'item',
@@ -84,13 +100,16 @@ function readItem(value: unknown): ReadItemResult {
             status: status as SessionWorkStateStatus,
             title,
             updatedAt,
-            ...(readStatusReason(raw.statusReason) ? { statusReason: readStatusReason(raw.statusReason) as SessionWorkStateStatusReason } : {}),
+            ...(statusReason ? { statusReason } : {}),
+            ...(goalCapabilities ? { goalCapabilities } : {}),
             ...(typeof raw.summary === 'string' ? { summary: raw.summary } : {}),
             ...(typeof raw.backendId === 'string' ? { backendId: raw.backendId } : {}),
             ...(typeof raw.agentId === 'string' ? { agentId: raw.agentId } : {}),
             ...(typeof raw.vendorRef === 'string' ? { vendorRef: raw.vendorRef } : {}),
             ...(typeof raw.order === 'number' && Number.isFinite(raw.order) ? { order: raw.order } : {}),
+            ...(readString(raw.parentId) ? { parentId: readString(raw.parentId) as string } : {}),
             ...(typeof raw.priority === 'string' ? { priority: raw.priority } : {}),
+            ...(typeof raw.progress === 'number' && Number.isFinite(raw.progress) && raw.progress >= 0 && raw.progress <= 1 ? { progress: raw.progress } : {}),
             ...(typeof raw.tokenBudget === 'number' && Number.isFinite(raw.tokenBudget) ? { tokenBudget: raw.tokenBudget } : {}),
             ...(raw.tokenBudget === null ? { tokenBudget: null } : {}),
             ...(typeof raw.tokensUsed === 'number' && Number.isFinite(raw.tokensUsed) ? { tokensUsed: raw.tokensUsed } : {}),
@@ -99,6 +118,17 @@ function readItem(value: unknown): ReadItemResult {
             ...(readNonNegativeNumber(raw.startedAt) !== null ? { startedAt: readNonNegativeNumber(raw.startedAt) as number } : {}),
             ...(readNonNegativeNumber(raw.completedAt) !== null ? { completedAt: readNonNegativeNumber(raw.completedAt) as number } : {}),
         },
+    };
+}
+
+function readTruncation(value: unknown): SessionWorkStateSnapshot['truncated'] | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const raw = value as Record<string, unknown>;
+    if (raw.reason !== 'item_limit' && raw.reason !== 'provider_limit') return null;
+    const omittedCount = readNonNegativeNumber(raw.omittedCount);
+    return {
+        reason: raw.reason,
+        ...(omittedCount !== null && Number.isInteger(omittedCount) ? { omittedCount } : {}),
     };
 }
 
@@ -115,6 +145,7 @@ function readCanonicalSnapshot(value: unknown): SessionWorkStateSnapshot | null 
         .map((item) => item.item);
     if (items.length === 0) return null;
 
+    const truncated = readTruncation(raw.truncated);
     return {
         v: 1,
         backendId,
@@ -122,6 +153,7 @@ function readCanonicalSnapshot(value: unknown): SessionWorkStateSnapshot | null 
         items,
         ...(typeof raw.agentId === 'string' ? { agentId: raw.agentId } : {}),
         ...(typeof raw.primaryItemId === 'string' || raw.primaryItemId === null ? { primaryItemId: raw.primaryItemId } : {}),
+        ...(truncated ? { truncated } : {}),
     };
 }
 
@@ -135,6 +167,7 @@ function readLegacyGoalSnapshot(metadata: Record<string, unknown>): SessionWorkS
     const status: SessionWorkStateStatus = rawStatus && VALID_STATUSES.has(rawStatus) ? rawStatus as SessionWorkStateStatus : 'active';
     const updatedAt = readNumber(raw.updatedAt) ?? Date.now();
     const backendId = readString(metadata.flavor) ?? 'codex';
+    const statusReason = readStatusReason(raw.statusReason);
     return {
         v: 1,
         backendId,
@@ -147,7 +180,7 @@ function readLegacyGoalSnapshot(metadata: Record<string, unknown>): SessionWorkS
             status,
             title,
             updatedAt,
-            ...(readStatusReason(raw.statusReason) ? { statusReason: readStatusReason(raw.statusReason) as SessionWorkStateStatusReason } : {}),
+            ...(statusReason ? { statusReason } : {}),
             ...(typeof raw.tokenBudget === 'number' && Number.isFinite(raw.tokenBudget) ? { tokenBudget: raw.tokenBudget } : {}),
             ...(typeof raw.tokensUsed === 'number' && Number.isFinite(raw.tokensUsed) ? { tokensUsed: raw.tokensUsed } : {}),
             ...(typeof raw.timeUsedSeconds === 'number' && Number.isFinite(raw.timeUsedSeconds) ? { timeUsedSeconds: raw.timeUsedSeconds } : {}),
@@ -168,12 +201,35 @@ function firstItem(snapshot: SessionWorkStateSnapshot | null, predicate: (item: 
     return snapshot?.items.find(predicate) ?? null;
 }
 
+/**
+ * The session's CURRENT goal for "current goal" surfaces (the AgentInput goal chip label): only a
+ * `kind:'goal'` item with `status:'active'`. Completed, cancelled/cleared, paused, or blocked goals
+ * are deliberately NOT current, so those surfaces fall back to the "Set goal" affordance. Mirrors
+ * happy's `resolveVisibleAgentGoalStatus` (active-only). This is intentionally distinct from
+ * `resolvePrimarySessionWorkStateItem`, which also returns inactive items for the status badge.
+ */
+export function resolveActiveSessionGoalItem(snapshot: SessionWorkStateSnapshot | null): SessionWorkStateItem | null {
+    return firstItem(snapshot, (item) => item.kind === 'goal' && item.status === 'active');
+}
+
+function isTerminalWorkStateStatus(status: SessionWorkStateStatus): boolean {
+    return status === 'complete' || status === 'cancelled';
+}
+
 export function resolvePrimarySessionWorkStateItem(snapshot: SessionWorkStateSnapshot | null): SessionWorkStateItem | null {
     if (!snapshot || snapshot.items.length === 0) return null;
     const primaryId = typeof snapshot.primaryItemId === 'string' ? snapshot.primaryItemId : null;
     if (primaryId) {
         const primary = snapshot.items.find((item) => item.id === primaryId);
-        if (primary) return primary;
+        // Trust the published primary unless it is terminal (complete/cancelled) while a non-terminal
+        // item still exists: a stale/legacy primaryItemId must not pin a finished row over active
+        // work. This mirrors the protocol write-side resolver's status-rank rule (G4) so the read and
+        // write paths agree, while still surfacing a completed/cancelled item when ALL items are
+        // terminal (a history badge).
+        if (primary && (!isTerminalWorkStateStatus(primary.status)
+            || !snapshot.items.some((item) => !isTerminalWorkStateStatus(item.status)))) {
+            return primary;
+        }
     }
     return firstItem(snapshot, (item) => item.kind === 'task' && item.status === 'active')
         ?? firstItem(snapshot, (item) => item.kind === 'todo' && item.status === 'active')
@@ -187,6 +243,10 @@ export function resolvePrimarySessionWorkStateItem(snapshot: SessionWorkStateSna
 export function formatSessionWorkStateBadgeLabel(item: SessionWorkStateItem | null, translate: Translate): string | null {
     if (!item) return null;
     if (item.kind === 'goal') {
+        // A cancelled (cleared) goal is not a current goal — it must NOT render as a badge (mirrors
+        // happy's resolveVisibleAgentGoalStatus, which only surfaces active goals). Returning null
+        // means the cleared goal produces no badge, so clearing a goal removes the badge.
+        if (item.status === 'cancelled') return null;
         if (item.status === 'paused') return translate('session.workState.badge.goalPaused');
         if (item.statusReason === 'budgetLimited') return translate('session.workState.badge.goalBudgetLimited');
         if (item.status === 'blocked') return translate('session.workState.badge.goalBlocked');
@@ -205,10 +265,21 @@ export function resolveSessionWorkStateBadgeTone(item: SessionWorkStateItem | nu
     return 'neutral';
 }
 
+/**
+ * Whether this item earns FILLED chrome in the composer status row.
+ *
+ * Fill means exactly one thing here: **a person is needed**. `blocked` and `paused` both wait on a
+ * human — one to unblock, one to resume — so they fill. Everything else, live work included, stays
+ * plain, and liveness is carried by the label rather than by chrome.
+ *
+ * A completed goal deliberately does NOT fill. It used to, which made the composer announce a
+ * success several times a day in the same chrome an agent uses to ask for help; a fill that
+ * sometimes means "well done" and sometimes means "you are needed" means neither. The success is
+ * still visible — it keeps its `complete` tone and its label — it just stops demanding attention.
+ */
 export function resolveSessionWorkStateBadgeEmphasis(item: SessionWorkStateItem | null): 'quiet' | 'prominent' {
     if (!item) return 'quiet';
     if (item.status === 'blocked' || item.status === 'paused') return 'prominent';
-    if (item.kind === 'goal' && item.status === 'complete') return 'prominent';
     return 'quiet';
 }
 

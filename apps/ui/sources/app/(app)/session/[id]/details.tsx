@@ -5,6 +5,7 @@ import { useIsFocused } from '@react-navigation/native';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { resolveSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionInvalidLinkFallback';
 import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { SessionDetailsPanel } from '@/components/sessions/panes/SessionDetailsPanel';
@@ -65,7 +66,7 @@ export default function SessionDetailsScreenRoute() {
     const sessionHydrated = isSessionRouteHydrationAvailable(routeHydrationState);
     const sessionMissingAfterHydration = isSessionRouteHydrationMissing(routeHydrationState);
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
-    const scopeId = React.useMemo(() => `session:${sessionId}`, [sessionId]);
+    const scopeId = React.useMemo(() => resolveSessionPaneScopeId(sessionId), [sessionId]);
     const pane = useAppPaneScope(scopeId);
     const session = useSession(sessionId);
     const { messages: committedMessages } = useSessionMessages(sessionId);

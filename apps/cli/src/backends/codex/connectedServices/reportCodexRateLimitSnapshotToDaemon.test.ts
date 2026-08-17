@@ -14,11 +14,35 @@ import {
 type NotifyQuotaSnapshotInput = Readonly<{
   sessionId: string;
   serviceId: 'openai-codex';
+  groupId?: string | null;
+  groupGeneration?: number | null;
   snapshot: unknown;
 }>;
 
 function createNotifyQuotaSnapshotMock() {
   return vi.fn(async (_body: NotifyQuotaSnapshotInput) => ({ ok: true }));
+}
+
+function buildAppliedIdentity(overrides: Partial<{
+  profileId: string;
+  groupId: string | null;
+  groupGeneration: number | null;
+  activeAccountId: string | null;
+  accountLabel: string | null;
+  credentialFingerprint: string | null;
+}> = {}) {
+  return {
+    serviceId: 'openai-codex' as const,
+    profileId: 'backup',
+    groupId: 'main',
+    groupGeneration: 2,
+    activeAccountId: 'acct_live',
+    accountLabel: 'live@example.test',
+    credentialFingerprint: 'sha256:abcdef12',
+    observedAtMs: 900,
+    source: 'app_server_runtime' as const,
+    ...overrides,
+  };
 }
 
 function buildJwt(payload: Record<string, unknown>): string {
@@ -30,7 +54,7 @@ function buildJwt(payload: Record<string, unknown>): string {
 }
 
 describe('reportCodexRateLimitSnapshotToDaemon', () => {
-  it('reports app-server rate-limit snapshots for the active connected-service group member', async () => {
+  it('declines connected-service snapshots that lack an immutable applied identity', async () => {
     const notify = createNotifyQuotaSnapshotMock();
 
     await reportCodexRateLimitSnapshotToDaemon({
@@ -53,16 +77,40 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
-      sessionId: 'sess_1',
-      serviceId: 'openai-codex',
-      snapshot: expect.objectContaining({
-        serviceId: 'openai-codex',
-        profileId: 'backup',
-        fetchedAt: 1_000,
-        planLabel: 'pro',
-      }),
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('declines metadata-only connected-service snapshots instead of adopting the current mutable member', async () => {
+    const notify = createNotifyQuotaSnapshotMock();
+
+    await expect(reportCodexRateLimitSnapshotToDaemon({
+      env: {},
+      session: {
+        getMetadataSnapshot: () => ({
+          connectedServices: {
+            v: 1,
+            bindingsByServiceId: {
+              'openai-codex': {
+                source: 'connected',
+                selection: 'group',
+                groupId: 'main',
+                profileId: 'current-after-hot-swap',
+              },
+            },
+          },
+        }),
+      },
+      sessionId: 'sess_metadata_only',
+      rawSnapshot: { primary: { used_percent: 88 } },
+      nowMs: 1_000,
+      notify,
+    })).resolves.toEqual({
+      attempted: 0,
+      delivered: 0,
+      pending: 0,
+      dropped: 0,
     });
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('routes connected-service group snapshots through the shared delivery outbox with runtime identity context', async () => {
@@ -93,7 +141,9 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       },
       sessionId: 'sess_1',
       rawSnapshot: { primary: { used_percent: 100 } },
+      appliedIdentity: buildAppliedIdentity({ groupGeneration: 9 }),
       activeAccountId: 'acct_live',
+      policyDisposition: 'evidence_only',
       nowMs: 1_000,
       notify,
       deliveryOutbox,
@@ -105,6 +155,9 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       serviceId: 'openai-codex',
       groupId: 'main',
       groupGeneration: 9,
+      sourceProviderAccountId: 'acct_live',
+      credentialFingerprint: 'sha256:abcdef12',
+      policyDisposition: 'evidence_only',
       snapshot: expect.objectContaining({
         serviceId: 'openai-codex',
         profileId: 'backup',
@@ -113,7 +166,7 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
     });
   });
 
-  it('attributes post-hot-apply snapshots to the current session metadata member, not the stale child env selection', async () => {
+  it('attributes post-hot-apply snapshots to the immutable applied identity, not stale metadata or child env', async () => {
     const notify = createNotifyQuotaSnapshotMock();
 
     await reportCodexRateLimitSnapshotToDaemon({
@@ -146,21 +199,99 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       },
       sessionId: 'sess_1',
       rawSnapshot: { primary: { used_percent: 5 } },
+      appliedIdentity: buildAppliedIdentity({
+        profileId: 'fresh-member',
+        activeAccountId: 'acct_fresh',
+        accountLabel: null,
+      }),
       nowMs: 1_000,
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       serviceId: 'openai-codex',
+      groupId: 'main',
+      groupGeneration: 2,
       snapshot: expect.objectContaining({
         serviceId: 'openai-codex',
         profileId: 'fresh-member',
       }),
-    });
+    }));
   });
 
-  it('falls back to the child env selection when session metadata has no usable connected binding', async () => {
+  it('attributes a snapshot from one atomic applied identity instead of mixing stale metadata and child env fields', async () => {
+    const notify = createNotifyQuotaSnapshotMock();
+    const input: Parameters<typeof reportCodexRateLimitSnapshotToDaemon>[0] & Readonly<{
+      appliedIdentity: Readonly<{
+        serviceId: 'openai-codex';
+        profileId: string;
+        groupId: string | null;
+        groupGeneration: number | null;
+        activeAccountId: string | null;
+        accountLabel: string | null;
+        credentialFingerprint: string | null;
+        observedAtMs: number;
+        source: 'app_server_runtime';
+      }>;
+    }> = {
+      env: {
+        [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([{
+          kind: 'group',
+          serviceId: 'openai-codex',
+          groupId: 'old-group',
+          activeProfileId: 'old-profile',
+          fallbackProfileId: 'old-fallback',
+          generation: 4,
+        }]),
+      },
+      session: {
+        getMetadataSnapshot: () => ({
+          connectedServices: {
+            v: 1,
+            bindingsByServiceId: {
+              'openai-codex': {
+                source: 'connected',
+                selection: 'group',
+                groupId: 'old-group',
+                profileId: 'old-profile',
+              },
+            },
+          },
+        }),
+      },
+      appliedIdentity: {
+        serviceId: 'openai-codex',
+        profileId: 'new-profile',
+        groupId: 'new-group',
+        groupGeneration: 8,
+        activeAccountId: 'acct_new',
+        accountLabel: 'new@example.com',
+        credentialFingerprint: 'sha256:abcdef12',
+        observedAtMs: 900,
+        source: 'app_server_runtime',
+      },
+      sessionId: 'sess_atomic',
+      rawSnapshot: { primary: { used_percent: 12 } },
+      nowMs: 1_000,
+      notify,
+    };
+
+    await reportCodexRateLimitSnapshotToDaemon(input);
+
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'new-group',
+      groupGeneration: 8,
+      credentialFingerprint: 'sha256:abcdef12',
+      snapshot: expect.objectContaining({
+        profileId: 'new-profile',
+        activeAccountId: 'acct_new',
+        accountLabel: 'new@example.com',
+      }),
+    }));
+  });
+
+  it('does not fall back to the child env selection when session metadata has no usable connected binding', async () => {
     const notify = createNotifyQuotaSnapshotMock();
 
     await reportCodexRateLimitSnapshotToDaemon({
@@ -183,11 +314,7 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
-      sessionId: 'sess_1',
-      serviceId: 'openai-codex',
-      snapshot: expect.objectContaining({ profileId: 'backup' }),
-    });
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('does not report selected auth-store account id as live activeAccountId for connected-service snapshots', async () => {
@@ -221,15 +348,7 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
-      sessionId: 'sess_1',
-      serviceId: 'openai-codex',
-      snapshot: expect.not.objectContaining({
-        activeAccountId: 'acct_selected_not_proven_live',
-      }),
-    });
-    const firstCall = notify.mock.calls[0]?.[0];
-    expect(firstCall?.snapshot).not.toHaveProperty('activeAccountId');
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('reports connected-service activeAccountId only when the app-server snapshot carries live account proof', async () => {
@@ -265,19 +384,25 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
         },
         primary: { used_percent: 88 },
       },
+      appliedIdentity: buildAppliedIdentity({
+        activeAccountId: 'acct_live_codex',
+        accountLabel: 'live@example.test',
+      }),
       nowMs: 1_000,
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       serviceId: 'openai-codex',
+      groupId: 'main',
+      groupGeneration: 2,
       snapshot: expect.objectContaining({
         profileId: 'backup',
         activeAccountId: 'acct_live_codex',
         accountLabel: 'live@example.test',
       }),
-    });
+    }));
   });
 
   it('reports connected-service activeAccountId when the runtime supplies live account/read proof', async () => {
@@ -296,21 +421,27 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       },
       sessionId: 'sess_1',
       rawSnapshot: { primary: { used_percent: 100 } },
+      appliedIdentity: buildAppliedIdentity({
+        activeAccountId: 'acct_live_from_account_read',
+        accountLabel: 'live-account@example.test',
+      }),
       activeAccountId: 'acct_live_from_account_read',
       accountLabel: 'live-account@example.test',
       nowMs: 1_000,
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       serviceId: 'openai-codex',
+      groupId: 'main',
+      groupGeneration: 2,
       snapshot: expect.objectContaining({
         profileId: 'backup',
         activeAccountId: 'acct_live_from_account_read',
         accountLabel: 'live-account@example.test',
       }),
-    });
+    }));
   });
 
   it('normalizes merged sparse app-server snapshots without erasing identity or reset windows', async () => {
@@ -347,6 +478,10 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
           planType: 'pro',
         },
       },
+      appliedIdentity: buildAppliedIdentity({
+        activeAccountId: 'acct_live_codex',
+        accountLabel: 'codex-user@example.test',
+      }),
       nowMs: 1_000,
       notify,
     });
@@ -388,6 +523,7 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       },
       sessionId: 'sess_1',
       rawSnapshot: { primary: { used_percent: 100 } },
+      appliedIdentity: buildAppliedIdentity({ groupId: null, groupGeneration: null }),
       activeAccountId: 'acct_live',
       nowMs: 1_000,
       notify,
@@ -420,6 +556,7 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       },
       sessionId: 'sess_provider_reconnect',
       rawSnapshot: { primary: { used_percent: 100 } },
+      appliedIdentity: buildAppliedIdentity({ groupId: null, groupGeneration: null }),
       activeAccountId: 'acct_live',
       nowMs: 1_000,
       deliveryOutbox,
@@ -457,6 +594,7 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       },
       sessionId: 'sess_1',
       rawSnapshot: { primary: { used_percent: 100 } },
+      appliedIdentity: buildAppliedIdentity({ groupId: null, groupGeneration: null }),
       activeAccountId: 'acct_live',
       nowMs: 1_000,
       notify,
@@ -507,16 +645,18 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       serviceId: 'openai-codex',
+      groupId: null,
+      groupGeneration: null,
       snapshot: expect.objectContaining({
         serviceId: 'openai-codex',
         profileId: expect.stringMatching(/^acct:[a-f0-9]{48}$/u),
         activeAccountId: 'acct_native_codex',
         providerId: 'codex',
       }),
-    });
+    }));
   });
 
   it('uses the native Codex auth-store email as the quota account label when the rate-limit payload is email-less', async () => {
@@ -541,13 +681,15 @@ describe('reportCodexRateLimitSnapshotToDaemon', () => {
       notify,
     });
 
-    expect(notify).toHaveBeenCalledWith({
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       serviceId: 'openai-codex',
+      groupId: null,
+      groupGeneration: null,
       snapshot: expect.objectContaining({
         activeAccountId: 'acct_native_codex',
         accountLabel: 'codex-user@example.test',
       }),
-    });
+    }));
   });
 });

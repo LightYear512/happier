@@ -1,11 +1,8 @@
 import * as React from 'react';
 import {
-    AccessibilityInfo,
-    AppState,
     Pressable,
     View,
     useWindowDimensions,
-    type AppStateStatus,
     type GestureResponderEvent,
     type ViewStyle,
 } from 'react-native';
@@ -58,50 +55,13 @@ import { useLocalSetting } from '@/sync/domains/state/storage';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { useApplyLocalSettings } from '@/sync/store/settingsWriters';
 import { useKeyboardHeight } from '@/hooks/ui/useKeyboardHeight';
+import { useRuntimeActive } from '@/hooks/runtime/useRuntimeActive';
+import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 
 const PET_TAP_REACTION_STATE = 'jumping' satisfies PetAnimationStateV1;
 const PET_TAP_REACTION_HAPTIC_STYLE: Record<typeof PET_TAP_REACTION_HAPTIC, Haptics.ImpactFeedbackStyle> = {
     light: Haptics.ImpactFeedbackStyle.Light,
 };
-
-function useReducedMotionPreference(): boolean {
-    const [reducedMotion, setReducedMotion] = React.useState(false);
-
-    React.useEffect(() => {
-        let mounted = true;
-        void AccessibilityInfo.isReduceMotionEnabled()
-            .then((enabled) => {
-                if (mounted) setReducedMotion(enabled);
-            })
-            .catch(() => {
-                if (mounted) setReducedMotion(false);
-            });
-        const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (enabled) => {
-            setReducedMotion(enabled);
-        });
-        return () => {
-            mounted = false;
-            subscription.remove();
-        };
-    }, []);
-
-    return reducedMotion;
-}
-
-function useAppStateActive(): boolean {
-    const [active, setActive] = React.useState(() => AppState.currentState === 'active');
-
-    React.useEffect(() => {
-        const subscription = AppState.addEventListener('change', (state: AppStateStatus) => {
-            setActive(state === 'active');
-        });
-        return () => {
-            subscription.remove();
-        };
-    }, []);
-
-    return active;
-}
 
 function useTapReactionState(): Readonly<{
     reactionState: PetAnimationStateV1 | null;
@@ -342,7 +302,7 @@ function NativePetCompanionActivityLayer(props: Readonly<{
     const safeAreaInsets = useSafeAreaInsets();
     const keyboardHeight = useKeyboardHeight();
     const reducedMotion = useReducedMotionPreference();
-    const appActive = useAppStateActive();
+    const appActive = useRuntimeActive();
     const spritesheetSource = usePetSpritesheetSource(props.source, DEFAULT_BUILT_IN_PET_ID);
 
     return (

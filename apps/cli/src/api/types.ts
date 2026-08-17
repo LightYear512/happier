@@ -1,12 +1,15 @@
 import { z } from 'zod'
 import { UsageSchema } from '@/api/usage'
-import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc'
+import { SOCKET_RPC_EVENTS, type SocketRpcRequestPayload as ProtocolSocketRpcRequestPayload } from '@happier-dev/protocol/socketRpc'
 import { SentFromSchema } from '@happier-dev/protocol'
 import type { ExecutionRunPublicState } from '@happier-dev/protocol'
 import type {
   AcpConfigOptionOverridesV1,
+  AcceptedPendingSettlementRequestV1,
+  AcceptedPendingSettlementResponseV1,
   AcpSessionModeOverrideV1,
   ConnectedServiceBindingsV1,
+  ConnectedServiceId,
   ConnectedServiceMaterializationIdentityV1,
   DirectSessionsSource,
   ModelOverrideV1,
@@ -17,7 +20,12 @@ import type {
   SessionUsageLimitRecoveryV1,
   SessionTerminalMetadata,
   SessionMessageRole,
-  SessionContinuationRecoveryV1,
+  ProviderSessionInfoV1,
+  SessionRuntimeActivityState,
+  SessionTranscriptObservationV1,
+  SessionTranscriptObservationAckV1,
+  SessionTranscriptObservationCapabilityAckV1,
+  SessionWorkspaceLocationV1,
 } from '@happier-dev/protocol'
 import {
   ContentPublicKeyFingerprintSchema,
@@ -132,10 +140,7 @@ export type UpdateMachineBody = Extract<Update['body'], { t: 'update-machine' }>
 export const SessionBroadcastSchema = SessionBroadcastContainerSchema
 export type SessionBroadcast = SessionBroadcastContainer
 
-export interface SocketRpcRequestPayload {
-  method: string
-  params: unknown
-}
+export type SocketRpcRequestPayload = ProtocolSocketRpcRequestPayload
 
 export interface SocketRpcCallPayload extends SocketRpcRequestPayload {
   timeoutMs?: number
@@ -154,6 +159,7 @@ export interface SocketRpcCallResponse {
 export interface ServerToClientEvents {
   update: (data: Update) => void
   session: (data: SessionBroadcast) => void
+  'server:restarting': (data: { retryAfterMs?: number }) => void
   [SOCKET_RPC_EVENTS.REQUEST]: (data: SocketRpcRequestPayload, callback: (response: unknown) => void) => void
   [SOCKET_RPC_EVENTS.REGISTERED]: (data: { method: string }) => void
   [SOCKET_RPC_EVENTS.UNREGISTERED]: (data: { method: string }) => void
@@ -168,6 +174,18 @@ export interface ServerToClientEvents {
  * Socket events from client to server
  */
 export interface ClientToServerEvents {
+  'pending-delivery-accepted-v1': (
+    data: AcceptedPendingSettlementRequestV1,
+    cb?: (answer: AcceptedPendingSettlementResponseV1) => void,
+  ) => void
+  'transcript-observation-capability-v1': (
+    data: { v: 1; sessionId: string },
+    cb?: (answer: SessionTranscriptObservationCapabilityAckV1) => void,
+  ) => void
+  'transcript-observation-v1': (
+    data: SessionTranscriptObservationV1,
+    cb?: (answer: SessionTranscriptObservationAckV1) => void,
+  ) => void
   message: (
     data: { sid: string, message: string | SessionMessageContent, localId?: string | null, sidechainId?: string | null, echoToSender?: boolean, messageRole?: SessionMessageRole },
     cb?: (answer: MessageAckResponse) => void
@@ -177,24 +195,41 @@ export interface ClientToServerEvents {
     time: number;
     thinking: boolean;
     mode?: 'local' | 'remote';
+    latestTurnStatus?: PrimaryTurnStatusV1;
+    latestTurnStatusObservedAt?: number;
   }) => void
   'session-end': (data: { sid: string, time: number }, cb?: (answer: SessionEndAckResponse) => void) => void,
-  'pending-materialize-next': (data: { sid: string; pendingVersion?: number }, cb?: (answer: {
+  'pending-materialize-next': (data: {
+    sid: string;
+    pendingVersion?: number;
+    expectedPendingVersion?: number;
+    expectedRuntimeActivityRevision?: number;
+    deliveryState?: 'provider';
+    deliveryTiming?: 'after_foreground_ready' | 'after_runtime_idle';
+    foregroundState?: 'ready' | 'active_steerable' | 'active_unsteerable';
+  }, cb?: (answer: {
     ok: boolean;
     didMaterialize?: boolean;
-    didWrite?: boolean;
-    pendingCount?: number;
-    pendingVersion?: number;
-    message?: {
-      id?: string;
-      seq?: number;
-      localId?: string;
-      messageRole?: SessionMessageRole;
-      content?: SessionMessageContent;
-      createdAt?: number;
-      updatedAt?: number;
-    };
+	    didWrite?: boolean;
+	    pendingCount?: number;
+	    pendingBlockedCount?: number;
+	    pendingVersion?: number;
+	    deferredReason?: 'waiting_for_runtime_activity' | 'runtime_activity_unknown' | 'pending_version_mismatch' | 'waiting_for_predecessor' | 'waiting_for_foreground_turn';
+	    deliveryState?: {
+	      mode: 'provider';
+	      unresolved: boolean;
+	    };
+	    message?: {
+	      id?: string | null;
+	      seq?: number | null;
+	      localId?: string;
+	      messageRole?: SessionMessageRole | null;
+	      content?: SessionMessageContent;
+	      createdAt?: number;
+	      updatedAt?: number;
+	    };
     error?: string;
+    retryAfterMs?: number;
   }) => void) => void,
   'execution-run-updated': (data: {
     sid: string;
@@ -206,6 +241,24 @@ export interface ClientToServerEvents {
       localId: string;
       messageRole?: SessionMessageRole | null;
       sidechainId?: string | null;
+      /** Live-stream tick this full snapshot corresponds to (delta-chaining checkpoint anchor). */
+      tick?: number;
+      content: string | SessionMessageContent;
+      createdAt: number;
+      updatedAt: number;
+    };
+  }) => void
+  'transcript-stream-segment-delta': (data: {
+    sid: string;
+    message: {
+      localId: string;
+      messageRole?: SessionMessageRole | null;
+      sidechainId?: string | null;
+      /** Per-segment live emission sequence (1-based, includes snapshot emissions). */
+      tick: number;
+      /** Accumulated text length (UTF-16 code units) BEFORE applying this delta. */
+      baseLength: number;
+      /** Envelope carrying ONLY the text appended since the previous live emission. */
       content: string | SessionMessageContent;
       createdAt: number;
       updatedAt: number;
@@ -222,7 +275,7 @@ export interface ClientToServerEvents {
     },
   }, cb: (answer: UpdateStateAckResponse) => void) => void,
   'update-read-cursor': (data: UpdateReadCursorPayload, cb: (answer: UpdateReadCursorAckResponse) => void) => void,
-  'ping': (callback: () => void) => void
+  'ping': (callback: (response: unknown) => void) => void
   [SOCKET_RPC_EVENTS.REGISTER]: (data: { method: string }) => void
   [SOCKET_RPC_EVENTS.UNREGISTER]: (data: { method: string }) => void
   [SOCKET_RPC_EVENTS.CALL]: (data: SocketRpcCallPayload, callback: (response: SocketRpcCallResponse) => void) => void
@@ -249,13 +302,18 @@ type SessionSharedFields = Readonly<{
   initialTranscriptAfterSeq?: number;
   metadata: Metadata;
   metadataVersion: number;
-  agentState: AgentState | null;
-  agentStateVersion: number;
-  pendingCount?: number;
-  pendingVersion?: number;
-  latestTurnStatus?: PrimaryTurnStatusV1 | null;
-  latestTurnStatusObservedAt?: number | null;
-}>;
+	  agentState: AgentState | null;
+	  agentStateVersion: number;
+	  pendingCount?: number;
+	  pendingBlockedCount?: number;
+	  pendingVersion?: number;
+	  latestTurnStatus?: PrimaryTurnStatusV1 | null;
+	  latestTurnStatusObservedAt?: number | null;
+	  runtimeActivityState?: SessionRuntimeActivityState | null;
+	  runtimeActivityActiveCount?: number;
+	  runtimeActivityObservedAt?: number | null;
+	  runtimeActivityRevision?: number;
+	}>;
 
 export type Session =
   | (SessionSharedFields & Readonly<{ encryptionMode: 'plain' }>)
@@ -270,7 +328,8 @@ export const MachineMetadataSchema = z.object({
   happyCliVersion: z.string(),
   homeDir: z.string(),
   happyHomeDir: z.string(),
-  happyLibDir: z.string()
+  happyLibDir: z.string(),
+  daemonTerminalSessionAttachSupported: z.boolean().optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
@@ -367,6 +426,7 @@ export type MessageMeta = z.infer<typeof MessageMetaSchema>
  * API response types
  */
 export const CreateSessionResponseSchema = z.object({
+  resolution: z.enum(['created', 'existing']).optional(),
   session: z.object({
     id: z.string(),
     tag: z.string(),
@@ -476,13 +536,32 @@ export type Metadata = {
     updatedAt: number
   },
   machineId?: string,
+  sessionWorkspaceLocationV1?: SessionWorkspaceLocationV1,
   claudeSessionId?: string, // Claude Code session ID
   claudeTranscriptPath?: string | null, // Claude Code transcript path (hooks)
   claudeLastCheckpointId?: string | null, // Claude SDK file checkpoint UUID (remote)
   claudeLastAssistantUuid?: string | null, // Claude SDK assistant message UUID (resume anchoring)
+  claudeSubscriptionAccessTokenRefreshV1?: {
+    v: 1,
+    mode: 'daemon_callback' | 'unavailable',
+  },
+  connectedServiceAccessTokenRefreshV1?: {
+    v: 1,
+    mode: 'daemon_callback' | 'unavailable',
+    serviceIds: ConnectedServiceId[],
+  },
   codexSessionId?: string, // Codex session/conversation ID (uuid)
   codexBackendMode?: 'mcp' | 'acp' | 'appServer',
   agentRuntimeDescriptorV1?: unknown,
+  // Compact, count-only workflow activity headline (CWF3). The live invalidation pointer to durable
+  // `activity/workflow_run.v1` system records; full phase/agent detail lives only in those records.
+  // Stored key is exactly `sessionWorkflowActivityHeadlineV1` in both repos (plan §3.3).
+  sessionWorkflowActivityHeadlineV1?: unknown,
+  // Unified agent-activity headline: the complete roster of agent work as compact entries, so a
+  // cold open does not depend on how much transcript has paginated in (R-3). Published in the SAME
+  // metadata write as the workflow headline above, which it is derived from and does not replace.
+  // Stored key is exactly `sessionAgentActivityHeadlineV1` in both repos (protocol-owned literal).
+  sessionAgentActivityHeadlineV1?: unknown,
   geminiSessionId?: string, // Gemini ACP session ID (opaque)
   opencodeSessionId?: string, // OpenCode ACP session ID (opaque)
   opencodeBackendMode?: 'server' | 'acp',
@@ -502,11 +581,13 @@ export type Metadata = {
   qwenSessionId?: string, // Qwen Code ACP session ID (opaque)
   kimiSessionId?: string, // Kimi ACP session ID (opaque)
   kiloSessionId?: string, // Kilo ACP session ID (opaque)
+  kiroSessionId?: string, // Kiro ACP session ID (opaque)
   piSessionId?: string, // Pi RPC session ID (opaque)
   piSessionFile?: string, // Absolute Pi session file path (preferred resume primitive)
   sessionUsageLimitRecoveryV1?: SessionUsageLimitRecoveryV1,
   copilotSessionId?: string, // Copilot ACP session ID (opaque)
   cursorSessionId?: string, // Cursor ACP session ID (opaque)
+  grokSessionId?: string, // Grok ACP session ID (opaque)
   auggieAllowIndexing?: boolean, // Auggie indexing enablement (spawn-time)
   tools?: string[],
   slashCommands?: string[],
@@ -525,6 +606,7 @@ export type Metadata = {
     v: 1,
     provider: string
   },
+  providerSessionInfoV1?: ProviderSessionInfoV1,
   /**
    * ACP session modes (if supported by the provider's ACP agent).
    *
@@ -569,6 +651,7 @@ export type Metadata = {
       name: string,
       description?: string,
       contextWindowTokens?: number,
+      extendedContextModelId?: string,
       modelOptions?: Array<{
         id: string,
         name: string,
@@ -594,6 +677,7 @@ export type Metadata = {
       name: string,
       description?: string,
       contextWindowTokens?: number,
+      extendedContextModelId?: string,
       modelOptions?: Array<{
         id: string,
         name: string,
@@ -608,6 +692,12 @@ export type Metadata = {
         }>,
       }>,
     }>,
+  },
+  sessionAppliedModelV1?: {
+    v: 1,
+    provider: string,
+    updatedAt: number,
+    modelId: string,
   },
   /**
    * ACP session configuration options (if supported by the provider's ACP agent).
@@ -686,7 +776,6 @@ export type Metadata = {
   /** Timestamp (ms) for permissionMode, used for "latest wins" arbitration across devices. */
   permissionModeUpdatedAt?: number,
   sessionRollbackRangesV1?: SessionRollbackRangesV1,
-  sessionContinuationRecoveryV1?: SessionContinuationRecoveryV1,
   /**
    * Session-scoped connected-service auth binding selected for this agent.
    *
@@ -703,12 +792,6 @@ export type Metadata = {
    * (some agents support live model switching; others may require a new session).
    */
   modelOverrideV1?: ModelOverrideV1,
-  /**
-   * Owed-delivery watermark (QA A-F2/D15b): highest user-row seq actually handed to the runner's
-   * agent loop. Daemon attach paths clamp the resume catch-up cursor to this value so user rows
-   * committed while the runner was down are redelivered instead of silently skipped.
-   */
-  deliveredUserMessageSeqV1?: number,
 };
 
 /**
@@ -732,7 +815,10 @@ export type AgentState = {
     canDetach?: boolean | null | undefined
   } | null | undefined
   capabilities?: {
+    /** New CLIs atomically retire config commands owned by the previous model. */
+    modelScopedConfigTombstonesV1?: boolean | null | undefined
     askUserQuestionAnswersInPermission?: boolean | null | undefined
+    structuredQuestionAnswersV1Supported?: boolean | null | undefined
     inFlightSteer?: boolean | null | undefined
     inFlightSteerSupported?: boolean | null | undefined
     inFlightSteerAvailable?: boolean | null | undefined
@@ -758,6 +844,13 @@ export type AgentState = {
      */
     terminalComposerClearSupported?: boolean | null | undefined
     terminalComposerDraftPresent?: boolean | null | undefined
+    /** Session-scoped goal operations currently registered by the attached runner. */
+    sessionGoalSetSupported?: boolean | null | undefined
+    sessionGoalClearSupported?: boolean | null | undefined
+    /** Exact current native-custody head eligible for the transient interrupt-and-run control. */
+    pendingInputInterruptAndRunLocalId?: string | null | undefined
+    /** Timestamp (ms) of the exact custody capability observation. */
+    pendingInputInterruptAndRunStateAt?: number | null | undefined
     localPermissionBridgeInLocalMode?: boolean | null | undefined
     permissionsInUiWhileLocal?: boolean | null | undefined
   } | null | undefined

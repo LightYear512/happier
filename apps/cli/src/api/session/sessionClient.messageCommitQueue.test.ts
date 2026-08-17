@@ -9,13 +9,13 @@ import {
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 
-type Ack = { ok: true; id: string; seq: number; localId: string };
+type Ack = { ok: true; id: string; seq: number; localId: string; didWrite?: boolean };
 
 type CommittedUserMessageSeqApi = {
   getCommittedUserMessageSeq: (localId: string) => number | null;
   waitForCommittedUserMessageSeq: (
     localId: string,
-    opts?: { timeoutMs?: number; pollMs?: number },
+    opts?: { timeoutMs?: number },
   ) => Promise<number | null>;
 };
 
@@ -377,43 +377,68 @@ describe('ApiSessionClient message commit queue', () => {
     await client.close();
   });
 
-  it('serializes best-effort message commits to avoid concurrent socket acks', async () => {
+  it('keeps best-effort commits paced while required commits bypass their ack backlog', async () => {
     vi.resetModules();
     supervisorStartCount = 0;
-    const delayedSessionSocket = createDelayedSocketStub();
-    sessionSocketStub = delayedSessionSocket;
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     const { ApiSessionClient } = await import('./sessionClient');
 
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const firstBestEffort = createDeferred<void>();
+    const secondBestEffort = createDeferred<void>();
+    const required = createDeferred<void>();
+    const dispatched: string[] = [];
+    const enqueue = (client as unknown as {
+      enqueueMessageCommit: (
+        delivery: 'best-effort' | 'required',
+        context: { operation: string; details: { requireCommit: boolean } },
+        fn: () => Promise<void>,
+      ) => Promise<void>;
+    }).enqueueMessageCommit.bind(client) as (
+      delivery: 'best-effort' | 'required',
+      context: { operation: string; details: { requireCommit: boolean } },
+      fn: () => Promise<void>,
+    ) => Promise<void>;
 
-    client.sendAgentMessage('opencode' as any, { type: 'message', message: 'a' } as any);
-    client.sendAgentMessage('opencode' as any, { type: 'message', message: 'b' } as any);
-    client.sendAgentMessage('opencode' as any, { type: 'message', message: 'c' } as any);
+    const firstBestEffortCommit = enqueue('best-effort', {
+      operation: 'best-effort-1',
+      details: { requireCommit: false },
+    }, async () => {
+      dispatched.push('best-effort-1');
+      await firstBestEffort.promise;
+    });
+    const secondBestEffortCommit = enqueue('best-effort', {
+      operation: 'best-effort-2',
+      details: { requireCommit: false },
+    }, async () => {
+      dispatched.push('best-effort-2');
+      await secondBestEffort.promise;
+    });
+    const requiredCommit = enqueue('required', {
+      operation: 'required',
+      details: { requireCommit: true },
+    }, async () => {
+      dispatched.push('required');
+      await required.promise;
+    });
 
-    const waitForPending = async (count: number) => {
-      const start = Date.now();
-    while (delayedSessionSocket.state.pendingResolvers.length < count) {
-        if (Date.now() - start > 1_000) {
-          throw new Error('Timed out waiting for socket ack resolvers');
-        }
-        await Promise.resolve();
-      }
-    };
+    await vi.waitFor(() => {
+      expect(dispatched).toEqual(['best-effort-1', 'required']);
+    });
 
-    await waitForPending(1);
+    firstBestEffort.resolve();
+    await expect(firstBestEffortCommit).resolves.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(dispatched).toEqual(['best-effort-1', 'required', 'best-effort-2']);
+    });
 
-    expect(delayedSessionSocket.state.maxInFlight).toBe(1);
-
-    delayedSessionSocket.resolveNext({ ok: true, id: 'm1', seq: 1, localId: 'l1' });
-    await waitForPending(1);
-
-    delayedSessionSocket.resolveNext({ ok: true, id: 'm2', seq: 2, localId: 'l2' });
-    await waitForPending(1);
-
-    delayedSessionSocket.resolveNext({ ok: true, id: 'm3', seq: 3, localId: 'l3' });
-  });
+    required.resolve();
+    secondBestEffort.resolve();
+    await expect(requiredCommit).resolves.toBeUndefined();
+    await expect(secondBestEffortCommit).resolves.toBeUndefined();
+  }, 60_000);
 
   it('records committed user message seqs from commit acks', async () => {
     vi.resetModules();
@@ -428,11 +453,264 @@ describe('ApiSessionClient message commit queue', () => {
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
     expectCommittedUserMessageSeqApi(client);
 
-    const waiter = client.waitForCommittedUserMessageSeq('prompt-1', { timeoutMs: 1_000, pollMs: 5 });
+    const waiter = client.waitForCommittedUserMessageSeq('prompt-1', { timeoutMs: 1_000 });
     await client.sendUserTextMessageCommitted('hello', { localId: 'prompt-1' });
 
     await expect(waiter).resolves.toBe(42);
     expect(client.getCommittedUserMessageSeq('prompt-1')).toBe(42);
+  });
+
+  it('awaits the exact Claude transcript commit before releasing its caller', async () => {
+    vi.resetModules();
+    supervisorStartCount = 0;
+    const messageAck = createDeferred<Ack>();
+    let messagePayload: any = null;
+    sessionSocketStub = createApiSessionSocketStub({
+      connected: true,
+      emitWithAck: async (event: string, payload: any) => {
+        if (event === 'message') {
+          messagePayload = payload;
+          return await messageAck.promise;
+        }
+        return { ok: true };
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+
+    const { ApiSessionClient } = await import('./sessionClient');
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    let didCommit = false;
+    const commit = client.sendClaudeSessionMessageCommittedExact({
+      type: 'assistant',
+      uuid: 'assistant-parent-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'parent row' }] },
+    } as any).then(() => {
+      didCommit = true;
+    });
+
+    await vi.waitFor(() => expect(messagePayload).not.toBeNull());
+    expect(didCommit).toBe(false);
+    messageAck.resolve({
+      ok: true,
+      id: 'message-parent-1',
+      seq: 42,
+      localId: messagePayload.localId,
+      didWrite: true,
+    });
+    await commit;
+    expect(didCommit).toBe(true);
+    await client.close();
+  });
+
+  it('awaits caller-identified Codex transcript custody and reports an idempotent duplicate', async () => {
+    vi.resetModules();
+    supervisorStartCount = 0;
+    const firstAck = createDeferred<Ack>();
+    const messagePayloads: any[] = [];
+    sessionSocketStub = createApiSessionSocketStub({
+      connected: true,
+      emitWithAck: async (event: string, payload: any) => {
+        if (event !== 'message') return { ok: true };
+        messagePayloads.push(payload);
+        if (messagePayloads.length === 1) return await firstAck.promise;
+        return { ok: true, id: 'message-1', seq: 41, localId: payload.localId, didWrite: false };
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+
+    const { ApiSessionClient } = await import('./sessionClient');
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const exactClient = client;
+    expect(typeof exactClient.sendCodexMessageCommitted).toBe('function');
+
+    let firstResolved = false;
+    const firstCommit = Promise.resolve().then(() => exactClient.sendCodexMessageCommitted(
+      { type: 'tool-call', callId: 'call-1', name: 'Bash', input: { cmd: 'pwd' } },
+      { localId: 'rollout-effect-1' },
+    )).then((result) => {
+      firstResolved = true;
+      return result;
+    });
+    await flushMicrotasks();
+
+    expect(firstResolved).toBe(false);
+    expect(messagePayloads[0]).toEqual(expect.objectContaining({ localId: 'rollout-effect-1' }));
+
+    firstAck.resolve({ ok: true, id: 'message-1', seq: 41, localId: 'rollout-effect-1', didWrite: true });
+    await expect(firstCommit).resolves.toEqual({
+      localId: 'rollout-effect-1',
+      messageId: 'message-1',
+      seq: 41,
+      didWrite: true,
+    });
+
+    await expect(exactClient.sendCodexMessageCommitted(
+      { type: 'tool-call', callId: 'call-1', name: 'Bash', input: { cmd: 'pwd' } },
+      { localId: 'rollout-effect-1' },
+    )).resolves.toEqual({
+      localId: 'rollout-effect-1',
+      messageId: 'message-1',
+      seq: 41,
+      didWrite: false,
+    });
+    expect(messagePayloads.map((payload) => payload.localId)).toEqual([
+      'rollout-effect-1',
+      'rollout-effect-1',
+    ]);
+  });
+
+  it('commits recovered Claude history through the durable transcript-observation outbox', async () => {
+    vi.resetModules();
+    supervisorStartCount = 0;
+    const firstAck = createDeferred<unknown>();
+    const messagePayloads: any[] = [];
+    sessionSocketStub = createApiSessionSocketStub({
+      connected: true,
+      emitWithAck: async (event: string, payload: any) => {
+        if (event === 'transcript-observation-capability-v1') {
+          return { ok: true, capability: 'session-transcript-observation-v1' };
+        }
+        if (event !== 'transcript-observation-v1') return { ok: true };
+        messagePayloads.push(payload);
+        if (messagePayloads.length === 1) return await firstAck.promise;
+        return {
+          ok: true,
+          status: 'observed',
+          id: 'claude-message-1',
+          seq: 43,
+          localId: payload.localId,
+          didWrite: false,
+          ingestedAt: 1,
+        };
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      features: {
+        sharing: {
+          pendingQueueV2: { enabled: true },
+          pendingDeliveryState: { enabled: true },
+        },
+      },
+      capabilities: {
+        session: {
+          runtimeActivity: { protocolVersion: 2 },
+          pendingInput: { protocolVersion: 1 },
+        },
+      },
+    }), { status: 200 })));
+
+    const { ApiSessionClient } = await import('./sessionClient');
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({
+      id: 's1',
+      metadata: createTestMetadata({ machineId: 'machine-1' }),
+    }));
+    await expect.poll(
+      () => (client as any).sessionSyncPendingInputServerContract?.pendingInput,
+    ).toBe('v1');
+    const message = {
+      type: 'assistant' as const,
+      uuid: 'claude-assistant-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'caught up' }] },
+    };
+
+    let commitResolved = false;
+    const observation = {
+      createdAt: 1_754_301_600_000,
+      updatedAt: 1_754_301_600_000,
+      provenance: { kind: 'non_dependent' as const, source: 'history' as const },
+    };
+    const commit = Promise.resolve().then(() => client.sendClaudeSessionMessageCommitted(message, observation)).then((result) => {
+      commitResolved = true;
+      return result;
+    });
+    await expect.poll(() => messagePayloads.length).toBe(1);
+
+    expect(commitResolved).toBe(false);
+    expect(messagePayloads[0]).toEqual(expect.objectContaining({
+      localId: 'claude-jsonl:main:assistant:claude-assistant-1',
+      messageRole: 'agent',
+      createdAt: observation.createdAt,
+      updatedAt: observation.updatedAt,
+      provenance: observation.provenance,
+    }));
+
+    firstAck.resolve({
+      ok: true,
+      status: 'observed',
+      id: 'claude-message-1',
+      seq: 43,
+      localId: 'claude-jsonl:main:assistant:claude-assistant-1',
+      didWrite: true,
+      ingestedAt: 1,
+    });
+    await expect(commit).resolves.toEqual({
+      persisted: true,
+      delivered: true,
+    });
+
+    await expect(client.sendClaudeSessionMessageCommitted(message, observation)).resolves.toEqual({
+      persisted: true,
+      delivered: true,
+    });
+    await client.close();
+    vi.unstubAllGlobals();
+  });
+
+  it('fails closed for exact session-event ACKs with missing disposition or mismatched identity', async () => {
+    vi.resetModules();
+    supervisorStartCount = 0;
+    const messagePayloads: any[] = [];
+    sessionSocketStub = createApiSessionSocketStub({
+      connected: true,
+      emitWithAck: async (event: string, payload: any) => {
+        if (event !== 'message') return { ok: true };
+        messagePayloads.push(payload);
+        if (messagePayloads.length === 1) {
+          return { ok: true, id: 'event-message-1', seq: 51, localId: payload.localId };
+        }
+        if (messagePayloads.length === 2) {
+          return { ok: true, id: 'event-message-1', seq: 51, localId: 'wrong-effect-id', didWrite: false };
+        }
+        return { ok: true, id: 'event-message-1', seq: 51, localId: payload.localId, didWrite: false };
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+
+    const { ApiSessionClient } = await import('./sessionClient');
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const exactClient = client;
+
+    await expect(Promise.resolve().then(() => exactClient.sendSessionEventCommitted(
+      { type: 'context-compaction', phase: 'completed' },
+      { localId: 'rollout-event-1' },
+    ))).rejects.toThrow('didWrite');
+
+    await expect(exactClient.sendSessionEventCommitted(
+      { type: 'context-compaction', phase: 'completed' },
+      { localId: 'rollout-event-1' },
+    )).rejects.toThrow('localId mismatch');
+
+    await expect(exactClient.sendSessionEventCommitted(
+      { type: 'context-compaction', phase: 'completed' },
+      { localId: 'rollout-event-1' },
+    )).resolves.toEqual({
+      localId: 'rollout-event-1',
+      messageId: 'event-message-1',
+      seq: 51,
+      didWrite: false,
+    });
+    expect(messagePayloads).toHaveLength(3);
+    expect(messagePayloads[2]).toEqual(expect.objectContaining({
+      localId: 'rollout-event-1',
+      messageRole: 'event',
+    }));
+    expect(messagePayloads[2].message).toEqual({
+      t: 'plain',
+      v: expect.objectContaining({
+        content: expect.objectContaining({ id: 'rollout-event-1', type: 'event' }),
+      }),
+    });
   });
 
   it('queues a retry and throws an explicit unsupported confirmation error when persisted ACK-timeout recovery hits an older server', async () => {
@@ -512,7 +790,7 @@ describe('ApiSessionClient message commit queue', () => {
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
     expectCommittedUserMessageSeqApi(client);
 
-    const waiter = client.waitForCommittedUserMessageSeq('steer-1', { timeoutMs: 1_000, pollMs: 5 });
+    const waiter = client.waitForCommittedUserMessageSeq('steer-1', { timeoutMs: 1_000 });
     userSocketStub.trigger('update', {
       id: 'u1',
       seq: 7,
@@ -547,6 +825,20 @@ describe('ApiSessionClient message commit queue', () => {
   it('records committed user message seqs from pending queue materialization acks', async () => {
     vi.resetModules();
     supervisorStartCount = 0;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      features: {
+        sharing: {
+          pendingQueueV2: { enabled: true },
+          pendingDeliveryState: { enabled: true },
+        },
+      },
+      capabilities: {
+        session: {
+          runtimeActivity: { protocolVersion: 2 },
+          pendingInput: { protocolVersion: 1 },
+        },
+      },
+    }), { status: 200 })));
     materializeNextPendingQueueV2MessageStub = async () => ({
       didMaterialize: true,
       localId: 'pending-user-1',
@@ -567,15 +859,20 @@ describe('ApiSessionClient message commit queue', () => {
       const { ApiSessionClient } = await import('./sessionClient');
       const client = new ApiSessionClient('tok', createPlainSessionFixture({
         id: 's1',
+        metadata: createTestMetadata({ machineId: 'machine-1' }),
         pendingCount: 1,
         pendingVersion: 1,
       }));
+      await expect.poll(
+        () => (client as any).sessionSyncPendingInputServerContract?.pendingInput,
+      ).toBe('v1');
       expectCommittedUserMessageSeqApi(client);
 
       await expect(client.popPendingMessage()).resolves.toBe(true);
       expect(client.getCommittedUserMessageSeq('pending-user-1')).toBe(55);
     } finally {
       materializeNextPendingQueueV2MessageStub = null;
+      vi.unstubAllGlobals();
     }
   });
 
@@ -586,6 +883,7 @@ describe('ApiSessionClient message commit queue', () => {
       pendingQueueState: {
         known: true,
         pendingCount: 1,
+        pendingBlockedCount: 0,
         pendingVersion: 6,
       },
     });
@@ -612,40 +910,6 @@ describe('ApiSessionClient message commit queue', () => {
     }
   });
 
-  it('blocks pending queue materialization while continuation recovery is unresolved', async () => {
-    vi.resetModules();
-    sessionSocketStub = createApiSessionSocketStub({
-      connected: true,
-      emitWithAckResult: { ok: true, id: 'm1', seq: 1, localId: 'ack-1' },
-    });
-    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-
-    const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({
-      id: 's1',
-      pendingCount: 1,
-      pendingVersion: 5,
-      metadata: createTestMetadata({
-        sessionContinuationRecoveryV1: {
-          v: 1,
-          attemptsById: {
-            'generation-1:restart-1': {
-              v: 1,
-              attemptId: 'generation-1:restart-1',
-              status: 'pending_provider_context',
-              failureAtMs: 1_000,
-              updatedAtMs: 1_100,
-              resumePromptMode: 'standard',
-            },
-          },
-        },
-      }),
-    }));
-
-    expect(client.shouldAttemptPendingMaterialization()).toBe(false);
-    await client.close();
-  });
-
   it('returns null when a committed user message seq is not observed before timeout', async () => {
     vi.resetModules();
     vi.useFakeTimers();
@@ -661,7 +925,7 @@ describe('ApiSessionClient message commit queue', () => {
       const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
       expectCommittedUserMessageSeqApi(client);
 
-      const waiter = client.waitForCommittedUserMessageSeq('missing-1', { timeoutMs: 25, pollMs: 5 });
+      const waiter = client.waitForCommittedUserMessageSeq('missing-1', { timeoutMs: 25 });
       await vi.advanceTimersByTimeAsync(25);
 
       await expect(waiter).resolves.toBeNull();
@@ -778,5 +1042,57 @@ describe('ApiSessionClient message commit queue', () => {
     await flushPromise;
     expect(didFlush).toBe(true);
     await client.close();
+  });
+
+  it('does not reset a message commit retry budget across reconnect flushes', async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    let emitted = 0;
+    sessionSocketStub = createApiSessionSocketStub({
+      connected: true,
+      emitWithAck: async (event: string) => {
+        if (event === 'message') {
+          emitted += 1;
+          return null;
+        }
+        return { ok: true };
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+
+    try {
+      const { ApiSessionClient } = await import('./sessionClient');
+      const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+      const commitQueueAccess = client as unknown as {
+        commitSessionMessage(params: {
+          message: { t: 'plain'; v: unknown };
+          localId: string;
+          sidechainId: string | null;
+          messageRole: 'agent';
+          requireCommit: false;
+        }): Promise<unknown>;
+        flushQueuedSessionMessagesOnReconnect(): Promise<void>;
+      };
+
+      await commitQueueAccess.commitSessionMessage({
+        message: { t: 'plain', v: { revision: 1 } },
+        localId: 'bounded-reconnect-local-id',
+        sidechainId: null,
+        messageRole: 'agent',
+        requireCommit: false,
+      });
+
+      for (let reconnect = 0; reconnect < 6; reconnect += 1) {
+        sessionSocketStub.connected = false;
+        await vi.runOnlyPendingTimersAsync();
+        sessionSocketStub.connected = true;
+        await commitQueueAccess.flushQueuedSessionMessagesOnReconnect();
+      }
+
+      expect(emitted).toBe(4);
+      await client.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

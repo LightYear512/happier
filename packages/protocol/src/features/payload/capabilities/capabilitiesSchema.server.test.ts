@@ -5,6 +5,25 @@ import { BUILT_IN_PET_IDS_V1, PET_SYNC_SUPPORTED_MEDIA_TYPES_V1 } from '../../..
 import { CapabilitiesSchema } from './capabilitiesSchema.js';
 
 describe('CapabilitiesSchema (server capabilities)', () => {
+  it('parses independent Runtime Activity and Pending-input session capabilities', () => {
+    const parsed = CapabilitiesSchema.parse({
+      session: {
+        runtimeActivity: { protocolVersion: 2 },
+        pendingInput: {
+          protocolVersion: 1,
+        },
+      },
+    });
+
+    expect(parsed.session.runtimeActivity).toEqual({ protocolVersion: 2 });
+    expect(parsed.session.pendingInput).toEqual({ protocolVersion: 1 });
+    expect(CapabilitiesSchema.safeParse({
+      server: {
+        runtimeActivity: { protocolVersion: 2 },
+      },
+    }).success).toBe(false);
+  });
+
   it('parses server identity capabilities outside the strict server capability object', () => {
     const parsed = CapabilitiesSchema.parse({
       server: {
@@ -142,6 +161,7 @@ describe('CapabilitiesSchema (server capabilities)', () => {
             inactivityDays: 30,
             requires: ['updatedAt', 'lastActiveAt'],
           },
+          sessionMessages: { mode: 'delete_older_than', days: 30 },
           accountChanges: { mode: 'delete_older_than', days: 30 },
           voiceSessionLeases: { mode: 'keep_forever' },
           userFeedItems: { mode: 'delete_older_than', days: 90 },
@@ -166,6 +186,7 @@ describe('CapabilitiesSchema (server capabilities)', () => {
         inactivityDays: 30,
         requires: ['updatedAt', 'lastActiveAt'],
       },
+      sessionMessages: { mode: 'delete_older_than', days: 30 },
       accountChanges: { mode: 'delete_older_than', days: 30 },
       voiceSessionLeases: { mode: 'keep_forever' },
     });

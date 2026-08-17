@@ -114,6 +114,8 @@ export interface CanUseToolRequest extends ControlRequest {
     subtype: 'can_use_tool'
     tool_name: string
     input: unknown
+    /** Canonical provider key for this tool call; preserve it unchanged for permission ownership. */
+    tool_use_id?: string
 }
 
 export interface CanUseToolControlRequest {
@@ -168,7 +170,11 @@ export type PermissionResult = {
  * Callback function for tool permission checks
  */
 export interface CanCallToolCallback {
-    (toolName: string, input: unknown, options: { signal: AbortSignal }): Promise<PermissionResult>
+    (
+        toolName: string,
+        input: unknown,
+        options: { signal: AbortSignal; toolUseId?: string | null },
+    ): Promise<PermissionResult>
 }
 
 /**
@@ -198,6 +204,8 @@ export interface QueryOptions {
     model?: string
     fallbackModel?: string
     strictMcpConfig?: boolean
+    /** Include Claude hook lifecycle records in the stream-json output. */
+    includeHookEvents?: boolean
     canCallTool?: CanCallToolCallback
     /** Path to a settings JSON file to pass to Claude via --settings */
     settingsPath?: string

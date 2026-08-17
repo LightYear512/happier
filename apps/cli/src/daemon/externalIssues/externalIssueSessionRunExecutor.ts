@@ -2,6 +2,7 @@ import type {
   SpawnSessionOptions,
   SpawnSessionResult,
 } from '@/rpc/handlers/registerSessionHandlers';
+import { createPendingFirstInput } from '@/daemon/spawn/pendingFirstInput';
 import { startAutomationLeaseHeartbeat } from '@/daemon/automation/automationLeaseHeartbeat';
 import { logExternalIssueSessionRunWarn } from './externalIssueSessionRunTelemetry';
 import type { ExternalIssueSessionRunClient } from './externalIssueSessionRunClient';
@@ -108,13 +109,17 @@ export async function executeClaimedExternalIssueSessionRun(params: {
   });
 
   try {
+    const spawnNonce = `external-issue-session-run:${run.id}:${run.generation}`;
     const spawnResult = await params.spawnSession({
       directory,
       existingSessionId: run.sessionId,
       sessionId: run.sessionId,
       machineId: params.machineId,
-      spawnNonce: `external-issue-session-run:${run.id}:${run.generation}`,
-      initialPrompt: buildInitialPrompt(params.detail),
+      spawnNonce,
+      pendingFirstInput: createPendingFirstInput({
+        text: buildInitialPrompt(params.detail),
+        spawnNonce,
+      }),
     });
 
     if (spawnResult.type === 'success') {

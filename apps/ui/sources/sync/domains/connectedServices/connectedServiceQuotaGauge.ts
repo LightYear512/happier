@@ -15,7 +15,7 @@ import {
     summarizeConnectedServiceQuotaRecoveryCredits,
     type ConnectedServiceQuotaRecoveryCreditSummary,
 } from './connectedServiceQuotaRecoveryCreditSummary';
-import { formatResetCountdown } from './formatResetCountdown';
+import { formatResetCountdown, isResetCountdownOutdated } from './formatResetCountdown';
 import { resolveQuotaTone } from './resolveQuotaTone';
 
 export type ConnectedServiceQuotaGaugeWindowMode =
@@ -46,6 +46,7 @@ export type ConnectedServiceQuotaGaugeLabelFormatter = Readonly<{
     remainingWithReset: (params: Readonly<{ percent: string; reset: string }>) => string;
     used: (params: Readonly<{ used: string; limit: string }>) => string;
     durationNow: () => string;
+    durationOutdated: () => string;
     durationDaysHours: (params: Readonly<{ days: number; hours: number }>) => string;
     durationHoursMinutes: (params: Readonly<{ hours: number; minutes: number }>) => string;
     durationHours: (params: Readonly<{ hours: number }>) => string;
@@ -256,7 +257,11 @@ function buildMeterRow(
         : clampQuotaPct(100 - usedPct);
     const roundedRemaining = Math.round(remainingPct);
     const remainingLabel = `${roundedRemaining}%`;
-    const resetLabel = formatResetCountdown(nowMs, meter.resetAtMs ?? meter.resetsAt, formatter);
+    // An elapsed reset boundary means the snapshot predates its own reset — fall back to the plain
+    // remaining label instead of composing the nonsense phrase "resets in outdated".
+    const resetLabel = isResetCountdownOutdated(nowMs, meter.resetAtMs ?? meter.resetsAt)
+        ? null
+        : formatResetCountdown(nowMs, meter.resetAtMs ?? meter.resetsAt, formatter);
     return {
         meterId: meter.meterId,
         label: meter.label,
@@ -494,8 +499,8 @@ export type ConnectedServiceQuotaProfileRefProvenance =
     | 'connected_binding_profile'
     | 'published_quota_ref';
 
-// Mirrors the CLI's `buildNativeQuotaProfileId` shapes (`acct:<hash>` /
-// `native:<hash>`) used when a runtime publishes a quota ref for native auth.
+// Mirrors native provider account-usage alias profile ids (`acct:<hash>` /
+// `native:<hash>`) used when a runtime publishes native-auth usage refs.
 const NATIVE_QUOTA_PROFILE_ID_PATTERN = /^(?:acct|native):/;
 
 function classifyConnectedServiceGaugeSourceKind(params: Readonly<{
@@ -536,6 +541,21 @@ function withRecoveryCredits(
     return { ...snapshot, recoveryCredits };
 }
 
+function quotaSnapshotFetchedAtMs(snapshot: ConnectedServiceQuotaSnapshotV1): number {
+    return snapshot.fetchedAtMs ?? snapshot.fetchedAt;
+}
+
+function shouldPreferRuntimeIssueQuotaSnapshot(params: Readonly<{
+    runtimeSnapshot: ConnectedServiceQuotaSnapshotV1;
+    connectedSnapshot: ConnectedServiceQuotaSnapshotV1 | null;
+}>): boolean {
+    if (!params.connectedSnapshot) return true;
+    const runtimeFetchedAtMs = quotaSnapshotFetchedAtMs(params.runtimeSnapshot);
+    const runtimeStaleAtMs = runtimeFetchedAtMs + params.runtimeSnapshot.staleAfterMs;
+    const connectedFetchedAtMs = quotaSnapshotFetchedAtMs(params.connectedSnapshot);
+    return runtimeFetchedAtMs >= connectedFetchedAtMs || runtimeStaleAtMs >= connectedFetchedAtMs;
+}
+
 /**
  * Production owner of the session provider-usage gauge source: routes both the
  * runtime-evidence projection and the polled connected-service snapshot
@@ -551,7 +571,10 @@ export function selectConnectedServiceSessionProviderUsageGaugeSource(params: Re
     runtimeIssue: SessionRuntimeIssueV1 | null | undefined;
 }>): ConnectedServiceQuotaGaugeSource | null {
     const runtimeIssueQuotaSnapshot = deriveConnectedServiceQuotaSnapshotFromRuntimeIssue(params.runtimeIssue);
-    if (runtimeIssueQuotaSnapshot) {
+    if (runtimeIssueQuotaSnapshot && shouldPreferRuntimeIssueQuotaSnapshot({
+        runtimeSnapshot: runtimeIssueQuotaSnapshot,
+        connectedSnapshot: params.connectedServiceSnapshot,
+    })) {
         const recoveryCredits = params.connectedServiceSnapshot
             && snapshotsIdentifySameQuotaProfile(runtimeIssueQuotaSnapshot, params.connectedServiceSnapshot)
             ? params.connectedServiceSnapshot.recoveryCredits ?? null

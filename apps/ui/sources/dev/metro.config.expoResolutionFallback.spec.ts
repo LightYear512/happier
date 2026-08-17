@@ -133,6 +133,52 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
         expect(fs.existsSync(String(result?.filePath))).toBe(true);
     });
 
+    it('resolves the app-owned enriched-markdown streaming patch before generic Metro resolution', () => {
+        const genericResolver = vi.fn(() => {
+            throw new Error('generic Metro resolution must not own patched private subpaths');
+        });
+        // metro.config.js is CommonJS, so replace the already-loaded CommonJS boundary directly;
+        // Vitest module mocks do not intercept its `require()` call.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require('@sentry/react-native/metro');
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const sentryModulePath = require.resolve('@sentry/react-native/metro');
+        const sentryModule = require.cache[sentryModulePath];
+        expect(sentryModule).toBeDefined();
+        const originalSentryExports = sentryModule?.exports;
+        if (!sentryModule) throw new Error('expected cached @sentry/react-native/metro module');
+        sentryModule.exports = {
+            getSentryExpoConfig: () => ({
+                resolver: {
+                    assetExts: [],
+                    blockList: [],
+                    resolveRequest: genericResolver,
+                },
+                serializer: {},
+                transformer: {},
+                watchFolders: [],
+            }),
+        };
+
+        try {
+            const config = requireFreshMetroConfig();
+            const expectedPath = path.resolve(
+                __dirname,
+                '../../node_modules/react-native-enriched-markdown/lib/module/web/streamingReveal.js',
+            );
+
+            expect(config.resolver.resolveRequest(
+                {},
+                'react-native-enriched-markdown/lib/module/web/streamingReveal.js',
+                'web',
+            )).toEqual({ type: 'sourceFile', filePath: expectedPath });
+            expect(genericResolver).not.toHaveBeenCalled();
+            expect(fs.existsSync(expectedPath)).toBe(true);
+        } finally {
+            sentryModule.exports = originalSentryExports;
+        }
+    });
+
     it('stubs Node os imports before Metro tries to hash builtin module ids', () => {
         const config = requireFreshMetroConfig();
         const expectedShimPath = path.resolve(__dirname, '../platform/nodeShims/nodeOsShim.ts');
@@ -154,5 +200,42 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
 
         const config = requireFreshMetroConfig();
         expect(config?.resolver?.useWatchman).toBe(false);
+    });
+
+    it('resolves editable internal workspace packages and their explicit .js imports from source', () => {
+        process.env.HAPPIER_STACK_STACK = 'qa-test';
+        delete process.env.CI;
+
+        const config = requireFreshMetroConfig();
+        const agentsEntry = path.resolve(__dirname, '../../../../packages/agents/src/index.ts');
+
+        expect(config.resolver.resolveRequest({}, '@happier-dev/agents', 'web')).toEqual({
+            type: 'sourceFile',
+            filePath: agentsEntry,
+        });
+        expect(config.resolver.resolveRequest(
+            { originModulePath: agentsEntry },
+            './models.js',
+            'web',
+        )).toEqual({
+            type: 'sourceFile',
+            filePath: path.resolve(__dirname, '../../../../packages/agents/src/models.ts'),
+        });
+    });
+
+    it('ignores internal workspace dist publications while continuing to watch source', () => {
+        process.env.HAPPIER_STACK_STACK = 'qa-test';
+        delete process.env.CI;
+
+        const config = requireFreshMetroConfig();
+        const blockList = Array.isArray(config.resolver.blockList)
+            ? config.resolver.blockList
+            : [config.resolver.blockList];
+        const isBlocked = (filePath: string) => blockList.some(
+            (pattern: RegExp | undefined) => pattern instanceof RegExp && pattern.test(filePath),
+        );
+
+        expect(isBlocked(path.resolve(__dirname, '../../../../packages/agents/dist/models.js'))).toBe(true);
+        expect(isBlocked(path.resolve(__dirname, '../../../../packages/agents/src/models.ts'))).toBe(false);
     });
 });

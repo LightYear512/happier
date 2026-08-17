@@ -1,6 +1,5 @@
 import React from 'react';
 import { Pressable, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
@@ -17,6 +16,7 @@ import { useSetting } from '@/sync/domains/state/storage';
 import { normalizeMcpServersSettingsV1 } from '@/sync/domains/settings/mcpServers/normalizeMcpServersSettingsV1';
 
 import { buildNewSessionMcpSelectionListStep } from './buildNewSessionMcpSelectionListStep';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 type PreviewSuccess = Extract<DaemonMcpServersPreviewResponse, { ok: true }>;
 
@@ -40,7 +40,7 @@ export type NewSessionMcpSelectionContentProps = Readonly<{
 type GroupActionButtonProps = Readonly<{
     testID: string;
     accessibilityLabel: string;
-    icon: React.ComponentProps<typeof Ionicons>['name'];
+    icon: IconName;
     loading?: boolean;
     onPress: () => void;
 }>;
@@ -67,7 +67,7 @@ function GroupActionButton(props: GroupActionButtonProps) {
                 <ActivitySpinner size="small" color={theme.colors.text.tertiary} />
             ) : (
                 normalizeNodeForView(
-                    <Ionicons name={props.icon} size={18} color={theme.colors.text.tertiary} />,
+                    <Icon name={props.icon} size={16} color={theme.colors.text.tertiary} />,
                 )
             )}
         </Pressable>
@@ -83,33 +83,67 @@ export function NewSessionMcpSelectionContent(props: NewSessionMcpSelectionConte
         [mcpServersSettingsRaw],
     );
 
+    // The row/header handlers are BEHAVIOUR, not data, so they are held in a
+    // ref and invoked through stable wrappers instead of being memo
+    // dependencies.
+    //
+    // The MCP chip hosts this content through `renderContent({ maxHeight })`,
+    // and `useNewSessionMcpSelection` rebuilds the props object it spreads in
+    // whenever its own `params` object literal changes — which is every render
+    // of the new session screen. With the raw handlers in the dependency lists
+    // below, each of those renders rebuilt the entire step tree plus both
+    // header accessory elements, so React lost element identity for every
+    // section and re-rendered each MCP row instead of skipping it. Only the
+    // DATA inputs may invalidate the model; a replaced handler is picked up
+    // through the ref on the next activation.
+    const handlersRef = React.useRef({
+        onSelectionChange: props.onSelectionChange,
+        onRefresh: props.onRefresh,
+        onOpenSettings: props.onOpenSettings,
+    });
+    handlersRef.current = {
+        onSelectionChange: props.onSelectionChange,
+        onRefresh: props.onRefresh,
+        onOpenSettings: props.onOpenSettings,
+    };
+
+    const onSelectionChange = React.useCallback((next: SessionMcpSelectionV1) => {
+        handlersRef.current.onSelectionChange(next);
+    }, []);
+    const onRefresh = React.useCallback(() => {
+        handlersRef.current.onRefresh();
+    }, []);
+    const onOpenSettings = React.useCallback(() => {
+        handlersRef.current.onOpenSettings();
+    }, []);
+
     const happierHeaderRightAccessory = React.useMemo(() => (
         <View style={styles.groupActions}>
             <GroupActionButton
                 testID="new-session.mcp.happier.refresh"
                 accessibilityLabel={t('common.refresh')}
-                icon="refresh-outline"
+                icon="arrow-clockwise"
                 loading={props.loading}
-                onPress={props.onRefresh}
+                onPress={onRefresh}
             />
             <GroupActionButton
                 testID="new-session.mcp.happier.open-settings"
                 accessibilityLabel={t('tabs.settings')}
-                icon="settings-outline"
-                onPress={props.onOpenSettings}
+                icon="sliders-horizontal"
+                onPress={onOpenSettings}
             />
         </View>
-    ), [props.loading, props.onOpenSettings, props.onRefresh, styles.groupActions]);
+    ), [onOpenSettings, onRefresh, props.loading, styles.groupActions]);
 
     const detectedHeaderRightAccessory = React.useMemo(() => (
         <GroupActionButton
             testID="new-session.mcp.detected.refresh"
             accessibilityLabel={t('common.refresh')}
-            icon="refresh-outline"
+            icon="arrow-clockwise"
             loading={props.loading}
-            onPress={props.onRefresh}
+            onPress={onRefresh}
         />
-    ), [props.loading, props.onRefresh]);
+    ), [onRefresh, props.loading]);
 
     const rootStep = React.useMemo(() => buildNewSessionMcpSelectionListStep({
         machineId: props.machineId,
@@ -124,18 +158,18 @@ export function NewSessionMcpSelectionContent(props: NewSessionMcpSelectionConte
         mcpServersSettings,
         happierHeaderRightAccessory,
         detectedHeaderRightAccessory,
-        onSelectionChange: props.onSelectionChange,
+        onSelectionChange,
     }), [
         detectedHeaderRightAccessory,
         happierHeaderRightAccessory,
         mcpServersSettings,
+        onSelectionChange,
         props.agentType,
         props.directory,
         props.error,
         props.hasContext,
         props.loading,
         props.machineId,
-        props.onSelectionChange,
         props.preview,
         props.previewUnsupported,
         props.selection,

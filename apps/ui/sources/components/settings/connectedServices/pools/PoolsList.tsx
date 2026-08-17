@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import * as ReactNavigation from '@react-navigation/native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { EmptyState } from '@/components/ui/empty/EmptyState';
@@ -20,6 +20,7 @@ import type { ConnectedServiceId } from '@happier-dev/protocol';
 import { t } from '@/text';
 
 import { ConnectedServiceCapacityAvatar, CONNECTED_SERVICE_GAUGE_BOX } from '../ConnectedServiceCapacityAvatar';
+import { Icon } from '@/components/ui/icons/Icon';
 import {
     resolveAccountCapacityRings,
     resolveAccountUsageRows,
@@ -27,6 +28,7 @@ import {
 } from '../account/accountBlockModel';
 import {
     parseConnectedServiceGroupViewModels,
+    resolveConnectedServiceGroupMemberCredentialHealthStatus,
     resolveConnectedServiceGroupProfileTitle,
     type ConnectedServiceGroupMemberViewModel,
     type ConnectedServiceGroupProfileLike,
@@ -50,6 +52,7 @@ const NOOP_GAUGE_LABEL_FORMATTER: ConnectedServiceQuotaGaugeLabelFormatter = {
     remainingWithReset: () => '',
     used: () => '',
     durationNow: () => '',
+    durationOutdated: () => '',
     durationDaysHours: () => '',
     durationHoursMinutes: () => '',
     durationHours: () => '',
@@ -73,6 +76,11 @@ function healthToStateVariant(health: AccountHealth): 'success' | 'warning' | 'd
     if (health === 'error') return 'danger';
     if (health === 'attention') return 'warning';
     return 'success';
+}
+
+function usePoolsScreenIsFocused(): boolean {
+    const useIsFocused = (ReactNavigation as { useIsFocused?: () => boolean }).useIsFocused;
+    return typeof useIsFocused === 'function' ? useIsFocused() : true;
 }
 
 export type SnapshotGauge = Readonly<{ capacityPct: number | null; rings: CapacityRingDatum[] }>;
@@ -101,12 +109,6 @@ function deriveSnapshotGauge(
     };
 }
 
-function resolveMemberHealthStatus(
-    member: ConnectedServiceGroupMemberViewModel,
-): 'needs_reauth' | null {
-    return member.blocker?.kind === 'auth_invalid' ? 'needs_reauth' : null;
-}
-
 export type PoolMemberResolution = Readonly<{
     health: AccountHealth;
     capacityPct: number | null;
@@ -127,15 +129,24 @@ function ringsKeyOf(rings: ReadonlyArray<CapacityRingDatum>): string {
 const PoolMemberProbe = React.memo(function PoolMemberProbe(props: Readonly<{
     serviceId: ConnectedServiceId;
     member: ConnectedServiceGroupMemberViewModel;
+    profiles: ReadonlyArray<ConnectedServiceGroupProfileLike>;
     onResolve: (profileId: string, resolution: PoolMemberResolution) => void;
 }>) {
     const { serviceId, member, onResolve } = props;
-    const { snapshot, isStale } = useConnectedServiceQuotaSnapshot({ serviceId, profileId: member.profileId });
+    const memberHealthStatus = resolveConnectedServiceGroupMemberCredentialHealthStatus({
+        member,
+        profiles: props.profiles,
+    });
+    const { snapshot, isStale } = useConnectedServiceQuotaSnapshot({
+        serviceId,
+        profileId: member.profileId,
+        credentialHealthStatus: memberHealthStatus,
+    });
 
     const gauge = React.useMemo(() => deriveSnapshotGauge(snapshot), [snapshot]);
     const { capacityPct, rings } = gauge;
     const health = deriveAccountHealth({
-        status: resolveMemberHealthStatus(member),
+        status: memberHealthStatus,
         capacityPct,
         isStale,
     });
@@ -157,7 +168,7 @@ const PoolRow = React.memo(function PoolRow(props: Readonly<{
     group: ConnectedServiceGroupViewModel;
     profiles: ReadonlyArray<ConnectedServiceGroupProfileLike>;
     profileLabelsByKey: Readonly<Record<string, string>>;
-    quotasEnabled: boolean;
+    quotaProbesActive: boolean;
     onOpenPool: (groupId: string) => void;
     /** Injected by {@link ItemGroup}'s divider distribution; forwarded to the row Item. */
     showDivider?: boolean;
@@ -243,9 +254,9 @@ const PoolRow = React.memo(function PoolRow(props: Readonly<{
                     style={[styles.warningChip, { backgroundColor: theme.colors.state[warningVariant].background }]}
                     accessibilityLabel={t('connectedServices.pools.memberWarningsA11y', { count: warningCount })}
                 >
-                    <Ionicons
+                    <Icon
                         name="warning"
-                        size={12}
+                        size={14}
                         color={theme.colors.state[warningVariant].foreground}
                     />
                     <Text
@@ -277,12 +288,13 @@ const PoolRow = React.memo(function PoolRow(props: Readonly<{
                 <Text style={styles.metaSeparator}> · </Text>
                 <Text testID={`${rowTestId}:strategy`} style={styles.meta}>{strategyLabel}</Text>
             </View>
-            {props.quotasEnabled
+            {props.quotaProbesActive
                 ? group.members.map((member) => (
                     <PoolMemberProbe
                         key={member.profileId}
                         serviceId={serviceId}
                         member={member}
+                        profiles={props.profiles}
                         onResolve={onResolve}
                     />
                 ))
@@ -315,6 +327,8 @@ export type PoolsListProps = Readonly<{
     groupConfigurationSupported: boolean;
     onOpenPool: (groupId: string) => void;
     onCreatePool: () => void;
+    /** Refetch the authoritative pools after a load failure (the error/stale retry action). */
+    onRetryLoad?: () => void;
 }>;
 
 /**
@@ -324,6 +338,8 @@ export type PoolsListProps = Readonly<{
  */
 export const PoolsList = React.memo(function PoolsList(props: PoolsListProps) {
     const { theme } = useUnistyles();
+    const isFocused = usePoolsScreenIsFocused();
+    const quotaProbesActive = props.quotasEnabled && isFocused;
     const pools = React.useMemo(
         () => parseConnectedServiceGroupViewModels(props.groups),
         [props.groups],
@@ -338,17 +354,45 @@ export const PoolsList = React.memo(function PoolsList(props: PoolsListProps) {
                 subtitle={props.groupConfigurationSupported
                     ? t('connectedServices.pools.create.subtitle')
                     : t('connectedServices.detail.groupActions.runtimeFallbackUnsupported')}
-                icon={<Ionicons name="add-circle-outline" size={22} color={theme.colors.accent.blue} />}
+                icon={<Icon name="plus-circle" size={20} color={theme.colors.accent.blue} />}
                 disabled={!props.groupConfigurationSupported}
                 onPress={props.groupConfigurationSupported ? props.onCreatePool : undefined}
             />
         </ItemGroup>
     );
 
+    const retryCard = props.onRetryLoad ? (
+        <Item
+            testID="connected-services-pools:load-error:retry"
+            title={t('connectedServices.pools.loadError.retry')}
+            icon={<Icon name="arrow-clockwise" size={20} color={theme.colors.accent.blue} />}
+            onPress={props.onRetryLoad}
+        />
+    ) : null;
+
+    // A failed load with NO data to fall back on gets an explicit, actionable error
+    // state — never the "No pools yet" empty state, which would silently mask the failure.
+    if (pools.length === 0 && loadStatus === 'error') {
+        return (
+            <>
+                <ItemGroup>
+                    <Item
+                        testID="connected-services-pools:load-error"
+                        title={t('connectedServices.pools.loadError.title')}
+                        subtitle={t('connectedServices.pools.loadError.subtitle')}
+                        icon={<Icon name="warning" size={20} color={theme.colors.state.danger.foreground} />}
+                        showChevron={false}
+                    />
+                    {retryCard}
+                </ItemGroup>
+                {createCard}
+            </>
+        );
+    }
+
     const canShowAuthoritativeEmpty = loadStatus == null
         || loadStatus === 'idle'
-        || loadStatus === 'loaded'
-        || loadStatus === 'error';
+        || loadStatus === 'loaded';
 
     if (pools.length === 0 && canShowAuthoritativeEmpty) {
         return (
@@ -356,7 +400,7 @@ export const PoolsList = React.memo(function PoolsList(props: PoolsListProps) {
                 <EmptyState
                     testID="connected-services-pools:empty"
                     titleTestID="connected-services-pools:empty:title"
-                    icon={<Ionicons name="layers-outline" size={28} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />}
                     title={t('connectedServices.pools.empty.title')}
                     subtitle={t('connectedServices.pools.empty.subtitle')}
                 />
@@ -365,9 +409,30 @@ export const PoolsList = React.memo(function PoolsList(props: PoolsListProps) {
         );
     }
 
+    // Stale data retained after a failed refresh: keep the last-known pool rows and
+    // surface an inline retry so the failure stays visible and recoverable.
+    const staleErrorBanner = loadStatus === 'error' && props.onRetryLoad ? (
+        <ItemGroup>
+            <Item
+                testID="connected-services-pools:stale-error"
+                title={t('connectedServices.pools.loadError.staleTitle')}
+                subtitle={t('connectedServices.pools.loadError.staleSubtitle')}
+                icon={<Icon name="warning" size={20} color={theme.colors.state.warning.foreground} />}
+                showChevron={false}
+            />
+            <Item
+                testID="connected-services-pools:stale-error:retry"
+                title={t('connectedServices.pools.loadError.retry')}
+                icon={<Icon name="arrow-clockwise" size={20} color={theme.colors.accent.blue} />}
+                onPress={props.onRetryLoad}
+            />
+        </ItemGroup>
+    ) : null;
+
     return (
         <>
-            <ItemGroup title={t('connectedServices.pools.title')}>
+            {staleErrorBanner}
+            <ItemGroup title={t('connectedServices.pools.title')} columns={2}>
                 {pools.map((group) => (
                     <PoolRow
                         key={group.groupId}
@@ -375,7 +440,7 @@ export const PoolsList = React.memo(function PoolsList(props: PoolsListProps) {
                         group={group}
                         profiles={props.profiles}
                         profileLabelsByKey={props.profileLabelsByKey}
-                        quotasEnabled={props.quotasEnabled}
+                        quotaProbesActive={quotaProbesActive}
                         onOpenPool={props.onOpenPool}
                     />
                 ))}

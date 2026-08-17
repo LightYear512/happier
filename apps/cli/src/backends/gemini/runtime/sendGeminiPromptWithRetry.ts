@@ -1,11 +1,17 @@
-import type { AgentBackend } from '@/agent';
+import {
+  type AcpBackend,
+  AcpPromptSubmissionPhaseError,
+  type AcpPromptSubmissionEvidence,
+} from '@/agent/acp/AcpBackend';
 import type { AcpTurnOutcome } from '@/agent/acp/backend/turn/_types';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 
-type GeminiPromptBackend = Omit<AgentBackend, 'waitForResponseComplete'> & {
-  waitForResponseComplete?: (timeoutMs?: number | null) => Promise<AcpTurnOutcome | void>;
-};
+export type GeminiPromptBackend =
+  Pick<AcpBackend, 'sendPromptWithEvidence'>
+  & Readonly<{
+    waitForResponseComplete?: (timeoutMs?: number | null) => Promise<AcpTurnOutcome | void>;
+  }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -39,21 +45,6 @@ function getErrorDetails(error: unknown): string {
   return typeof details === 'string' ? details : '';
 }
 
-function isRetryableAcpTurnOutcome(outcome: AcpTurnOutcome | void): outcome is AcpTurnOutcome {
-  return (
-    outcome?.kind === 'timed_out' ||
-    (outcome?.kind === 'completed' && outcome.stopReason === 'max_turn_requests')
-  );
-}
-
-function describeRetryableAcpTurnOutcome(outcome: AcpTurnOutcome): string {
-  if (outcome.kind === 'timed_out') return `turn timed out after ${outcome.capMs}ms`;
-  if (outcome.kind === 'completed' && outcome.stopReason === 'max_turn_requests') {
-    return 'turn reached the maximum turn request cap';
-  }
-  return 'turn ended before producing a final response';
-}
-
 export async function sendGeminiPromptWithRetry(params: {
   backend: GeminiPromptBackend;
   acpSessionId: string;
@@ -64,6 +55,10 @@ export async function sendGeminiPromptWithRetry(params: {
   maxRetries?: number;
   retryDelayMs?: number;
   waitForResponseTimeoutMs?: number;
+  onProviderPromptAccepted?: () => void;
+  onProviderPromptAttemptStarted?: () => void;
+  onProviderPromptEffectMayHaveOccurred?: () => void;
+  beforeProviderPromptAttempt?: () => void | Promise<void>;
 }): Promise<AcpTurnOutcome | void> {
   const maxRetries = typeof params.maxRetries === 'number' ? params.maxRetries : 3;
   const retryDelayMs = typeof params.retryDelayMs === 'number' ? params.retryDelayMs : 2_000;
@@ -73,26 +68,64 @@ export async function sendGeminiPromptWithRetry(params: {
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    let providerPromptAccepted = false;
+    let providerPromptAttemptStarted = false;
     try {
-      await params.backend.sendPrompt(params.acpSessionId, params.prompt);
+      await params.beforeProviderPromptAttempt?.();
+      let submissionEvidence: AcpPromptSubmissionEvidence | null = null;
+      try {
+        submissionEvidence = await params.backend.sendPromptWithEvidence(
+          params.acpSessionId,
+          params.prompt,
+        );
+        providerPromptAttemptStarted = true;
+        params.onProviderPromptAttemptStarted?.();
+      } catch (error) {
+        if (
+          !(error instanceof AcpPromptSubmissionPhaseError)
+          || error.phase !== 'rejected_before_effect'
+        ) {
+          providerPromptAttemptStarted = true;
+          params.onProviderPromptAttemptStarted?.();
+        }
+        throw error;
+      }
+
+      let responseCompletion: Promise<AcpTurnOutcome | void> | null = null;
+      if (params.backend.waitForResponseComplete) {
+        responseCompletion = params.backend.waitForResponseComplete(waitForResponseTimeoutMs);
+      }
+      if (submissionEvidence?.kind === 'effect_may_have_occurred') {
+        const responseCompletionFailure = responseCompletion
+          ? responseCompletion.then(
+              () => new Promise<never>(() => {}),
+              (error: unknown) => Promise.reject(error),
+            )
+          : new Promise<never>(() => {});
+        await Promise.race([
+          submissionEvidence.finalResponseEvidence,
+          responseCompletionFailure,
+        ]);
+      }
+
+      providerPromptAccepted = true;
+      params.onProviderPromptAccepted?.();
       params.onDebug('[gemini] Prompt sent successfully');
 
       // Wait for Gemini to finish responding (all chunks received + final idle)
       // This ensures we don't send task_complete until response is truly done.
-      if (params.backend.waitForResponseComplete) {
-        const outcome = await params.backend.waitForResponseComplete(waitForResponseTimeoutMs);
+      if (responseCompletion) {
+        const outcome = await responseCompletion;
         params.onDebug('[gemini] Response complete');
-        if (isRetryableAcpTurnOutcome(outcome) && attempt < maxRetries) {
-          params.onDebug(`[gemini] Retryable turn outcome on attempt ${attempt}/${maxRetries}: ${describeRetryableAcpTurnOutcome(outcome)}`);
-          params.messageBuffer.addMessage(`Gemini turn did not finish cleanly, retrying (${attempt}/${maxRetries})...`, 'status');
-          await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
-          continue;
-        }
         return isAcpTurnOutcome(outcome) ? outcome : undefined;
       }
 
       return undefined;
     } catch (promptError) {
+      if (providerPromptAccepted) {
+        throw promptError;
+      }
+
       lastError = promptError;
       const errorDetails = getErrorDetails(promptError);
       const errorCode = getErrorCode(promptError);
@@ -111,6 +144,16 @@ export async function sendGeminiPromptWithRetry(params: {
         const quotaMsg = `Gemini quota exceeded.${resetTimeMsg} Try using a different model (gemini-2.5-flash-lite) or wait for quota reset.`;
         params.messageBuffer.addMessage(quotaMsg, 'status');
         params.session.sendAgentMessage('gemini', { type: 'message', message: quotaMsg });
+        if (providerPromptAttemptStarted) {
+          params.onProviderPromptEffectMayHaveOccurred?.();
+        }
+        throw promptError;
+      }
+
+      // Once session/prompt has been invoked, a rejected/lost response cannot prove that the
+      // provider performed no work. Blindly retrying here can duplicate the exact Queue input.
+      if (providerPromptAttemptStarted) {
+        params.onProviderPromptEffectMayHaveOccurred?.();
         throw promptError;
       }
 

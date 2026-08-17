@@ -125,8 +125,8 @@ function createBaseState(): any {
       ],
     },
     machines: {
-      m1: { id: 'm1', active: true, metadata: { host: 'a-host' }, spawnReadinessStatus: 'ready' },
-      m2: { id: 'm2', active: true, metadata: { host: 'b-host' }, spawnReadinessStatus: 'ready' },
+      m1: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'a-host' } },
+      m2: { id: 'm2', active: true, activeAt: Date.now(), metadata: { host: 'b-host' } },
     },
     sessionMessages: {
       s1: {
@@ -231,6 +231,20 @@ vi.mock('@/voice/agent/teleportVoiceAgentToSessionRoot', () => ({
   teleportVoiceAgentToSessionRoot: (args: any) => teleportVoiceAgentToSessionRoot(args),
 }));
 
+async function spawnSessionWithMatchingCustody(options: any) {
+  const result = await spawnSession(options);
+  if (result?.type !== 'success' || result.spawnAttemptCustody) return result;
+  return {
+    ...result,
+    spawnAttemptCustody: {
+      status: 'completed',
+      userAttemptId: options.userAttemptId,
+      spawnNonce: 'voice-test-nonce',
+      targetFingerprint: 'voice-test-target',
+    },
+  };
+}
+
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
   sessionExecutionRunStart: (sessionId: string, request: any, opts?: any) => executionRunStart(sessionId, request, opts),
   sessionExecutionRunList: (sessionId: string, request: any, opts?: any) => executionRunList(sessionId, request, opts),
@@ -242,6 +256,8 @@ vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
 
 vi.mock('@/sync/ops/machines', () => ({
   machineSpawnNewSession: (options: any) => spawnSession(options),
+  machineSpawnNewSessionUntilResolved: (options: any) => spawnSessionWithMatchingCustody(options),
+  completeMachineSpawnAttemptCustody: vi.fn(async () => true),
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
@@ -924,6 +940,7 @@ describe('voice tool handlers', () => {
   });
 
   it('maps allow-or-deny decisions onto AskUserQuestion option labels when no structured answers are provided', async () => {
+    state.sessions.s1.agentState.capabilities = { structuredQuestionAnswersV1Supported: true };
     state.sessions.s1.agentState.requests = {
       req_question: {
         id: 'req_question',
@@ -956,11 +973,10 @@ describe('voice tool handlers', () => {
     expect(sessionRpcWithServerScope).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 's1',
-        method: 'permission',
+        method: 'session.structuredQuestion.respond.v1',
         payload: {
           id: 'req_question',
-          approved: false,
-          answers: { 'May I create QA_DENY_PATH.txt?': `No, don't create it` },
+          structuredAnswersV1: { 'May I create QA_DENY_PATH.txt?': [`No, don't create it`] },
         },
       }),
     );

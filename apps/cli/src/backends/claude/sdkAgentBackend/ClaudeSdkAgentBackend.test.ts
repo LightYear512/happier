@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CHANGE_TITLE_INSTRUCTION } from '@/agent/runtime/changeTitleInstruction';
+import { createExecutionRunPermissionHandler } from '@/agent/executionRuns/policy/executionRunPermissionDecision';
 
 function createFakeClaudeEntrypointSource(): string {
   return `
@@ -71,7 +72,7 @@ const rl = readline.createInterface({ input: process.stdin });
 	    if (toolName && turn === 1) {
 	      // Request permission for a tool call; the parent will reply with a control_response.
 	      const reqId = 'req-1';
-    process.stdout.write(JSON.stringify({ type: 'control_request', request_id: reqId, request: { subtype: 'can_use_tool', tool_name: toolName, input: toolInput } }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'control_request', request_id: reqId, request: { subtype: 'can_use_tool', tool_name: toolName, input: toolInput, tool_use_id: 'toolu_permission_1' } }) + '\\n');
     const onControl = (line2) => {
       const t2 = String(line2 || '').trim();
       if (!t2) return;
@@ -196,7 +197,10 @@ async function withFakeClaudeBackend(
     backend = new ClaudeSdkAgentBackend({
       cwd: dir,
       modelId: params.modelId ?? 'chat-model',
-      permissionPolicy: params.permissionPolicy,
+      permissionHandler: createExecutionRunPermissionHandler({
+        backendId: 'claude',
+        permissionMode: params.permissionPolicy,
+      }),
       env: params.env,
     });
 
@@ -245,6 +249,53 @@ describe('ClaudeSdkAgentBackend', () => {
     } else {
       process.env.DEBUG = originalDebug;
     }
+  });
+
+  it('holds provider membership until the exact typed session/task terminal and ignores tool-result inference', async () => {
+    const { ClaudeSdkAgentBackend } = await import('./ClaudeSdkAgentBackend');
+    const backend = new ClaudeSdkAgentBackend({
+      cwd: process.cwd(),
+      modelId: 'chat-model',
+      permissionHandler: createExecutionRunPermissionHandler({
+        backendId: 'claude',
+        permissionMode: 'no_tools',
+      }),
+    });
+    const statuses: string[] = [];
+    backend.onMessage((message) => {
+      if (message.type === 'status') statuses.push(message.status);
+    });
+
+    (backend as any).handleSdkMessage({
+      type: 'system',
+      subtype: 'task_started',
+      session_id: 'session-a',
+      task_id: 'task-1',
+    });
+    (backend as any).handleSdkMessage({
+      type: 'user',
+      toolUseResult: { backgroundTaskId: 'task-1', status: 'completed' },
+      message: { role: 'user', content: [] },
+    });
+    (backend as any).handleSdkMessage({
+      type: 'system',
+      subtype: 'task_notification',
+      session_id: 'session-b',
+      task_id: 'task-1',
+      status: 'completed',
+    });
+
+    expect(statuses).not.toContain('idle');
+
+    (backend as any).handleSdkMessage({
+      type: 'system',
+      subtype: 'task_notification',
+      session_id: 'session-a',
+      task_id: 'task-1',
+      status: 'completed',
+    });
+
+    expect(statuses.filter((status) => status === 'idle')).toHaveLength(1);
   });
 
   it('emits cumulative model-output fullText when Claude returns multiple assistant messages in a single turn', async () => {
@@ -431,7 +482,7 @@ describe('ClaudeSdkAgentBackend', () => {
     );
   });
 
-  it('allows read-only bash inspection commands in read_only policy', async () => {
+  it('denies ad-hoc bash inspection commands in read_only policy', async () => {
     delete process.env.DEBUG;
 
     await withFakeClaudeBackend(
@@ -452,12 +503,12 @@ describe('ClaudeSdkAgentBackend', () => {
         const { sessionId } = await backend.startSession();
         await backend.sendPrompt(sessionId, 'hi');
         await (backend as any).waitForResponseComplete?.();
-        expect(seen.join(' ')).toContain('TOOL_ALLOWED');
+        expect(seen.join(' ')).toContain('TOOL_DENIED');
       },
     );
   });
 
-  it('allows read-only bash loop inspection commands in read_only policy', async () => {
+  it('denies bash loop inspection commands in read_only policy', async () => {
     delete process.env.DEBUG;
 
     await withFakeClaudeBackend(
@@ -481,12 +532,12 @@ describe('ClaudeSdkAgentBackend', () => {
         const { sessionId } = await backend.startSession();
         await backend.sendPrompt(sessionId, 'hi');
         await (backend as any).waitForResponseComplete?.();
-        expect(seen.join(' ')).toContain('TOOL_ALLOWED');
+        expect(seen.join(' ')).toContain('TOOL_DENIED');
       },
     );
   });
 
-  it('allows read-only bash loop inspection commands with safe command substitutions in read_only policy', async () => {
+  it('denies bash loop inspection commands with substitutions in read_only policy', async () => {
     delete process.env.DEBUG;
 
     await withFakeClaudeBackend(
@@ -509,12 +560,12 @@ describe('ClaudeSdkAgentBackend', () => {
         const { sessionId } = await backend.startSession();
         await backend.sendPrompt(sessionId, 'hi');
         await (backend as any).waitForResponseComplete?.();
-        expect(seen.join(' ')).toContain('TOOL_ALLOWED');
+        expect(seen.join(' ')).toContain('TOOL_DENIED');
       },
     );
   });
 
-  it('allows multiline read-only bash inspection commands with comments, elif branches, and safe command substitutions in read_only policy', async () => {
+  it('denies multiline bash inspection commands in read_only policy', async () => {
     delete process.env.DEBUG;
 
     await withFakeClaudeBackend(
@@ -537,7 +588,7 @@ describe('ClaudeSdkAgentBackend', () => {
         const { sessionId } = await backend.startSession();
         await backend.sendPrompt(sessionId, 'hi');
         await (backend as any).waitForResponseComplete?.();
-        expect(seen.join(' ')).toContain('TOOL_ALLOWED');
+        expect(seen.join(' ')).toContain('TOOL_DENIED');
       },
     );
   });

@@ -62,8 +62,8 @@ const installStartupMocks = async (mocks: StartupMocks): Promise<void> => {
     });
 };
 
-const expectConfiguredWithCanonicalBaseThemes = async (configure: ReturnType<typeof vi.fn>): Promise<string> => {
-    const { darkTheme, lightTheme } = await import('@/theme');
+const expectConfiguredWithCanonicalBaseThemes = async (configure: ReturnType<typeof vi.fn>) => {
+    const { darkTheme, lightTheme } = await import('./theme');
 
     expect(configure).toHaveBeenCalledWith(expect.objectContaining({
         themes: {
@@ -72,7 +72,7 @@ const expectConfiguredWithCanonicalBaseThemes = async (configure: ReturnType<typ
         },
     }));
 
-    return lightTheme.colors.background.canvas;
+    return { darkTheme, lightTheme };
 };
 
 describe('Unistyles startup theme fallback', () => {
@@ -86,8 +86,8 @@ describe('Unistyles startup theme fallback', () => {
 
         await expect(import('./unistyles')).resolves.toBeDefined();
 
-        const lightBackground = await expectConfiguredWithCanonicalBaseThemes(mocks.configure);
-        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightBackground);
+        const { lightTheme } = await expectConfiguredWithCanonicalBaseThemes(mocks.configure);
+        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightTheme.colors.background.canvas);
     });
 
     it('configures web startup with canonical base themes when effective profile resolution throws', async () => {
@@ -100,7 +100,7 @@ describe('Unistyles startup theme fallback', () => {
 
         await expect(import('./unistyles.web')).resolves.toBeDefined();
 
-        const lightBackground = await expectConfiguredWithCanonicalBaseThemes(mocks.configure);
-        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightBackground);
+        const { lightTheme } = await expectConfiguredWithCanonicalBaseThemes(mocks.configure);
+        expect(mocks.setRootViewBackgroundColor).toHaveBeenCalledWith(lightTheme.colors.background.canvas);
     });
 });

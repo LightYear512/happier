@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import type { MachineDataKeyCacheEntry } from './syncMachines';
 
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 
@@ -31,7 +32,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function createEncryptionHarness() {
-    const decryptEncryptionKey = vi.fn(async (): Promise<Uint8Array | null> => new Uint8Array([1, 2, 3]));
+    const decryptEncryptionKeys = vi.fn(
+        async (values: readonly string[]): Promise<Array<Uint8Array | null>> => values.map(() => new Uint8Array([1, 2, 3])),
+    );
     const initialized = new Set<string>();
     const initializeMachines = vi.fn(async (machineKeys: Map<string, Uint8Array | null>) => {
         for (const machineId of machineKeys.keys()) {
@@ -44,7 +47,7 @@ function createEncryptionHarness() {
         return { decrypted: value };
     });
     return {
-        decryptEncryptionKey,
+        decryptEncryptionKeys,
         initializeMachines,
         decryptMetadata,
         decryptDaemonState,
@@ -67,6 +70,12 @@ beforeEach(() => {
 async function loadFetchAndApplyMachines() {
     const mod = await import('./syncMachines');
     return mod.fetchAndApplyMachines;
+}
+
+async function flushAsyncWork(): Promise<void> {
+    for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 }
 
 describe('fetchAndApplyMachines request override', () => {
@@ -95,7 +104,7 @@ describe('fetchAndApplyMachines request override', () => {
         );
 
         const encryption = createEncryptionHarness();
-        const machineDataKeys = new Map<string, Uint8Array>();
+        const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
         const applied: unknown[][] = [];
 
         await fetchAndApplyMachines({
@@ -147,7 +156,7 @@ describe('fetchAndApplyMachines request override', () => {
         await fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines: (machines) => {
                 applied.push(machines);
@@ -193,7 +202,7 @@ describe('fetchAndApplyMachines request override', () => {
         await fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             ...( {
@@ -263,7 +272,7 @@ describe('fetchAndApplyMachines request override', () => {
         await fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             ...( {
@@ -327,7 +336,7 @@ describe('fetchAndApplyMachines request override', () => {
         const fetchPromise = fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             getExistingMachine: (machineId: string) => machineId === 'm_cached'
@@ -407,7 +416,7 @@ describe('fetchAndApplyMachines request override', () => {
         await fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             getExistingMachine: (machineId: string) => machineId === 'm_cached'
@@ -482,7 +491,7 @@ describe('fetchAndApplyMachines request override', () => {
         const fetchPromise = fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             applyMachineDisplayEntries,
@@ -511,6 +520,50 @@ describe('fetchAndApplyMachines request override', () => {
         ], false);
     });
 
+    it('caps and batches cold machine display hydration work', async () => {
+        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
+        const rows = Array.from({ length: 6 }, (_, index) => ({
+            id: `m_cold_${index}`,
+            metadata: `encrypted-meta-${index}`,
+            metadataVersion: 5,
+            daemonState: `encrypted-daemon-${index}`,
+            daemonStateVersion: 7,
+            dataEncryptionKey: `key-${index}`,
+            seq: index + 1,
+            active: index % 2 === 0,
+            activeAt: 10 + index,
+            revokedAt: null,
+            createdAt: 1,
+            updatedAt: 10 + index,
+        } satisfies RawMachine));
+        const requestSpy = vi.fn(async (_path: string, _init?: RequestInit) => jsonResponse(rows));
+
+        const encryption = createEncryptionHarness();
+        const applyMachines = vi.fn();
+        const applyMachineDisplayEntries = vi.fn();
+
+        await fetchAndApplyMachines({
+            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            encryption,
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
+            request: requestSpy,
+            applyMachines,
+            applyMachineDisplayEntries,
+            cachedMachineDisplayEntries: {},
+            machineDisplayHydrationConcurrencyLimit: 2,
+            machineDisplayEagerHydrationCount: 2,
+            machineDisplayBackgroundHydrationMaxRows: 0,
+            machineDisplayBackgroundHydrationApplyBatchSize: 2,
+        } as any);
+        await flushAsyncWork();
+
+        expect(encryption.decryptMetadata).toHaveBeenCalledTimes(2);
+        expect(encryption.decryptDaemonState).toHaveBeenCalledTimes(2);
+        expect(applyMachines).toHaveBeenCalledTimes(2);
+        expect(applyMachines.mock.calls[1]?.[0]).toHaveLength(2);
+        expect(applyMachines.mock.calls[1]?.[1]).toBe(false);
+    });
+
     it('does not throw when the request transport fails (e.g. network error)', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -520,7 +573,7 @@ describe('fetchAndApplyMachines request override', () => {
             });
 
             const encryption = createEncryptionHarness();
-            const machineDataKeys = new Map<string, Uint8Array>();
+            const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
             const applyMachines = vi.fn();
 
             await expect(
@@ -564,9 +617,9 @@ describe('fetchAndApplyMachines request override', () => {
         );
 
         const encryption = createEncryptionHarness();
-        encryption.decryptEncryptionKey.mockResolvedValueOnce(null);
+        encryption.decryptEncryptionKeys.mockResolvedValueOnce([null]);
 
-        const machineDataKeys = new Map<string, Uint8Array>();
+        const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
         const applied: unknown[][] = [];
 
         await fetchAndApplyMachines({
@@ -611,9 +664,9 @@ describe('fetchAndApplyMachines request override', () => {
         );
 
         const encryption = createEncryptionHarness();
-        encryption.decryptEncryptionKey.mockResolvedValue(null);
+        encryption.decryptEncryptionKeys.mockImplementation(async (values: readonly string[]) => values.map(() => null));
 
-        const machineDataKeys = new Map<string, Uint8Array>();
+        const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
 
         await fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
@@ -658,7 +711,7 @@ describe('fetchAndApplyMachines request override', () => {
         );
 
         const encryption = createEncryptionHarness();
-        const machineDataKeys = new Map<string, Uint8Array>();
+        const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
 
         const machineStateById: Record<string, any> = {
             m2: { id: 'm2' },
@@ -712,7 +765,7 @@ describe('fetchAndApplyMachines request override', () => {
         await fetchAndApplyMachines({
             credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
             encryption,
-            machineDataKeys: new Map<string, Uint8Array>(),
+            machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             applyMachineDisplayEntries,

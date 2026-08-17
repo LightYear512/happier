@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { useMessagesByIds } from '@/sync/domains/state/storage';
@@ -11,11 +12,11 @@ import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/
 import {
     ToolCallsGroupViewWithSessionCommon,
 } from '@/components/sessions/transcript/turns/toolCalls/ToolCallsGroupView';
-import { TRANSCRIPT_WEB_TOOL_GROUP_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/webTranscriptPrependAnchor';
+import { TRANSCRIPT_WEB_TOOL_GROUP_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/viewport/prepend/webTranscriptPrependAnchor';
 import { layout } from '@/components/ui/layout/layout';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { resolveInactiveSessionToolCallFailure } from '@/components/tools/shell/permissions/resolveInactiveSessionToolCallFailure';
-import { resolveToolStatusIndicatorKind } from '@/components/tools/shell/presentation/resolveToolStatusIndicatorKind';
+import { resolveToolCallsGroupStatus } from '@/components/sessions/transcript/toolCalls/units/toolCallsGroupChrome';
 import {
     type TranscriptSessionCommonProps,
     useTranscriptSessionCommon,
@@ -31,6 +32,8 @@ type ToolCallsGroupRowProps = Readonly<{
     getMessageById?: (messageId: string) => Message | null;
     expanded: boolean;
     onSetExpanded: (params: { toolCallsGroupId: string; toolMessageIds: readonly string[]; expanded: boolean }) => void;
+    messagePins?: readonly PersistedSessionMessagePinV1[];
+    onToggleToolPin?: (pin: PersistedSessionMessagePinV1) => void;
     interaction: TranscriptInteraction;
 }>;
 
@@ -85,17 +88,7 @@ export const ToolCallsGroupRowWithSessionCommon = React.memo(function ToolCallsG
         });
     }, [props.interaction.permissionDisabledReason, toolMessages]);
 
-    let status: 'running' | 'completed' | 'error' = 'completed';
-    let sawError = false;
-    for (const m of toolMessagesForSession) {
-        const kind = resolveToolStatusIndicatorKind(m.tool);
-        if (kind === 'running' || kind === 'permission_pending') {
-            status = 'running';
-            break;
-        }
-        if (kind === 'error') sawError = true;
-    }
-    if (status !== 'running' && sawError) status = 'error';
+    const status = resolveToolCallsGroupStatus({ toolMessages: toolMessagesForSession });
 
     const createdAt = toolMessagesForSession[0]?.createdAt ?? Date.now();
 
@@ -121,6 +114,8 @@ export const ToolCallsGroupRowWithSessionCommon = React.memo(function ToolCallsG
                             approvalRequests={props.approvalRequests}
                             expanded={props.expanded}
                             setExpanded={setExpanded}
+                            messagePins={props.messagePins}
+                            onToggleToolPin={props.onToggleToolPin}
                             interaction={props.interaction}
                             forkCommon={props.forkCommon}
                             messageDisplayCommon={props.messageDisplayCommon}

@@ -9,6 +9,8 @@ import type {
 
 const nativeUpdateState = vi.hoisted(() => ({
     updateUrl: null as string | null,
+    required: false,
+    minimumAppVersion: null as string | null,
 }));
 const desktopUpdateState = vi.hoisted(() => ({
     status: 'idle' as 'idle' | 'checking' | 'available' | 'installing' | 'error' | 'dismissed' | 'upToDate',
@@ -40,6 +42,7 @@ const linkingState = vi.hoisted(() => ({
 const reactNativeState = vi.hoisted(() => ({
     os: 'web' as 'web' | 'ios' | 'android',
 }));
+const webUiDeploymentState = vi.hoisted(() => ({ updateAvailable: false, reload: vi.fn() }));
 
 const expoRouterMock = createExpoRouterMock({
     router: {
@@ -100,7 +103,16 @@ vi.mock('@/changelog/releaseNotes', () => ({
 
 vi.mock('@/hooks/ui/useNativeUpdate', () => ({
     useNativeUpdate: () => nativeUpdateState.updateUrl,
+    useNativeUpdateStatus: () => nativeUpdateState.required || nativeUpdateState.updateUrl
+        ? {
+            available: true,
+            ...(nativeUpdateState.updateUrl ? { updateUrl: nativeUpdateState.updateUrl } : {}),
+            ...(nativeUpdateState.required ? { required: true } : {}),
+            ...(nativeUpdateState.minimumAppVersion ? { minimumAppVersion: nativeUpdateState.minimumAppVersion } : {}),
+        }
+        : null,
 }));
+vi.mock('./useWebUiDeploymentFreshness', () => ({ useWebUiDeploymentFreshness: () => webUiDeploymentState }));
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -133,8 +145,12 @@ function expectVisibleModel(model: AppUpdateStatusModel): VisibleAppUpdateStatus
 
 describe('useAppUpdateStatus', () => {
     beforeEach(() => {
+        webUiDeploymentState.updateAvailable = false;
+        webUiDeploymentState.reload.mockReset();
         reactNativeState.os = 'web';
         nativeUpdateState.updateUrl = null;
+        nativeUpdateState.required = false;
+        nativeUpdateState.minimumAppVersion = null;
         desktopUpdateState.status = 'idle';
         desktopUpdateState.availableVersion = null;
         desktopUpdateState.error = null;
@@ -153,6 +169,17 @@ describe('useAppUpdateStatus', () => {
         linkingState.canOpenURL.mockResolvedValue(true);
         linkingState.openURL.mockReset();
         vi.useRealTimers();
+    });
+
+    it('reloads the web application when its serving origin reports a new UI deployment', async () => {
+        webUiDeploymentState.updateAvailable = true;
+        const { useAppUpdateStatus } = await import('./useAppUpdateStatus');
+        const hook = await renderHook(() => useAppUpdateStatus());
+        await flushHookEffects({ cycles: 1, turns: 2 });
+        expect(hook.getCurrent().model).toMatchObject({ visible: true, kind: 'web-ui' });
+        await hook.getCurrent().runPrimaryAction();
+        expect(webUiDeploymentState.reload).toHaveBeenCalledTimes(1);
+        await hook.unmount();
     });
 
     afterEach(() => {
@@ -213,6 +240,27 @@ describe('useAppUpdateStatus', () => {
         expect(linkingState.canOpenURL).toHaveBeenCalledWith('https://apps.apple.com/app/id123');
         expect(linkingState.openURL).toHaveBeenCalledWith('https://apps.apple.com/app/id123');
 
+        await hook.unmount();
+    });
+
+    it('keeps a required update visible and non-dismissible without a safe URL', async () => {
+        nativeUpdateState.required = true;
+        nativeUpdateState.minimumAppVersion = '0.3.0';
+
+        const { useAppUpdateStatus } = await import('./useAppUpdateStatus');
+        const hook = await renderHook(() => useAppUpdateStatus());
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        const model = expectVisibleModel(hook.getCurrent().model);
+        expect(model).toMatchObject({
+            kind: 'native-store',
+            tone: 'warning',
+            actionDisabled: true,
+        });
+        expect(model.dismissLabel).toBeUndefined();
+
+        await hook.getCurrent().dismiss();
+        expect(hook.getCurrent().model.visible).toBe(true);
         await hook.unmount();
     });
 

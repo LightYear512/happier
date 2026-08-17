@@ -60,7 +60,11 @@ describe('resolveExistingSessionAttachContext', () => {
     const out = await resolveExistingSessionAttachContext({ token: 't', sessionId: 'sess_plain', agent: 'codex', credentials: null });
     expect(out).toMatchObject({
       ok: true,
-      attachPayload: { v: 2, encryptionMode: 'plain', lastObservedMessageSeq: 42 },
+      attachPayload: {
+        v: 2,
+        encryptionMode: 'plain',
+        lastObservedMessageSeq: 42,
+      },
       vendorResumeId: 'vendor-plain-1',
       sessionPath: '/tmp',
       metadata: { flavor: 'codex', path: '/tmp', codexSessionId: 'vendor-plain-1' },
@@ -68,7 +72,7 @@ describe('resolveExistingSessionAttachContext', () => {
     expect(vi.mocked(fetchSessionByIdCompat)).toHaveBeenCalledTimes(1);
   });
 
-  it('clamps the attach cursor to the owed-delivery watermark so committed-while-dead user rows are redelivered (D15b)', async () => {
+  it('uses the server session sequence without consulting retired delivery watermark metadata', async () => {
     vi.mocked(fetchSessionByIdCompat).mockResolvedValueOnce(
       createSessionRecordFixture({
         id: 'sess_owed',
@@ -82,8 +86,7 @@ describe('resolveExistingSessionAttachContext', () => {
     const out = await resolveExistingSessionAttachContext({ token: 't', sessionId: 'sess_owed', agent: 'claude', credentials: null });
     expect(out).toMatchObject({
       ok: true,
-      attachPayload: { v: 2, encryptionMode: 'plain', lastObservedMessageSeq: 4 },
-      deliveredUserMessageSeq: 4,
+      attachPayload: { v: 2, encryptionMode: 'plain', lastObservedMessageSeq: 42 },
     });
   });
 
@@ -102,7 +105,6 @@ describe('resolveExistingSessionAttachContext', () => {
     expect(out).toMatchObject({
       ok: true,
       attachPayload: { v: 2, encryptionMode: 'plain', lastObservedMessageSeq: 42 },
-      deliveredUserMessageSeq: null,
     });
   });
 

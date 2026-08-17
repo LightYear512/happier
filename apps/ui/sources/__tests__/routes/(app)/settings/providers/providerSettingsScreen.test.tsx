@@ -401,15 +401,15 @@ vi.mock('@/agents/providers/registry/providerLocalAuthRegistry', () => ({
         providerId: 'codex',
         support: 'login_terminal',
         docsUrl: 'https://example.com/codex',
-        buildLoginLaunch: () => ({ initialCommand: 'codex login' }),
+        buildAuthLaunches: () => [{ kind: 'primary', initialCommand: 'codex login' }],
     }),
 }));
 
 vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
     getPermissionModeLabelForAgentType: () => 'Ask',
     getPermissionModeOptionsForAgentType: () => [
-        { value: 'default', label: 'Default', description: 'Use the global default', icon: 'list-outline' },
-        { value: 'ask', label: 'Ask', description: 'Ask each time', icon: 'help-circle-outline' },
+        { value: 'default', label: 'Default', description: 'Use the global default', icon: 'list' },
+        { value: 'ask', label: 'Ask', description: 'Ask each time', icon: 'question' },
     ],
 }));
 
@@ -462,10 +462,10 @@ vi.mock('@/components/settings/providers/authentication/useProviderAuthenticatio
         const providerId = params.providerId;
         const authStatus = cliDetectionState.authStatus?.[providerId] ?? null;
         return {
-            canLaunchLogin: true,
+            canLaunchAuth: true,
             machineId: null,
             machineHomeDir: null,
-            loginLaunch: null,
+            authLaunches: [{ kind: 'primary', initialCommand: 'codex login' }],
             authStatus,
             canCheckNow: true,
             loginActionKind: authStatus?.state === 'logged_in' ? 'reauthenticate' : 'login',
@@ -751,9 +751,9 @@ describe('ProviderSettingsScreen', () => {
 
     it('shows the shared connected-services default auth row for providers that support connected services', async () => {
         const screen = await renderProviderSettingsScreen();
-        const menu = screen.findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-connected-services-default-auth-codex');
-        expect(menu).toBeTruthy();
+        const row = screen.findAllByType('Item' as any)
+            .find((node: any) => node.props?.testID === 'settings-connected-services-default-auth-codex');
+        expect(row).toBeTruthy();
     });
 
     it('routes the provider default-auth chooser settings action to the selected connected service settings screen', async () => {
@@ -763,11 +763,12 @@ describe('ProviderSettingsScreen', () => {
             connectedServicesV2: [createCodexConnectedService({ profiles: [] })],
         };
         const screen = await renderProviderSettingsScreen();
-        const menu = screen.findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-connected-services-default-auth-codex');
-        expect(menu).toBeTruthy();
-
-        menu?.props?.onSelect?.('connected-service:openai-codex:connect');
+        const row = screen.findAllByType('Item' as any)
+            .find((node: any) => node.props?.testID === 'settings-connected-services-default-auth-codex');
+        expect(row).toBeTruthy();
+        row?.props?.onPress?.();
+        const modalDescriptor = modalShowSpy.mock.calls.at(-1)?.[0];
+        modalDescriptor?.props?.onOpenSettings?.('openai-codex');
         expect(routerPushSpy).toHaveBeenCalledWith({
             pathname: '/settings/connected-services/[serviceId]',
             params: { serviceId: 'openai-codex' },

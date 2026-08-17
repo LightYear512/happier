@@ -12,7 +12,12 @@ import {
   type SessionSystemRecordPageResponse,
 } from '@happier-dev/protocol';
 
-import { createHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
+import {
+  createHttpStatusError,
+  createInvalidResponseShapeError,
+  isAuthenticationStatus,
+} from '@/api/client/httpStatusError';
+import { throwIfCliClientUpgradeRequired } from '@/api/clientCompatibility/cliClientCompatibility';
 import { configuration } from '@/configuration';
 import { resolveServerHttpBaseUrl } from './serverHttpBaseUrl';
 
@@ -37,7 +42,10 @@ function throwUnexpectedHttpStatusError(status: number, message: string): never 
 function parseOrThrow<T>(schema: { safeParse: (value: unknown) => { success: boolean; data?: T } }, payload: unknown, message: string): T {
   const parsed = schema.safeParse(payload);
   if (!parsed.success || !parsed.data) {
-    throw new Error(message);
+    // The response ARRIVED and this build's schema refused it — a version skew, not a blip. Minting
+    // it as deterministic is what stops a writer from re-sending the same request forever: a plain
+    // statusless Error is indistinguishable from a dropped socket, which must stay retryable.
+    throw createInvalidResponseShapeError(message);
   }
   return parsed.data;
 }
@@ -50,14 +58,16 @@ function buildHeaders(token: string, extra?: Record<string, string>): Record<str
   };
 }
 
-function handleCommonStatus(status: number, route: string): void {
+function handleCommonStatus(status: number, payload: unknown, route: string): void {
+  throwIfCliClientUpgradeRequired(status, payload);
   if (isAuthenticationStatus(status)) {
     throwAuthenticationStatusError(status);
   }
   if (status === 404) {
-    const err = new Error('Session not found');
-    (err as { code?: string }).code = 'session_not_found';
-    throw err;
+    // Carries the status as well as the stable code: a writer that retries on failure needs to see
+    // that this refusal is permanent, and a statusless error reads as an unclassifiable blip and is
+    // retried forever. Callers branching on `code` are unaffected.
+    throw createHttpStatusError(404, 'Session not found', 'session_not_found');
   }
   if (status !== 200) {
     throwUnexpectedHttpStatusError(status, `Unexpected status from ${route}: ${status}`);
@@ -86,7 +96,7 @@ export async function upsertSessionSystemRecord(params: Readonly<{
     validateStatus: () => true,
   });
 
-  handleCommonStatus(response.status, route);
+  handleCommonStatus(response.status, response.data, route);
   return parseOrThrow(SessionSystemRecordUpsertResponseSchema, response.data, `Unexpected ${route} response shape`).record;
 }
 
@@ -115,7 +125,7 @@ export async function fetchSessionSystemRecordsPage(params: Readonly<{
     validateStatus: () => true,
   });
 
-  handleCommonStatus(response.status, route);
+  handleCommonStatus(response.status, response.data, route);
   const parsed: SessionSystemRecordPageResponse = parseOrThrow(
     SessionSystemRecordPageResponseSchema,
     response.data,
@@ -144,7 +154,7 @@ export async function fetchLatestSessionSystemRecord(params: Readonly<{
     validateStatus: () => true,
   });
 
-  handleCommonStatus(response.status, route);
+  handleCommonStatus(response.status, response.data, route);
   return parseOrThrow(SessionSystemRecordLatestResponseSchema, response.data, `Unexpected ${route} response shape`).record;
 }
 
@@ -164,6 +174,6 @@ export async function fetchSessionSystemRecord(params: Readonly<{
     validateStatus: () => true,
   });
 
-  handleCommonStatus(response.status, route);
+  handleCommonStatus(response.status, response.data, route);
   return parseOrThrow(SessionSystemRecordLookupResponseSchema, response.data, `Unexpected ${route} response shape`).record;
 }

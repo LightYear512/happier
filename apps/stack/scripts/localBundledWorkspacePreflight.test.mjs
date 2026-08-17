@@ -2,18 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
-  closeSync,
   cpSync,
   existsSync,
-  ftruncateSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
-  statSync,
-  unlinkSync,
-  writeSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,91 +16,11 @@ import { fileURLToPath } from 'node:url';
 
 import { runNodeCapture } from './testkit/core/run_node_capture.mjs';
 import { coerceHappyMonorepoRootFromPath } from './utils/paths/paths.mjs';
-import {
-  reclaimWorkspaceBundleLockIfStale,
-  releaseWorkspaceBundleLock,
-} from './utils/workspaces/workspaceBundleLock.mjs';
 
 function stackRootDirFromMeta(metaUrl) {
   const scriptsDir = dirname(fileURLToPath(metaUrl));
   return dirname(scriptsDir);
 }
-
-test('workspace bundle lock release closes the descriptor before unlinking the lock file', () => {
-  const fixtureDir = mkdtempSync(join(tmpdir(), 'workspace-bundle-lock-release-'));
-  const lockPath = join(fixtureDir, 'bundle.lock');
-  let fd = null;
-  try {
-    fd = openSync(lockPath, 'wx');
-    const owner = {
-      pid: process.pid,
-      createdAtMs: Date.now(),
-      token: `test-token-${process.pid}`,
-    };
-    const serializedOwner = JSON.stringify(owner);
-    writeSync(fd, serializedOwner, 0, 'utf8');
-    ftruncateSync(fd, Buffer.byteLength(serializedOwner));
-
-    const events = [];
-    releaseWorkspaceBundleLock(lockPath, fd, owner, {
-      closeSync(fdToClose) {
-        events.push('close');
-        closeSync(fdToClose);
-      },
-      unlinkSync(pathToRemove) {
-        events.push('unlink');
-        unlinkSync(pathToRemove);
-      },
-    });
-    fd = null;
-
-    assert.deepEqual(events, ['close', 'unlink']);
-    assert.equal(existsSync(lockPath), false);
-  } finally {
-    if (fd != null) closeSync(fd);
-    rmSync(fixtureDir, { recursive: true, force: true });
-  }
-});
-
-test('workspace bundle stale reclaim does not unlink a successor owner lock', () => {
-  const fixtureDir = mkdtempSync(join(tmpdir(), 'workspace-bundle-lock-reclaim-successor-'));
-  const lockPath = join(fixtureDir, 'bundle.lock');
-  try {
-    const staleOwner = {
-      createdAtMs: Date.now() - 60_000,
-      token: 'stale-owner',
-    };
-    const successorOwner = {
-      pid: process.pid,
-      createdAtMs: Date.now(),
-      token: 'successor-owner',
-    };
-    writeFileSync(lockPath, JSON.stringify(staleOwner), 'utf8');
-
-    let readCount = 0;
-    const reclaimed = reclaimWorkspaceBundleLockIfStale(lockPath, {
-      staleAfterMs: 1_000,
-      nowMs: Date.now(),
-      operations: {
-        statSync,
-        readFileSync(pathToRead, encoding) {
-          readCount += 1;
-          const contents = readFileSync(pathToRead, encoding);
-          if (readCount === 1) {
-            writeFileSync(lockPath, JSON.stringify(successorOwner), 'utf8');
-          }
-          return contents;
-        },
-        unlinkSync,
-      },
-    });
-
-    assert.equal(reclaimed, false);
-    assert.deepEqual(JSON.parse(readFileSync(lockPath, 'utf8')), successorOwner);
-  } finally {
-    rmSync(fixtureDir, { recursive: true, force: true });
-  }
-});
 
 test('local bundled workspace preflight falls back to bundleWorkspaceDeps when the monorepo sync helper is unavailable', async () => {
   const rootDir = stackRootDirFromMeta(import.meta.url);
@@ -135,6 +49,89 @@ test('local bundled workspace preflight falls back to bundleWorkspaceDeps when t
       [
         'export function resolveBundledWorkspaceSyncModulePath() {',
         '  return null;',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(
+      loaderPath,
+      [
+        "import { pathToFileURL } from 'node:url';",
+        '',
+        'export async function resolve(specifier, context, defaultResolve) {',
+        "  if (specifier === '../scripts/bundleWorkspaceDeps.mjs') {",
+        `    return { url: pathToFileURL(${JSON.stringify(bundleStubPath)}).href, shortCircuit: true };`,
+        '  }',
+        "  if (specifier === '../scripts/runtime/resolveBundledWorkspaceSyncModulePath.mjs') {",
+        `    return { url: pathToFileURL(${JSON.stringify(resolveSyncModulePathStubPath)}).href, shortCircuit: true };`,
+        '  }',
+        '  return defaultResolve(specifier, context, defaultResolve);',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const modulePath = join(rootDir, 'bin', 'localBundledWorkspacePreflight.mjs');
+    const res = await runNodeCapture(
+      ['--input-type=module', '-e', `import { refreshLocalBundledWorkspacePackages } from ${JSON.stringify(modulePath)}; await refreshLocalBundledWorkspacePackages(${JSON.stringify(rootDir)});`],
+      {
+        cwd: rootDir,
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `--experimental-loader=${loaderPath}`,
+        },
+      },
+    );
+
+    assert.equal(res.code, 0, `expected exit 0, got ${res.code}\nstderr:\n${res.stderr}\nstdout:\n${res.stdout}`);
+    const options = JSON.parse(readFileSync(markerPath, 'utf8'));
+    assert.equal(options.repoRoot, repoRoot);
+    assert.equal(options.stackDir, rootDir);
+  } finally {
+    rmSync(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('local bundled workspace preflight builds missing source dist when the fast sync cannot publish it', async () => {
+  const rootDir = stackRootDirFromMeta(import.meta.url);
+  const repoRoot = coerceHappyMonorepoRootFromPath(rootDir);
+  assert.ok(repoRoot, `expected monorepo root for ${rootDir}`);
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'local-bundled-preflight-missing-dist-'));
+  try {
+    const markerPath = join(fixtureDir, 'bundle.json');
+    const bundleStubPath = join(fixtureDir, 'bundleWorkspaceDeps.mjs');
+    const syncStubPath = join(fixtureDir, 'syncBundledWorkspacePackages.mjs');
+    const resolveSyncModulePathStubPath = join(fixtureDir, 'resolveBundledWorkspaceSyncModulePath.mjs');
+    const loaderPath = join(fixtureDir, 'loader.mjs');
+
+    writeFileSync(
+      bundleStubPath,
+      [
+        "import { writeFileSync } from 'node:fs';",
+        'export async function bundleWorkspaceDeps(opts) {',
+        `  writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify(opts), 'utf8');`,
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(
+      syncStubPath,
+      [
+        'export function syncBundledWorkspacePackages() {',
+        '  throw new Error("Missing bundled workspace package dist: /repo/packages/agents/dist");',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(
+      resolveSyncModulePathStubPath,
+      [
+        'export function resolveBundledWorkspaceSyncModulePath() {',
+        `  return ${JSON.stringify(syncStubPath)};`,
         '}',
         '',
       ].join('\n'),

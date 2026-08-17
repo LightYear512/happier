@@ -460,7 +460,7 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
     );
   });
 
-  it('suppresses background soft-threshold switch attempt transcript events', async () => {
+  it('surfaces preemptive soft-threshold switch attempt transcript events', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.resetModules();
     const { commitConnectedServiceAccountSwitchSessionEvent } = await import('./commitConnectedServiceAccountSwitchSessionEvent');
@@ -511,7 +511,19 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
       },
     });
 
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v2\/sessions\/sess-attempt-background\/messages$/),
+      expect.objectContaining({
+        content: expect.objectContaining({
+          v: expect.objectContaining({
+            content: expect.objectContaining({
+              data: expect.objectContaining({ type: 'connected-service-account-switch-attempt' }),
+            }),
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it('suppresses same-provider fanout switch attempt transcript events as background maintenance', async () => {
@@ -810,7 +822,7 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
     expect(JSON.stringify(postedBody)).not.toContain('entryName');
   });
 
-  it('suppresses preventive soft-threshold switches as background maintenance transcript events', async () => {
+  it('surfaces preventive soft-threshold switches as transcript events', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.resetModules();
     const { commitConnectedServiceAccountSwitchSessionEvent } = await import('./commitConnectedServiceAccountSwitchSessionEvent');
@@ -859,8 +871,14 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
       },
     });
 
-    expect(getSpy).not.toHaveBeenCalled();
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(getSpy).toHaveBeenCalled();
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v2\/sessions\/sess-2\/messages$/),
+      expect.objectContaining({
+        localId: expect.stringMatching(/^connected-service-account-switch:openai-codex:codex-main:/),
+      }),
+      expect.any(Object),
+    );
   });
 
   it('commits the actual switch mode from runtime auth events', async () => {
@@ -930,7 +948,7 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
     );
   });
 
-  it('suppresses pre-turn auth-group soft-threshold switch coordinator events', async () => {
+  it('surfaces pre-turn auth-group soft-threshold switch coordinator events', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.resetModules();
     const { commitConnectedServiceAccountSwitchSessionEvent } = await import('./commitConnectedServiceAccountSwitchSessionEvent');
@@ -983,8 +1001,14 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
       },
     });
 
-    expect(getSpy).not.toHaveBeenCalled();
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(getSpy).toHaveBeenCalled();
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v2\/sessions\/sess-3\/messages$/),
+      expect.objectContaining({
+        localId: expect.stringMatching(/^connected-service-account-switch:openai-codex:codex-main:/),
+      }),
+      expect.any(Object),
+    );
   });
 
   it('suppresses same-provider fanout switch coordinator events as background maintenance', async () => {
@@ -1192,5 +1216,128 @@ describe('commitConnectedServiceAccountSwitchSessionEvent', () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it('uses deterministic semantic local ids for repeated maintenance event commits', async () => {
+    process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
+    vi.resetModules();
+    const { commitConnectedServiceAccountSwitchSessionEvent } = await import('./commitConnectedServiceAccountSwitchSessionEvent');
+
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      status: 200,
+      data: {
+        session: {
+          id: 'sess-deterministic',
+          seq: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          active: true,
+          activeAt: 1,
+          encryptionMode: 'plain',
+          metadata: '{}',
+          metadataVersion: 1,
+          agentState: null,
+          agentStateVersion: 1,
+          dataEncryptionKey: null,
+        },
+      },
+    });
+    const postSpy = vi.spyOn(axios, 'post').mockResolvedValue({
+      status: 200,
+      data: {
+        didWrite: true,
+        message: { id: 'msg-deterministic', seq: 2, localId: 'local-deterministic', createdAt: 2 },
+      },
+    });
+    const credentials = {
+      token: 'token-1',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array([1, 2, 3, 4]) },
+    };
+    const eventCases: ReadonlyArray<Readonly<{
+      event: Readonly<Record<string, unknown>>;
+      expectedPrefix: string;
+    }>> = [
+      {
+        expectedPrefix: 'connected-service-account-switch:anthropic:direct:old-profile:new-profile:manual:restart_resume',
+        event: {
+          type: 'connected_service_account_switch',
+          serviceId: 'anthropic',
+          groupId: null,
+          fromProfileId: 'old-profile',
+          toProfileId: 'new-profile',
+          reason: 'manual',
+          mode: 'restart_resume',
+        },
+      },
+      {
+        expectedPrefix: 'connected-service-account-switch-deferral:defer_until_turn_boundary:awaiting_boundary:60000',
+        event: {
+          type: 'connected_service_account_switch_deferred',
+          policy: 'defer_until_turn_boundary',
+          awaitingBoundary: true,
+          timeoutMs: 60_000,
+        },
+      },
+      {
+        expectedPrefix: 'connected-service-account-switch-deferral-completed:defer_until_turn_boundary:completed_at_boundary',
+        event: {
+          type: 'connected_service_account_switch_deferral_completed',
+          policy: 'defer_until_turn_boundary',
+          reason: 'completed_at_boundary',
+        },
+      },
+      {
+        expectedPrefix: 'connected-service-account-switch-deferral-superseded:defer_until_idle',
+        event: {
+          type: 'connected_service_account_switch_deferral_superseded',
+          policy: 'defer_until_idle',
+        },
+      },
+      {
+        expectedPrefix: 'connected-service-account-switch-attempt:failed:hot_applied:manual:hot_apply:failed:none:post_switch_verification_failed',
+        event: {
+          type: 'connected_service_account_switch_attempt',
+          ok: false,
+          action: 'hot_applied',
+          reason: 'manual',
+          attemptedContinuityMode: 'hot_apply',
+          outcome: 'failed',
+          outcomeAction: 'none',
+          errorCode: 'post_switch_verification_failed',
+          partialState: 'runtime_auth_partially_applied',
+        },
+      },
+      {
+        expectedPrefix: 'provider-state-sharing-degraded:anthropic:shared:isolated:state_symlink_unavailable',
+        event: {
+          type: 'provider_state_sharing_degraded',
+          serviceId: 'anthropic',
+          requestedStateMode: 'shared',
+          effectiveStateMode: 'isolated',
+          code: 'state_symlink_unavailable',
+          entryName: 'sessions/--Users-alice-work-project--',
+        },
+      },
+    ];
+
+    for (const { event, expectedPrefix } of eventCases) {
+      postSpy.mockClear();
+      await commitConnectedServiceAccountSwitchSessionEvent({
+        credentials,
+        sessionId: 'sess-deterministic',
+        event,
+      });
+      await commitConnectedServiceAccountSwitchSessionEvent({
+        credentials,
+        sessionId: 'sess-deterministic',
+        event,
+      });
+
+      expect(postSpy).toHaveBeenCalledTimes(2);
+      const firstPayload = postSpy.mock.calls[0]?.[1] as Readonly<{ localId: string }>;
+      const secondPayload = postSpy.mock.calls[1]?.[1] as Readonly<{ localId: string }>;
+      expect(firstPayload.localId).toBe(secondPayload.localId);
+      expect(firstPayload.localId).toBe(expectedPrefix);
+    }
   });
 });

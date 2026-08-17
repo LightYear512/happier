@@ -1,25 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const kvStore = vi.hoisted(() => new Map<string, string>());
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            return kvStore.get(key);
-        }
-        set(key: string, value: string) {
-            kvStore.set(key, value);
-        }
-        delete(key: string) {
-            kvStore.delete(key);
-        }
-        clearAll() {
-            kvStore.clear();
-        }
-    }
-
-    return { MMKV };
-});
-
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock(
@@ -93,10 +73,13 @@ import { storage } from './domains/state/storage';
 import { setActiveServerId, upsertServerProfile } from './domains/server/serverProfiles';
 import { saveAccountSettings, savePendingAccountSettings } from './domains/state/accountSettingsPersistence';
 import { createAccountSettingsScope } from './domains/settings/scope/accountSettingsScope';
+import { loadPendingOutboxForSession } from './domains/state/pendingOutboxPersistence';
 import { settingsDefaults } from './domains/settings/settings';
 import { encodeBase64 } from '@/encryption/base64';
 import { encodeUTF8 } from '@/encryption/text';
 import type { Session } from './domains/state/storageTypes';
+import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
+import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 
 const initialStorageState = storage.getState();
 
@@ -160,6 +143,27 @@ function findRuntimeFetchCall(url: string) {
     return call;
 }
 
+function expectRuntimeFetchMessagePageCall(
+    call: unknown[] | undefined,
+    params: { baseUrl: string; sessionId: string; beforeSeq: string; limit: string },
+): void {
+    expect(call).toBeDefined();
+    if (!call) {
+        throw new Error(`Expected runtimeFetch message page call for ${params.sessionId}`);
+    }
+    const [url, init] = call;
+    const requestUrl = new URL(String(url));
+    expect(`${requestUrl.origin}${requestUrl.pathname}`).toBe(
+        `${params.baseUrl}/v1/sessions/${encodeURIComponent(params.sessionId)}/messages`,
+    );
+    expect(requestUrl.searchParams.get('scope')).toBe('main');
+    expect(requestUrl.searchParams.get('beforeSeq')).toBe(params.beforeSeq);
+    expect(requestUrl.searchParams.get('limit')).toBe(params.limit);
+    expect(requestUrl.searchParams.has('afterSeq')).toBe(false);
+    expect(requestUrl.searchParams.has('sidechainId')).toBe(false);
+    expect(init).toEqual(expect.objectContaining({ method: 'GET' }));
+}
+
 function buildTokenWithSub(sub: string): string {
     const payload = encodeBase64(encodeUTF8(JSON.stringify({ sub })), 'base64');
     return `hdr.${payload}.sig`;
@@ -167,8 +171,8 @@ function buildTokenWithSub(sub: string): string {
 
 describe('sync.fetchMessages server-scoped known-session checks', () => {
     beforeEach(() => {
+        resetServerFeaturesClientForTests();
         storage.setState(initialStorageState, true);
-        kvStore.clear();
         requestMock.mockReset();
         runtimeFetchMock.mockReset();
         getCredentialsForServerUrlMock.mockReset();
@@ -186,8 +190,12 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         vi.clearAllMocks();
     });
 
-    it('does not delete local session when snapshot is loaded and session is absent on active server', async () => {
-        const sessionId = 'stale_session_id';
+    it('keeps storage-present sessions absent from the active-server snapshot on the normal fetch path', async () => {
+        // The active-server list snapshot is partial (archived sessions and rows beyond the
+        // snapshot page are absent). A storage-present session resolved to the active server
+        // must stay on the normal fetch path (retry semantics, same as its snapshot-listed
+        // siblings) instead of being classified as missing, and must never be deleted locally.
+        const sessionId = 'off_snapshot_session_id';
         storage.getState().applySessions([createSession(sessionId)]);
 
         const { sync } = await import('./sync');
@@ -197,10 +205,10 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         (sync as any).activeServerSessionIds = new Set<string>();
         (sync as any).hasFetchedSessionsSnapshotForActiveServer = true;
 
-        await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
+        await expect((sync as any).fetchMessages(sessionId)).rejects.toThrow(
+            `Session encryption not ready for ${sessionId}`,
+        );
         expect(storage.getState().sessions[sessionId]).not.toBeUndefined();
-        // Ensure we don't get stuck in a perpetual loading state.
-        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
     });
 
     it('keeps retry semantics before first session snapshot for the active server', async () => {
@@ -349,7 +357,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         storage.getState().applySessions([createSession(sessionId)]);
 
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'owner-token', secret: 'owner-secret' });
+        const ownerToken = buildTokenWithSub('owner-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
         runtimeFetchMock.mockResolvedValue(
             new Response(
@@ -402,7 +411,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             }),
         );
         const ownerMessagesCall = findRuntimeFetchCall(`https://owner.example/v1/sessions/${sessionId}/messages?scope=main`);
-        expectHeaderValue(ownerMessagesCall?.[1]?.headers, 'Authorization', 'Bearer owner-token');
+        expectHeaderValue(ownerMessagesCall?.[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
         const messagesById = storage.getState().sessionMessages[sessionId]?.messagesById ?? {};
         expect(Object.values(messagesById).some((message) => message.kind === 'user-text' && message.text === 'hello scoped')).toBe(true);
     });
@@ -416,7 +425,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         storage.getState().applySessions([createSession(sessionId)]);
 
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'owner-token', secret: 'owner-secret' });
+        const ownerToken = buildTokenWithSub('owner-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
         runtimeFetchMock
             .mockResolvedValueOnce(
@@ -484,14 +494,13 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         expect(result).toEqual({ loaded: 1, hasMore: false, status: 'no_more' });
         expect(requestMock).not.toHaveBeenCalled();
-        expect(runtimeFetchMock).toHaveBeenNthCalledWith(
-            2,
-            `https://owner.example/v1/sessions/${sessionId}/messages?beforeSeq=2&limit=150&scope=main`,
-            expect.objectContaining({
-                method: 'GET',
-            }),
-        );
-        expectHeaderValue(runtimeFetchMock.mock.calls[1]?.[1]?.headers, 'Authorization', 'Bearer owner-token');
+        expectRuntimeFetchMessagePageCall(runtimeFetchMock.mock.calls[1], {
+            baseUrl: 'https://owner.example',
+            sessionId,
+            beforeSeq: '2',
+            limit: '150',
+        });
+        expectHeaderValue(runtimeFetchMock.mock.calls[1]?.[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
     });
 
     it('fetches pending messages through the preferred owner server when the owner is not active', async () => {
@@ -506,7 +515,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             encryptionMode: 'plain',
         } as Session]);
 
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'owner-token', secret: 'owner-secret' });
+        const ownerToken = buildTokenWithSub('owner-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
         runtimeFetchMock.mockResolvedValue(
             new Response(
@@ -547,44 +557,258 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             }),
         );
         const ownerPendingCall = findRuntimeFetchCall(`https://owner.example/v2/sessions/${sessionId}/pending?includeDiscarded=1`);
-        expectHeaderValue(ownerPendingCall?.[1]?.headers, 'Authorization', 'Bearer owner-token');
+        expectHeaderValue(ownerPendingCall?.[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
         expect(storage.getState().sessionPending[sessionId]?.messages.map((message) => message.text)).toEqual(['queued remotely']);
     });
 
-    it('enqueues pending messages through the preferred owner server when the owner is not active', async () => {
-        const sessionId = 'persisted_session_remote_pending_enqueue';
+    it('routes a pending mutation through the preferred owner server instead of active scope', async () => {
+        const sessionId = 'persisted_session_remote_pending_update';
+        const pendingId = 'remote-pending-1';
         const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
         const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
         setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
-
-        storage.getState().applySessions([{
-            ...createSession(sessionId),
-            encryptionMode: 'plain',
-        } as Session]);
-
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'owner-token', secret: 'owner-secret' });
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: pendingId,
+            localId: pendingId,
+            createdAt: 100,
+            updatedAt: 100,
+            source: 'server_pending',
+            deliveryStatus: 'accepted',
+            text: 'old',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'old' }, meta: {} },
+        });
+        const ownerToken = buildTokenWithSub('owner-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
-        runtimeFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+        runtimeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
 
         const { sync } = await import('./sync');
-        (sync as any).encryption = {
-            getSessionEncryption: () => null,
-        };
-
-        await expect((sync as any).enqueuePendingMessage(sessionId, 'hello pending')).resolves.toBeUndefined();
+        await expect((sync as any).updatePendingMessage(sessionId, pendingId, 'new')).resolves.toBeUndefined();
 
         expect(requestMock).not.toHaveBeenCalled();
-        expect(runtimeFetchMock).toHaveBeenCalledWith(
-            `https://owner.example/v2/sessions/${sessionId}/pending`,
-            expect.objectContaining({
-                method: 'POST',
-            }),
+        const call = findRuntimeFetchCall(`https://owner.example/v2/sessions/${sessionId}/pending/${pendingId}`);
+        if (!call) throw new Error('Expected remote owner PATCH request');
+        expect(call[1]).toEqual(expect.objectContaining({ method: 'PATCH' }));
+        expectHeaderValue(call[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+            expect.objectContaining({ id: pendingId, text: 'new' }),
+        ]);
+
+        runtimeFetchMock.mockClear();
+        await expect(sync.updatePendingRequestedAction(sessionId, '.', { v: 1, kind: 'send_now' }))
+            .rejects.toThrow('Pending message ID cannot be a dot path segment');
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('resolves exact scoped reorder projection ids while preserving unmatched canonical local ids', async () => {
+        const sessionId = 'active_pending_reorder_projection_identity';
+        const canonicalLocalId = 'reorder-canonical-local-id';
+        const unmatchedCanonicalLocalId = 'reorder-unmatched-canonical-local-id';
+        const syntheticProjectionId = 'pending-outbox:collision-allocated-reorder-projection';
+        const server = upsertServerProfile({ serverUrl: 'https://active-reorder.example', name: 'Active reorder' });
+        const scope = { serverId: server.id, accountId: 'account-a' } as const;
+        setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope(scope);
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: canonicalLocalId,
+            localId: 'raw-id-collider-local-id',
+            createdAt: 1,
+            updatedAt: 1,
+            source: 'server_pending',
+            pendingOutboxScope: { serverId: server.id, accountId: 'other-account' },
+            text: 'other-scope collider',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'other-scope collider' }, meta: {} },
+        });
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: syntheticProjectionId,
+            localId: canonicalLocalId,
+            createdAt: 2,
+            updatedAt: 2,
+            source: 'local_outbound',
+            deliveryStatus: 'queued',
+            pendingOutboxScope: scope,
+            pendingOutboxOperation: 'enqueue',
+            text: 'collision allocated projection',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'collision allocated projection' }, meta: {} },
+        });
+        requestMock.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path.endsWith('/reorder')) {
+                expect(JSON.parse(String(init?.body))).toEqual({
+                    orderedLocalIds: [canonicalLocalId, unmatchedCanonicalLocalId],
+                });
+                return Response.json({ ok: true });
+            }
+            return Response.json({ pending: [] });
+        });
+
+        const { sync } = await import('./sync');
+        await expect(sync.reorderPendingMessages(sessionId, [syntheticProjectionId, unmatchedCanonicalLocalId]))
+            .resolves.toBeUndefined();
+
+        expect(requestMock).toHaveBeenCalledWith(
+            `/v2/sessions/${sessionId}/pending/reorder`,
+            expect.objectContaining({ method: 'POST' }),
         );
-        const ownerPendingCall = findRuntimeFetchCall(`https://owner.example/v2/sessions/${sessionId}/pending`);
-        expectHeaderValue(ownerPendingCall?.[1]?.headers, 'Authorization', 'Bearer owner-token');
-        expectHeaderValue(ownerPendingCall?.[1]?.headers, 'Content-Type', 'application/json');
-        expect(storage.getState().sessionPending[sessionId]?.messages.map((message) => message.text)).toEqual(['hello pending']);
+    });
+
+    it('fences a captured active-owner request before dynamic transport after an account switch', async () => {
+        const sessionId = 'active_pending_scope_preflight';
+        const server = upsertServerProfile({ serverUrl: 'https://active-owner.example', name: 'Active owner' });
+        setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'account-a' });
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        requestMock.mockResolvedValue(Response.json({ didUpdate: true }));
+        const { sync } = await import('./sync');
+        const ownerAccess = sync as unknown as {
+            resolvePendingQueueOwnerContext: (candidateSessionId: string) => Promise<{
+                request: (path: string, init?: RequestInit) => Promise<Response>;
+            }>;
+        };
+        const owner = await ownerAccess.resolvePendingQueueOwnerContext(sessionId);
+
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'account-b' });
+        await expect(owner.request(`/v2/sessions/${sessionId}/pending/p1/action`, { method: 'PATCH' }))
+            .rejects.toThrow('Pending queue owner scope changed');
+        expect(requestMock).not.toHaveBeenCalled();
+    });
+
+    it('routes a requested-action update through the preferred Pending owner scope', async () => {
+        const sessionId = 'persisted_session_remote_pending_action';
+        const localId = 'remote-pending-action-1';
+        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        setActiveServerId(activeServer.id, { scope: 'device' });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        const ownerToken = buildTokenWithSub('owner-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockImplementation(async (input, init) => {
+            const url = String(input);
+            if (url.endsWith('/health')) {
+                return Response.json({ ok: true });
+            }
+            if (url.endsWith('/v1/features')) {
+                return Response.json(buildServerFeaturesResponse());
+            }
+            if (url === `https://owner.example/v2/sessions/${sessionId}/pending/${localId}/action`) {
+                expect(init).toEqual(expect.objectContaining({
+                    method: 'PATCH',
+                    body: JSON.stringify({ requestedAction: { v: 1, kind: 'steer_now' } }),
+                }));
+                return Response.json({ didUpdate: true });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        await expect(sync.updatePendingRequestedAction(
+            sessionId,
+            localId,
+            { v: 1, kind: 'steer_now' },
+        )).resolves.toBeUndefined();
+
+        expect(requestMock).not.toHaveBeenCalled();
+        const actionCall = findRuntimeFetchCall(
+            `https://owner.example/v2/sessions/${sessionId}/pending/${localId}/action`,
+        );
+        expectHeaderValue(actionCall?.[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
+    });
+
+    it('rechecks a captured active-owner request before applying local completion', async () => {
+        const sessionId = 'active_pending_scope_completion';
+        const server = upsertServerProfile({ serverUrl: 'https://active-owner-completion.example', name: 'Active owner completion' });
+        setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'account-a' });
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        requestMock.mockImplementation(async () => {
+            storage.getState().activateProfileScope({ serverId: server.id, accountId: 'account-b' });
+            return Response.json({ didUpdate: true });
+        });
+        runtimeFetchMock.mockResolvedValue(Response.json(buildServerFeaturesResponse()));
+
+        const { sync } = await import('./sync');
+        await expect(sync.updatePendingRequestedAction(sessionId, 'p1', { v: 1, kind: 'send_now' }))
+            .rejects.toThrow('Pending queue owner scope changed');
+        expect(requestMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a non-active mutation refresh after the owner account changes on the same server', async () => {
+        const sessionId = 'persisted_session_remote_pending_account_change';
+        const pendingId = 'remote-pending-account-change';
+        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        setActiveServerId(activeServer.id, { scope: 'device' });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: pendingId,
+            localId: pendingId,
+            createdAt: 100,
+            updatedAt: 100,
+            source: 'server_pending',
+            deliveryStatus: 'accepted',
+            text: 'must survive stale refresh',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'must survive stale refresh' }, meta: {} },
+        });
+        const accountAToken = buildTokenWithSub('owner-account-a');
+        const accountBToken = buildTokenWithSub('owner-account-b');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: accountAToken, secret: 'owner-secret-a' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockImplementation(async (input) => {
+            const url = String(input);
+            if (url.endsWith(`/pending/${pendingId}/discard`)) {
+                getCredentialsForServerUrlMock.mockResolvedValue({ token: accountBToken, secret: 'owner-secret-b' });
+                return Response.json({ ok: true });
+            }
+            if (url.endsWith('/pending?includeDiscarded=1')) {
+                return Response.json({ pending: [] });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        await expect(sync.discardPendingMessage(sessionId, pendingId)).resolves.toBeUndefined();
+
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+            expect.objectContaining({ id: pendingId, text: 'must survive stale refresh' }),
+        ]);
+    });
+
+    it('applies a non-active mutation refresh while the full owner account scope remains current', async () => {
+        const sessionId = 'persisted_session_remote_pending_account_stable';
+        const pendingId = 'remote-pending-account-stable';
+        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        setActiveServerId(activeServer.id, { scope: 'device' });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: pendingId,
+            localId: pendingId,
+            createdAt: 100,
+            updatedAt: 100,
+            source: 'server_pending',
+            deliveryStatus: 'accepted',
+            text: 'remove after stable refresh',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'remove after stable refresh' }, meta: {} },
+        });
+        const ownerToken = buildTokenWithSub('owner-account-stable');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockImplementation(async (input) => String(input).endsWith('/pending?includeDiscarded=1')
+            ? Response.json({ pending: [] })
+            : Response.json({ ok: true }));
+
+        const { sync } = await import('./sync');
+        await expect(sync.discardPendingMessage(sessionId, pendingId)).resolves.toBeUndefined();
+
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
     });
 
     it('routes abortSession through the preferred owner server scope', async () => {

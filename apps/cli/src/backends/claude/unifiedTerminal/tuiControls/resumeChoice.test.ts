@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createFakeControlPort } from './fakeControlPort';
 import { answerClaudeResumeChoiceDialog } from './resumeChoice';
@@ -25,7 +25,7 @@ const UNKNOWN_NUMBERED_DIALOG = [
 ].join('\n');
 
 describe('answerClaudeResumeChoiceDialog', () => {
-  it('answers resume-from-summary by selecting option 1 and pressing Enter after a fresh capture', async () => {
+  it('answers resume-from-summary with its auto-submitting numeric shortcut after a fresh capture', async () => {
     const port = createFakeControlPort({ captures: [RESUME_DIALOG, IDLE] });
 
     const result = await answerClaudeResumeChoiceDialog({
@@ -39,12 +39,11 @@ describe('answerClaudeResumeChoiceDialog', () => {
     expect(port.log).toEqual([
       { type: 'capture', index: 0 },
       { type: 'literal', text: '1' },
-      { type: 'key', key: 'Enter' },
       { type: 'capture', index: 1 },
     ]);
   });
 
-  it('answers full-session resume by selecting option 2 and pressing Enter after a fresh capture', async () => {
+  it('answers full-session resume with its auto-submitting numeric shortcut after a fresh capture', async () => {
     const port = createFakeControlPort({ captures: [RESUME_DIALOG, IDLE] });
 
     const result = await answerClaudeResumeChoiceDialog({
@@ -56,7 +55,7 @@ describe('answerClaudeResumeChoiceDialog', () => {
 
     expect(result).toEqual({ kind: 'answered', choice: 'resume_full_session' });
     expect(port.sentLiteral).toEqual(['2']);
-    expect(port.sentKeys).toEqual(['Enter']);
+    expect(port.sentKeys).toEqual([]);
   });
 
   it('sends zero keys when the dialog was already resolved before the fresh capture', async () => {
@@ -101,6 +100,43 @@ describe('answerClaudeResumeChoiceDialog', () => {
 
     expect(result).toEqual({ kind: 'failed', reason: 'resume_choice_dialog_still_visible' });
     expect(port.sentLiteral).toEqual(['1']);
-    expect(port.sentKeys).toEqual(['Enter']);
+    expect(port.sentKeys).toEqual([]);
+  });
+
+  it('publishes the exact submission boundary even when post-selection recapture fails', async () => {
+    const onSubmitted = vi.fn();
+    const port = createFakeControlPort({
+      captures: [RESUME_DIALOG],
+      failCaptureAtIndexes: [1],
+    });
+
+    const result = await answerClaudeResumeChoiceDialog({
+      port,
+      choice: 'resume_from_summary',
+      wait: async () => undefined,
+      settleMs: 1,
+      onSubmitted,
+    });
+
+    expect(result).toEqual({ kind: 'failed', reason: 'host_dead:unrecoverable' });
+    expect(onSubmitted).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish submission when the numeric shortcut write fails', async () => {
+    const onSubmitted = vi.fn();
+    const port = createFakeControlPort({
+      captures: [RESUME_DIALOG],
+      failLiteralText: ['1'],
+    });
+
+    await answerClaudeResumeChoiceDialog({
+      port,
+      choice: 'resume_from_summary',
+      wait: async () => undefined,
+      settleMs: 1,
+      onSubmitted,
+    });
+
+    expect(onSubmitted).not.toHaveBeenCalled();
   });
 });

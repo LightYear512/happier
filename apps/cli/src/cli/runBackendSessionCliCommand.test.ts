@@ -30,6 +30,7 @@ import * as authModule from '@/ui/auth';
 import * as persistenceModule from '@/persistence';
 import * as accountSettingsModule from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import * as providerSettingsModule from '@/settings/providerSettings';
+import { logger } from '@/ui/logger';
 import { AIBackendProfileSchema } from '@happier-dev/protocol';
 import type { Credentials } from '@/persistence';
 
@@ -41,6 +42,7 @@ afterEach(() => {
   delete process.env.HAPPIER_CODEX_BACKEND_MODE;
   delete process.env.HAPPIER_EXPERIMENTAL_CODEX_ACP;
   delete process.env.HAPPIER_DAEMON_SPAWN_SELF_MIGRATE_CGROUP;
+  delete process.env.CONNECTED_SERVICE_TEST_TOKEN;
 });
 
 describe('runBackendSessionCliCommand', () => {
@@ -49,6 +51,47 @@ describe('runBackendSessionCliCommand', () => {
     const payload = Buffer.from(JSON.stringify({ sub })).toString('base64url');
     return `${header}.${payload}.signature`;
   }
+
+  it('reports a daemon-started backend rejection after session creation and before its webhook', async () => {
+    const credentials = { token: 'x' } as any;
+    vi.spyOn(persistenceModule, 'readCredentials').mockResolvedValue(credentials);
+    vi.spyOn(authModule, 'ensureMachineIdForCredentials').mockResolvedValue({ machineId: 'machine-1' } as any);
+    vi.spyOn(accountSettingsModule, 'bootstrapAccountSettingsContext').mockResolvedValue({
+      source: 'none',
+      settings: {} as any,
+      settingsVersion: 0,
+      loadedAtMs: Date.now(),
+      whenRefreshed: null,
+    } as any);
+
+    const startupError = Object.assign(new Error('post-session startup failure'), {
+      argv: ['--token', 'argv-secret-value'],
+      env: { OPENAI_API_KEY: 'env-secret-value' },
+    });
+    let sessionCreated = false;
+    let webhookSent = false;
+    const run = vi.fn(async () => {
+      sessionCreated = true;
+      throw startupError;
+    });
+    const fatalSpy = vi.spyOn(logger, 'fatal').mockImplementation(() => {});
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
+      throw new Error(`process.exit(${code ?? ''})`);
+    }) as typeof process.exit);
+
+    await expect(runBackendSessionCliCommand({
+      context: { args: ['codex', '--started-by', 'daemon'], terminalRuntime: null } as any,
+      loadRun: async () => run,
+      agentIdForAccountSettings: 'codex' as any,
+    })).rejects.toThrow('process.exit(1)');
+
+    expect(sessionCreated).toBe(true);
+    expect(webhookSent).toBe(false);
+    expect(fatalSpy).toHaveBeenCalledWith(startupError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.anything(), 'post-session startup failure');
+    exitSpy.mockRestore();
+  });
 
   it('fast-paths terminal starts by avoiding auth/setup and using fast account settings bootstrap', async () => {
     const credentials = { token: 'x' } as any;
@@ -84,6 +127,69 @@ describe('runBackendSessionCliCommand', () => {
       }),
     );
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ credentials }));
+  });
+
+  it('materializes the configured Connected Services default for a direct backend launch', async () => {
+    const credentials = { token: 'x' } as any;
+    vi.spyOn(persistenceModule, 'readCredentials').mockResolvedValue(credentials);
+    vi.spyOn(persistenceModule, 'readSettings').mockResolvedValue({ machineId: 'machine-1' } as any);
+    vi.spyOn(accountSettingsModule, 'bootstrapAccountSettingsContext').mockResolvedValue({
+      source: 'cache',
+      settings: {
+        connectedServicesDefaultAuthByAgentIdV1: {
+          v: 1,
+          bindingsByAgentId: {
+            codex: {
+              v: 1,
+              bindingsByServiceId: {
+                'openai-codex': {
+                  source: 'connected',
+                  selection: 'group',
+                  groupId: 'team',
+                },
+              },
+            },
+          },
+        },
+      },
+      settingsVersion: 1,
+      loadedAtMs: Date.now(),
+      whenRefreshed: null,
+    } as any);
+    const cleanup = vi.fn();
+    const materialize = vi.fn(async ({ connectedServices }: any) => ({
+      env: { CONNECTED_SERVICE_TEST_TOKEN: 'selected' },
+      cleanupOnFailure: cleanup,
+      cleanupOnExit: cleanup,
+      connectedServices,
+    }));
+    const run = vi.fn(async () => {
+      expect(process.env.CONNECTED_SERVICE_TEST_TOKEN).toBe('selected');
+    });
+
+    await runBackendSessionCliCommand({
+      context: { args: ['codex'], terminalRuntime: null } as any,
+      loadRun: async () => run,
+      agentIdForAccountSettings: 'codex' as any,
+      resolveDirectConnectedServiceEnvironmentFn: materialize,
+    });
+
+    expect(materialize).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'codex',
+      connectedServices: {
+        v: 1,
+        bindingsByServiceId: {
+          openai: { source: 'native' },
+          'openai-codex': {
+            source: 'connected',
+            selection: 'group',
+            groupId: 'team',
+          },
+        },
+      },
+    }));
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(process.env.CONNECTED_SERVICE_TEST_TOKEN).toBeUndefined();
   });
 
   it('uses the cached fast account settings snapshot without waiting for refresh', async () => {

@@ -68,9 +68,10 @@ describe('ApiSessionClient pending queue materialization', () => {
             .spyOn(snapshotSync, 'fetchSessionSnapshotUpdateFromServer')
             .mockResolvedValueOnce({
                 pendingQueueState: {
-                    known: true,
-                    pendingCount: 0,
-                    pendingVersion: 5,
+	                    known: true,
+	                    pendingCount: 0,
+	                    pendingBlockedCount: 0,
+	                    pendingVersion: 5,
                 },
             });
 
@@ -218,9 +219,10 @@ describe('ApiSessionClient pending queue materialization', () => {
         const snapshotSync = await import('./session/snapshotSync');
         const refreshedSnapshot = {
             pendingQueueState: {
-                known: true,
-                pendingCount: 1,
-                pendingVersion: 2,
+	                known: true,
+	                pendingCount: 1,
+	                pendingBlockedCount: 0,
+	                pendingVersion: 2,
             },
             latestTurnStatus: 'in_progress',
         } satisfies Awaited<ReturnType<typeof snapshotSync.fetchSessionSnapshotUpdateFromServer>> & {
@@ -376,9 +378,10 @@ describe('ApiSessionClient pending queue materialization', () => {
             .spyOn(snapshotSync, 'fetchSessionSnapshotUpdateFromServer')
             .mockResolvedValueOnce({
                 pendingQueueState: {
-                    known: true,
-                    pendingCount: 0,
-                    pendingVersion: 6,
+	                    known: true,
+	                    pendingCount: 0,
+	                    pendingBlockedCount: 0,
+	                    pendingVersion: 6,
                 },
             });
 

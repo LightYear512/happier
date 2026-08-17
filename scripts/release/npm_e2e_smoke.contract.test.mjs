@@ -373,6 +373,39 @@ test('npm-e2e-smoke local mode prepares a local linux server binary for remote s
   );
 });
 
+test('npm-e2e-smoke local relay upgrade builds the explicit local-source relay image target', async () => {
+  const runnerPath = join(smokeDir, 'run.sh');
+  const dockerfilePath = join(repoRoot, 'Dockerfile');
+  const runnerRaw = await readFile(runnerPath, 'utf8');
+  const dockerfileRaw = await readFile(dockerfilePath, 'utf8');
+
+  assert.match(
+    runnerRaw,
+    /--target relay-server-local-source/,
+    'expected local relay-upgrade smoke to build a source-backed local relay image, not the artifact-based production relay target',
+  );
+  assert.match(
+    dockerfileRaw,
+    /FROM server AS relay-server-local-source/,
+    'expected Dockerfile to expose an explicit source-backed relay target for local candidate upgrade QA',
+  );
+  assert.match(
+    dockerfileRaw,
+    /COPY --from=webapp-builder[\s\S]+\/repo\/apps\/ui\/dist[\s\S]+\/opt\/happier\/ui-web/,
+    'expected local-source relay target to embed the locally built web UI',
+  );
+});
+
+test('relay upgrade pins the discovered predecessor image before changing persisted state', async () => {
+  const runnerRaw = await readFile(join(smokeDir, 'run.sh'), 'utf8');
+  const upgrade = runnerRaw.slice(runnerRaw.indexOf('run_relay_upgrade_smoke()'));
+
+  assert.match(upgrade, /docker pull "\$from_image"/);
+  assert.match(upgrade, /docker image inspect[\s\S]*?RepoDigests/);
+  assert.match(upgrade, /from_image="\$from_image_pinned"/);
+  assert.doesNotMatch(upgrade, /docker manifest inspect "\$devbox_image"/);
+});
+
 test('npm-e2e-smoke remote server smoke forwards canonical server binary override to hstack remote setup', async () => {
   const remoteServerSmokePath = join(smokeDir, 'bin', 'remote-server-smoke.sh');
   const raw = await readFile(remoteServerSmokePath, 'utf8');

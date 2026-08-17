@@ -59,6 +59,32 @@ function listMergedTags(head, prefix) {
     .filter(Boolean);
 }
 
+function createRemoteReachabilityIndex(head) {
+  const graph = new Map();
+  for (const line of runGit(['rev-list', '--parents', head]).split('\n')) {
+    const [commit, ...parents] = line.trim().split(/\s+/);
+    if (commit) graph.set(commit, parents);
+  }
+  const distanceCache = new Map();
+  return {
+    distanceFromHead(commit) {
+      if (!graph.has(commit)) return null;
+      if (distanceCache.has(commit)) return distanceCache.get(commit);
+      const reachable = new Set();
+      const pending = [commit];
+      while (pending.length > 0) {
+        const current = pending.pop();
+        if (!current || reachable.has(current) || !graph.has(current)) continue;
+        reachable.add(current);
+        pending.push(...graph.get(current));
+      }
+      const distance = graph.size - reachable.size;
+      distanceCache.set(commit, distance);
+      return distance;
+    },
+  };
+}
+
 function listTrackedPaths() {
   return runGit(['ls-files'])
     .split('\n')
@@ -73,26 +99,30 @@ function listChangedPathsSince(baseRef, head) {
     .filter(Boolean);
 }
 
-function resolveBaselineTag({ environment, head, prefix }) {
+function resolveBaselineTag({ environment, head, prefix, remoteTagRefs, remoteReachability }) {
   const allowedChannels = allowedChannelsForEnvironment(environment);
-  const candidates = listMergedTags(head, prefix);
-  /** @type {{ tag: string; distance: number } | null} */
+  const candidates = remoteTagRefs === null
+    ? listMergedTags(head, prefix).map((tag) => ({ tag, ref: tag, distance: null }))
+    : Object.entries(remoteTagRefs)
+        .filter(([tag]) => tag.startsWith(prefix))
+        .map(([tag, ref]) => ({ tag, ref, distance: remoteReachability.distanceFromHead(ref) }))
+        .filter(({ distance }) => distance !== null);
+  /** @type {{ tag: string; ref: string; distance: number } | null} */
   let best = null;
 
-  for (const tag of candidates) {
+  for (const { tag, ref, distance: knownDistance } of candidates) {
     const channel = parseTagChannel(tag, prefix);
     if (channel === null || !allowedChannels.has(channel)) continue;
-    const tagCommit = runGit(['rev-list', '-n', '1', tag]).trim();
+    const tagCommit = remoteTagRefs === null ? runGit(['rev-list', '-n', '1', ref]).trim() : ref;
     if (!tagCommit) continue;
-    const distanceRaw = runGit(['rev-list', '--count', `${tagCommit}..${head}`]).trim();
-    const distance = Number(distanceRaw);
+    const distance = knownDistance ?? Number(runGit(['rev-list', '--count', `${tagCommit}..${head}`]).trim());
     if (!Number.isFinite(distance) || distance < 0) continue;
     if (best === null || distance < best.distance) {
-      best = { tag, distance };
+      best = { tag, ref: tagCommit, distance };
     }
   }
 
-  return best?.tag ?? '';
+  return best;
 }
 
 function main() {
@@ -100,25 +130,45 @@ function main() {
   const environment = String(args.get('--environment') ?? '').trim();
   const head = String(args.get('--head') ?? '').trim();
   const outPath = String(args.get('--out') ?? '').trim();
+  const tagRefsJson = args.get('--tag-refs-json');
 
   if (!environment) fail('--environment is required');
   if (!head) fail('--head is required');
 
+  /** @type {Record<string, string> | null} */
+  let remoteTagRefs = null;
+  if (tagRefsJson !== undefined) {
+    const parsed = JSON.parse(String(tagRefsJson));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      fail('--tag-refs-json must be a JSON object');
+    }
+    remoteTagRefs = Object.fromEntries(
+      Object.entries(parsed).map(([tag, ref]) => {
+        const normalizedRef = String(ref ?? '').trim();
+        if (!tag.trim() || !normalizedRef) fail('--tag-refs-json entries must have non-empty tag names and refs');
+        return [tag, normalizedRef];
+      }),
+    );
+  }
+
   /** @type {Record<string, string>} */
   const outputs = {};
+  const remoteReachability = remoteTagRefs === null ? null : createRemoteReachabilityIndex(head);
 
   for (const [key, definition] of Object.entries(versionedComponents)) {
-    const baselineTag = resolveBaselineTag({
+    const baseline = resolveBaselineTag({
       environment,
       head,
       prefix: definition.baselineTagPrefix,
+      remoteTagRefs,
+      remoteReachability,
     });
-    const paths = baselineTag ? listChangedPathsSince(baselineTag, head) : listTrackedPaths();
+    const paths = baseline ? listChangedPathsSince(baseline.ref, head) : listTrackedPaths();
     const classified = classifyChangedPaths(paths);
     const derived = deriveVersionedComponentChanges(classified);
 
     outputs[`changed_${key}`] = derived[key] ? 'true' : 'false';
-    outputs[`${key}_baseline_tag`] = baselineTag;
+    outputs[`${key}_baseline_tag`] = baseline?.tag ?? '';
   }
 
   if (outPath) {

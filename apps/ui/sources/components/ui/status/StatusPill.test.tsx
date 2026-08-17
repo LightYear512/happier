@@ -88,6 +88,83 @@ describe('StatusPill', () => {
         expect(Number(flat.fontSize)).toBeGreaterThan(0);
         expect(Number(flat.lineHeight)).toBeGreaterThanOrEqual(Number(flat.fontSize));
     });
+
+    it('uses regular untracked typography for phrase labels', async () => {
+        const { StatusPill } = await import('./StatusPill');
+
+        const screen = await renderScreen(
+            <StatusPill variant="warning" label="Account rotation pending" labelVariant="phrase" testID="status-rotation" />,
+        );
+        const label = screen.findByTestId('status-rotation:label');
+        const flat = flattenStyle(label?.props.style);
+
+        expect(flat.fontWeight).toBe('400');
+        expect(flat.letterSpacing).toBe(0);
+    });
+
+    it('paints a pill-chrome label with the on-tint ink while the dot keeps the glyph foreground', async () => {
+        const { StatusPill } = await import('./StatusPill');
+        const { lightTheme } = await import('@/theme');
+        const state = lightTheme.colors.state.success;
+
+        const screen = await renderScreen(<StatusPill variant="success" label="Online" testID="status-on-tint" />);
+        const label = flattenStyle(screen.findByTestId('status-on-tint:label')?.props.style);
+        const dot = flattenStyle(screen.findByTestId('status-on-tint:dot')?.props.style);
+
+        // Guard the assertion below against a theme where the two roles happen to coincide.
+        expect(state.onTint).not.toBe(state.foreground);
+        expect(label.color).toBe(state.onTint);
+        expect(dot.backgroundColor).toBe(state.foreground);
+    });
+
+    it('keeps the glyph foreground for plain chrome, where no tint sits behind the label', async () => {
+        const { StatusPill } = await import('./StatusPill');
+        const { lightTheme } = await import('@/theme');
+        const state = lightTheme.colors.state.success;
+
+        const screen = await renderScreen(
+            <StatusPill variant="success" label="online" chrome="plain" testID="status-plain" />,
+        );
+        const label = flattenStyle(screen.findByTestId('status-plain:label')?.props.style);
+
+        expect(state.onTint).not.toBe(state.foreground);
+        expect(label.color).toBe(state.foreground);
+    });
+
+    it('lets an explicit foreground color override both ink roles', async () => {
+        const { StatusPill } = await import('./StatusPill');
+
+        const screen = await renderScreen(
+            <StatusPill variant="success" label="Online" foregroundColor="#123456" testID="status-override" />,
+        );
+        const label = flattenStyle(screen.findByTestId('status-override:label')?.props.style);
+        const dot = flattenStyle(screen.findByTestId('status-override:dot')?.props.style);
+
+        expect(label.color).toBe('#123456');
+        expect(dot.backgroundColor).toBe('#123456');
+    });
+
+    it('replaces the dot with a leading element and truncates constrained labels', async () => {
+        const { StatusPill } = await import('./StatusPill');
+
+        const screen = await renderScreen(
+            <StatusPill
+                variant="info"
+                label="A deliberately long status phrase"
+                leading={<React.Fragment>marker</React.Fragment>}
+                labelNumberOfLines={1}
+                testID="status-constrained"
+            />,
+        );
+        const label = screen.findByTestId('status-constrained:label');
+        const flat = flattenStyle(label?.props.style);
+
+        expect(screen.findByTestId('status-constrained:dot')).toBeNull();
+        expect(screen.getTextContent()).toContain('marker');
+        expect(label?.props.numberOfLines).toBe(1);
+        expect(label?.props.ellipsizeMode).toBe('tail');
+        expect(flat.flexShrink).toBe(1);
+    });
 });
 
 function flattenStyle(style: unknown): Record<string, any> {

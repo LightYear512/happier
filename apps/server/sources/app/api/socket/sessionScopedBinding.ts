@@ -1,7 +1,9 @@
 import type { Socket } from "socket.io";
 
 import type { ClientConnection } from "@/app/events/eventPayloadTypes";
+import { classifyCurrentMachineSocketRecord } from "@/app/machines/validateCurrentMachineSocket";
 import { db } from "@/storage/db";
+import type { Tx } from "@/storage/inTx";
 
 export type SessionScopedBindingProof = "owner-session" | "machine-access-key";
 
@@ -10,6 +12,42 @@ export type SessionScopedSocketBinding = Readonly<{
     machineId: string | null;
     proof: SessionScopedBindingProof;
 }>;
+
+export async function hasCurrentSessionScopedMachineAccessInTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    machineId: string;
+    sessionId: string;
+}>): Promise<boolean> {
+    const accessKey = await params.tx.accessKey.findUnique({
+        where: {
+            accountId_machineId_sessionId: {
+                accountId: params.accountId,
+                machineId: params.machineId,
+                sessionId: params.sessionId,
+            },
+        },
+        select: {
+            machine: {
+                select: { revokedAt: true, replacedByMachineId: true },
+            },
+            session: {
+                select: { accountId: true },
+            },
+        },
+    });
+    return accessKey !== null
+        && accessKey.session.accountId === params.accountId
+        && classifyCurrentMachineSocketRecord(accessKey.machine).ok;
+}
+
+export async function hasCurrentSessionScopedMachineAccess(params: Readonly<{
+    accountId: string;
+    machineId: string;
+    sessionId: string;
+}>): Promise<boolean> {
+    return await hasCurrentSessionScopedMachineAccessInTx({ tx: db, ...params });
+}
 
 type SessionScopedBindingResolution =
     | Readonly<{ ok: true; binding: SessionScopedSocketBinding }>
@@ -51,17 +89,11 @@ export async function resolveSessionScopedSocketBinding(params: Readonly<{
         };
     }
 
-    const accessKey = await db.accessKey.findUnique({
-        where: {
-            accountId_machineId_sessionId: {
-                accountId: params.userId,
-                machineId,
-                sessionId,
-            },
-        },
-        select: { machineId: true },
-    });
-    if (!accessKey) {
+    if (!await hasCurrentSessionScopedMachineAccess({
+        accountId: params.userId,
+        machineId,
+        sessionId,
+    })) {
         return { ok: false, statusCode: 403, error: "invalid-session-access-key" };
     }
 
@@ -114,42 +146,29 @@ export function canRegisterSessionScopedRpcMethod(params: Readonly<{
     return params.method.slice(0, lastColon) === binding.sessionId;
 }
 
-export async function canPublishFromSessionScopedSocket(params: Readonly<{
+/**
+ * Resolve the machine-bound session binding a session-scoped socket must present before publishing
+ * relay events (transcript stream segments, execution-run updates) for a session.
+ *
+ * This is the synchronous (in-memory) half of publish authorization: it proves the socket handshake
+ * bound this exact session through a machine access key. The access key's continued existence and
+ * the sender's session access are re-verified by the TTL cache in `sessionRelayAuthCache.ts`.
+ */
+export function resolveSessionScopedMachinePublishBinding(params: Readonly<{
     socket: Socket;
     connection: ClientConnection;
     sessionId: string;
-    requireMachineBinding?: boolean;
-}>): Promise<boolean> {
+}>): Readonly<{ sessionId: string; machineId: string }> | null {
     if (params.connection.connectionType !== "session-scoped") {
-        return false;
+        return null;
     }
 
     const binding = readSessionScopedSocketBinding(params.socket);
     if (!binding || binding.sessionId !== params.sessionId) {
-        return false;
+        return null;
     }
-    if (params.requireMachineBinding === true) {
-        if (binding.proof !== "machine-access-key") {
-            return false;
-        }
-        const machineId = binding.machineId;
-        if (!machineId) {
-            return false;
-        }
-
-        const accessKey = await db.accessKey.findUnique({
-            where: {
-                accountId_machineId_sessionId: {
-                    accountId: params.connection.userId,
-                    machineId,
-                    sessionId: binding.sessionId,
-                },
-            },
-            select: { machineId: true },
-        });
-        if (!accessKey) {
-            return false;
-        }
+    if (binding.proof !== "machine-access-key" || !binding.machineId) {
+        return null;
     }
-    return true;
+    return { sessionId: binding.sessionId, machineId: binding.machineId };
 }

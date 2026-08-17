@@ -1,7 +1,6 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { Ionicons, Octicons } from '@expo/vector-icons';
+import { Platform, Pressable, StyleSheet, View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 import { RepositoryTreeList } from '@/components/sessions/files/content/RepositoryTreeList';
@@ -17,6 +16,7 @@ import { useSessionMachineReachability } from '@/components/sessions/model/useSe
 import { useSessionFileUploadAvailability } from '@/components/sessions/files/useSessionFileUploadAvailability';
 import type { FileItem } from '@/sync/domains/input/suggestionFile';
 import { fileSearchCache, searchFiles } from '@/sync/domains/input/suggestionFile';
+import { resolveSessionFileSuggestionScope } from '@/sync/ops/resolveSessionFileSuggestionScope';
 import { clearCachedRepositoryDirectoryEntries } from '@/sync/domains/input/repositoryDirectory';
 import { storage, useSessionProjectScmSnapshot, useSessionRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
 import { t } from '@/text';
@@ -33,13 +33,13 @@ import { readWebDroppedEntries } from '@/utils/files/webDroppedEntries';
 import { nativePickFiles, type NativePickedFile } from '@/utils/files/nativePickFiles';
 import { applyWebDirectoryInputAttributes } from '@/utils/files/applyWebDirectoryInputAttributes';
 import { useWorkspaceFileTransfers, type WorkspaceUploadEntry } from '@/hooks/session/files/useWorkspaceFileTransfers';
-import { buildWebUploadEntriesFromFiles } from './buildWebUploadEntriesFromFiles';
 import { showUploadConflictResolutionDialog } from '@/components/sessions/files/repositoryTree/showUploadConflictResolutionDialog';
 import { shouldUseRepositoryRootDropTarget } from '@/components/sessions/files/repositoryTree/shouldUseRepositoryRootDropTarget';
 import { createRepositoryTreeUploadMenuConfig } from '@/components/sessions/files/repositoryTree/createRepositoryTreeUploadMenuConfig';
 import { useRepositoryTreeWebDropState } from '@/components/sessions/files/repositoryTree/useRepositoryTreeWebDropState';
 import { promptRepositoryUploadDestination } from '@/components/sessions/files/views/promptRepositoryUploadDestination';
 import { RepositoryTreeChangedFilesPane } from '@/components/sessions/files/views/repositoryTreeBrowser/RepositoryTreeChangedFilesPane';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export type SessionRepositoryTreeBrowserViewProps = Readonly<{
     sessionId: string;
@@ -176,7 +176,11 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         const handle = setTimeout(() => {
             void (async () => {
                 try {
-                    const results = await searchFiles(props.sessionId, q, { limit: 200 });
+                    // Same addressing as the composer's `@` picker: the search is scoped by the
+                    // session's MACHINE and FOLDER, so both surfaces share one index for a
+                    // workspace instead of building one per session.
+                    const scope = resolveSessionFileSuggestionScope(props.sessionId);
+                    const results = scope ? await searchFiles(scope, q, { limit: 200 }) : [];
                     if (cancelled) return;
                     setSearchResults(results);
                 } finally {
@@ -202,7 +206,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [shouldShowSearchResults, showChangedOnly]);
 
     const refresh = React.useCallback(() => {
-        fileSearchCache.clearCache(props.sessionId);
+        const scope = resolveSessionFileSuggestionScope(props.sessionId);
+        if (scope) fileSearchCache.clearCache(scope);
         clearCachedRepositoryDirectoryEntries({ sessionId: props.sessionId });
         scmStatusSync.invalidateFromUser(props.sessionId);
         setTreeReloadNonce((n) => n + 1);
@@ -320,7 +325,11 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [expandedPaths, props.sessionId, refresh]);
 
     const startWebUploads = React.useCallback(async (files: readonly File[], destinationDir: string) => {
-        const entries = buildWebUploadEntriesFromFiles(files);
+        const entries: WorkspaceUploadEntry[] = files.map((file) => ({
+            kind: 'web',
+            file,
+            relativePath: (file as any).webkitRelativePath || file.name,
+        }));
         const res = await transfers.startUploads({ entries, destinationDir });
         if (!res.ok) {
             Modal.alert(t('common.error'), res.error);
@@ -362,7 +371,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             title: t('settingsAttachments.workspaceDirectory.uploadsDirectory.title'),
             subtitle: uploadDestinationDir || t('files.projectRoot'),
             category: t('common.path'),
-            icon: <Ionicons name="folder-open-outline" size={16} color={theme.colors.text.secondary} />,
+            icon: <Icon name="folder-open" size={16} color={theme.colors.text.secondary} />,
             disabled: !uploadActionsAvailable,
         },
         ...uploadMenuConfig.items.map((item) => ({
@@ -370,7 +379,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             title: t(item.titleKey),
             subtitle: uploadDestinationDir || t('files.projectRoot'),
             category: t('files.toolbar.upload'),
-            icon: <Ionicons name={item.iconName} size={16} color={theme.colors.text.secondary} />,
+            icon: <Icon name={item.iconName} size={16} color={theme.colors.text.secondary} />,
             disabled: item.disabled,
         })),
     ], [theme.colors.text.secondary, uploadActionsAvailable, uploadDestinationDir, uploadMenuConfig.items]);
@@ -401,8 +410,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-filter-changed',
                 priority: 1,
                 order: 0,
-                icon: <Octicons name="filter" size={16} color={showChangedOnly ? theme.colors.text.link : theme.colors.text.secondary} />,
-                menuIcon: 'funnel-outline',
+                icon: <Icon name="funnel-simple" size={16} color={showChangedOnly ? theme.colors.text.link : theme.colors.text.secondary} />,
+                menuIcon: 'funnel-simple',
                 accessibilityLabel: t('files.toolbar.changedFiles'),
                 selected: showChangedOnly,
                 onPress: () => setShowChangedOnly((prev) => !prev),
@@ -411,8 +420,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-toggle-details',
                 priority: 2,
                 order: 1,
-                icon: <Ionicons name={detailsMode ? 'list' : 'list-outline'} size={16} color={detailsMode ? theme.colors.text.link : theme.colors.text.secondary} />,
-                menuIcon: 'list-outline',
+                icon: <Icon name="list" size={16} color={detailsMode ? theme.colors.text.link : theme.colors.text.secondary} />,
+                menuIcon: 'list',
                 accessibilityLabel: t('common.details'),
                 selected: detailsMode,
                 onPress: () => setDetailsMode((prev) => !prev),
@@ -421,8 +430,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-upload',
                 priority: 3,
                 order: 2,
-                icon: <Ionicons name="cloud-upload-outline" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'cloud-upload-outline',
+                icon: <Icon name="cloud-arrow-up" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'cloud-arrow-up',
                 accessibilityLabel: t('files.toolbar.upload'),
                 disabled: !uploadActionsAvailable,
                 selected: uploadDestinationDir.length > 0,
@@ -432,8 +441,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-create-file',
                 priority: 5,
                 order: 3,
-                icon: <Ionicons name="document-text-outline" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'document-text-outline',
+                icon: <Icon name="file-text" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'file-text',
                 accessibilityLabel: t('files.createFileA11y'),
                 disabled: !allowCreateActions,
                 onPress: createFile,
@@ -442,8 +451,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-create-folder',
                 priority: 6,
                 order: 4,
-                icon: <Ionicons name="folder-outline" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'folder-outline',
+                icon: <Icon name="folder" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'folder',
                 accessibilityLabel: t('files.createFolderA11y'),
                 disabled: !allowCreateActions,
                 onPress: createFolder,
@@ -452,8 +461,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-clear-search',
                 priority: 4,
                 order: 5,
-                icon: <Octicons name="x" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'close-outline',
+                icon: <Icon name="x" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'x',
                 accessibilityLabel: t('files.clearSearchA11y'),
                 onPress: () => setSearchQuery(''),
             },
@@ -463,8 +472,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 order: 6,
                 icon: treeRootLoading
                     ? <ActivitySpinner testID="repository-tree-refresh-loading" size="small" color={theme.colors.text.secondary} />
-                    : <Octicons name="sync" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'refresh-outline',
+                    : <Icon name="arrows-clockwise" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'arrow-clockwise',
                 accessibilityLabel: t('common.refresh'),
                 onPress: refresh,
             },
@@ -475,8 +484,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-collapse-all',
                 priority: 0,
                 order: 7,
-                icon: <Ionicons name="contract-outline" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'contract-outline',
+                icon: <Icon name="arrows-in" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'arrows-in',
                 accessibilityLabel: t('files.repositoryCollapseAll'),
                 onPress: collapseAll,
             });
@@ -487,8 +496,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 id: 'repository-tree-close',
                 priority: 8,
                 order: 8,
-                icon: <Octicons name="x" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'close-outline',
+                icon: <Icon name="x" size={16} color={theme.colors.text.secondary} />,
+                menuIcon: 'x',
                 accessibilityLabel: t('common.close'),
                 onPress: props.onRequestClose,
             });
@@ -536,7 +545,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             {
                 id: 'repository-tree-upload-destination-select',
                 title: t('settingsAttachments.workspaceDirectory.uploadsDirectory.title'),
-                icon: 'folder-open-outline',
+                icon: 'folder-open',
                 disabled: !uploadActionsAvailable,
                 onPress: () => onSelectUploadMenuItem('repository-tree-upload-destination-select'),
             },

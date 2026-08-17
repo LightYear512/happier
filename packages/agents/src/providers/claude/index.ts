@@ -9,6 +9,8 @@ export {
   type ClaudeEffortLevel,
 } from './effort.js';
 
+export { CURRENT_FLAGSHIP_CLAUDE_MODEL_ID } from './flagshipModel.js';
+
 export {
   CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
   CLAUDE_1M_SUFFIX,
@@ -27,13 +29,25 @@ export {
 export {
   CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
   CLAUDE_LOCAL_PERMISSION_BRIDGE_STOPPED_REASON,
-  CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICE_REQUEST_SOURCE,
+  CLAUDE_UNIFIED_TERMINAL_DIALOG_CHOICE_REQUEST_SOURCE,
   isClaudeLocalPermissionBridgeAgentStateRequest,
-  isClaudeUnifiedTerminalResumeChoiceAgentStateRequest,
+  isClaudeUnifiedTerminalDialogChoiceAgentStateRequest,
 } from './permissionRequestSource.js';
 
 export {
   CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
   CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPES,
   CLAUDE_CODE_REQUIRED_OAUTH_SCOPES,
+  CLAUDE_CODE_SETUP_TOKEN_SCOPES,
 } from './oauthScopes.js';
+
+export {
+  CLAUDE_OAUTH_AUTHORIZE_URL,
+  CLAUDE_OAUTH_CALLBACK_URL,
+  CLAUDE_OAUTH_CLIENT_ID,
+  normalizeClaudeOauthProfileEntitlement,
+  CLAUDE_OAUTH_PROFILE_BETA_HEADER,
+  CLAUDE_OAUTH_PROFILE_URL,
+  CLAUDE_OAUTH_TOKEN_URL,
+  type ClaudeOauthEntitlementMetadata,
+} from './oauthProfile.js';

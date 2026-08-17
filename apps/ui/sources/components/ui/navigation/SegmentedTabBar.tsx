@@ -4,11 +4,42 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { shadowLevelStyle } from '@/shadowElevation';
 import { Text } from '@/components/ui/text/Text';
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
 import { GradientSurface } from '@/components/ui/surfaces/GradientSurface';
+import { TabBadge } from '@/components/ui/navigation/tabBadge/TabBadge';
+
+/**
+ * The glyph size for an icon-only segmented bar.
+ *
+ * Owned here rather than at the call site because the bar reserves the matching slot height below:
+ * the two numbers have to move together, and when they lived apart the icons were sized to the
+ * LABEL's optical height (16) and then drawn at 14, so an iconic bar read lighter than the textual
+ * one it replaced. A tab is a primary control in its pane — it takes the standard toolbar step.
+ */
+export const SEGMENTED_TAB_ICON_SIZE_PX = ICON_SIZE.md;
 
 export type SegmentedTab<T extends string = string> = Readonly<{
     id: T;
     label: string;
+    /**
+     * Optional glyph. When every tab in a bar supplies one, the bar renders icons alone and the
+     * label becomes the accessible name — a four-word row of text costs more vertical space than
+     * the tabs are worth in a narrow docked panel. Mixed bars keep their labels, so this stays
+     * opt-in and the other consumers are unaffected.
+     */
+    icon?: React.ReactNode;
+    /**
+     * Live count riding the tab's top-right corner; nothing renders at zero or below. A count, not
+     * a word: an iconic bar in a narrow pane has no room for a second string, and the number is the
+     * part that changes.
+     */
+    badgeCount?: number;
+    /**
+     * Overrides the accessible name. `label` is the default and is right for a plain tab; a tab
+     * carrying a badge needs a name that says what the number means, because the badge itself is
+     * unreadable to a screen reader.
+     */
+    accessibilityLabel?: string;
 }>;
 
 export type SegmentedTabBarProps<T extends string = string> = Readonly<{
@@ -59,12 +90,27 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         fontWeight: '600',
     },
+    // Sized to the glyph, not to the label it replaces. Holding the slot at the label's 16px optical
+    // height kept an iconic bar exactly as tall as a textual one, which sounds right and is not: the
+    // glyph then has to shrink below its own step to fit, and the bar reads weaker than the words.
+    tabIcon: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: SEGMENTED_TAB_ICON_SIZE_PX,
+    },
+    // Only wraps content that actually carries a badge, so an unbadged bar keeps its current tree.
+    tabBadgeAnchor: {
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
 }));
 
 function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) {
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const compact = props.compact;
+    // Icons replace labels only when the whole bar is iconic; a half-iconic row reads as broken.
+    const iconOnly = props.tabs.length > 0 && props.tabs.every((tab) => tab.icon != null);
 
     return (
         <View style={styles.container}>
@@ -74,6 +120,13 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
             >
                 {props.tabs.map((tab) => {
                     const active = props.activeTabId === tab.id;
+                    const badgeCount = tab.badgeCount ?? 0;
+                    const accessibleName = tab.accessibilityLabel ?? tab.label;
+                    const content = iconOnly ? (
+                        <View style={styles.tabIcon}>{tab.icon}</View>
+                    ) : (
+                        <Text style={[styles.tabLabel, compact ? styles.tabLabelCompact : null, active ? styles.tabLabelActive : null]}>{tab.label}</Text>
+                    );
                     return (
                         <Pressable
                             key={tab.id}
@@ -83,6 +136,10 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                             accessibilityRole="tab"
                             accessibilityState={{ selected: active }}
                             aria-selected={active}
+                            // The label is still the accessible name when the glyph replaces it,
+                            // and it doubles as the native tooltip on web.
+                            accessibilityLabel={iconOnly || tab.accessibilityLabel ? accessibleName : undefined}
+                            {...(iconOnly ? ({ title: accessibleName } as object) : {})}
                         >
                             {active ? (
                                 <GradientSurface
@@ -92,7 +149,17 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                                     style={StyleSheet.absoluteFillObject}
                                 />
                             ) : null}
-                            <Text style={[styles.tabLabel, compact ? styles.tabLabelCompact : null, active ? styles.tabLabelActive : null]}>{tab.label}</Text>
+                            {badgeCount > 0 ? (
+                                <View style={styles.tabBadgeAnchor}>
+                                    {content}
+                                    <TabBadge
+                                        variant="count"
+                                        value={badgeCount}
+                                        tone="neutral"
+                                        testID={props.testIDPrefix ? `${props.testIDPrefix}:${tab.id}:badge` : undefined}
+                                    />
+                                </View>
+                            ) : content}
                         </Pressable>
                     );
                 })}

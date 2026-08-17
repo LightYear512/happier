@@ -1,4 +1,4 @@
-import { ActivityIndicator } from 'react-native';
+import { ActivityIndicator, StyleSheet } from 'react-native';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
@@ -278,6 +278,28 @@ describe('TranscriptEventRow', () => {
         expect(serialized).toContain(t('message.runtimeConfigOutcomeFailed'));
         expect(serialized).toContain(`${t('message.runtimeConfigOutcomeKeyReasoningEffort')} → Medium`);
         expect(serialized).toContain('warning-outline');
+    });
+
+    it('mutes de-emphasized prior-era event rows without changing current-era failure rows', async () => {
+        const event = parseProtocolValidAgentEvent({
+            type: 'runtime-config-outcome',
+            provider: 'claude',
+            runtime: 'claude-unified-terminal',
+            status: 'failed',
+            message: 'Failed to apply Claude Unified runtime controls: reasoningEffort.',
+            changes: [
+                { key: 'reasoningEffort', requested: 'medium', reason: 'not_delivered' },
+            ],
+        } as AgentEvent);
+
+        const mutedScreen = await renderScreen(<TranscriptEventRow event={event} emphasis="deemphasized" />);
+        const normalScreen = await renderScreen(<TranscriptEventRow event={event} />);
+
+        const mutedRow = mutedScreen.findByProps({ testID: 'transcript-event-runtime-config-outcome-failed' });
+        const normalRow = normalScreen.findByProps({ testID: 'transcript-event-runtime-config-outcome-failed' });
+
+        expect(StyleSheet.flatten(mutedRow.props.style)?.opacity).toBeLessThan(1);
+        expect(StyleSheet.flatten(normalRow.props.style)?.opacity).toBeUndefined();
     });
 
     it('renders boolean and provider-echo change values readably', async () => {
@@ -634,6 +656,30 @@ describe('TranscriptEventRow', () => {
         expect(screen.findByProps({ testID: 'transcript-event-connected-service-account-switch-attempt' })).toBeTruthy();
         expect(serialized).toContain('Authentication refreshed');
         expect(serialized).not.toContain(t('connectedServices.authSwitch.status.restarting'));
+    });
+
+    it('renders an observed restart request as requested, not completed or a generic switch', async () => {
+        const event = parseProtocolValidAgentEvent({
+            type: 'connected-service-account-switch-attempt',
+            ok: true,
+            action: 'restart_requested',
+            attemptedContinuityMode: 'restart',
+            outcome: 'observed',
+            outcomeAction: 'none',
+            diagnostic: {
+                code: 'connected_service_restart_requested',
+                failurePhase: 'restart',
+                source: 'transcript_switch_attempt',
+                retryable: true,
+                suggestedActions: [],
+            },
+        });
+
+        const screen = await renderScreen(<TranscriptEventRow event={event} />);
+        const serialized = JSON.stringify(screen.tree.toJSON());
+        expect(serialized).toContain(t('connectedServices.diagnostics.status.connected_service_restart_requested'));
+        expect(serialized).not.toContain(t('connectedServices.authSwitch.status.restarting'));
+        expect(serialized).not.toContain(t('connectedServices.authSwitch.confirmAction'));
     });
 
     it('falls back safely for unknown connected-service switch diagnostics', async () => {

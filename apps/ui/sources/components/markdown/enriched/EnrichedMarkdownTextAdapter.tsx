@@ -2,9 +2,9 @@ import * as React from 'react';
 import { Platform, type StyleProp, type TextStyle } from 'react-native';
 import { EnrichedMarkdownText, type EnrichedMarkdownTextProps } from 'react-native-enriched-markdown';
 
-import { ENRICHED_MARKDOWN_MD4C_FLAGS } from './enrichedMarkdownConstants';
+import { resolveEnrichedMarkdownMd4cFlags } from './enrichedMarkdownConstants';
 import { normalizeMarkdownLinkUrl, openMarkdownLinkUrl, sanitizeEnrichedMarkdownLinkTargets } from './enrichedMarkdownLinkHandling';
-import { preloadEnrichedMarkdownRuntime } from './preloadEnrichedMarkdownRuntime';
+import { useEnrichedMarkdownRuntimeStatus } from './preloadEnrichedMarkdownRuntime';
 import { resolveEnrichedMarkdownFlavor } from './resolveEnrichedMarkdownFlavor';
 import { useEnrichedMarkdownStyle } from './useEnrichedMarkdownStyle';
 import type { MarkdownRenderingProfile } from '../rendering/MarkdownRenderingProfile';
@@ -82,9 +82,12 @@ type EnrichedMarkdownTextAdapterProps = Readonly<{
     streamingRevealPreset?: StreamingTextRevealPreset;
     testID?: string;
     suppressLeadingTopMargin?: boolean;
+    fillContainer?: boolean;
+    agentTexMath: boolean;
 }>;
 
 export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTextAdapterProps) => {
+    const runtimeStatus = useEnrichedMarkdownRuntimeStatus();
     const styleBundle = useEnrichedMarkdownStyle({
         profile: props.profile,
         textStyle: props.textStyle,
@@ -93,6 +96,7 @@ export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTe
         () => sanitizeEnrichedMarkdownLinkTargets(props.markdown),
         [props.markdown],
     );
+    const md4cFlags = resolveEnrichedMarkdownMd4cFlags(props.agentTexMath);
 
     const handleLinkPress = React.useCallback((event: { url: string }) => {
         const normalizedUrl = normalizeMarkdownLinkUrl(event.url);
@@ -105,11 +109,6 @@ export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTe
         preset: props.streamingRevealPreset,
     });
     const flavor = React.useMemo(() => resolveEnrichedMarkdownFlavor(sanitizedMarkdown), [sanitizedMarkdown]);
-
-    React.useEffect(() => {
-        if (Platform.OS !== 'web') return;
-        void preloadEnrichedMarkdownRuntime();
-    }, []);
 
     useWebRevealStyleInsertion({
         enabled: revealConfig != null,
@@ -125,7 +124,13 @@ export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTe
         if (Platform.OS === 'web') {
             const webProps: Record<string, unknown> = {
                 'data-testid': props.testID,
-                renderRawFallback: 'hidden',
+                // Hiding the raw Markdown fallback is only defensible while the runtime is
+                // still loading: the transcript holds its first-paint cover over exactly that
+                // window, and the remount below lands the AST in the same commit the cover
+                // releases. Once the runtime has settled, a raw fallback can only mean the
+                // parse itself failed, and hiding it would leave real text present-but-
+                // invisible with nothing bounding the window.
+                renderRawFallback: runtimeStatus === 'pending' ? 'hidden' : true,
             };
             if (props.streamingAnimated) {
                 webProps.streamingAnimation = true;
@@ -142,28 +147,32 @@ export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTe
             allowFontScaling: true,
             streamingAnimation: props.streamingAnimated && flavor === 'commonmark',
         };
-    }, [flavor, props.streamingAnimated, props.suppressLeadingTopMargin, props.testID]);
+    }, [flavor, props.streamingAnimated, props.suppressLeadingTopMargin, props.testID, runtimeStatus]);
 
     const containerStyle = React.useMemo(() => {
+        const baseContainerStyle = props.fillContainer === false
+            ? { ...styleBundle.containerStyle, width: undefined }
+            : styleBundle.containerStyle;
         if (Platform.OS !== 'web' || revealConfig == null) {
-            return styleBundle.containerStyle;
+            return baseContainerStyle;
         }
 
         return ({
-            ...styleBundle.containerStyle,
+            ...baseContainerStyle,
             [ENRICHED_REVEAL_DURATION_VAR]: `${revealConfig.durationMs}ms`,
             [ENRICHED_REVEAL_EASING_VAR]: revealConfig.easing,
             [ENRICHED_REVEAL_TRANSLATE_Y_VAR]: `${revealConfig.translateYPx}px`,
         } as unknown) as EnrichedMarkdownTextProps['containerStyle'];
-    }, [revealConfig, styleBundle.containerStyle]);
+    }, [props.fillContainer, revealConfig, styleBundle.containerStyle]);
 
     return (
         <EnrichedMarkdownText
+            key={runtimeStatus === 'ready' ? 'runtime-ready' : 'runtime-cold'}
             {...platformProps}
             markdown={sanitizedMarkdown}
             markdownStyle={styleBundle.markdownStyle}
             containerStyle={containerStyle}
-            md4cFlags={ENRICHED_MARKDOWN_MD4C_FLAGS}
+            md4cFlags={md4cFlags}
             onLinkPress={handleLinkPress}
             selectable={props.selectable}
             allowTrailingMargin={false}

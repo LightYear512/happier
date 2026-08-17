@@ -1,12 +1,14 @@
 # Happier Docs
 
-This folder documents how Happier works internally, with a focus on protocol, backend architecture, deployment, and the CLI tool. Start here.
+This folder documents how Happier works internally, with a focus on protocol, backend architecture, deployment, and the CLI tool. Published user, operator, self-hoster, and public contributor documentation lives in `apps/docs/content/docs/**`. Start here for internal technical documentation.
 
 ## Index
 - protocol.md: Wire protocol (WebSocket), payload formats, sequencing, and concurrency rules.
 - api.md: HTTP endpoints and authentication flows.
 - encryption.md: Encryption boundaries, on-wire encoding, and session storage modes.
 - feature-gating.md: Canonical feature catalog, payload, policy, and gate-consumption contracts.
+- compatibility.md: Released/predecessor baselines, mixed-version seams, rollout directions, and compatibility-path lifecycle.
+- pending-delivery.md: Pending queue ownership, Pending Delivery Attempt V1 vocabulary, admission, authorization, and compatibility boundaries.
 - testing.md: Repository test lanes, placement rules, and e2e conventions.
 - binary-runtime.md: Binary-safe runtime rules and bundled internal workspace packaging.
 - backend-architecture.md: Internal backend structure, data flow, and key subsystems.

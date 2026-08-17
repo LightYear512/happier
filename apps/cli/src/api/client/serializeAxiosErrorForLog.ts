@@ -44,15 +44,39 @@ function redactMessageForLog(raw: unknown): string {
 }
 
 function readSafeErrorCode(error: Error): string | undefined {
-  const raw = (error as { code?: unknown }).code;
+    const raw = (error as { code?: unknown }).code;
+    if (typeof raw !== 'string') return undefined;
+    const value = raw.trim();
+    return /^[A-Za-z0-9_.:-]{1,160}$/u.test(value) ? value : undefined;
+}
+
+function readSafeResponseField(data: unknown, field: 'error' | 'reason'): string | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const raw = (data as Record<string, unknown>)[field];
   if (typeof raw !== 'string') return undefined;
   const value = raw.trim();
   return /^[A-Za-z0-9_.:-]{1,160}$/u.test(value) ? value : undefined;
 }
 
+function readSafeResponseCorrelationId(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const raw = (data as Record<string, unknown>).correlationId;
+  return typeof raw === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/u.test(raw) ? raw : undefined;
+}
+
+function readSafeResponseRetryAfterMs(data: unknown): number | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const raw = (data as Record<string, unknown>).retryAfterMs;
+  return typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0 ? raw : undefined;
+}
+
 // IMPORTANT: Do not log axios error.config.headers.Authorization or request body, which may contain secrets.
 export function serializeAxiosErrorForLog(error: unknown): Record<string, unknown> {
   if (axios.isAxiosError(error)) {
+    const responseError = readSafeResponseField(error.response?.data, 'error');
+    const responseReason = readSafeResponseField(error.response?.data, 'reason');
+    const responseCorrelationId = readSafeResponseCorrelationId(error.response?.data);
+    const responseRetryAfterMs = readSafeResponseRetryAfterMs(error.response?.data);
     return {
       name: error.name,
       message: redactMessageForLog(error.message),
@@ -60,6 +84,10 @@ export function serializeAxiosErrorForLog(error: unknown): Record<string, unknow
       status: error.response?.status,
       method: typeof error.config?.method === 'string' ? error.config.method.toUpperCase() : undefined,
       url: redactUrlForLog(error.config?.url),
+      ...(responseError ? { responseError } : {}),
+      ...(responseReason ? { responseReason } : {}),
+      ...(responseCorrelationId ? { responseCorrelationId } : {}),
+      ...(responseRetryAfterMs !== undefined ? { responseRetryAfterMs } : {}),
     };
   }
 

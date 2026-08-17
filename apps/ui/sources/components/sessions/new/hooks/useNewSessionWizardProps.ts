@@ -1,6 +1,9 @@
+import type { ComposerSuggestionKindId } from '@/components/autocomplete/composerSuggestionKinds';
+import type { ActiveSuggestionsHandler } from '@/components/autocomplete/useActiveSuggestions';
 import * as React from 'react';
 
 import type { AgentId } from '@/agents/catalog/catalog';
+import type { NewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { t } from '@/text';
 import { getRequiredSecretEnvVarNames } from '@/sync/domains/profiles/profileSecrets';
@@ -35,7 +38,24 @@ function tNoParams(key: string): string {
     return (t as any)(key);
 }
 
+/** The wizard-only prop sections. Absent entirely when the simple panel is rendered. */
+export type NewSessionWizardSectionProps = Readonly<{
+    layout: NewSessionWizardLayoutProps;
+    agent: NewSessionWizardAgentProps;
+    machine: NewSessionWizardMachineProps;
+    footer: NewSessionWizardFooterProps;
+    sectionPresentation?: Partial<Record<NewSessionWizardSelectionSectionId, NewSessionWizardSectionPresentation>>;
+    useColumnLayout?: boolean;
+}>;
+
 export function useNewSessionWizardProps(params: Readonly<{
+    /**
+     * TOO MUCH: the enhanced wizard is off by default, yet this hook used to assemble every
+     * wizard section on every render of a screen that renders the simple panel and throws
+     * them away. Only the profiles section is shared with the simple variant, so the rest is
+     * built only when the wizard is the rendered variant.
+     */
+    enabled: boolean;
     // Layout
     theme: any;
     styles: any;
@@ -103,7 +123,7 @@ export function useNewSessionWizardProps(params: Readonly<{
     acpConfigOptions?: NewSessionWizardAgentProps['acpConfigOptions'];
     acpConfigOptionsProbe?: NewSessionWizardAgentProps['acpConfigOptionsProbe'];
     acpConfigOptionOverrides?: NewSessionWizardAgentProps['acpConfigOptionOverrides'];
-    setAcpConfigOptionOverride?: NewSessionWizardAgentProps['setAcpConfigOptionOverride'];
+    setSessionConfigOptionOverride?: NewSessionWizardAgentProps['setSessionConfigOptionOverride'];
     modelMode: ModelMode | undefined;
     setModelMode: (mode: ModelMode) => void;
     selectedIndicatorColor: string;
@@ -132,15 +152,14 @@ export function useNewSessionWizardProps(params: Readonly<{
     setFavoriteDirectories: (dirs: string[]) => void;
 
     // Footer section
-    sessionPrompt: string;
+    promptStore: NewSessionPromptStore;
     setSessionPrompt: (v: string) => void;
     handleCreateSession: NewSessionWizardFooterProps['handleCreateSession'];
     canCreate: boolean;
     isCreating: boolean;
     submitAccessibilityLabel?: NewSessionWizardFooterProps['submitAccessibilityLabel'];
-    emptyAutocompletePrefixes: any;
-    emptyAutocompleteSuggestions: any;
-    onAutocompleteSuggestionSelect?: NewSessionWizardFooterProps['onAutocompleteSuggestionSelect'];
+    emptyAutocompleteKinds: readonly ComposerSuggestionKindId[];
+    emptyAutocompleteSuggestions: ActiveSuggestionsHandler;
     connectionStatus?: any;
     machinePopover?: NewSessionWizardFooterProps['machinePopover'];
     pathPopover?: NewSessionWizardFooterProps['pathPopover'];
@@ -151,15 +170,12 @@ export function useNewSessionWizardProps(params: Readonly<{
     agentInputExtraActionChips?: ReadonlyArray<AgentInputExtraActionChip>;
     attachmentFlowId?: string | null;
 }>): Readonly<{
-    layout: NewSessionWizardLayoutProps;
     profiles: NewSessionWizardProfilesProps;
-    agent: NewSessionWizardAgentProps;
-    machine: NewSessionWizardMachineProps;
-    footer: NewSessionWizardFooterProps;
-    sectionPresentation?: Partial<Record<NewSessionWizardSelectionSectionId, NewSessionWizardSectionPresentation>>;
-    useColumnLayout?: boolean;
+    wizardSections: NewSessionWizardSectionProps | null;
 }> {
-    const wizardLayoutProps = React.useMemo((): NewSessionWizardLayoutProps => {
+    const enabled = params.enabled;
+    const wizardLayoutProps = React.useMemo((): NewSessionWizardLayoutProps | null => {
+        if (!enabled) return null;
         return {
             theme: params.theme,
             styles: params.styles,
@@ -172,6 +188,7 @@ export function useNewSessionWizardProps(params: Readonly<{
             shouldBottomAnchor: params.shouldBottomAnchor,
         };
     }, [
+        enabled,
         params.headerHeight,
         params.newSessionBottomPadding,
         params.newSessionSidePadding,
@@ -278,6 +295,7 @@ export function useNewSessionWizardProps(params: Readonly<{
     ]);
 
     const installableDepInstallers = React.useMemo((): InstallableDepInstallerProps[] => {
+        if (!enabled) return [];
         if (!params.selectedMachineId) return [];
         if (params.wizardInstallableDeps.length === 0) return [];
 
@@ -318,9 +336,10 @@ export function useNewSessionWizardProps(params: Readonly<{
                 });
             },
         }));
-    }, [params.selectedMachineCapabilities.status, params.selectedMachineId, params.targetServerId, params.wizardInstallableDeps]);
+    }, [enabled, params.selectedMachineCapabilities.status, params.selectedMachineId, params.targetServerId, params.wizardInstallableDeps]);
 
-    const wizardAgentProps = React.useMemo((): NewSessionWizardAgentProps => {
+    const wizardAgentProps = React.useMemo((): NewSessionWizardAgentProps | null => {
+        if (!enabled) return null;
         const agentPickerProbe: NewSessionWizardAgentProps['agentPickerProbe'] =
             buildCliAvailabilityProbeState({
                 selectedMachineId: params.selectedMachineId,
@@ -355,7 +374,7 @@ export function useNewSessionWizardProps(params: Readonly<{
             acpConfigOptions: params.acpConfigOptions,
             acpConfigOptionsProbe: params.acpConfigOptionsProbe,
             acpConfigOptionOverrides: params.acpConfigOptionOverrides,
-            setAcpConfigOptionOverride: params.setAcpConfigOptionOverride,
+            setSessionConfigOptionOverride: params.setSessionConfigOptionOverride,
             modelMode: params.modelMode,
             setModelMode: params.setModelMode,
             selectedIndicatorColor: params.selectedIndicatorColor,
@@ -365,6 +384,7 @@ export function useNewSessionWizardProps(params: Readonly<{
             installableDepInstallers,
         };
     }, [
+        enabled,
         params.agentType,
         params.agentLabel,
         params.agentPickerOptions,
@@ -391,7 +411,7 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.selectedBackendEntry,
         params.setFavoriteModelSelections,
         params.setAgentType,
-        params.setAcpConfigOptionOverride,
+        params.setSessionConfigOptionOverride,
         params.setAcpSessionModeId,
         params.setModelMode,
         params.handlePermissionModeChange,
@@ -399,7 +419,8 @@ export function useNewSessionWizardProps(params: Readonly<{
         installableDepInstallers,
     ]);
 
-    const wizardMachineProps = React.useMemo((): NewSessionWizardMachineProps => {
+    const wizardMachineProps = React.useMemo((): NewSessionWizardMachineProps | null => {
+        if (!enabled) return null;
         return {
             machines: params.machines,
             serverId: params.targetServerId,
@@ -421,6 +442,7 @@ export function useNewSessionWizardProps(params: Readonly<{
             setFavoriteDirectories: params.setFavoriteDirectories,
         };
     }, [
+        enabled,
         params.favoriteDirectories,
         params.favoriteMachineItems,
         params.favoriteMachines,
@@ -441,17 +463,17 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.usePathPickerSearch,
     ]);
 
-    const wizardFooterProps = React.useMemo((): NewSessionWizardFooterProps => {
+    const wizardFooterProps = React.useMemo((): NewSessionWizardFooterProps | null => {
+        if (!enabled) return null;
         return {
-            sessionPrompt: params.sessionPrompt,
+            promptStore: params.promptStore,
             setSessionPrompt: params.setSessionPrompt,
             handleCreateSession: params.handleCreateSession,
             canCreate: params.canCreate,
             isCreating: params.isCreating,
             submitAccessibilityLabel: params.submitAccessibilityLabel,
-            emptyAutocompletePrefixes: params.emptyAutocompletePrefixes,
+            emptyAutocompleteKinds: params.emptyAutocompleteKinds,
             emptyAutocompleteSuggestions: params.emptyAutocompleteSuggestions,
-            onAutocompleteSuggestionSelect: params.onAutocompleteSuggestionSelect,
             connectionStatus: params.connectionStatus,
             machinePopover: params.machinePopover,
             pathPopover: params.pathPopover,
@@ -466,14 +488,14 @@ export function useNewSessionWizardProps(params: Readonly<{
         // broad mirrors the previous in-screen memoization behavior and avoids subtle
         // referential changes during refactors.
     }, [
+        enabled,
         params.agentType,
         params.agentInputExtraActionChips,
         params.attachmentFlowId,
         params.canCreate,
         params.connectionStatus,
-        params.emptyAutocompletePrefixes,
+        params.emptyAutocompleteKinds,
         params.emptyAutocompleteSuggestions,
-        params.onAutocompleteSuggestionSelect,
         params.handleCreateSession,
         params.isCreating,
         params.isResumeSupportChecking,
@@ -481,18 +503,34 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.pathPopover,
         params.resumePopover,
         params.resumeSessionId,
-        params.sessionPrompt,
+        params.promptStore,
         params.sessionPromptInputMaxHeight,
         params.setSessionPrompt,
     ]);
 
+    const wizardSections = React.useMemo((): NewSessionWizardSectionProps | null => {
+        if (!wizardLayoutProps || !wizardAgentProps || !wizardMachineProps || !wizardFooterProps) {
+            return null;
+        }
+        return {
+            layout: wizardLayoutProps,
+            sectionPresentation: params.sectionPresentation,
+            useColumnLayout: params.useColumnLayout,
+            agent: wizardAgentProps,
+            machine: wizardMachineProps,
+            footer: wizardFooterProps,
+        };
+    }, [
+        params.sectionPresentation,
+        params.useColumnLayout,
+        wizardAgentProps,
+        wizardFooterProps,
+        wizardLayoutProps,
+        wizardMachineProps,
+    ]);
+
     return {
-        layout: wizardLayoutProps,
-        sectionPresentation: params.sectionPresentation,
-        useColumnLayout: params.useColumnLayout,
         profiles: wizardProfilesProps,
-        agent: wizardAgentProps,
-        machine: wizardMachineProps,
-        footer: wizardFooterProps,
+        wizardSections,
     };
 }

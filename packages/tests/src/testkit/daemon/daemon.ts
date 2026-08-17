@@ -581,6 +581,12 @@ export function resolveTestDaemonOwnershipLeasesDir(rootDir: string = repoRootDi
 
 export function sanitizeDaemonEnvForSpawn(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const sanitized = { ...env };
+  // Source-entrypoint E2E runs must not inherit a stack's pinned-dist fast path.
+  if (shouldUseCliSourceEntrypoint(sanitized)) {
+    sanitized.HAPPIER_CLI_SUBPROCESS_PREFER_TSX = '1';
+    delete sanitized.HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT;
+    delete sanitized.HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT;
+  }
   delete sanitized.TMUX;
   delete sanitized.TMUX_PANE;
   delete sanitized.TMUX_TMPDIR;
@@ -621,9 +627,13 @@ export async function startTestDaemon(params: {
   happyHomeDir: string;
   env: NodeJS.ProcessEnv;
   snapshotDir?: string;
+  preparedDistSnapshotOnly?: boolean;
   startupTimeoutMs?: number;
   cleanupDescendantsOnExit?: boolean;
 }): Promise<StartedDaemon> {
+  if (params.preparedDistSnapshotOnly === true && !params.snapshotDir?.trim()) {
+    throw new Error('startTestDaemon preparedDistSnapshotOnly requires an explicit snapshotDir');
+  }
   const stdoutPath = resolve(params.testDir, 'daemon.stdout.log');
   const stderrPath = resolve(params.testDir, 'daemon.stderr.log');
   const phaseTimeoutMs = resolveDaemonStartupPhaseTimeoutMs(params.env, params.startupTimeoutMs);
@@ -664,6 +674,7 @@ export async function startTestDaemon(params: {
       },
       {
         snapshotDir: params.snapshotDir ?? resolveDaemonCliSnapshotDir({ testDir: params.testDir, env: params.env }),
+        preparedDistSnapshotOnly: params.preparedDistSnapshotOnly,
         skipDistIntegrityCheck: true,
         skipSourceFreshnessCheck: true,
         buildTimeoutMs: cliDistBuildTimeoutMs,

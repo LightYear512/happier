@@ -1,5 +1,12 @@
 import type { ReactNode } from 'react';
-import type { AccountProfile, AcpConfigOptionOverridesV1, DirectSessionLinkEnsureRequest, DirectSessionsSource } from '@happier-dev/protocol';
+import type {
+    AccountProfile,
+    AcpConfigOptionOverridesV1,
+    AgentRuntimeDescriptorV1,
+    DirectSessionLinkEnsureRequest,
+    DirectSessionsSource,
+    PendingDeliveryDetailV1,
+} from '@happier-dev/protocol';
 import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReducer';
 import type { AgentId } from './registryCore';
 import { AGENT_IDS, getAgentCore, resolveAgentIdFromFlavor } from './registryCore';
@@ -10,6 +17,7 @@ import type { Settings } from '@/sync/domains/settings/settings';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { NonSteerablePayloadReason } from '@/sync/domains/session/control/submitMode';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
+import type { GoalActionCapabilities } from '@/components/sessions/workState/goalActionVisibility';
 import { CODEX_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/codex/uiBehavior';
 import { CLAUDE_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/claude/uiBehavior';
 import { AUGGIE_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/auggie/uiBehavior';
@@ -17,6 +25,14 @@ import { OPENCODE_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/opencode/uiBeh
 import { PI_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/pi/uiBehavior';
 import { CUSTOM_ACP_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/customAcp/uiBehavior';
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput';
+import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import type { PendingInputServerWireMode } from '@/sync/engine/pending/pendingInputServerWireContract';
+
+export type PendingDeliveryTransientAction = Readonly<{
+    id: 'interrupt_and_run';
+    localId: string;
+    stateAtMs?: number;
+}>;
 
 type CapabilityResults = Partial<Record<CapabilityId, CapabilityDetectResult>>;
 export type SessionComposerNonSteerablePayloadReason = Extract<NonSteerablePayloadReason, 'provider_config_change_refused'>;
@@ -54,7 +70,34 @@ export type DirectBrowseLinkEnsureRequestExtras = Readonly<
     Partial<Omit<DirectSessionLinkEnsureRequest, 'machineId' | 'providerId' | 'remoteSessionId' | 'titleHint' | 'directoryHint'>>
 >;
 
+export type AgentSessionHandoffProviderPatch = Readonly<{
+    clearMetadataKeys?: readonly string[];
+    metadataPatch?: Record<string, unknown>;
+    agentRuntimeDescriptor?: AgentRuntimeDescriptorV1 | null;
+    directSessionAgentRuntimeDescriptor?: AgentRuntimeDescriptorV1 | null;
+}>;
+
 export type AgentUiBehavior = Readonly<{
+    pendingDelivery?: Readonly<{
+        resolveLabelKey?: (ctx: {
+            agentId: AgentId;
+            session: Session;
+            localId: string | null;
+            detail: PendingDeliveryDetailV1 | undefined;
+        }) => TranslationKey | null;
+        resolveTransientAction?: (ctx: {
+            agentId: AgentId;
+            session: Session;
+            localId: string;
+            wireMode: PendingInputServerWireMode;
+        }) => PendingDeliveryTransientAction | null;
+    }>;
+    attachedSessionTerminal?: Readonly<{
+        isAvailable?: (ctx: {
+            agentId: AgentId;
+            session: Session;
+        }) => boolean;
+    }>;
     guidance?: Readonly<{
         includeInSessionGettingStartedCliExamples?: boolean;
     }>;
@@ -66,6 +109,17 @@ export type AgentUiBehavior = Readonly<{
             agentId: AgentId;
             session: Session;
         }) => boolean;
+        /**
+         * Provider goal-action capability profile applied when no goal item carries its own
+         * `goalCapabilities` yet (the "Set goal" form before any native goal is derived). Lets a
+         * provider restrict the control surface (e.g. Claude: edit/clear only, no budget) at the
+         * session level without the goal-item round-trip. Return null/undefined to fall back to the
+         * full legacy control surface.
+         */
+        resolveGoalActionCapabilityProfile?: (ctx: {
+            agentId: AgentId;
+            session: Session;
+        }) => GoalActionCapabilities | null;
     }>;
     mcpServers?: Readonly<{
         supportsDetectedConfigScan?: boolean;
@@ -117,6 +171,16 @@ export type AgentUiBehavior = Readonly<{
             }) => DirectBrowseLinkEnsureRequestExtras;
         }>;
     }>;
+    sessionHandoff?: Readonly<{
+        buildProviderPatch?: (ctx: {
+            agentId: AgentId;
+            metadata: Record<string, unknown>;
+            sourceMetadataForHandoff?: Record<string, unknown>;
+            targetRemoteSessionId: string;
+            targetDirectSource: DirectSessionsSource | Record<string, unknown>;
+            targetRuntimeDescriptor?: AgentRuntimeDescriptorV1;
+        }) => AgentSessionHandoffProviderPatch;
+    }>;
     payload?: Readonly<{
         buildSpawnEnvironmentVariables?: (opts: {
             agentId: AgentId;
@@ -162,10 +226,6 @@ export type AgentUiBehavior = Readonly<{
             session: Session;
             subagents: readonly SessionSubagent[];
         }) => readonly ReactNode[];
-        createTeammateLauncherDetailsTab?: (ctx: {
-            session: Session;
-            teamId: string;
-        }) => DetailsTab | null;
         renderDetailsTab?: (ctx: {
             sessionId: string;
             scopeId: string;
@@ -205,6 +265,17 @@ export type NewSessionPreflightIssue = Readonly<{
 
 function mergeAgentUiBehavior(a: AgentUiBehavior, b: AgentUiBehavior): AgentUiBehavior {
     return {
+        ...(a.pendingDelivery || b.pendingDelivery
+            ? { pendingDelivery: { ...(a.pendingDelivery ?? {}), ...(b.pendingDelivery ?? {}) } }
+            : {}),
+        ...(a.attachedSessionTerminal || b.attachedSessionTerminal
+            ? {
+                attachedSessionTerminal: {
+                    ...(a.attachedSessionTerminal ?? {}),
+                    ...(b.attachedSessionTerminal ?? {}),
+                },
+            }
+            : {}),
         ...(a.guidance || b.guidance ? { guidance: { ...(a.guidance ?? {}), ...(b.guidance ?? {}) } } : {}),
         ...(a.sessionUsage || b.sessionUsage ? { sessionUsage: { ...(a.sessionUsage ?? {}), ...(b.sessionUsage ?? {}) } } : {}),
         ...(a.workState || b.workState ? { workState: { ...(a.workState ?? {}), ...(b.workState ?? {}) } } : {}),
@@ -233,6 +304,7 @@ function mergeAgentUiBehavior(a: AgentUiBehavior, b: AgentUiBehavior): AgentUiBe
                 },
             }
             : {}),
+        ...(a.sessionHandoff || b.sessionHandoff ? { sessionHandoff: { ...(a.sessionHandoff ?? {}), ...(b.sessionHandoff ?? {}) } } : {}),
         ...(a.payload || b.payload ? { payload: { ...(a.payload ?? {}), ...(b.payload ?? {}) } } : {}),
         ...(a.sessionComposer || b.sessionComposer ? { sessionComposer: { ...(a.sessionComposer ?? {}), ...(b.sessionComposer ?? {}) } } : {}),
         ...(a.sessionSubagents || b.sessionSubagents
@@ -284,6 +356,43 @@ export const AGENTS_UI_BEHAVIOR: Readonly<Record<AgentId, AgentUiBehavior>> = Ob
 export function resolveAgentUiBehaviorFromFlavor(flavor: unknown): AgentUiBehavior | null {
     const agentId = typeof flavor === 'string' ? resolveAgentIdFromFlavor(flavor) : null;
     return agentId ? AGENTS_UI_BEHAVIOR[agentId] ?? null : null;
+}
+
+export function isAttachedSessionTerminalAvailableForSession(session: Session): boolean {
+    const agentId = resolveAgentIdFromSessionMetadata(session.metadata);
+    if (!agentId) return false;
+    const isAvailable = AGENTS_UI_BEHAVIOR[agentId].attachedSessionTerminal?.isAvailable;
+    return isAvailable?.({ agentId, session }) === true;
+}
+
+export function resolvePendingDeliveryTransientActionForSession(ctx: {
+    session: Session;
+    localId: string;
+    wireMode: PendingInputServerWireMode;
+}): PendingDeliveryTransientAction | null {
+    const agentId = resolveAgentIdFromSessionMetadata(ctx.session.metadata);
+    if (!agentId) return null;
+    return AGENTS_UI_BEHAVIOR[agentId].pendingDelivery?.resolveTransientAction?.({
+        agentId,
+        session: ctx.session,
+        localId: ctx.localId,
+        wireMode: ctx.wireMode,
+    }) ?? null;
+}
+
+export function resolvePendingDeliveryLabelKeyForSession(ctx: {
+    session: Session;
+    localId: string | null;
+    detail: PendingDeliveryDetailV1 | undefined;
+}): TranslationKey | null {
+    const agentId = resolveAgentIdFromSessionMetadata(ctx.session.metadata);
+    if (!agentId) return null;
+    return AGENTS_UI_BEHAVIOR[agentId].pendingDelivery?.resolveLabelKey?.({
+        agentId,
+        session: ctx.session,
+        localId: ctx.localId,
+        detail: ctx.detail,
+    }) ?? null;
 }
 
 export function getAgentResumeExperimentsFromSettings(agentId: AgentId, settings: Settings): AgentResumeExperiments {
@@ -428,4 +537,17 @@ export function supportsEditableSessionGoals(ctx: {
 }): boolean {
     const fn = AGENTS_UI_BEHAVIOR[ctx.agentId]?.workState?.supportsEditableGoals;
     return fn ? fn(ctx) : false;
+}
+
+/**
+ * Provider goal-action capability profile for a session, used as the fallback when no goal item
+ * carries its own `goalCapabilities` (the "Set goal" form before any native goal exists). Returns
+ * null when the provider declares no profile, in which case the full legacy control surface applies.
+ */
+export function resolveSessionGoalActionCapabilityProfile(ctx: {
+    agentId: AgentId;
+    session: Session;
+}): GoalActionCapabilities | null {
+    const fn = AGENTS_UI_BEHAVIOR[ctx.agentId]?.workState?.resolveGoalActionCapabilityProfile;
+    return fn ? fn(ctx) : null;
 }

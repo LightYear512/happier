@@ -63,6 +63,157 @@ describe('projectSessionListPlacement', () => {
         });
     });
 
+    it('uses fresh legacy thinking evidence for working placement without detached runtime activity', () => {
+        const nowMs = 10_000;
+
+        expect(projectSessionListPlacement({
+            nowMs,
+            session: makeSession({
+                active: true,
+                activeAt: nowMs - 1_000,
+                presence: 'online',
+                thinking: true,
+                thinkingAt: nowMs - 1_000,
+                latestTurnStatus: undefined,
+                latestTurnStatusObservedAt: undefined,
+                lastRuntimeIssue: null,
+                runtimeActivityActiveCount: 0,
+                runtimeActivityState: 'idle',
+                runtimeActivityObservedAt: null,
+                runtimeActivityRevision: 1,
+            }),
+        })).toEqual({
+            kind: 'working',
+            timestamp: null,
+            retainedWorking: false,
+        });
+    });
+
+    it('places background activity in Working ahead of Ready after the foreground turn completed', () => {
+        const nowMs = 10_000;
+
+        expect(projectSessionListPlacement({
+            nowMs,
+            session: makeSession({
+                active: true,
+                activeAt: nowMs - 180_000,
+                presence: 'online',
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: nowMs - 2_000,
+                lastRuntimeIssue: null,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: nowMs - 1_000,
+                runtimeActivityRevision: 1,
+            }),
+        })).toEqual({
+            kind: 'working',
+            timestamp: null,
+            retainedWorking: false,
+        });
+    });
+
+    it('keeps canonical background activity in Working on an aged projection the runtime still witnesses', () => {
+        // The projection instant is stamped only when the projected pair CHANGES, so an hour-old
+        // `observedAt` is the normal shape of work that has been running for an hour. Placement must
+        // not require a fresh stamp — that would drop live background work out of Working.
+        const nowMs = 10_000_000;
+
+        const placement = projectSessionListPlacement({
+            nowMs,
+            session: makeSession({
+                active: true,
+                activeAt: nowMs - 15_000,
+                presence: 'online',
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: nowMs - 2_000,
+                lastRuntimeIssue: null,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: nowMs - 3_600_000,
+                runtimeActivityRevision: 1,
+            }),
+        });
+
+        expect(placement.kind).toBe('working');
+        expect(placement.retainedWorking).toBe(false);
+    });
+
+    it('drops background activity out of Working once nothing witnesses the runtime any more', () => {
+        // Was: "keeps canonical background activity in Working without an observedAt freshness
+        // lease" — the contract that kept a session published `active` moments before an
+        // unwitnessed death pinned to Working forever. With the session keep-alive at 15 s, a
+        // three-minute silence is twelve missed pings, not a slow session.
+        const nowMs = 10_000_000;
+
+        const placement = projectSessionListPlacement({
+            nowMs,
+            session: makeSession({
+                active: true,
+                activeAt: nowMs - 180_000,
+                presence: 'online',
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: nowMs - 180_000,
+                lastRuntimeIssue: null,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: nowMs - 180_000,
+                runtimeActivityRevision: 1,
+            }),
+        });
+
+        expect(placement.kind).not.toBe('working');
+    });
+
+    it.each([
+        ['offline', { active: false, presence: 0, archivedAt: null }],
+        ['archived', { active: true, presence: 'online' as const, archivedAt: 9_000 }],
+    ])('does not place %s retained background activity in Working', (_label, lifecycle) => {
+        const nowMs = 10_000;
+        const placement = projectSessionListPlacement({
+            nowMs,
+            session: makeSession({
+                ...lifecycle,
+                latestTurnStatus: null,
+                latestTurnStatusObservedAt: null,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: nowMs - 1_000,
+                runtimeActivityRevision: 1,
+            }),
+        });
+
+        expect(placement.kind).toBe('none');
+    });
+
+    it('projects retained working placement for stale retained candidates', () => {
+        const now = 1_000_000;
+        const placement = projectSessionListPlacement({
+            session: makeSession({
+                active: true,
+                presence: 'online',
+                activeAt: now - 600_000,
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: now - 600_000,
+            }),
+            sessionKey: 'server-a:s1',
+            retainedWorkingSessionKeys: ['server-a:s1'],
+            nowMs: now,
+        });
+
+        expect(placement).toEqual({
+            kind: 'working',
+            timestamp: null,
+            retainedWorking: true,
+        });
+    });
+
     it('keeps terminal turn projection authoritative over fresh legacy thinking evidence', () => {
         const nowMs = 10_000;
 
@@ -77,6 +228,10 @@ describe('projectSessionListPlacement', () => {
                 latestTurnStatus: 'failed',
                 latestTurnStatusObservedAt: nowMs - 5_000,
                 lastRuntimeIssue: usageLimitIssue,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: nowMs - 1_000,
+                runtimeActivityRevision: 1,
             }),
         })).toEqual({
             kind: 'failed',
@@ -103,6 +258,64 @@ describe('projectSessionListPlacement', () => {
         })).toEqual({
             kind: 'failed',
             timestamp: 1_000,
+            retainedWorking: false,
+        });
+    });
+
+    it('promotes blocked pending delivery as action-required attention', () => {
+        expect(projectSessionListPlacement({
+            nowMs: 10_000,
+            session: makeSession({
+                pendingBlockedCount: 1,
+                createdAt: 100,
+                updatedAt: 2_000,
+                hasPendingUserActionRequests: false,
+                hasPendingPermissionRequests: false,
+                pendingRequestObservedAt: undefined,
+            }),
+        })).toEqual({
+            kind: 'action_required',
+            timestamp: 2_000,
+            retainedWorking: false,
+        });
+    });
+
+    it('promotes generic unread activity when an older ready event is already behind the read cursor', () => {
+        expect(projectSessionListPlacement({
+            nowMs: 10_000,
+            session: makeSession({
+                seq: 742,
+                lastViewedSessionSeq: 738,
+                hasUnreadMessages: true,
+                meaningfulActivityAt: 7_390,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: 7_000,
+                latestReadyEventSeq: 110,
+                latestReadyEventAt: 1_100,
+            }),
+        })).toEqual({
+            kind: 'unread',
+            timestamp: 7_390,
+            retainedWorking: false,
+        });
+    });
+
+    it('keeps a newer ready event authoritative over generic unread placement', () => {
+        expect(projectSessionListPlacement({
+            nowMs: 10_000,
+            session: makeSession({
+                seq: 742,
+                lastViewedSessionSeq: 738,
+                hasUnreadMessages: true,
+                meaningfulActivityAt: 7_390,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: 7_000,
+                latestReadyEventSeq: 742,
+                latestReadyEventAt: 7_400,
+            }),
+        })).toEqual({
+            kind: 'ready',
+            timestamp: 7_400,
             retainedWorking: false,
         });
     });
@@ -168,6 +381,53 @@ describe('projectSessionListPlacement', () => {
         })).toEqual({
             kind: 'failed',
             timestamp: 1_000,
+            retainedWorking: false,
+        });
+    });
+});
+
+describe('unread placement ordering key', () => {
+    it('orders unread placement by the unread entry time rather than the moving activity time', () => {
+        const session = makeSession({
+            seq: 742,
+            lastViewedSessionSeq: 738,
+            hasUnreadMessages: true,
+            unreadSince: 4_000,
+            meaningfulActivityAt: 9_500,
+            updatedAt: 9_500,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: 7_000,
+        });
+
+        expect(projectSessionListPlacement({ nowMs: 10_000, session })).toEqual({
+            kind: 'unread',
+            timestamp: 4_000,
+            retainedWorking: false,
+        });
+
+        // The same row after another message lands: the key must not move.
+        expect(projectSessionListPlacement({
+            nowMs: 10_000,
+            session: { ...session, seq: 743, meaningfulActivityAt: 9_900, updatedAt: 9_900 },
+        })).toEqual({
+            kind: 'unread',
+            timestamp: 4_000,
+            retainedWorking: false,
+        });
+    });
+
+    it('falls back to meaningful activity time when no unread entry time is available', () => {
+        expect(projectSessionListPlacement({
+            nowMs: 10_000,
+            session: makeSession({
+                seq: 742,
+                lastViewedSessionSeq: 738,
+                hasUnreadMessages: true,
+                meaningfulActivityAt: 7_390,
+            }),
+        })).toEqual({
+            kind: 'unread',
+            timestamp: 7_390,
             retainedWorking: false,
         });
     });

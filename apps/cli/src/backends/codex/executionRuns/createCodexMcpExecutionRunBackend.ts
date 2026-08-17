@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId, StartSessionResult, ToolCallId } from '@/agent/core';
 import type { PermissionMode } from '@/api/types';
 import { CodexMcpClient } from '@/backends/codex/codexMcpClient';
@@ -19,6 +20,7 @@ export function createCodexMcpExecutionRunBackend(args: Readonly<{
   cwd: string;
   env?: NodeJS.ProcessEnv;
   modelId?: string;
+  reasoningEffort?: string;
   permissionMode: PermissionMode;
 }>): AgentBackend {
   const client = new CodexMcpClient({ env: args.env });
@@ -34,7 +36,6 @@ export function createCodexMcpExecutionRunBackend(args: Readonly<{
     | {
         promise: Promise<void>;
         resolve: () => void;
-        reject: (error: Error) => void;
       } = null;
   let lastAssistantText = '';
   let fallbackCallIdCounter = 0;
@@ -91,25 +92,23 @@ export function createCodexMcpExecutionRunBackend(args: Readonly<{
 
   const resetResponseWaiter = () => {
     let resolve!: () => void;
-    let reject!: (error: Error) => void;
-    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    const promise = new Promise<void>((resolvePromise) => {
       resolve = resolvePromise;
-      reject = rejectPromise;
     });
     responseSettled = false;
-    responseWaiter = { promise, resolve, reject };
+    responseWaiter = { promise, resolve };
   };
 
-  const settleResponseWaiter = (error?: Error) => {
+  // Resolve-only by design: turn failures are reported through sendPrompt's thrown error, which the
+  // bounded runtime awaits before it ever reaches waitForResponseComplete(). Rejecting this waiter
+  // would leave its promise without a consumer and escape as a process-fatal unhandledRejection, so
+  // the waiter is only ever settled (resolved) to release any pending waitForResponseComplete().
+  const settleResponseWaiter = () => {
     if (!responseWaiter || responseSettled) return;
     responseSettled = true;
     const waiter = responseWaiter;
     responseWaiter = null;
     currentAbortController = null;
-    if (error) {
-      waiter.reject(error);
-      return;
-    }
     waiter.resolve();
   };
 
@@ -120,13 +119,16 @@ export function createCodexMcpExecutionRunBackend(args: Readonly<{
       args.permissionMode === 'default'
         ? { approvalPolicy: null as null, sandbox: null as null }
         : resolveCodexMcpPolicyForPermissionMode(args.permissionMode);
+    const modelId = readNonBlankSessionControlIdentifier(args.modelId);
+    const reasoningEffort = readNonBlankSessionControlIdentifier(args.reasoningEffort);
     return buildCodexMcpStartConfig({
       prompt,
       cwd: args.cwd,
       sandbox: policy.sandbox,
       approvalPolicy: policy.approvalPolicy,
       mcpServers: {},
-      ...(typeof args.modelId === 'string' && args.modelId.trim() ? { model: args.modelId.trim() } : {}),
+      ...(modelId !== null ? { model: modelId } : {}),
+      ...(reasoningEffort !== null ? { modelReasoningEffort: reasoningEffort } : {}),
     });
   };
 
@@ -260,7 +262,13 @@ export function createCodexMcpExecutionRunBackend(args: Readonly<{
       });
       const sendError = extractCodexToolErrorText(response);
       if (sendError) {
-        settleResponseWaiter(new Error(sendError));
+        // Provider-side failures (e.g. usage-limit responses) are surfaced through the single
+        // thrown-error channel that callers await. Settle the response waiter as resolved rather
+        // than rejecting it: the bounded runtime awaits this sendPrompt promise before it ever
+        // reaches waitForResponseComplete(), so rejecting the waiter here would leave its promise
+        // without a consumer and escape as a process-fatal unhandledRejection. The turn still
+        // fails cleanly via the throw; the session stays alive.
+        settleResponseWaiter();
         throw new Error(sendError);
       }
       if (!toolCallWasAborted && !vendorSessionId) {

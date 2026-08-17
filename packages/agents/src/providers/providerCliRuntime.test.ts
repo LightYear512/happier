@@ -24,8 +24,30 @@ describe('PROVIDER_CLI_RUNTIME_SPECS', () => {
         kind: 'github_release_binary',
         binaryName: 'codex',
         githubRepo: 'openai/codex',
+        assetNameByPlatform: {
+          win32: {
+            arm64: 'codex-package-aarch64-pc-windows-msvc.tar.gz',
+            x64: 'codex-package-x86_64-pc-windows-msvc.tar.gz',
+          },
+        },
+        archiveExtractionLimits: {
+          maxFileBytes: 384 * 1024 * 1024,
+          maxExpandedBytes: 384 * 1024 * 1024,
+        },
       },
     });
+
+    const managedInstall = getProviderCliRuntimeSpec('codex').managedInstall;
+    expect(managedInstall?.kind).toBe('github_release_binary');
+    if (managedInstall?.kind !== 'github_release_binary') return;
+    const archiveExtractionLimits = managedInstall.archiveExtractionLimits;
+    expect(archiveExtractionLimits).toBeDefined();
+    if (!archiveExtractionLimits) return;
+
+    // Checksum-pinned OpenAI release rust-v0.147.0 contains a 298,668,336-byte
+    // Codex executable and expands to 370,442,135 bytes across the package.
+    expect(archiveExtractionLimits.maxFileBytes).toBeGreaterThan(298_668_336);
+    expect(archiveExtractionLimits.maxExpandedBytes).toBeGreaterThan(370_442_135);
   });
 
   it('declares managed package sources for package-backed CLIs', () => {
@@ -112,6 +134,28 @@ describe('PROVIDER_CLI_RUNTIME_SPECS', () => {
       { kind: 'homePath', relativePath: 'AppData/Roaming/npm/opencode.cmd' },
     ]);
     expect(getProviderCliRuntimeSpec('codex').knownCommandCandidates).toBeNull();
+    expect(getProviderCliRuntimeSpec('grok').knownCommandCandidates).toEqual([
+      { kind: 'homeBinDir', relativeDir: '.grok/bin' },
+      { kind: 'homePath', relativePath: '.grok/bin/grok.exe' },
+      { kind: 'homeBinDir', relativeDir: '.local/bin' },
+      { kind: 'absolutePath', path: '/opt/homebrew/bin/grok' },
+      { kind: 'absolutePath', path: '/usr/local/bin/grok' },
+    ]);
+  });
+
+  it('keeps Grok on the official vendor-install contract without an agent binary fallback', () => {
+    expect(getProviderCliRuntimeSpec('grok')).toMatchObject({
+      title: 'Grok Build CLI',
+      binaryName: 'grok',
+      sourcePreferenceDefault: 'system-first',
+      managedInstall: null,
+      manualInstallKind: 'vendor_recipe',
+      acceptsJavaScriptFileOverride: false,
+      installGuideUrl: 'https://x.ai/cli',
+    });
+    expect(getProviderCliRuntimeSpec('grok').alternativeBinaryNames).toBeUndefined();
+    expect(JSON.stringify(getProviderCliRuntimeSpec('grok').manualInstallRecipes)).toContain('x.ai/cli/install.sh');
+    expect(JSON.stringify(getProviderCliRuntimeSpec('grok').manualInstallRecipes)).toContain('x.ai/cli/install.ps1');
   });
 
   it('declares Cursor as a system-first CLI with identity-checked fallback candidates', () => {

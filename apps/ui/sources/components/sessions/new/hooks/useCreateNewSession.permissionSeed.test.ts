@@ -16,6 +16,7 @@ import { renderScreen } from '@/dev/testkit';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,6 +32,11 @@ type SpawnPayloadCapture = {
     transcriptStorage?: 'persisted' | 'direct';
     windowsRemoteSessionLaunchMode?: 'hidden' | 'windows_terminal' | 'console';
     windowsTerminalWindowName?: string;
+    pendingFirstInput?: {
+        text: string;
+        localId: string;
+        meta?: Record<string, unknown>;
+    };
 } | null;
 
 type AutomationCreateCapture = {
@@ -323,6 +329,8 @@ async function setupUseCreateNewSessionHarness() {
     vi.doMock('@/sync/ops', () => ({
         machineSpawnNewSession: (...args: unknown[]) => machineSpawnNewSessionSpy(...args),
         machineBash: (...args: unknown[]) => machineBashSpy(...args),
+        completeMachineSpawnAttemptCustody: vi.fn(async () => true),
+        resetMachineSpawnAttemptCustody: vi.fn(async () => true),
     }));
     vi.doMock('@/components/sessions/new/modules/materializeNewSessionCheckout', () => ({
         materializeNewSessionCheckout: materializeNewSessionCheckoutSpy,
@@ -403,6 +411,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -417,7 +426,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -462,6 +471,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -476,7 +486,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'opencode' as any,
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: 'sess_old',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -503,14 +513,18 @@ describe('useCreateNewSession permission seeding', () => {
         expect(prefetchMachineCapabilitiesSpy).toHaveBeenCalledTimes(0);
     });
 
-    it('passes the selected model as initial message metaOverrides so next-prompt model backends can apply it on the first turn', async () => {
+    it('hands a plain first turn to a compatible daemon without relying on post-spawn UI follow-up', async () => {
         const {
             useCreateNewSession,
+            captured,
             followUpSpawnedSessionWithServerScopeSpy,
             machineSpawnNewSessionSpy,
         } = await setupUseCreateNewSessionHarness();
 
-        machineSpawnNewSessionSpy.mockResolvedValueOnce({ type: 'success', sessionId: 'sess_target' });
+        machineSpawnNewSessionSpy.mockImplementationOnce(async (options: unknown) => {
+            captured.value = options as SpawnPayloadCapture;
+            return { type: 'success', sessionId: 'sess_target' };
+        });
 
         let handleCreateSession: null | (() => Promise<void>) = null;
         const settings = { experiments: false } as unknown as Settings;
@@ -524,10 +538,14 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: {
+                    metadata: {},
+                    daemonState: { startedWithCliVersion: '0.2.10' },
+                },
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -538,7 +556,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'opencode' as any,
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'gpt' as any,
-                sessionPrompt: 'hello',
+                promptStore: createNewSessionPromptStore('hello'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -561,10 +579,98 @@ describe('useCreateNewSession permission seeding', () => {
             await handleCreateSession?.();
         });
 
+        expect(captured.value).toEqual(expect.objectContaining({
+            pendingFirstInput: {
+                text: 'hello',
+                localId: expect.stringMatching(/^first-turn-/),
+                meta: { model: 'gpt' },
+            },
+        }));
+        expect(followUpSpawnedSessionWithServerScopeSpy).not.toHaveBeenCalled();
+    });
+
+    it('carries the composer structured-input envelope into the first turn, merged with the model seed', async () => {
+        // The new-session composer builds `mentions[]` exactly like the session composer, but its
+        // first turn is sent by this hook rather than by `SessionView`. Without this the envelope
+        // is silently dropped and an `@session` reference reaches the agent as bare text.
+        const {
+            useCreateNewSession,
+            followUpSpawnedSessionWithServerScopeSpy,
+            machineSpawnNewSessionSpy,
+        } = await setupUseCreateNewSessionHarness();
+
+        machineSpawnNewSessionSpy.mockResolvedValueOnce({ type: 'success', sessionId: 'sess_target' });
+
+        let handleCreateSession: null | ((options?: unknown) => Promise<void>) = null;
+        const settings = { experiments: false } as unknown as Settings;
+        const machineEnvPresence: UseMachineEnvPresenceResult = {
+            isPreviewEnvSupported: false,
+            isLoading: false,
+            meta: {},
+            refreshedAt: null,
+            refresh: () => {},
+        };
+
+        function Test() {
+            const hook = useCreateNewSession({
+                launchIntentSignature: 'test-launch-intent',
+                router: { push: vi.fn(), replace: vi.fn() },
+                selectedMachineId: 'm1',
+                selectedPath: '/tmp',
+                selectedMachine: { metadata: {} },
+                setIsCreating: vi.fn(),
+                setIsResumeSupportChecking: vi.fn(),
+                settings,
+                useProfiles: false,
+                selectedProfileId: null,
+                profileMap: new Map(),
+                recentMachinePaths: [],
+                agentType: 'opencode' as any,
+                permissionMode: 'default' as PermissionMode,
+                modelMode: 'gpt' as any,
+                promptStore: createNewSessionPromptStore('see @session:peer-abc123'),
+                resumeSessionId: '',
+                agentNewSessionOptions: null,
+                machineEnvPresence,
+                secrets: [],
+                secretBindingsByProfileId: {},
+                selectedSecretIdByProfileIdByEnvVarName: {},
+                sessionOnlySecretValueByProfileIdByEnvVarName: {},
+                selectedMachineCapabilities: null,
+                targetServerId: 'server-a',
+                allowedTargetServerIds: ['server-a'],
+            });
+
+            handleCreateSession = hook.handleCreateSession as (options?: unknown) => Promise<void>;
+            return React.createElement('View');
+        }
+
+        await renderScreen(React.createElement(Test));
+
+        const envelope = {
+            v: 1,
+            mentions: [{
+                kind: 'happier.session',
+                ref: 'session:peer',
+                token: '@session:peer-abc123',
+                start: 4,
+                end: 24,
+            }],
+        };
+
+        await act(async () => {
+            await handleCreateSession?.({
+                structuredInputMetaOverrides: { happierStructuredInputV1: envelope },
+            });
+        });
+
         expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
             sessionId: 'sess_target',
-            initialMessageText: 'hello',
-            metaOverrides: { model: 'gpt' },
+            initialMessageText: 'see @session:peer-abc123',
+            metaOverrides: {
+                model: 'gpt',
+                happierStructuredInputV1: envelope,
+            },
         }));
     });
 
@@ -591,6 +697,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -605,7 +712,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex' as any,
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as any,
-                sessionPrompt: '/goal Ship slash support',
+                promptStore: createNewSessionPromptStore('/goal Ship slash support'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -656,6 +763,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -670,7 +778,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: {
                     connectedServices: {
@@ -727,6 +835,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -741,7 +850,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 mcpSelection: {
@@ -793,6 +902,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -807,7 +917,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'claude',
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 transcriptStorage: 'direct',
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
@@ -854,6 +964,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -868,7 +979,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -919,6 +1030,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -933,7 +1045,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -984,6 +1096,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1003,7 +1116,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'Ship the scoped follow-up fix',
+                promptStore: createNewSessionPromptStore('Ship the scoped follow-up fix'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -1066,6 +1179,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1085,7 +1199,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'Ship the scoped follow-up fix',
+                promptStore: createNewSessionPromptStore('Ship the scoped follow-up fix'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -1151,6 +1265,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1165,7 +1280,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'Ship the scoped follow-up fix',
+                promptStore: createNewSessionPromptStore('Ship the scoped follow-up fix'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -1230,6 +1345,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1244,7 +1360,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'Ship the scoped follow-up fix',
+                promptStore: createNewSessionPromptStore('Ship the scoped follow-up fix'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -1315,6 +1431,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: routerPush, replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1335,7 +1452,7 @@ describe('useCreateNewSession permission seeding', () => {
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
                 acpSessionModeId: 'plan',
-                sessionPrompt: 'Run the nightly maintenance checklist',
+                promptStore: createNewSessionPromptStore('Run the nightly maintenance checklist'),
                 transcriptStorage: 'direct',
                 resumeSessionId: '',
                 agentNewSessionOptions: { connectedServices },
@@ -1455,6 +1572,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: routerPush, replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1469,7 +1587,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'gpt-5' as ModelMode,
-                sessionPrompt: 'Update the scheduled work',
+                promptStore: createNewSessionPromptStore('Update the scheduled work'),
                 automationEditId: 'auto_existing',
                 transcriptStorage: 'direct',
                 resumeSessionId: '',
@@ -1550,6 +1668,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test(props: Readonly<{ automationDraft: NewSessionAutomationDraft }>) {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router,
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1564,7 +1683,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'gpt-5' as ModelMode,
-                sessionPrompt: 'Update the scheduled work',
+                promptStore: createNewSessionPromptStore('Update the scheduled work'),
                 automationEditId: 'auto_existing',
                 transcriptStorage: 'direct',
                 resumeSessionId: '',
@@ -1651,6 +1770,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test(props: Readonly<{ automationDraft: NewSessionAutomationDraft }>) {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router,
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1665,7 +1785,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'gpt-5' as ModelMode,
-                sessionPrompt: 'Update the scheduled work',
+                promptStore: createNewSessionPromptStore('Update the scheduled work'),
                 automationEditId: 'auto_existing',
                 transcriptStorage: 'direct',
                 resumeSessionId: '',
@@ -1760,6 +1880,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1774,7 +1895,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'PROMPT',
+                promptStore: createNewSessionPromptStore('PROMPT'),
                 resumeSessionId: 'sess_old',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -1828,6 +1949,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1863,7 +1985,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'PROMPT',
+                promptStore: createNewSessionPromptStore('PROMPT'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -1919,6 +2041,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -1955,7 +2078,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'PROMPT',
+                promptStore: createNewSessionPromptStore('PROMPT'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -2008,6 +2131,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -2022,7 +2146,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'PROMPT',
+                promptStore: createNewSessionPromptStore('PROMPT'),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -2077,6 +2201,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -2091,7 +2216,7 @@ describe('useCreateNewSession permission seeding', () => {
                 agentType: 'codex',
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 windowsRemoteSessionLaunchModeOverride: 'windows_terminal',

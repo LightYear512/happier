@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,10 +6,12 @@ import { join } from 'node:path';
 import { AGENT_IDS, DEFAULT_AGENT_ID } from '@happier-dev/agents';
 import { AGENTS_CORE } from '@happier-dev/agents';
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import type { ConnectedServicesProviderMaterializer } from '@/daemon/connectedServices/materialize/providerMaterializerTypes';
 
 import * as catalog from './catalog';
 import {
   AGENTS,
+  notifyTerminalAttachmentRetiredThroughCatalog,
   getAcpForkContinuationHandler,
   getConnectedServiceMaterializer,
   getConnectedServiceStateSharingDescriptor,
@@ -22,11 +24,51 @@ import {
   getSessionGoalControlAdapter,
   getProviderNativeForkHandler,
   getVendorResumeSupport,
+  resolveConnectedServiceGenerationApplicationScope,
   requireCatalogEntry,
 } from './catalog';
 import { DEFAULT_CATALOG_AGENT_ID } from './types';
 
 describe('AGENTS', () => {
+  it('fans exact terminal retirement out through provider-owned lifecycle hooks', async () => {
+    const original = AGENTS.codex;
+    const onTerminalAttachmentRetired = vi.fn(async () => {});
+    AGENTS.codex = original ? { ...original, onTerminalAttachmentRetired } : original;
+    try {
+      const attachmentInfo = {
+        version: 2 as const,
+        attachmentId: 'attachment-1' as never,
+        sessionId: 'session-1',
+        handle: {
+          attachmentId: 'attachment-1' as never,
+          kind: 'tmux' as const,
+          sessionName: 'host-1',
+          attachMetadata: {
+            attachStrategy: 'terminal_host' as const,
+            topology: 'shared' as const,
+            locality: 'same_machine' as const,
+            liveProbe: 'required' as const,
+          },
+        },
+        terminal: { mode: 'tmux' as const, tmux: { target: 'host-1' } },
+        updatedAt: 1,
+      };
+
+      await notifyTerminalAttachmentRetiredThroughCatalog({
+        happyHomeDir: '/tmp/happier',
+        sessionId: 'session-1',
+        attachmentInfo,
+      });
+
+      expect(onTerminalAttachmentRetired).toHaveBeenCalledWith({
+        happyHomeDir: '/tmp/happier',
+        sessionId: 'session-1',
+        attachmentInfo,
+      });
+    } finally {
+      AGENTS.codex = original;
+    }
+  });
   it('includes kilo', () => {
     expect(Object.prototype.hasOwnProperty.call(AGENTS, 'kilo')).toBe(true);
   });
@@ -70,6 +112,24 @@ describe('AGENTS', () => {
     expect(DEFAULT_CATALOG_AGENT_ID).toBe(DEFAULT_AGENT_ID);
   });
 
+  it('resolves generation application cardinality from the service-owning provider declaration', async () => {
+    await expect(resolveConnectedServiceGenerationApplicationScope('claude-subscription', 'claude')).resolves.toEqual({
+      status: 'supported',
+      scope: 'shared_group_auth_surface',
+      ownerId: 'claude',
+    });
+    await expect(resolveConnectedServiceGenerationApplicationScope('openai-codex', 'codex')).resolves.toEqual({
+      status: 'supported',
+      scope: 'per_session_runtime',
+      ownerId: 'codex',
+    });
+    await expect(resolveConnectedServiceGenerationApplicationScope('openai', 'opencode')).resolves.toEqual({
+      status: 'supported',
+      scope: 'per_session_runtime',
+      ownerId: 'opencode',
+    });
+  });
+
   it('keeps cloud connect config in sync with catalog entries', async () => {
     for (const id of AGENT_IDS) {
       const core = AGENTS_CORE[id];
@@ -93,9 +153,11 @@ describe('AGENTS', () => {
 
   it('exposes a preflight session-controls probe adapter for claude so model-scoped options can be surfaced without ACP', async () => {
     const entry = requireCatalogEntry('claude');
+    expect(entry.needsAccountSettingsForProbes).toBe(true);
     expect(entry.getPreflightSessionControlsProbeAdapter).toBeTypeOf('function');
     const adapter = await entry.getPreflightSessionControlsProbeAdapter!();
     expect(adapter).toMatchObject({
+      modelProbeCachePolicy: 'provider-owned',
       probeModelsRaw: expect.any(Function),
     });
   });
@@ -203,16 +265,57 @@ describe('AGENTS', () => {
     await expect(resolveDescriptor('claude')).resolves.toMatchObject({
       providerId: 'claude',
       serviceIds: expect.arrayContaining(['claude-subscription']),
-      spawnPreflightOauthRefresh: { mode: 'force' },
-      refreshedCredentialApplication: { mode: 'no_restart_required' },
+      generationApplicationScope: 'shared_group_auth_surface',
+      sharedGenerationApplicationServiceIds: ['claude-subscription'],
+      spawnPreflightOauthRefresh: { mode: 'expiry_window' },
+      refreshedCredentialApplication: {
+        mode: 'restart_required',
+        noRestartRequiredServiceIds: ['claude-subscription'],
+      },
     });
     await expect(resolveDescriptor('pi')).resolves.toMatchObject({
       providerId: 'pi',
+      generationApplicationScope: 'per_session_runtime',
       refreshedCredentialApplication: { mode: 'restart_required' },
+      predictiveSoftSwitch: { mode: 'unsupported' },
+      sameAccountFanoutStrategy: 'shared_group_auth_surface',
+      runtimeAuthApply: {
+        directLiveHotAuth: {
+          supportsInTurnApply: false,
+          requiresExactRuntimeIdentity: false,
+          refreshSelectionResync: 'not_applicable',
+          authMode: {
+            kind: 'provider_owned',
+            name: 'broker_selection_indirection',
+          },
+        },
+      },
+    });
+    await expect(resolveDescriptor('opencode')).resolves.toMatchObject({
+      providerId: 'opencode',
+      generationApplicationScope: 'per_session_runtime',
+      refreshedCredentialApplication: { mode: 'restart_required' },
+      predictiveSoftSwitch: { mode: 'supported' },
+      sameAccountFanoutStrategy: 'shared_group_auth_surface',
+      runtimeAuthApply: {
+        directLiveHotAuth: {
+          supportsInTurnApply: false,
+          requiresExactRuntimeIdentity: false,
+          refreshSelectionResync: 'not_applicable',
+          authMode: {
+            kind: 'provider_owned',
+            name: 'broker_selection_indirection',
+          },
+        },
+      },
     });
     await expect(resolveDescriptor('codex')).resolves.toMatchObject({
       providerId: 'codex',
-      refreshedCredentialApplication: { mode: 'restart_required' },
+      generationApplicationScope: 'per_session_runtime',
+      refreshedCredentialApplication: {
+        mode: 'restart_required',
+        noRestartRequiredWhenAccessTokenCallbackServiceIds: ['openai-codex'],
+      },
       runtimeAuthApply: {
         directLiveHotAuth: {
           supportsInTurnApply: true,
@@ -232,6 +335,7 @@ describe('AGENTS', () => {
       refreshedCredentialApplication: { mode: 'restart_required' },
       predictiveSoftSwitch: { mode: 'unsupported' },
       sameAccountFanoutStrategy: 'none',
+      generationApplicationScope: 'per_session_runtime',
       runtimeAuthApply: { directLiveHotAuth: 'unsupported' },
     });
     await expect(resolveDescriptor('kilo')).resolves.toEqual({
@@ -241,6 +345,7 @@ describe('AGENTS', () => {
       refreshedCredentialApplication: { mode: 'no_restart_required' },
       predictiveSoftSwitch: { mode: 'unsupported', liveSessionRequirement: { kind: 'none' } },
       sameAccountFanoutStrategy: 'none',
+      generationApplicationScope: 'unsupported',
       runtimeAuthApply: { directLiveHotAuth: 'unsupported' },
     });
   });
@@ -252,6 +357,62 @@ describe('AGENTS', () => {
     await expect(getConnectedServiceMaterializer('pi')).resolves.toBeTypeOf('function');
     await expect(getConnectedServiceMaterializer('gemini')).resolves.toBeTypeOf('function');
     await expect(getConnectedServiceMaterializer('kilo')).resolves.toBeNull();
+  });
+
+  it('retries a rejected catalog hook load while preserving singleflight and successful caching', async () => {
+    const original = AGENTS.grok;
+    if (!original) throw new Error('Missing grok catalog entry');
+
+    const recoveredMaterializer: ConnectedServicesProviderMaterializer = async () => null;
+    let resolveRecovery!: (materializer: ConnectedServicesProviderMaterializer) => void;
+    const recovery = new Promise<ConnectedServicesProviderMaterializer>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    const getConnectedServiceMaterializerHook = vi.fn()
+      .mockRejectedValueOnce(new Error('transient catalog load failure'))
+      .mockImplementationOnce(() => recovery);
+    AGENTS.grok = {
+      ...original,
+      getConnectedServiceMaterializer: getConnectedServiceMaterializerHook,
+    };
+
+    try {
+      await expect(getConnectedServiceMaterializer('grok')).rejects.toThrow('transient catalog load failure');
+
+      const firstRetry = getConnectedServiceMaterializer('grok');
+      const concurrentRetry = getConnectedServiceMaterializer('grok');
+      resolveRecovery(recoveredMaterializer);
+      const retryResults = await Promise.allSettled([firstRetry, concurrentRetry]);
+
+      expect(getConnectedServiceMaterializerHook).toHaveBeenCalledTimes(2);
+      expect(retryResults).toEqual([
+        { status: 'fulfilled', value: recoveredMaterializer },
+        { status: 'fulfilled', value: recoveredMaterializer },
+      ]);
+      await expect(getConnectedServiceMaterializer('grok')).resolves.toBe(recoveredMaterializer);
+      expect(getConnectedServiceMaterializerHook).toHaveBeenCalledTimes(2);
+    } finally {
+      AGENTS.grok = original;
+    }
+  });
+
+  it('caches a genuine null catalog hook result', async () => {
+    const original = AGENTS.qwen;
+    if (!original) throw new Error('Missing qwen catalog entry');
+
+    const getConnectedServiceMaterializerHook = vi.fn(async () => null);
+    AGENTS.qwen = {
+      ...original,
+      getConnectedServiceMaterializer: getConnectedServiceMaterializerHook,
+    };
+
+    try {
+      await expect(getConnectedServiceMaterializer('qwen')).resolves.toBeNull();
+      await expect(getConnectedServiceMaterializer('qwen')).resolves.toBeNull();
+      expect(getConnectedServiceMaterializerHook).toHaveBeenCalledTimes(1);
+    } finally {
+      AGENTS.qwen = original;
+    }
   });
 
   it('resolves connected-service state sharing descriptors through optional backend catalog hooks', async () => {
@@ -854,12 +1015,16 @@ describe('AGENTS', () => {
     });
   });
 
-  it('loads Codex inactive goal control through the backend catalog hook', async () => {
+  it('loads inactive goal controls through backend catalog hooks for supported providers', async () => {
     await expect(getSessionGoalControlAdapter('codex')).resolves.toMatchObject({
       setGoal: expect.any(Function),
       clearGoal: expect.any(Function),
     });
-    await expect(getSessionGoalControlAdapter('claude')).resolves.toBeNull();
+    await expect(getSessionGoalControlAdapter('claude')).resolves.toMatchObject({
+      setGoal: expect.any(Function),
+      clearGoal: expect.any(Function),
+      getGoal: expect.any(Function),
+    });
   });
 
   it('loads inactive usage-limit recovery control for supported providers', async () => {

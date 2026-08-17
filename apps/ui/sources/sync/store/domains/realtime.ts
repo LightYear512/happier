@@ -18,9 +18,29 @@ export type SyncError = {
   nextRetryAt?: number;
 } | null;
 
-export type NativeUpdateStatus = { available: boolean; updateUrl?: string } | null;
+export type NativeUpdateStatus = {
+  available: boolean;
+  updateUrl?: string;
+  required?: boolean;
+  minimumAppVersion?: string;
+} | null;
 
-export type EndpointConnectivityStatus = 'idle' | 'offline' | 'connecting' | 'online' | 'auth_failed' | 'shutting_down';
+export function mergeNativeUpdateStatus(
+  previous: NativeUpdateStatus,
+  next: NativeUpdateStatus,
+): NativeUpdateStatus {
+  if (previous?.required === true && next?.required !== true) {
+    return previous;
+  }
+  return next;
+}
+
+/**
+ * User-visible endpoint connectivity. Deliberately narrower than the connection supervisor's phase union:
+ * the supervisor's `shutting_down` teardown phase describes our own lifecycle, not the endpoint, and is
+ * resolved away by `bindManagedConnectionStateToRealtimeStore` before it can reach a connection indicator.
+ */
+export type EndpointConnectivityStatus = 'idle' | 'offline' | 'connecting' | 'online' | 'auth_failed';
 
 export type EndpointConnectivitySnapshot = Readonly<{
   status: EndpointConnectivityStatus;
@@ -98,7 +118,7 @@ export function createRealtimeDomain<S extends RealtimeDomain>({
     applyNativeUpdateStatus: (status) =>
       set((state) => ({
         ...state,
-        nativeUpdateStatus: status,
+        nativeUpdateStatus: mergeNativeUpdateStatus(state.nativeUpdateStatus, status),
       })),
     setRealtimeStatus: (status) =>
       set((state) => ({

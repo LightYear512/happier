@@ -133,6 +133,10 @@ import type { OrphanToolResultBucket } from "./helpers/orphanToolResults";
 import { isDebugFlagEnabled } from "./helpers/debugFlags";
 import { markRunningToolsUnavailable } from "./helpers/markRunningToolsUnavailable";
 import { compareIncomingTranscriptRowsOldestFirst, normalizeTranscriptSeq } from "../domains/messages/transcriptOrdering";
+import {
+    applyTranscriptObservationMetadata,
+    type TranscriptObservationMetadata,
+} from "../domains/messages/transcriptObservationProvenance";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -188,7 +192,7 @@ export type ReducerMessage = {
     event: AgentEvent | null;
     tool: ToolCall | null;
     meta?: MessageMeta;
-}
+} & TranscriptObservationMetadata;
 
 type StoredPermission = {
     tool: string;
@@ -295,7 +299,25 @@ export type ReducerResult = {
     reducerStateChanged?: boolean;
 };
 
-export function reducer(state: ReducerState, messages: NormalizedMessage[], agentState?: AgentState | null): ReducerResult {
+export type ReducerSessionRuntimeOwnership = Readonly<{
+    /**
+     * Instant at which the CLI session process that owns this transcript was last observed
+     * attached, when it is no longer attached. `null` while the process is attached (or while the
+     * client has no confident evidence that it is gone).
+     *
+     * Transcript tool calls — including subagent sidechains — run inside that process, so once it
+     * is gone none of them can still be running. This is a session-death fact, never an
+     * inactivity guess: without it, no amount of elapsed time closes a row.
+     */
+    ownerProcessGoneSinceMs?: number | null;
+}>;
+
+export function reducer(
+    state: ReducerState,
+    messages: NormalizedMessage[],
+    agentState?: AgentState | null,
+    ownership?: ReducerSessionRuntimeOwnership,
+): ReducerResult {
 	    const DEBUG_SIDECHAINS = isDebugFlagEnabled({
 	        // Enable in browser devtools via: `window.__HAPPIER_DEBUG_SIDECHAINS__ = true`
 	        // (kept off by default to avoid noisy logs for users).
@@ -513,11 +535,42 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         allocateId,
     });
 
+    const incomingObservationMetadataById = new Map(
+        orderedIncomingMessages.map((message) => [message.id, message] as const),
+    );
+    const incomingObservationMetadataByLocalId = new Map(
+        orderedIncomingMessages
+            .filter((message): message is typeof message & { localId: string } => typeof message.localId === 'string')
+            .map((message) => [message.localId, message] as const),
+    );
+    const applyIncomingObservationMetadata = (message: ReducerMessage): void => {
+        const source = (message.realID ? incomingObservationMetadataById.get(message.realID) : undefined)
+            ?? (message.localId ? incomingObservationMetadataByLocalId.get(message.localId) : undefined);
+        applyTranscriptObservationMetadata(message, source);
+    };
+    for (const id of changed) {
+        const message = state.messages.get(id);
+        if (message) applyIncomingObservationMetadata(message);
+    }
+
     if (typeof latestReadyEventAt === 'number') {
         markRunningToolsUnavailable({
             state,
             completedAt: latestReadyEventAt,
             changed,
+        });
+    }
+
+    // The process that hosted every one of these tool calls is gone. Subagent sidechains have no
+    // other closing path — nothing can ever write their result — so this is the sweep that stops
+    // them presenting as work in progress. It changes presentation only; no record is written.
+    const ownerProcessGoneSinceMs = ownership?.ownerProcessGoneSinceMs;
+    if (typeof ownerProcessGoneSinceMs === 'number' && Number.isFinite(ownerProcessGoneSinceMs)) {
+        markRunningToolsUnavailable({
+            state,
+            completedAt: ownerProcessGoneSinceMs,
+            changed,
+            ownerProcessEnded: true,
         });
     }
 
@@ -529,7 +582,10 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
     // sidechain state only and are rendered under the owning tool-call when that tool-call exists.
     const sidechainChildIds = new Set<string>();
     for (const chain of state.sidechains.values()) {
-        for (const m of chain) sidechainChildIds.add(m.id);
+        for (const m of chain) {
+            sidechainChildIds.add(m.id);
+            if (changed.has(m.id)) applyIncomingObservationMetadata(m);
+        }
     }
 
     const filteredSidechainChildIds: string[] = [];
@@ -628,7 +684,46 @@ function processUsageData(state: ReducerState, usage: UsageData, timestamp: numb
 }
 
 
+/**
+ * One sidechain's transcript, in the `Message` shape every transcript renderer already speaks.
+ *
+ * The reducer stores sidechains as flat `ReducerMessage` records and, until now, projected them
+ * into `Message` in exactly one place: as the `children` of the tool-call that owns them. That is
+ * unreachable for a sidechain NO tool call owns — an imported workflow-agent sidecar — so a details
+ * host had no way to read one without re-implementing the conversion, which would be a second
+ * message model for the same records.
+ *
+ * So the read lives here, beside both things it needs: the `sidechains` map and the one converter.
+ * Returns a fresh array (empty when the sidechain is unknown), oldest first, in store order.
+ */
+export function readReducerSidechainMessages(
+    state: ReducerState | null | undefined,
+    sidechainId: string,
+): Message[] {
+    const normalizedSidechainId = sidechainId.trim();
+    if (!state || !normalizedSidechainId) return [];
+    const chain = state.sidechains.get(normalizedSidechainId);
+    if (!chain || chain.length === 0) return [];
+
+    const messages: Message[] = [];
+    for (const reducerMsg of chain) {
+        const message = convertReducerMessageToMessage(reducerMsg, state);
+        if (message) messages.push(message);
+    }
+    return messages;
+}
+
 function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: ReducerState): Message | null {
+    const observationMetadata: TranscriptObservationMetadata = {
+        ...(reducerMsg.sourceCreatedAt !== undefined ? { sourceCreatedAt: reducerMsg.sourceCreatedAt } : {}),
+        ...(reducerMsg.sourceUpdatedAt !== undefined ? { sourceUpdatedAt: reducerMsg.sourceUpdatedAt } : {}),
+        ...(reducerMsg.transcriptObservationProvenance !== undefined
+            ? { transcriptObservationProvenance: reducerMsg.transcriptObservationProvenance }
+            : {}),
+        ...(reducerMsg.deliveryResolution !== undefined
+            ? { deliveryResolution: reducerMsg.deliveryResolution }
+            : {}),
+    };
     if (reducerMsg.role === 'user' && reducerMsg.text !== null) {
         const displayText = typeof reducerMsg.meta?.displayText === 'string' ? reducerMsg.meta.displayText : undefined;
         return {
@@ -641,7 +736,8 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             kind: 'user-text',
             text: reducerMsg.text,
             ...(displayText !== undefined ? { displayText } : {}),
-            meta: reducerMsg.meta
+            meta: reducerMsg.meta,
+            ...observationMetadata,
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.text !== null) {
         return {
@@ -654,7 +750,8 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             kind: 'agent-text',
             text: reducerMsg.text,
             ...(reducerMsg.isThinking && { isThinking: true }),
-            meta: reducerMsg.meta
+            meta: reducerMsg.meta,
+            ...observationMetadata,
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.tool !== null) {
         // Convert children recursively
@@ -682,7 +779,8 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             kind: 'tool-call',
             tool: { ...reducerMsg.tool },
             children: childMessages,
-            meta: reducerMsg.meta
+            meta: reducerMsg.meta,
+            ...observationMetadata,
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.event !== null) {
         return {
@@ -693,7 +791,8 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             createdAt: reducerMsg.createdAt,
             kind: 'agent-event',
             event: reducerMsg.event,
-            meta: reducerMsg.meta
+            meta: reducerMsg.meta,
+            ...observationMetadata,
         };
     }
 

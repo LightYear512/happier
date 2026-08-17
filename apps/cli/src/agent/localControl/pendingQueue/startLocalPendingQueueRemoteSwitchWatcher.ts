@@ -1,10 +1,11 @@
+import { waitForSessionMetadataRetryBackoff } from '@/agent/runtime/sessionMetadataWaitRetryBackoff';
+
 export type LocalPendingQueueRemoteSwitchWatcher = Readonly<{
   stop: () => void;
 }>;
 
 export function startLocalPendingQueueRemoteSwitchWatcher(opts: Readonly<{
   peekPendingCount?: () => Promise<number>;
-  pollIntervalMs: number;
   requestRemoteSwitch: () => Promise<boolean>;
   waitForPendingQueueUpdate?: (signal?: AbortSignal) => Promise<boolean>;
 }>): LocalPendingQueueRemoteSwitchWatcher {
@@ -12,10 +13,6 @@ export function startLocalPendingQueueRemoteSwitchWatcher(opts: Readonly<{
   let triggered = false;
   let switchRequestInFlight = false;
   let waitController: AbortController | null = null;
-
-  const pollIntervalMs = Number.isFinite(opts.pollIntervalMs) && opts.pollIntervalMs > 0
-    ? Math.trunc(opts.pollIntervalMs)
-    : 0;
 
   const stopWaiting = (): void => {
     waitController?.abort();
@@ -46,74 +43,33 @@ export function startLocalPendingQueueRemoteSwitchWatcher(opts: Readonly<{
       return triggered;
     } catch {
       // Best-effort watcher: local mode should keep running if the server is
-      // temporarily unreachable. The next interval will retry.
+      // temporarily unreachable. A later server wake can retry the switch.
       return false;
     }
   };
 
-  const waitForDefensiveInterval = async (): Promise<'defensive' | 'stopped'> => {
-    if (pollIntervalMs <= 0 || stopped || triggered) return 'stopped';
-    const controller = new AbortController();
-    waitController = controller;
-    const wake = await new Promise<'defensive' | 'stopped'>((resolve) => {
-      const timer = setTimeout(() => resolve('defensive'), pollIntervalMs);
-      timer.unref?.();
-      controller.signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve('stopped');
-        },
-        { once: true },
-      );
+  const waitForMissedUpdateBackoff = async (signal: AbortSignal): Promise<'retry' | 'stopped'> => {
+    if (stopped || triggered || signal.aborted) return 'stopped';
+    await waitForSessionMetadataRetryBackoff({
+      abortSignal: signal,
     });
-    if (waitController === controller) {
-      waitController = null;
-    }
-    return stopped || triggered ? 'stopped' : wake;
+    if (stopped || triggered || signal.aborted) return 'stopped';
+    return 'retry';
   };
 
-  const waitForWake = async (): Promise<'update' | 'defensive' | 'stopped'> => {
+  const waitForWake = async (): Promise<'update' | 'retry' | 'stopped'> => {
     if (stopped || triggered) return 'stopped';
+    if (!opts.waitForPendingQueueUpdate) return 'stopped';
 
     const controller = new AbortController();
     waitController = controller;
-
-    const waits: Array<Promise<'update' | 'defensive' | 'stopped'>> = [];
-    if (opts.waitForPendingQueueUpdate) {
-      waits.push(
-        opts.waitForPendingQueueUpdate(controller.signal)
-          .then((ok) => ok ? 'update' as const : 'stopped' as const)
-          .catch(() => 'stopped' as const),
-      );
-    }
-    if (pollIntervalMs > 0) {
-      waits.push(new Promise<'defensive' | 'stopped'>((resolve) => {
-        const timer = setTimeout(() => resolve('defensive'), pollIntervalMs);
-        timer.unref?.();
-        controller.signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            resolve('stopped');
-          },
-          { once: true },
-        );
-      }));
-    }
-
-    if (waits.length === 0) {
-      return 'stopped';
-    }
-
-    const wake = await Promise.race(waits);
+    const wake = await opts.waitForPendingQueueUpdate(controller.signal)
+      .then((ok) => ok ? 'update' as const : waitForMissedUpdateBackoff(controller.signal))
+      .catch(() => waitForMissedUpdateBackoff(controller.signal));
     if (waitController === controller) {
       waitController = null;
     }
     controller.abort();
-    if (wake === 'stopped' && !stopped && !triggered) {
-      return await waitForDefensiveInterval();
-    }
     return stopped || triggered ? 'stopped' : wake;
   };
 
@@ -126,7 +82,7 @@ export function startLocalPendingQueueRemoteSwitchWatcher(opts: Readonly<{
 
       const wake = await waitForWake();
       if (wake === 'stopped') return;
-      allowDirectInspection = true;
+      allowDirectInspection = wake === 'update';
     }
   })();
 

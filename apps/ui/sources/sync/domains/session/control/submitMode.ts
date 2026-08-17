@@ -1,9 +1,9 @@
-import { isNonSteerablePromptPayload } from '@happier-dev/protocol';
+import { isNonSteerablePromptPayload, type PendingRequestedActionV1 } from '@happier-dev/protocol';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isVersionSupported, MINIMUM_CLI_PENDING_QUEUE_V2_VERSION } from '@/utils/system/versionUtils';
 import { getSessionLocalControlState } from '@/sync/domains/session/control/sessionLocalControl';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/deriveSessionRuntimePresentationState';
+import { deriveSessionInputReadinessState } from '@/sync/domains/session/control/deriveSessionInputReadinessState';
 
 export type MessageSendMode = 'agent_queue' | 'interrupt' | 'server_pending';
 
@@ -27,11 +27,7 @@ export type SessionMessageDirectBypassReason =
     | 'selected_direct'
     | 'force_immediate'
     | 'interrupt'
-    | 'subagent_control_command'
-    | 'voice_turn_immediate'
-    | 'voice_post_process'
-    | 'server_scoped_rpc_active'
-    | 'spawned_session_follow_up';
+    | 'subagent_control_command';
 
 /**
  * Why this specific payload cannot be steered into the active turn (lane P, O-design §2.2).
@@ -50,6 +46,8 @@ export type SessionMessageDeliveryDecision = Readonly<{
     intent: SessionMessageDeliveryIntent;
     reason: string;
     pendingSupportState: PendingQueueSubmitSupportState;
+    /** Requested action frozen before this submission is durably enqueued. */
+    requestedAction: PendingRequestedActionV1;
     directBypassReason?: SessionMessageDirectBypassReason;
     /** Present when a busy-steer send was demoted because the PAYLOAD is non-steerable. */
     nonSteerablePayloadReason?: NonSteerablePayloadReason;
@@ -60,10 +58,10 @@ export type SessionMessageDeliveryDecision = Readonly<{
 type SessionSubmitRuntimeState = Readonly<{
     localControlBlocksDirectSubmit: boolean;
     isBusy: boolean;
+    inputReadinessDisposition: 'accepts_next_turn' | 'steer_available' | 'blocked' | 'offline';
     isOnline: boolean;
     agentReady: boolean;
     inFlightSteerSupported: boolean | undefined;
-    inFlightSteerAvailable: boolean | undefined;
     steerUnavailableReason: string | null;
     /** Lane Q: backend can apply a steered message's config delta (mode) to the RUNNING turn. */
     inFlightConfigApplySupported: boolean;
@@ -72,7 +70,8 @@ type SessionSubmitRuntimeState = Readonly<{
 function deriveSubmitRuntimeState(session: Session | null, nowMs: number): SessionSubmitRuntimeState {
     const localControl = getSessionLocalControlState(session);
     const localControlBlocksDirectSubmit = localControl?.attached === true && localControl.remoteWritable !== true;
-    const runtimeStatus = deriveSessionRuntimePresentationState({
+    const capabilities = session?.agentState?.capabilities;
+    const inputReadiness = deriveSessionInputReadinessState({
         active: session?.active,
         activeAt: session?.activeAt,
         presence: session?.presence,
@@ -80,21 +79,61 @@ function deriveSubmitRuntimeState(session: Session | null, nowMs: number): Sessi
         thinkingAt: session?.thinkingAt,
         latestTurnStatus: session?.latestTurnStatus,
         latestTurnStatusObservedAt: session?.latestTurnStatusObservedAt,
-        meaningfulActivityAt: session?.meaningfulActivityAt,
+        inFlightSteerSupported: capabilities?.inFlightSteerSupported ?? capabilities?.inFlightSteer,
+        inFlightSteerAvailable: capabilities?.inFlightSteerAvailable ?? capabilities?.inFlightSteer,
     }, nowMs);
-    const capabilities = session?.agentState?.capabilities;
     return {
         localControlBlocksDirectSubmit,
-        isBusy: runtimeStatus.working,
+        isBusy: inputReadiness.isInputBusy,
+        inputReadinessDisposition: inputReadiness.disposition,
         isOnline: session?.presence === 'online',
         agentReady: Boolean(session && session.agentStateVersion > 0),
         inFlightSteerSupported: capabilities?.inFlightSteerSupported ?? capabilities?.inFlightSteer,
-        inFlightSteerAvailable: capabilities?.inFlightSteerAvailable ?? capabilities?.inFlightSteer,
         steerUnavailableReason: typeof capabilities?.inFlightSteerUnavailableReason === 'string'
             ? capabilities.inFlightSteerUnavailableReason
             : null,
         inFlightConfigApplySupported: capabilities?.inFlightConfigApplySupported === true,
     };
+}
+
+/**
+ * Selects the one Queue V2 action justified by current runtime readiness.
+ * Readiness facts remain owned by deriveSessionInputReadinessState; this function only maps
+ * that result to the bounded row-action contract shared by UI send callers.
+ */
+export function selectSessionPendingRequestedAction(opts: {
+    session: Session | null;
+    nowMs?: number;
+    firstTurn?: boolean;
+    preferSteer?: boolean;
+    /** Explicit user override of the pending delivery timing preference; control serviceability still applies. */
+    timingOverride?: 'send_now';
+}): PendingRequestedActionV1 {
+    const session = opts.session;
+    if (!session) return { v: 1, kind: opts.timingOverride === 'send_now' ? 'send_now' : 'enqueue' };
+    if (session.active === false) {
+        return { v: 1, kind: 'send_now' };
+    }
+    if (opts.firstTurn === true) {
+        return { v: 1, kind: 'send_now' };
+    }
+
+    const runtimeState = deriveSubmitRuntimeState(session, opts.nowMs ?? Date.now());
+    if (
+        runtimeState.localControlBlocksDirectSubmit
+        || !runtimeState.isOnline
+        || !runtimeState.agentReady
+    ) {
+        return { v: 1, kind: opts.timingOverride === 'send_now' ? 'send_now' : 'enqueue' };
+    }
+
+    if (opts.timingOverride === 'send_now') {
+        return { v: 1, kind: runtimeState.inputReadinessDisposition === 'steer_available' ? 'steer_now' : 'send_now' };
+    }
+    if (opts.preferSteer === true && runtimeState.inFlightSteerSupported === true) {
+        return { v: 1, kind: 'steer_if_active' };
+    }
+    return { v: 1, kind: 'enqueue' };
 }
 
 function normalizeTimestamp(value: number | null | undefined): number | null {
@@ -200,33 +239,15 @@ export function canSteerUserMessageNow(opts: {
     session: Session | null;
     nowMs?: number;
 }): boolean {
-    const session = opts.session;
-    if (!supportsInFlightSteerUserMessage({ session, nowMs: opts.nowMs })) {
-        return false;
-    }
-
-    const runtimeState = deriveSubmitRuntimeState(session, opts.nowMs ?? Date.now());
-    return runtimeState.isBusy && runtimeState.inFlightSteerAvailable === true;
+    const action = selectSessionPendingRequestedAction({ ...opts, preferSteer: true });
+    return action.kind === 'steer_if_active' || action.kind === 'steer_now';
 }
 
 export function canDirectSubmitUserMessageNow(opts: {
     session: Session | null;
     nowMs?: number;
 }): boolean {
-    if (!opts.session || opts.session.active === false) {
-        return false;
-    }
-
-    const runtimeState = deriveSubmitRuntimeState(opts.session, opts.nowMs ?? Date.now());
-    if (runtimeState.localControlBlocksDirectSubmit || !runtimeState.isOnline || !runtimeState.agentReady) {
-        return false;
-    }
-
-    if (!runtimeState.isBusy) {
-        return true;
-    }
-
-    return runtimeState.inFlightSteerSupported === true && runtimeState.inFlightSteerAvailable === true;
+    return opts.session !== null;
 }
 
 export function isPendingQueueSubmitKnownUnsupported(session: Session | null): boolean {
@@ -272,9 +293,6 @@ function getDeliveryIntent(opts: {
 function withDirectReason(
     decision: Omit<SessionMessageDeliveryDecision, 'directBypassReason'>,
 ): SessionMessageDeliveryDecision {
-    if (decision.mode === 'interrupt') {
-        return { ...decision, directBypassReason: 'interrupt' };
-    }
     if (decision.mode === 'agent_queue') {
         return {
             ...decision,
@@ -315,27 +333,29 @@ export function decideSessionMessageDelivery(opts: {
 }): SessionMessageDeliveryDecision {
     const configuredMode = opts.configuredMode;
     const requestedMode = opts.explicitMode ?? configuredMode;
+    const transportMode: MessageSendMode = requestedMode === 'interrupt' ? 'server_pending' : requestedMode;
     const intent = getDeliveryIntent(opts);
     const pendingSupportState = getPendingQueueSubmitSupportState(opts.session);
-    if (requestedMode === 'interrupt') {
-        return withDirectReason({
-            mode: 'interrupt',
-            intent,
-            reason: 'interrupt',
-            pendingSupportState,
-        });
-    }
 
     const session = opts.session;
+    const requestedAction = selectSessionPendingRequestedAction({
+        session,
+        nowMs: opts.nowMs,
+        preferSteer: opts.explicitMode !== 'server_pending'
+            && configuredMode !== 'server_pending'
+            && (opts.busySteerSendPolicy ?? DEFAULT_BUSY_STEER_SEND_POLICY) === 'steer_immediately',
+        ...(opts.forceImmediate === true ? { timingOverride: 'send_now' as const } : {}),
+    });
     if (
         opts.forceImmediate === true
-        && canDirectSubmitUserMessageNow({ session, nowMs: opts.nowMs })
+        && requestedAction.kind !== 'enqueue'
     ) {
         return withDirectReason({
             mode: 'agent_queue',
             intent,
             reason: 'force_immediate_direct',
             pendingSupportState,
+            requestedAction,
         });
     }
 
@@ -347,10 +367,15 @@ export function decideSessionMessageDelivery(opts: {
         // explicit queueing intent. Preserve server_pending so callers fail closed
         // through the queue path instead of steering directly.
         return withDirectReason({
-            mode: requestedMode,
+            mode: transportMode,
             intent,
-            reason: requestedMode === 'server_pending' ? 'pending_support_unknown' : 'pending_support_unknown_preserve_request',
+            reason: requestedMode === 'server_pending'
+                ? 'pending_support_unknown'
+                : requestedMode === 'interrupt'
+                    ? 'pending_support_unknown_interrupt'
+                    : 'pending_support_unknown_preserve_request',
             pendingSupportState,
+            requestedAction,
         });
     }
 
@@ -360,11 +385,21 @@ export function decideSessionMessageDelivery(opts: {
     const trimmedCliVersion = typeof cliVersion === 'string' ? cliVersion.trim() : '';
     if (trimmedCliVersion) {
         if (!isVersionSupported(trimmedCliVersion, MINIMUM_CLI_PENDING_QUEUE_V2_VERSION)) {
+            if (requestedMode === 'interrupt') {
+                return {
+                    mode: 'server_pending',
+                    intent,
+                    reason: 'pending_unsupported_cli_interrupt',
+                    pendingSupportState,
+                    requestedAction,
+                };
+            }
             return withDirectReason({
                 mode: requestedMode === 'server_pending' ? 'agent_queue' : requestedMode,
                 intent,
                 reason: requestedMode === 'server_pending' ? 'pending_unsupported_cli_fallback' : 'pending_unsupported_cli_preserve_request',
                 pendingSupportState,
+                requestedAction,
             });
         }
     }
@@ -375,6 +410,31 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'explicit_pending',
             pendingSupportState,
+            requestedAction,
+        };
+    }
+
+    if (requestedMode === 'interrupt') {
+        return {
+            mode: 'server_pending',
+            intent,
+            reason: 'interrupt_pending',
+            pendingSupportState,
+            requestedAction: { v: 1, kind: 'send_now' },
+        };
+    }
+
+    if (
+        opts.forceImmediate === true
+        && session?.active === true
+        && session.presence === 'online'
+    ) {
+        return {
+            mode: 'server_pending',
+            intent,
+            reason: 'force_immediate_pending_dispatch',
+            pendingSupportState,
+            requestedAction,
         };
     }
 
@@ -384,6 +444,7 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'inactive_session',
             pendingSupportState,
+            requestedAction,
         };
     }
 
@@ -396,8 +457,8 @@ export function decideSessionMessageDelivery(opts: {
     // - the agent is not ready yet (direct sends can be missed because the agent does not replay backlog), or
     // - the machine is offline (queue gives reliable eventual processing once it reconnects).
     //
-    // Exception: if the agent supports in-flight steer and is online+ready, do NOT auto-enqueue while busy.
-    // Steering preserves the current turn (Codex-style) and is the more intuitive default.
+    // A steer-capable busy turn is durable-first: enqueue the exact row, then request steer-now.
+    // This preserves the current turn without making provider delivery the message's first custody boundary.
     // Payload-aware steer gate (lane P, O-design §2.2): a busy send whose PAYLOAD cannot be
     // steered must never silently take the agent_queue path — it would render as delivered while
     // the CLI demotes it invisibly. The kill-switch setting restores legacy behavior.
@@ -411,12 +472,7 @@ export function decideSessionMessageDelivery(opts: {
         : null;
 
     if (
-        runtimeState.isBusy
-        && runtimeState.inFlightSteerSupported === true
-        && runtimeState.inFlightSteerAvailable === true
-        && !runtimeState.localControlBlocksDirectSubmit
-        && runtimeState.isOnline
-        && runtimeState.agentReady
+        requestedAction.kind === 'steer_if_active'
         && busySteerSendPolicy === 'steer_immediately'
     ) {
         if (nonSteerablePayloadReason !== null) {
@@ -424,14 +480,16 @@ export function decideSessionMessageDelivery(opts: {
                 nonSteerablePayloadReason === 'mode_change_refused'
                 && opts.steerWithoutConfig === true
             ) {
-                // Lane X (X3 Case B): the user chose to steer the text only; the caller strips the
-                // mode delta from this message and the setting applies on the next message.
-                return withDirectReason({
-                    mode: 'agent_queue',
+                // Lane X (X3 Case B): the user chose to steer the text only. Keep delivery
+                // durable-first; the pending pump will inject the text when the terminal can
+                // safely accept it.
+                return {
+                    mode: 'server_pending',
                     intent,
                     reason: 'busy_steer_text_only',
                     pendingSupportState,
-                });
+                    requestedAction,
+                };
             }
             if (
                 nonSteerablePayloadReason === 'mode_change_refused'
@@ -439,28 +497,32 @@ export function decideSessionMessageDelivery(opts: {
                 && runtimeState.inFlightConfigApplySupported
             ) {
                 // Lane Q: the backend applies the mode delta to the running turn, then steers the
-                // text — explicit per-message user choice, capability-gated.
-                return withDirectReason({
-                    mode: 'agent_queue',
+                // text. The prompt itself still starts from the durable pending queue so an
+                // occupied runtime slot cannot drop it.
+                return {
+                    mode: 'server_pending',
                     intent,
                     reason: 'busy_steer_config_apply',
                     pendingSupportState,
-                });
+                    requestedAction,
+                };
             }
             return {
                 mode: 'server_pending',
                 intent,
                 reason: 'busy_non_steerable_payload_pending',
                 pendingSupportState,
+                requestedAction: { v: 1, kind: 'enqueue' },
                 nonSteerablePayloadReason,
             };
         }
-        return withDirectReason({
-            mode: 'agent_queue',
+        return {
+            mode: 'server_pending',
             intent,
             reason: 'busy_steer_immediate',
             pendingSupportState,
-        });
+            requestedAction,
+        };
     }
 
     if (runtimeState.localControlBlocksDirectSubmit) {
@@ -469,6 +531,7 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'local_control_pending',
             pendingSupportState,
+            requestedAction,
         };
     }
 
@@ -478,10 +541,21 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'busy_policy_pending',
             pendingSupportState,
+            requestedAction,
             ...(nonSteerablePayloadReason !== null ? { nonSteerablePayloadReason } : {}),
             ...(runtimeState.steerUnavailableReason !== null
                 ? { sessionSteerUnavailableReason: runtimeState.steerUnavailableReason }
                 : {}),
+        };
+    }
+
+    if (runtimeState.inputReadinessDisposition === 'blocked') {
+        return {
+            mode: 'server_pending',
+            intent,
+            reason: 'runtime_readiness_blocked',
+            pendingSupportState,
+            requestedAction,
         };
     }
 
@@ -491,6 +565,7 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'offline_pending',
             pendingSupportState,
+            requestedAction,
         };
     }
 
@@ -500,6 +575,7 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'agent_not_ready_pending',
             pendingSupportState,
+            requestedAction,
         };
     }
 
@@ -508,6 +584,7 @@ export function decideSessionMessageDelivery(opts: {
         intent,
         reason: 'configured_mode',
         pendingSupportState,
+        requestedAction,
     });
 }
 

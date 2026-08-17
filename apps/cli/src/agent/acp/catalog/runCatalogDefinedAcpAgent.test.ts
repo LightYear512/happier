@@ -61,6 +61,7 @@ describe('runCatalogDefinedAcpAgent', () => {
     }
 
     const runtimeConfig = capturedConfig as Readonly<{ createRuntime: (args: any) => unknown }>;
+    expect(runtimeConfig).not.toHaveProperty('runtimeActivityApplicability');
     const createdRuntime = runtimeConfig.createRuntime({
       directory: '/repo',
       machineId: 'machine-123',

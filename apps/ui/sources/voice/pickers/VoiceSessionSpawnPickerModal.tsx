@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { View, Pressable, ScrollView } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { CustomModalInjectedProps } from '@/modal';
@@ -22,13 +21,14 @@ import {
 } from '@/utils/sessions/useStableRecentPathsForMachine';
 import { resolvePreferredMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
 import { Text } from '@/components/ui/text/Text';
-import { resolveMachineExactSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineExactSpawnReadiness';
+import { canAttemptMachineSpawn } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import {
   resolveDirectoryFavoriteComparisonKey,
   toggleHomeAwareDirectoryFavorite,
 } from '@/components/sessions/new/hooks/favoriteDirectoriesToggle';
 
 import type { VoiceSessionSpawnPickerResult } from './openVoiceSessionSpawnPicker';
+import { Icon } from '@/components/ui/icons/Icon';
 
 
 type Props = CustomModalInjectedProps & Readonly<{
@@ -142,13 +142,13 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
   const canCreate = Boolean(
     selectedMachineId
     && selectedMachine
-    && resolveMachineExactSpawnReadiness(selectedMachine as any, selectedMachineId).status === 'ready'
+    && canAttemptMachineSpawn({ selectedMachineId, machine: selectedMachine })
     && (selectedPath.trim() || selectedMachine?.metadata?.homeDir),
   );
 
   const handleCreate = React.useCallback(() => {
     if (!selectedMachineId) return;
-    if (resolveMachineExactSpawnReadiness(selectedMachine as any, selectedMachineId).status !== 'ready') return;
+    if (!canAttemptMachineSpawn({ selectedMachineId, machine: selectedMachine })) return;
     const directory = selectedPath.trim() || selectedMachine?.metadata?.homeDir || '/home';
     onResolve({ machineId: selectedMachineId, directory });
     onClose();
@@ -223,7 +223,7 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
               accessibilityRole="button"
               accessibilityLabel={t('common.back')}
             >
-              <Ionicons name="chevron-back" size={20} color={theme.colors.text.secondary} />
+              <Icon name="caret-left" size={20} color={theme.colors.text.secondary} />
             </Pressable>
             <Text style={styles.stepHeaderText}>{t('newSession.selectWorkingDirectoryTitle')}</Text>
           </View>

@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,12 @@ import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
 import { createClaudeConnectedServiceRuntimeAuthAdapter } from './createClaudeConnectedServiceRuntimeAuthAdapter';
 import { CLAUDE_RUNTIME_AUTH_SHARED_GROUP_SURFACE_METADATA_KEY } from './claudeRuntimeAuthSharedGroupSurfaceMetadata';
 import { CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE } from './nativeAuth/claudeCodeCredentialScopes';
-import { writeClaudeCodeCredentialsFile } from './nativeAuth/claudeCodeCredentialFile';
+import {
+  computeClaudeCodeCredentialFingerprint,
+  resolveClaudeCodeCredentialsFilePath,
+  writeClaudeCodeCredentialsFile,
+} from './nativeAuth/claudeCodeCredentialFile';
+import { writeClaudeConnectedServiceHomeProvenance } from './claudeConnectedServiceHomeProvenance';
 
 const FUTURE_EXPIRES_AT_MS = Date.now() + 60 * 60 * 1000;
 const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -25,6 +30,54 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
     if (ORIGINAL_PLATFORM_DESCRIPTOR) {
       Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM_DESCRIPTOR);
     }
+  });
+
+  it('attaches source provider account identity to Claude runtime usage-limit classifications', () => {
+    const record = buildConnectedServiceCredentialRecord({
+      now: 1000,
+      serviceId: 'claude-subscription',
+      profileId: 'oauth',
+      kind: 'oauth',
+      expiresAt: FUTURE_EXPIRES_AT_MS,
+      oauth: {
+        accessToken: 'access-placeholder',
+        refreshToken: 'refresh-placeholder',
+        idToken: null,
+        scope: CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
+        tokenType: 'Bearer',
+        providerAccountId: 'provider-account',
+        providerEmail: 'team@example.com',
+      },
+    });
+
+    const classification = createClaudeConnectedServiceRuntimeAuthAdapter().classifyRuntimeAuthFailure({
+      target: { agentId: 'claude' },
+      selection: {
+        serviceId: 'claude-subscription',
+        activeProfileId: 'oauth',
+        groupId: 'claude',
+        generation: 42,
+        record,
+      },
+      error: {
+        type: 'rate_limit_event',
+        rate_limit_info: {
+          status: 'rejected',
+          rateLimitType: 'weekly',
+          utilization: 100,
+        },
+      },
+    });
+
+    expect(classification).toMatchObject({
+      kind: 'usage_limit',
+      serviceId: 'claude-subscription',
+      profileId: 'oauth',
+      groupId: 'claude',
+      groupGeneration: 42,
+      sourceProviderAccountId: 'provider-account',
+      sourceAccountLabel: 'team@example.com',
+    });
   });
 
   it('does not treat healthy Claude subscription native credentials as runtime account adoption proof', async () => {
@@ -51,7 +104,7 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
         claudeAiOauth: {
           accessToken: 'access-placeholder',
           refreshToken: 'refresh-placeholder',
-          expiresAt: FUTURE_EXPIRES_AT_MS,
+          expiresAt: FUTURE_EXPIRES_AT_MS + 1_000,
           scopes: CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE.split(' '),
         },
       },
@@ -193,7 +246,118 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
     });
   });
 
-  it('does not advertise Claude subscription runtime config rewrites as provider hot-apply', async () => {
+  it('hot-applies Claude subscription group credentials by rewriting the shared runtime config dir', async () => {
+    const runtimeClaudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-claude-hot-group-config-'));
+    const rootConfigBefore = JSON.stringify({
+      oauthAccount: { accountUuid: 'must-not-be-rewritten-during-live-auth-adoption' },
+      unrelatedRuntimeState: { preserved: true },
+    });
+    const settingsBefore = JSON.stringify({ permissions: { allow: ['Read'] } });
+    await writeFile(join(runtimeClaudeConfigDir, '.claude.json'), rootConfigBefore);
+    await writeFile(join(runtimeClaudeConfigDir, 'settings.json'), settingsBefore);
+    const record = buildConnectedServiceCredentialRecord({
+      now: 1000,
+      serviceId: 'claude-subscription',
+      profileId: 'oauth',
+      kind: 'oauth',
+      expiresAt: FUTURE_EXPIRES_AT_MS,
+      oauth: {
+        accessToken: 'new-access-placeholder',
+        refreshToken: 'new-refresh-placeholder',
+        idToken: null,
+        scope: CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
+        tokenType: 'Bearer',
+        providerAccountId: 'provider-account',
+        providerEmail: 'member@example.com',
+      },
+    });
+    const selection = {
+      record,
+      groupId: 'team',
+      activeProfileId: 'oauth',
+      fallbackProfileId: 'oauth',
+      generation: 7,
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
+      targetMaterializedEnv: { CLAUDE_CONFIG_DIR: runtimeClaudeConfigDir },
+      targetMaterializedRoot: runtimeClaudeConfigDir,
+      [CLAUDE_RUNTIME_AUTH_SHARED_GROUP_SURFACE_METADATA_KEY]: {
+        mode: 'shared_group_auth_surface',
+        runtimeClaudeConfigDir,
+        runtimeMaterializedRoot: runtimeClaudeConfigDir,
+        sourceClaudeConfigDir: runtimeClaudeConfigDir,
+      },
+    };
+
+    const adapter = createClaudeConnectedServiceRuntimeAuthAdapter();
+    expect(adapter.canHotApply({ target: { agentId: 'claude' }, selection })).toEqual({
+      supported: true,
+      mode: 'claude_subscription_shared_group_auth_surface_rewrite',
+    });
+    await expect(adapter.hotApply({ target: { agentId: 'claude' }, selection })).resolves.toMatchObject({
+      applied: true,
+      reason: 'claude_shared_group_auth_surface_rewritten',
+      targetMaterializedRoot: runtimeClaudeConfigDir,
+      targetMaterializedEnv: { CLAUDE_CONFIG_DIR: runtimeClaudeConfigDir },
+      verification: {
+        status: 'weakly_verified',
+        providerAccountId: 'provider-account',
+        activeAccountId: 'member@example.com',
+        sharedAuthSurfaceId: 'team',
+        proofStrength: 'weak',
+        source: 'shared_group_auth_surface',
+        reason: 'claude_shared_group_auth_surface_rewritten',
+      },
+    });
+    const credentials = JSON.parse(await readFile(join(runtimeClaudeConfigDir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth?: { accessToken?: string; refreshToken?: string };
+    };
+    expect(credentials.claudeAiOauth).toMatchObject({
+      accessToken: 'new-access-placeholder',
+    });
+    expect(credentials.claudeAiOauth).not.toHaveProperty('refreshToken');
+    const credentialPath = join(runtimeClaudeConfigDir, '.credentials.json');
+    const provenancePath = join(runtimeClaudeConfigDir, '.happier-claude-connected-service-home.json');
+    const firstCredentialInode = (await stat(credentialPath)).ino;
+    const firstProvenanceInode = (await stat(provenancePath)).ino;
+    await expect(adapter.hotApply({ target: { agentId: 'claude' }, selection })).resolves.toMatchObject({
+      applied: true,
+    });
+    expect((await stat(credentialPath)).ino).toBe(firstCredentialInode);
+    expect((await stat(provenancePath)).ino).toBe(firstProvenanceInode);
+    await expect(adapter.verifyActiveAccount?.({ target: { agentId: 'claude' }, selection })).resolves.toMatchObject({
+      status: 'verified',
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
+      credentialFingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      proofStrength: 'exact',
+    });
+    expect(JSON.parse(await readFile(join(runtimeClaudeConfigDir, '.claude.json'), 'utf8'))).toMatchObject({
+      unrelatedRuntimeState: { preserved: true },
+      hasCompletedOnboarding: true,
+      oauthAccount: {
+        accountUuid: 'provider-account',
+        emailAddress: 'member@example.com',
+      },
+    });
+    expect(await readFile(join(runtimeClaudeConfigDir, 'settings.json'), 'utf8')).toBe(settingsBefore);
+    expect(JSON.parse(await readFile(
+      join(runtimeClaudeConfigDir, '.happier-claude-connected-service-home.json'),
+      'utf8',
+    ))).toMatchObject({
+      v: 1,
+      serviceId: 'claude-subscription',
+      credentialProfileId: 'oauth',
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
+      generation: 7,
+      selection: {
+        kind: 'group',
+        groupId: 'team',
+        activeProfileId: 'oauth',
+        fallbackProfileId: 'oauth',
+      },
+    });
+  });
+
+  it('fails closed when Claude shared-group hot apply is missing a group generation', async () => {
     const runtimeClaudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-claude-hot-group-config-'));
     const record = buildConnectedServiceCredentialRecord({
       now: 1000,
@@ -208,11 +372,15 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
         scope: CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
         tokenType: 'Bearer',
         providerAccountId: 'provider-account',
-        providerEmail: null,
+        providerEmail: 'member@example.com',
       },
     });
     const selection = {
       record,
+      groupId: 'team',
+      activeProfileId: 'oauth',
+      fallbackProfileId: 'oauth',
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
       targetMaterializedEnv: { CLAUDE_CONFIG_DIR: runtimeClaudeConfigDir },
       targetMaterializedRoot: runtimeClaudeConfigDir,
       [CLAUDE_RUNTIME_AUTH_SHARED_GROUP_SURFACE_METADATA_KEY]: {
@@ -235,7 +403,7 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
     });
   });
 
-  it('does not treat probe-backed Claude group runtime config rewrite as live account adoption proof', async () => {
+  it('weakly verifies a probe-backed Claude group runtime config rewrite through the shared auth surface', async () => {
     const sourceClaudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-claude-hot-source-'));
     const runtimeClaudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-claude-hot-group-config-'));
     const record = buildConnectedServiceCredentialRecord({
@@ -251,7 +419,7 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
         scope: CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
         tokenType: 'Bearer',
         providerAccountId: 'provider-account',
-        providerEmail: null,
+        providerEmail: 'member@example.com',
       },
     });
     await writeClaudeCodeCredentialsFile({
@@ -265,11 +433,37 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
         },
       },
     });
+    const credentialFingerprint = computeClaudeCodeCredentialFingerprint(JSON.parse(
+      await readFile(resolveClaudeCodeCredentialsFilePath(runtimeClaudeConfigDir), 'utf8'),
+    ));
+    await writeClaudeConnectedServiceHomeProvenance({
+      claudeConfigDir: runtimeClaudeConfigDir,
+      provenance: {
+        v: 1,
+        serviceId: 'claude-subscription',
+        credentialProfileId: 'oauth',
+        credentialCreatedAt: record.createdAt,
+        credentialFingerprint,
+        credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
+        generation: 7,
+        selection: {
+          kind: 'group',
+          groupId: 'team',
+          activeProfileId: 'oauth',
+          fallbackProfileId: 'oauth',
+        },
+      },
+    });
 
     await expect(createClaudeConnectedServiceRuntimeAuthAdapter().verifyActiveAccount?.({
       target: { agentId: 'claude' },
       selection: {
         record,
+        groupId: 'team',
+        activeProfileId: 'oauth',
+        fallbackProfileId: 'oauth',
+        generation: 7,
+        credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
         targetMaterializedEnv: { CLAUDE_CONFIG_DIR: runtimeClaudeConfigDir },
         targetMaterializedRoot: runtimeClaudeConfigDir,
         [CLAUDE_RUNTIME_AUTH_SHARED_GROUP_SURFACE_METADATA_KEY]: {
@@ -279,13 +473,15 @@ describe('createClaudeConnectedServiceRuntimeAuthAdapter', () => {
           sourceClaudeConfigDir,
         },
       },
-    })).resolves.toEqual({
-      status: 'unavailable',
-      retryable: true,
-      reason: 'claude_code_runtime_account_adoption_unproven',
-      errorClassification: {
-        missingScopes: [],
-      },
+    })).resolves.toMatchObject({
+      status: 'verified',
+      providerAccountId: 'provider-account',
+      activeAccountId: 'member@example.com',
+      sharedAuthSurfaceId: 'team',
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
+      credentialFingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      proofStrength: 'exact',
+      source: 'claude_shared_group_home_provenance',
     });
   });
 });

@@ -67,6 +67,14 @@ describe('createOpenCodeServerExecutionRunBackend', () => {
         },
         { localId: 'assistant-1' },
       );
+      await sendAgentMessageCommitted(
+        'opencode',
+        {
+          type: 'message',
+          message: 'Separate stream',
+        },
+        { localId: ' assistant-1' },
+      );
     });
 
     createOpenCodeServerRuntimeMock.mockImplementation((params: Record<string, unknown>) => {
@@ -108,6 +116,8 @@ describe('createOpenCodeServerExecutionRunBackend', () => {
     expect(createOpenCodeServerRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
       directory: '/tmp/opencode-run',
       env: { HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4096' },
+      mcpServers: {},
+      happierMcpAdmission: { kind: 'not_available_for_execution_run' },
     }));
     expect(beginTurn).toHaveBeenCalledTimes(1);
     expect(flushTurn).toHaveBeenCalledTimes(1);
@@ -120,6 +130,7 @@ describe('createOpenCodeServerExecutionRunBackend', () => {
       { type: 'tool-call', toolName: 'Bash', args: { command: 'pwd' }, callId: 'tool-1' },
       { type: 'tool-result', toolName: 'Bash', result: { output: '/tmp/demo' }, callId: 'tool-1', isError: false },
       { type: 'model-output', fullText: 'Hello world' },
+      { type: 'model-output', fullText: 'Separate stream' },
     ]));
   });
 

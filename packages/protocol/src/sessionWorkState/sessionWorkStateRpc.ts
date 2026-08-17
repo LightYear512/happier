@@ -1,9 +1,13 @@
 import { z } from 'zod';
 
 import { ConnectedServiceIdSchema } from '../connect/connectedServiceBindings.js';
-import { ConnectedServiceQuotaSnapshotV1Schema } from '../connect/connectedServiceSchemas.js';
+import {
+  ConnectedServiceCredentialRevisionV1Schema,
+  ConnectedServiceQuotaSnapshotV1Schema,
+} from '../connect/connectedServiceSchemas.js';
 import { SessionUsageLimitRecoveryOperationResultV1Schema } from '../sessionControl/sessionUsageLimitRecoveryOperationResultV1.js';
 import { SessionUsageLimitRecoveryResumePromptModeV1Schema } from '../sessionMetadata/sessionUsageLimitRecoveryV1.js';
+import { LEGACY_SKILL_CATALOG_ORIGINS_V1 } from './skillCatalogItemIdentityV1.js';
 import { SessionWorkStateStatusV1Schema, SessionWorkStateV1Schema } from './sessionWorkStateV1.js';
 
 type MetadataRecord = Record<string, unknown>;
@@ -79,6 +83,7 @@ const ConnectedServiceRuntimeControlExpectedV1Schema = z
     profileId: ConnectedServiceRuntimeControlIdV1Schema.optional(),
     groupId: ConnectedServiceRuntimeControlIdV1Schema.optional(),
     generation: z.union([z.string().trim().min(1), z.number().int().nonnegative()]).optional(),
+    credentialRevision: z.string().trim().min(1).optional(),
   })
   .passthrough();
 
@@ -93,6 +98,7 @@ export type SessionConnectedServiceAuthApplyGenerationReasonV1 =
   z.infer<typeof SessionConnectedServiceAuthApplyGenerationReasonV1Schema>;
 
 export const SessionConnectedServiceAuthApplyGenerationAppliedViaV1Schema = z.enum([
+  'current_truth_fence',
   'direct_live_hot_auth',
   'transport_recycle',
   'restart_resume',
@@ -126,23 +132,68 @@ function addMissingExactIdentityMaterialIssue(
   });
 }
 
+const SessionConnectedServiceAuthGenerationApplicationV1Schema = z.object({
+  serviceId: ConnectedServiceIdSchema,
+  groupId: z.string().trim().min(1),
+  profileId: z.string().trim().min(1),
+  generation: z.number().int().nonnegative(),
+  credentialRevision: ConnectedServiceCredentialRevisionV1Schema,
+  credentialFingerprint: z.string().trim().min(1),
+}).passthrough();
+
 const SessionConnectedServiceAuthApplyGenerationVerificationV1Schema = z
-  .record(z.string(), z.unknown())
+  .object({
+    providerAccountId: z.string().trim().min(1).optional(),
+    activeAccountId: z.string().trim().min(1).optional(),
+    sharedAuthSurfaceId: z.string().trim().min(1).optional(),
+    proofStrength: z.enum(['exact', 'weak', 'diagnostic']).optional(),
+    source: z.string().trim().min(1).optional(),
+    reason: z.string().trim().min(1).optional(),
+    credentialRevision: ConnectedServiceCredentialRevisionV1Schema.nullable().optional(),
+    credentialFingerprint: z.string().trim().min(1).nullable().optional(),
+    generationApplication: SessionConnectedServiceAuthGenerationApplicationV1Schema.optional(),
+  })
+  .passthrough()
   .superRefine((value, ctx) => {
     if (value.proofStrength !== 'exact') return;
     if (hasExactIdentityMaterial(value, ['providerAccountId', 'activeAccountId', 'sharedAuthSurfaceId'])) return;
     addMissingExactIdentityMaterialIssue(ctx, ['proofStrength'], 'exact verification requires identity material');
   });
 
+export const SessionConnectedServiceAuthCurrentGroupTruthV1Schema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('current_auth_group_unavailable'),
+    groupId: z.string().trim().min(1),
+    unavailableReason: z.enum(['group_missing', 'active_profile_missing']),
+  }).passthrough(),
+  z.object({
+    kind: z.literal('current_auth_group_available'),
+    groupId: z.string().trim().min(1),
+    generation: z.number().int().nonnegative(),
+    credentialRevision: ConnectedServiceCredentialRevisionV1Schema,
+  }).passthrough(),
+]);
+export type SessionConnectedServiceAuthCurrentGroupTruthV1 =
+  z.infer<typeof SessionConnectedServiceAuthCurrentGroupTruthV1Schema>;
+
+const SessionConnectedServiceAuthLegacyGenerationV1Schema = z
+  .record(z.string(), z.unknown())
+  .refine((value) => Object.keys(value).length > 0)
+  .refine((value) => (
+    typeof value.kind !== 'string' || !value.kind.startsWith('current_auth_group_')
+  ));
+
 export const SessionConnectedServiceAuthApplyGenerationRequestV1Schema = z
   .object({
     serviceId: ConnectedServiceRuntimeControlServiceIdV1Schema,
     reason: SessionConnectedServiceAuthApplyGenerationReasonV1Schema,
     requireDirectLiveHotApply: z.boolean().optional(),
+    applicationSettled: z.literal(true).optional(),
     expected: ConnectedServiceRuntimeControlExpectedV1Schema.optional(),
-    authGeneration: z
-      .record(z.string(), z.unknown())
-      .refine((value) => Object.keys(value).length > 0),
+    authGeneration: z.union([
+      SessionConnectedServiceAuthCurrentGroupTruthV1Schema,
+      SessionConnectedServiceAuthLegacyGenerationV1Schema,
+    ]),
   })
   .passthrough();
 export type SessionConnectedServiceAuthApplyGenerationRequestV1 =
@@ -253,6 +304,7 @@ export const SessionConnectedServiceAuthReadRuntimeIdentityResponseV1Schema = z.
           profileId: z.string().trim().min(1).optional(),
           groupId: z.string().trim().min(1).optional(),
           generation: z.union([z.string().trim().min(1), z.number().int().nonnegative()]).optional(),
+          credentialRevision: z.string().trim().min(1).optional(),
         })
         .passthrough()
         .optional(),
@@ -287,6 +339,8 @@ export const SessionUsageLimitWaitResumeCancelRequestV1Schema = z
   .object({
     sessionId: SessionIdRequestFieldSchema,
     issueFingerprint: IssueFingerprintFieldSchema.nullable().optional(),
+    armedAtMs: z.number().int().nonnegative().optional(),
+    runtimeAuthRecoveryAttemptId: z.string().trim().min(1).optional(),
   })
   .passthrough();
 export type SessionUsageLimitWaitResumeCancelRequestV1 = z.infer<typeof SessionUsageLimitWaitResumeCancelRequestV1Schema>;
@@ -345,6 +399,7 @@ export const ConnectedServiceQuotaRecoveryCreditConsumeReceiptStatusV1Schema = z
   'consumed',
   'already_consumed',
   'not_available',
+  'nothing_to_reset',
   'unknown_after_timeout',
 ]);
 export type ConnectedServiceQuotaRecoveryCreditConsumeReceiptStatusV1 =
@@ -454,16 +509,13 @@ export const SessionVendorPluginCatalogListResponseV1Schema = z.preprocess(
 );
 export type SessionVendorPluginCatalogListResponseV1 = z.infer<typeof SessionVendorPluginCatalogListResponseV1Schema>;
 
+// The legacy arm derives from the identity owner's fold table rather than re-listing it:
+// two independent declarations of the same origin vocabulary can drift, and an origin the
+// wire accepts but the identity resolver cannot fold produces a reference that never
+// resolves. `derived`/`fallback` are accepted for historical payloads and carry no identity.
 const SessionSkillCatalogOriginV1Schema = z.union([
   z.enum(['vendor', 'happier', 'derived', 'fallback']),
-  z.enum([
-    'codex_native',
-    'opencode_native',
-    'claude_native',
-    'pi_native',
-    'happier_projected',
-    'text_fallback_only',
-  ]),
+  z.enum(LEGACY_SKILL_CATALOG_ORIGINS_V1),
 ]);
 
 export const SessionSkillCatalogItemV1Schema = z

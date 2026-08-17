@@ -91,6 +91,29 @@ describe('useNewSessionScreenModel (draft hydration — core)', () => {
         expect((settingsState as any).lastEngineSelectionsByScopeV1?.[scopeKey]?.acpSessionModeId).toBeNull();
     });
 
+    it('drops a persisted Claude model when a route-selected Codex backend owns the new session', async () => {
+        searchParamsState.value = {
+            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        };
+        persistedDraft.agentType = 'claude';
+        persistedDraft.backendTarget = { kind: 'builtInAgent', agentId: 'claude' };
+        persistedDraft.modelMode = 'claude-opus-4-8';
+
+        let model: any = null;
+        await renderNewSessionScreenModel((nextModel) => {
+            model = nextModel;
+        });
+
+        expect(model?.simpleProps?.agentType).toBe('codex');
+        expect(model?.simpleProps?.modelMode).toBe('default');
+        expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
+            authoringDraft: expect.objectContaining({
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                modelId: null,
+            }),
+        }));
+    });
+
     it('hydrates permission, agent, and path from the persisted draft', async () => {
         let model: any = null;
         await renderNewSessionScreenModel((nextModel) => {
@@ -125,6 +148,23 @@ describe('useNewSessionScreenModel (draft hydration — core)', () => {
                 },
             },
         }));
+    });
+
+    it('rehydrates and durably updates the principal launch user-attempt id', async () => {
+        persistedDraft.launchUserAttemptId = 'opaque-attempt-a';
+        await renderNewSessionScreenModel(() => {});
+
+        expect(useCreateNewSessionArgsRef.current?.launchUserAttemptId).toBe('opaque-attempt-a');
+        expect(useCreateNewSessionArgsRef.current?.launchIntentSignature).toEqual(expect.any(String));
+        const updateAttempt = useCreateNewSessionArgsRef.current?.onLaunchUserAttemptIdChange;
+        expect(updateAttempt).toEqual(expect.any(Function));
+
+        await act(async () => {
+            (updateAttempt as (value: string | null) => void)('opaque-attempt-b');
+        });
+        expect(saveNewSessionDraftMock).toHaveBeenLastCalledWith(
+            expect.objectContaining({ launchUserAttemptId: 'opaque-attempt-b' }),
+        );
     });
 
     it('hydrates the persisted target server when no route server is selected', async () => {
@@ -675,7 +715,7 @@ describe('useNewSessionScreenModel (draft hydration — core)', () => {
             model = nextModel;
         });
 
-        expect(model?.simpleProps?.sessionPrompt).toBe('Persisted prompt');
+        expect(model?.simpleProps?.promptStore.getPrompt()).toBe('Persisted prompt');
         expect(model?.simpleProps?.agentType).toBe('codex');
         expect(model?.simpleProps?.permissionMode).toBe('acceptEdits');
         expect(model?.simpleProps?.selectedPath).toBe('/repo/from-session');
@@ -705,7 +745,7 @@ describe('useNewSessionScreenModel (draft hydration — core)', () => {
             model = nextModel;
         });
 
-        expect(model?.simpleProps?.sessionPrompt).toBe('Old persisted prompt');
+        expect(model?.simpleProps?.promptStore.getPrompt()).toBe('Old persisted prompt');
         expect(model?.simpleProps?.resumeSessionId).toBe('sess_old');
         expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
             authoringDraft: expect.objectContaining({
@@ -727,7 +767,7 @@ describe('useNewSessionScreenModel (draft hydration — core)', () => {
             if (typeof cleanup === 'function') cleanup();
         }
 
-        expect(model?.simpleProps?.sessionPrompt).toBe('Focused draft prompt');
+        expect(model?.simpleProps?.promptStore.getPrompt()).toBe('Focused draft prompt');
         expect(model?.simpleProps?.resumeSessionId).toBe('sess_new');
         expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
             authoringDraft: expect.objectContaining({

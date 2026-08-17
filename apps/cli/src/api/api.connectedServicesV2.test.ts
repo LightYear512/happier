@@ -3,11 +3,15 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import {
   buildConnectedServiceCredentialRecord,
+  buildProviderAccountUsageRecordId,
   sealAccountScopedBlobCiphertext,
+  type ConnectedServiceUsageSourceV1,
+  type ProviderAccountUsageRecordKeyV1,
 } from '@happier-dev/protocol';
 
 import { ApiClient } from './api';
 import { logger } from '@/ui/logger';
+import { resetServerEndpointFailureLogSamplingForTests } from './client/serverEndpointFailureLog';
 import type { Credentials } from '@/persistence';
 import type { ScmConnectedAccountCredentialResolver } from '@/scm/types';
 
@@ -24,6 +28,7 @@ vi.mock('axios', () => ({
 vi.mock('@/ui/logger', () => ({
   logger: {
     debug: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -66,28 +71,59 @@ function createAxiosResponseError(params: Readonly<{
   return error;
 }
 
+function createProviderAccountUsageRecordKey(): ProviderAccountUsageRecordKeyV1 {
+  const recordKey: ProviderAccountUsageRecordKeyV1 = {
+    providerId: 'codex',
+    accountSubjectId: 'acct_live_codex',
+    subjectKind: 'account',
+    quotaScope: 'account',
+  };
+  return recordKey;
+}
+
+function createProviderAccountUsageRecordId(): string {
+  return buildProviderAccountUsageRecordId(createProviderAccountUsageRecordKey());
+}
+
+function createConnectedServiceUsageSource(): ConnectedServiceUsageSourceV1 {
+  return {
+    serviceId: 'openai-codex',
+    profileId: 'work',
+    bindingKind: 'group_member',
+    groupId: 'team',
+    groupGeneration: 4,
+  };
+}
+
 describe('ApiClient connected services v2', () => {
   beforeEach(() => {
     mockPost.mockReset();
     mockGet.mockReset();
     vi.clearAllMocks();
+    resetServerEndpointFailureLogSamplingForTests();
   });
 
   it('posts sealed credentials to the v2 connected services endpoint', async () => {
-    mockPost.mockResolvedValue({ status: 200, data: { success: true } });
+    mockPost.mockResolvedValue({ status: 200, data: { success: true, credentialRevision: 'csr_1234567890123456789012' } });
 
     const api = await ApiClient.create(createTestCredentials());
 
-    await api.registerConnectedServiceCredentialSealed({
+    const result = await api.registerConnectedServiceCredentialSealed({
       serviceId: 'openai-codex',
       profileId: 'work',
       sealed: { format: 'account_scoped_v1', ciphertext: 'c2VhbGVk' },
       metadata: { kind: 'oauth', providerEmail: 'user@example.com', expiresAt: Date.now() + 3600_000 },
+      expectedCredentialRevision: 'csr_abcdefghijklmnopqrstuv',
+      refreshLeaseOwnerId: 'machine:daemon:attempt',
     });
+
+    expect(result).toEqual({ success: true, credentialRevision: 'csr_1234567890123456789012' });
 
     expect(axios.post).toHaveBeenCalledWith(
       expect.stringContaining('/v2/connect/openai-codex/profiles/work/credential'),
       expect.objectContaining({
+        expectedCredentialRevision: 'csr_abcdefghijklmnopqrstuv',
+        refreshLeaseOwnerId: 'machine:daemon:attempt',
         sealed: { format: 'account_scoped_v1', ciphertext: 'c2VhbGVk' },
       }),
       expect.objectContaining({
@@ -101,22 +137,66 @@ describe('ApiClient connected services v2', () => {
     expect(serializedLogs).not.toContain('c2VhbGVk');
   });
 
-  it('posts sealed quota snapshots to the v2 connected services quotas endpoint', async () => {
-    mockPost.mockResolvedValue({ status: 200, data: { success: true } });
+  it('serializes an explicit expect-absent credential revision guard', async () => {
+    mockPost.mockResolvedValue({ status: 200, data: { success: true, credentialRevision: 'csr_1234567890123456789012' } });
 
     const api = await ApiClient.create(createTestCredentials());
-
-    await api.registerConnectedServiceQuotaSnapshotSealed({
+    await api.registerConnectedServiceCredentialSealed({
       serviceId: 'openai-codex',
       profileId: 'work',
-      sealed: { format: 'account_scoped_v1', ciphertext: 'cXVvdGEtY2lwaGVydGV4dA==' },
-      metadata: { fetchedAt: Date.now(), staleAfterMs: 300_000, status: 'ok' },
+      sealed: { format: 'account_scoped_v1', ciphertext: 'c2VhbGVk' },
+      expectedCredentialRevision: null,
     });
 
     expect(axios.post).toHaveBeenCalledWith(
-      expect.stringContaining('/v2/connect/openai-codex/profiles/work/quotas'),
+      expect.stringContaining('/v2/connect/openai-codex/profiles/work/credential'),
+      expect.objectContaining({ expectedCredentialRevision: null }),
+      expect.any(Object),
+    );
+  });
+
+  it('preserves a definite credential write rejection as a sanitized status error', async () => {
+    mockPost.mockRejectedValueOnce(createAxiosResponseError({
+      status: 400,
+      data: { error: 'invalid_request' },
+    }));
+    const api = await ApiClient.create(createTestCredentials());
+
+    await expect(api.registerConnectedServiceCredentialSealed({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      sealed: { format: 'account_scoped_v1', ciphertext: 'c2VhbGVk' },
+      expectedCredentialRevision: null,
+    })).rejects.toMatchObject({ response: { status: 400 } });
+  });
+
+  it('does not expose the retired sealed connected-service quota writer', async () => {
+    const api = await ApiClient.create(createTestCredentials());
+
+    expect('registerConnectedServiceQuotaSnapshotSealed' in api).toBe(false);
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('posts sealed provider account usage snapshots to the v2 canonical endpoint by record id', async () => {
+    mockPost.mockResolvedValue({ status: 200, data: { success: true, credentialRevision: 'csr_1234567890123456789012' } });
+    const recordKey = createProviderAccountUsageRecordKey();
+    const recordId = buildProviderAccountUsageRecordId(recordKey);
+
+    const api = await ApiClient.create(createTestCredentials());
+
+    await api.registerProviderAccountUsageSnapshotSealed({
+      recordId,
+      recordKey,
+      sealed: { format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' },
+      metadata: { fetchedAt: 1_000, staleAfterMs: 300_000, status: 'ok', materialFingerprint: 'fingerprint' },
+    });
+
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining(`/v2/connect/provider-account-usage/${encodeURIComponent(recordId)}`),
       expect.objectContaining({
-        sealed: { format: 'account_scoped_v1', ciphertext: 'cXVvdGEtY2lwaGVydGV4dA==' },
+        sealed: { format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' },
+        recordKey,
+        metadata: expect.objectContaining({ materialFingerprint: 'fingerprint' }),
       }),
       expect.objectContaining({
         headers: expect.objectContaining({
@@ -124,9 +204,108 @@ describe('ApiClient connected services v2', () => {
         }),
       }),
     );
+    expect(String(vi.mocked(axios.post).mock.calls[0]?.[0])).not.toContain('/profiles/');
+  });
 
-    const serializedLogs = JSON.stringify(vi.mocked(logger.debug).mock.calls);
-    expect(serializedLogs).not.toContain('cXVvdGEtY2lwaGVydGV4dA==');
+  it('posts sealed provider account usage snapshots with source context to the v2 canonical endpoint', async () => {
+    mockPost.mockResolvedValue({ status: 200, data: { success: true, credentialRevision: 'csr_1234567890123456789012' } });
+    const recordKey = createProviderAccountUsageRecordKey();
+    const recordId = buildProviderAccountUsageRecordId(recordKey);
+
+    const api = await ApiClient.create(createTestCredentials());
+
+    await api.registerProviderAccountUsageSnapshotSealed({
+      recordId,
+      recordKey,
+      source: {
+        serviceId: 'openai-codex',
+        profileId: 'work',
+        bindingKind: 'profile',
+      },
+      sealed: { format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' },
+      metadata: { fetchedAt: 1_000, staleAfterMs: 300_000, status: 'ok', materialFingerprint: 'fingerprint' },
+    });
+
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining(`/v2/connect/provider-account-usage/${encodeURIComponent(recordId)}`),
+      expect.objectContaining({
+        sealed: { format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' },
+        recordKey,
+        source: {
+          serviceId: 'openai-codex',
+          profileId: 'work',
+          bindingKind: 'profile',
+        },
+        metadata: expect.objectContaining({ materialFingerprint: 'fingerprint' }),
+      }),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer happy-token',
+        }),
+      }),
+    );
+    expect(String(vi.mocked(axios.post).mock.calls[0]?.[0])).not.toContain('/profiles/');
+  });
+
+  it('logs skipped sealed provider account usage source-link outcomes from the v2 canonical endpoint', async () => {
+    mockPost.mockResolvedValue({
+      status: 200,
+      data: {
+        success: true,
+        source: {
+          status: 'skipped',
+          reason: 'binding_unavailable',
+        },
+      },
+    });
+    const recordKey = createProviderAccountUsageRecordKey();
+    const recordId = buildProviderAccountUsageRecordId(recordKey);
+
+    const api = await ApiClient.create(createTestCredentials());
+
+    await api.registerProviderAccountUsageSnapshotSealed({
+      recordId,
+      recordKey,
+      source: {
+        serviceId: 'openai-codex',
+        profileId: 'work',
+        bindingKind: 'profile',
+      },
+      sealed: { format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' },
+      metadata: { fetchedAt: 1_000, staleAfterMs: 300_000, status: 'ok', materialFingerprint: 'fingerprint' },
+    });
+
+    expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('Provider account usage source link skipped'));
+    expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('binding_unavailable'));
+  });
+
+  it('gets sealed provider account usage snapshots from the v2 canonical endpoint by record id', async () => {
+    const recordId = createProviderAccountUsageRecordId();
+    const source = createConnectedServiceUsageSource();
+    mockGet.mockResolvedValue({
+      status: 200,
+      data: {
+        sealed: { format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' },
+        metadata: { fetchedAt: 1_000, staleAfterMs: 300_000, status: 'ok' },
+        sources: [source],
+      },
+    });
+
+    const api = await ApiClient.create(createTestCredentials());
+
+    const res = await api.getProviderAccountUsageSnapshotSealed({ recordId });
+
+    expect(res?.sealed).toEqual({ format: 'account_scoped_v1', ciphertext: 'cHJvdmlkZXItdXNhZ2U=' });
+    expect(res?.sources).toEqual([source]);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining(`/v2/connect/provider-account-usage/${encodeURIComponent(recordId)}`),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer happy-token',
+        }),
+      }),
+    );
+    expect(String(vi.mocked(axios.get).mock.calls[0]?.[0])).not.toContain('/profiles/');
   });
 
   it('gets sealed quota snapshots from the v2 connected services quotas endpoint', async () => {
@@ -170,19 +349,17 @@ describe('ApiClient connected services v2', () => {
     })).resolves.toBeNull();
   });
 
-  it.each([401, 403] as const)('classifies auth quota write failures by status %i', async (status) => {
-    mockPost.mockRejectedValue(createAxiosResponseError({
+  it.each([401, 403] as const)('classifies auth quota read failures by status %i', async (status) => {
+    mockGet.mockRejectedValue(createAxiosResponseError({
       status,
       data: { error: 'not_authenticated' },
     }));
 
     const api = await ApiClient.create(createTestCredentials());
 
-    await expect(api.registerConnectedServiceQuotaSnapshotSealed({
+    await expect(api.getConnectedServiceQuotaSnapshotSealed({
       serviceId: 'openai-codex',
       profileId: 'work',
-      sealed: { format: 'account_scoped_v1', ciphertext: 'cXVvdGE=' },
-      metadata: { fetchedAt: 1, staleAfterMs: 300_000, status: 'ok' },
     })).rejects.toMatchObject({
       name: 'ConnectedServiceQuotaApiError',
       kind: 'auth',
@@ -198,15 +375,13 @@ describe('ApiClient connected services v2', () => {
       data: { error: 'rate_limited' },
       headers: { 'retry-after': '7' },
     });
-    mockPost.mockRejectedValue(cause);
+    mockGet.mockRejectedValue(cause);
 
     const api = await ApiClient.create(createTestCredentials());
 
-    await expect(api.registerConnectedServiceQuotaSnapshotSealed({
+    await expect(api.getConnectedServiceQuotaSnapshotSealed({
       serviceId: 'openai-codex',
       profileId: 'work',
-      sealed: { format: 'account_scoped_v1', ciphertext: 'cXVvdGE=' },
-      metadata: { fetchedAt: 1, staleAfterMs: 300_000, status: 'ok' },
     })).rejects.toMatchObject({
       name: 'ConnectedServiceQuotaApiError',
       kind: 'retryable',
@@ -214,6 +389,17 @@ describe('ApiClient connected services v2', () => {
       retryable: true,
       retryAfterMs: 7_000,
       cause,
+    });
+    expect(vi.mocked(logger.debug)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logger.debug).mock.calls[0]?.[0]).toContain('temporarily unavailable');
+    expect(vi.mocked(logger.debug).mock.calls[0]?.[0]).not.toContain('[ERROR]');
+    expect(vi.mocked(logger.debug).mock.calls[0]?.[1]).toMatchObject({
+      classification: {
+        kind: 'rate_limited',
+        retryable: true,
+        statusCode: 429,
+        retryAfterMs: 7_000,
+      },
     });
   });
 
@@ -264,6 +450,7 @@ describe('ApiClient connected services v2', () => {
         return {
           status: 200,
           data: {
+            credentialRevision: 'csr_abcdefghijklmnopqrstuv',
             sealed: { format: 'account_scoped_v1', ciphertext },
             metadata: {
               kind: 'oauth',
@@ -383,6 +570,36 @@ describe('ApiClient connected services v2', () => {
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
 
+  it('bypasses the connected-service profile cache for an authoritative inventory read', async () => {
+    mockGet
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          serviceId: 'openai-codex',
+          profiles: [{ profileId: 'old', status: 'connected', kind: 'oauth' }],
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          serviceId: 'openai-codex',
+          profiles: [{ profileId: 'current', status: 'connected', kind: 'oauth' }],
+        },
+      });
+    const api = await ApiClient.create(createTestCredentials());
+
+    await expect(api.listConnectedServiceProfiles({ serviceId: 'openai-codex' })).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ profileId: 'old' })],
+    });
+    await expect(api.listConnectedServiceProfiles({
+      serviceId: 'openai-codex',
+      forceRefresh: true,
+    })).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ profileId: 'current' })],
+    });
+    expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
   it('invalidates connected-service profile list cache after sealed credential writes', async () => {
     mockGet
       .mockResolvedValueOnce({
@@ -399,7 +616,7 @@ describe('ApiClient connected services v2', () => {
           profiles: [{ profileId: 'new', status: 'connected', kind: 'oauth' }],
         },
       });
-    mockPost.mockResolvedValue({ status: 200, data: { success: true } });
+    mockPost.mockResolvedValue({ status: 200, data: { success: true, credentialRevision: 'csr_1234567890123456789012' } });
 
     const api = await ApiClient.create(createTestCredentials());
 

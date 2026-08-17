@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -13,7 +13,28 @@ import {
   cleanupHookSettingsFile,
   generateHookPluginDir,
   generateHookSettingsFile,
+  refreshRetainedClaudeHookPlugin,
 } from './generateHookSettings';
+
+const WINDOWS_LIFECYCLE_HOOK_NAMES = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'Stop',
+  'StopFailure',
+  'SessionEnd',
+  'PostToolUse',
+  'SubagentStart',
+  'SubagentStop',
+] as const;
+
+const WINDOWS_PERMISSION_HOOK_NAMES = ['PermissionRequest', 'PreToolUse'] as const;
+
+function decodeEncodedPowerShellHookCommand(command: string): string {
+  const match = /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/]+={0,2})$/.exec(command);
+  expect(match).toBeTruthy();
+  expect(command).not.toMatch(/[&|<>'"`$();]/);
+  return Buffer.from(match![1]!, 'base64').toString('utf16le');
+}
 
 describe('generateHookSettingsFile', () => {
   const createdFiles: string[] = [];
@@ -33,6 +54,9 @@ describe('generateHookSettingsFile', () => {
     }
     for (const pluginDir of createdPluginDirs.splice(0, createdPluginDirs.length)) {
       cleanupHookPluginDir(pluginDir);
+      if (existsSync(pluginDir)) {
+        rmSync(pluginDir, { recursive: true, force: true });
+      }
     }
     for (const dirPath of createdDirs.splice(0, createdDirs.length)) {
       rmSync(dirPath, { recursive: true, force: true });
@@ -105,6 +129,9 @@ describe('generateHookPluginDir', () => {
     }
     for (const pluginDir of createdPluginDirs.splice(0, createdPluginDirs.length)) {
       cleanupHookPluginDir(pluginDir);
+      if (existsSync(pluginDir)) {
+        rmSync(pluginDir, { recursive: true, force: true });
+      }
     }
     for (const dirPath of createdDirs.splice(0, createdDirs.length)) {
       rmSync(dirPath, { recursive: true, force: true });
@@ -120,17 +147,83 @@ describe('generateHookPluginDir', () => {
 
     const hooksPath = join(pluginDir!, 'hooks', 'hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf8')) as any;
-    const lifecycleHookNames = ['SessionStart', 'UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd', 'PostToolUse'];
+    const lifecycleHookNames = [
+      'SessionStart',
+      'UserPromptSubmit',
+      'Stop',
+      'StopFailure',
+      'SessionEnd',
+      'PostToolUse',
+      'SubagentStart',
+      'SubagentStop',
+    ];
     for (const hookName of lifecycleHookNames) {
       const command = parsed.hooks?.[hookName]?.[0]?.hooks?.[0]?.command as string;
       expect(command).toContain('session_hook_forwarder.cjs');
+      expect(command).toContain(pluginDir!);
       expect(command).toContain(hookName);
     }
+    expect(existsSync(join(pluginDir!, 'runtime-assets'))).toBe(true);
+    const permissionForwarderPaths = readFileSync(hooksPath, 'utf8').match(/[^"\s]*permission_hook_forwarder\.cjs/g) ?? [];
+    expect(permissionForwarderPaths).toHaveLength(0);
+    const runtimeAssetDirs = readdirSync(join(pluginDir!, 'runtime-assets'));
+    expect(runtimeAssetDirs).toHaveLength(1);
+    expect(existsSync(join(pluginDir!, 'runtime-assets', runtimeAssetDirs[0]!, 'session_hook_forwarder.cjs'))).toBe(true);
+    expect(existsSync(join(pluginDir!, 'runtime-assets', runtimeAssetDirs[0]!, 'permission_hook_forwarder.cjs'))).toBe(true);
     const command = parsed.hooks?.SessionStart?.[0]?.hooks?.[0]?.command as string;
     // Prefer execPath over `node` so hooks still work when PATH is minimal (common on Windows/GUI contexts).
     expect(command).toContain(process.execPath);
     expect(parsed.hooks?.PermissionRequest).toBeUndefined();
     expect(parsed.hooks?.PermissionDenied).toBeUndefined();
+  });
+
+  it('encodes every Windows hook command so the outer hook shell cannot interpret its argv, including retained refreshes', () => {
+    const overrideDir = mkdtempSync(join(tmpdir(), 'happier Program Files-'));
+    createdDirs.push(overrideDir);
+    const nodeExecutable = writeExecutableShimSync({
+      dir: overrideDir,
+      fileName: 'node.exe',
+      contents: '#!/bin/sh\n',
+    });
+    envScope.patch({ HAPPIER_MANAGED_NODE_BIN: nodeExecutable });
+
+    const pluginDir = generateHookPluginDir(43123, {
+      enableLocalPermissionBridge: true,
+      permissionHookSecret: 'windows-hook-secret',
+      platform: 'win32',
+      sessionHookPluginId: 'windows-shell-neutral-hooks',
+    });
+
+    expect(pluginDir).toBeTruthy();
+    createdPluginDirs.push(pluginDir!);
+    const runtimeAssetsDir = readdirSync(join(pluginDir!, 'runtime-assets'))[0]!;
+    const secretFile = join(pluginDir!, 'permission-hook-secret');
+    const assertHookCommands = (port: number): void => {
+      const parsed = JSON.parse(readFileSync(join(pluginDir!, 'hooks', 'hooks.json'), 'utf8')) as any;
+      for (const hookName of [...WINDOWS_LIFECYCLE_HOOK_NAMES, ...WINDOWS_PERMISSION_HOOK_NAMES]) {
+        const command = parsed.hooks?.[hookName]?.[0]?.hooks?.[0]?.command as string;
+        const forwarderBasename = WINDOWS_PERMISSION_HOOK_NAMES.includes(
+          hookName as (typeof WINDOWS_PERMISSION_HOOK_NAMES)[number],
+        )
+          ? 'permission_hook_forwarder.cjs'
+          : 'session_hook_forwarder.cjs';
+        const forwarderPath = join(pluginDir!, 'runtime-assets', runtimeAssetsDir, forwarderBasename);
+        expect(decodeEncodedPowerShellHookCommand(command)).toBe(
+          `& '${nodeExecutable}' '${forwarderPath}' '${port}' '${hookName}' '--secret-file' '${secretFile}'`,
+        );
+        expect(command).not.toContain('windows-hook-secret');
+      }
+    };
+
+    assertHookCommands(43123);
+
+    refreshRetainedClaudeHookPlugin({
+      pluginDir: pluginDir!,
+      port: 53123,
+      platform: 'win32',
+    });
+
+    assertHookCommands(53123);
   });
 
   it('writes the Claude plugin manifest required for --plugin-dir loading', () => {
@@ -146,6 +239,68 @@ describe('generateHookPluginDir', () => {
     expect(parsed.author?.name).toBe('Happier');
   });
 
+  it('uses a stable session-scoped plugin dir when a session hook plugin id is provided', () => {
+    const sessionHookPluginId = 'cmr3dpuka06zhtmtpaa1af5gh';
+    const firstPluginDir = generateHookPluginDir(43132, {
+      sessionHookPluginId,
+      permissionHookSecret: 'first-secret',
+    });
+    expect(firstPluginDir).toBeTruthy();
+    createdPluginDirs.push(firstPluginDir!);
+
+    const secondPluginDir = generateHookPluginDir(53132, {
+      sessionHookPluginId,
+      permissionHookSecret: 'second-secret',
+    });
+    expect(secondPluginDir).toBe(firstPluginDir);
+
+    expect(secondPluginDir).toContain(`session-${sessionHookPluginId}`);
+    expect(secondPluginDir).not.toContain(`session-${process.pid}`);
+
+    const manifest = JSON.parse(readFileSync(join(secondPluginDir!, '.claude-plugin', 'plugin.json'), 'utf8')) as any;
+    expect(manifest.name).toBe(`happier-session-hooks-${sessionHookPluginId}`);
+
+    const hooksPath = join(secondPluginDir!, 'hooks', 'hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf8')) as any;
+    const command = parsed.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command as string;
+    expect(command).toContain('53132');
+    expect(command).not.toContain('43132');
+    const secretPath = command.match(/--secret-file\s+"([^"]+)"/)?.[1];
+    expect(secretPath).toBeTruthy();
+    expect(readFileSync(secretPath!, 'utf8')).toBe('second-secret');
+  });
+
+  it('keeps stable session-scoped plugin dirs during runner cleanup', () => {
+    const pluginDir = generateHookPluginDir(43132, {
+      sessionHookPluginId: 'cmr3dpuka06zhtmtpaa1af5gh',
+      permissionHookSecret: 'cleanup-secret',
+    });
+    expect(pluginDir).toBeTruthy();
+    createdPluginDirs.push(pluginDir!);
+
+    try {
+      cleanupHookPluginDir(pluginDir);
+
+      expect(existsSync(pluginDir!)).toBe(true);
+      expect(readFileSync(join(pluginDir!, 'permission-hook-secret'), 'utf8')).toBe('cleanup-secret');
+    } finally {
+      rmSync(pluginDir!, { recursive: true, force: true });
+    }
+  });
+
+  it('force-removes stable session-scoped plugin dirs at final session end', () => {
+    const pluginDir = generateHookPluginDir(43132, {
+      sessionHookPluginId: 'cmr3dpuka06zhtmtpaa1af5gh',
+      permissionHookSecret: 'cleanup-secret',
+    });
+    expect(pluginDir).toBeTruthy();
+    createdPluginDirs.push(pluginDir!);
+
+    cleanupHookPluginDir(pluginDir, { force: true });
+
+    expect(existsSync(pluginDir!)).toBe(false);
+  });
+
   it('adds PermissionRequest hook using a private secret file instead of command argv', () => {
     const secret = 'test-secret-123';
     const pluginDir = generateHookPluginDir(43124, {
@@ -159,6 +314,7 @@ describe('generateHookPluginDir', () => {
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf8')) as any;
     const permissionCommand = parsed.hooks?.PermissionRequest?.[0]?.hooks?.[0]?.command as string;
     expect(permissionCommand).toContain('permission_hook_forwarder.cjs');
+    expect(permissionCommand).toContain(pluginDir!);
     expect(permissionCommand).toContain('--secret-file');
     expect(permissionCommand).not.toContain(secret);
     const secretPath = permissionCommand.match(/--secret-file\s+"([^"]+)"/)?.[1];
@@ -178,7 +334,16 @@ describe('generateHookPluginDir', () => {
 
     const hooksPath = join(pluginDir!, 'hooks', 'hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf8')) as any;
-    for (const hookName of ['SessionStart', 'UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd', 'PostToolUse']) {
+    for (const hookName of [
+      'SessionStart',
+      'UserPromptSubmit',
+      'Stop',
+      'StopFailure',
+      'SessionEnd',
+      'PostToolUse',
+      'SubagentStart',
+      'SubagentStop',
+    ]) {
       const command = parsed.hooks?.[hookName]?.[0]?.hooks?.[0]?.command as string;
       expect(command).toContain('session_hook_forwarder.cjs');
       expect(command).toContain('--secret-file');

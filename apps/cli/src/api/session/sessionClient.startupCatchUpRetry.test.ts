@@ -26,35 +26,56 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
         vi.useRealTimers();
     });
 
-    it('keeps retrying startup transcript catch-up after messages have already been observed', async () => {
+    it('does not schedule daemon startup transcript retries after the initial catch-up succeeds', async () => {
         const client = Object.create(ApiSessionClient.prototype) as {
+            pendingMessageCallback: null;
+            userSocketDisconnectTimer: ReturnType<typeof setTimeout> | null;
+            kickUserSocketConnect: () => void;
+            pendingMessages: unknown[];
+            bufferedPendingMessageDeliveryInfoByLocalId: Map<string, unknown>;
+            startupMessageCatchUpStarted: boolean;
+            startupMessageCatchUpExplicitAfterSeq: number | null;
+            startedByDaemonProcess: boolean;
+            metadata: null;
             closed: boolean;
+            currentConnectionState: ReturnType<typeof createOnlineConnectionState>;
             lastObservedMessageSeq: number;
             startupMessageCatchUpInitialAfterSeq: number;
             startupMessageCatchUpInitialAfterSeqIsExplicit: boolean;
             startupMessageCatchUpRetryTimer: ReturnType<typeof setTimeout> | null;
             startupMessageCatchUpRetryIndex: number;
-            catchUpSessionMessages: (afterSeq: number, opts?: { afterSeqIsExplicit?: boolean }) => Promise<void>;
-            shouldRunStartupTranscriptCatchUp: () => boolean;
-            scheduleNextStartupMessageCatchUpRetry: () => void;
+            catchUpSessionMessages: (request: { afterSeq: number; replayPreviouslyObservedMessageIdsForObservation?: boolean }) => Promise<void>;
+            onUserMessage: (callback: () => void) => void;
         };
 
+        client.pendingMessageCallback = null;
+        client.userSocketDisconnectTimer = null;
+        client.kickUserSocketConnect = vi.fn();
+        client.pendingMessages = [];
+        client.bufferedPendingMessageDeliveryInfoByLocalId = new Map();
+        client.startupMessageCatchUpStarted = false;
+        client.startupMessageCatchUpExplicitAfterSeq = 7;
+        client.startedByDaemonProcess = true;
+        client.metadata = null;
         client.closed = false;
-        client.lastObservedMessageSeq = 1;
-        client.startupMessageCatchUpInitialAfterSeq = 1;
+        client.currentConnectionState = createOnlineConnectionState();
+        client.lastObservedMessageSeq = 9;
+        client.startupMessageCatchUpInitialAfterSeq = 0;
         client.startupMessageCatchUpInitialAfterSeqIsExplicit = false;
         client.startupMessageCatchUpRetryTimer = null;
         client.startupMessageCatchUpRetryIndex = 0;
         client.catchUpSessionMessages = vi.fn(async () => {});
-        client.shouldRunStartupTranscriptCatchUp = vi.fn(() => true);
 
-        client.scheduleNextStartupMessageCatchUpRetry();
+        client.onUserMessage(() => {});
 
-        await vi.advanceTimersByTimeAsync(300);
         await Promise.resolve();
+        await vi.runAllTimersAsync();
 
         expect(client.catchUpSessionMessages).toHaveBeenCalledTimes(1);
-        expect(client.catchUpSessionMessages).toHaveBeenCalledWith(1, { afterSeqIsExplicit: false });
+        expect(client.catchUpSessionMessages).toHaveBeenCalledWith({
+            afterSeq: 7,
+            replayPreviouslyObservedMessageIdsForObservation: true,
+        });
     });
 
     it('retries startup transcript catch-up from the initial afterSeq even if a local echo advances the live cursor', async () => {
@@ -65,7 +86,7 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
             startupMessageCatchUpInitialAfterSeqIsExplicit: boolean;
             startupMessageCatchUpRetryTimer: ReturnType<typeof setTimeout> | null;
             startupMessageCatchUpRetryIndex: number;
-            catchUpSessionMessages: (afterSeq: number, opts?: { afterSeqIsExplicit?: boolean }) => Promise<void>;
+            catchUpSessionMessages: (request: { afterSeq: number; replayPreviouslyObservedMessageIdsForObservation: boolean }) => Promise<void>;
             shouldRunStartupTranscriptCatchUp: () => boolean;
             scheduleNextStartupMessageCatchUpRetry: () => void;
         };
@@ -85,7 +106,10 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
         await Promise.resolve();
 
         expect(client.catchUpSessionMessages).toHaveBeenCalledTimes(1);
-        expect(client.catchUpSessionMessages).toHaveBeenCalledWith(0, { afterSeqIsExplicit: false });
+        expect(client.catchUpSessionMessages).toHaveBeenCalledWith({
+            afterSeq: 0,
+            replayPreviouslyObservedMessageIdsForObservation: true,
+        });
     });
 
     it('reports terminal auth failures from transcript catch-up into the session supervisor', async () => {
@@ -101,7 +125,7 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
                 reportProbeResult: ReturnType<typeof vi.fn>;
             };
             handleUpdate: ReturnType<typeof vi.fn>;
-            catchUpSessionMessages: (afterSeq: number) => Promise<void>;
+            catchUpSessionMessages: (request: { afterSeq: number; replayPreviouslyObservedMessageIdsForObservation: boolean }) => Promise<void>;
         };
 
         client.token = 'expired';
@@ -112,7 +136,10 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
         };
         client.handleUpdate = vi.fn();
 
-        await expect(client.catchUpSessionMessages(10)).rejects.toMatchObject({
+        await expect(client.catchUpSessionMessages({
+            afterSeq: 10,
+            replayPreviouslyObservedMessageIdsForObservation: true,
+        })).rejects.toMatchObject({
             name: 'HttpStatusError',
             code: 'not_authenticated',
             response: { status: 401 },
@@ -132,7 +159,7 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
             startupMessageCatchUpInitialAfterSeqIsExplicit: boolean;
             startupMessageCatchUpRetryTimer: ReturnType<typeof setTimeout> | null;
             startupMessageCatchUpRetryIndex: number;
-            catchUpSessionMessages: (afterSeq: number, opts?: { afterSeqIsExplicit?: boolean }) => Promise<void>;
+            catchUpSessionMessages: (request: { afterSeq: number; authorization: 'startup_recovery' | 'explicit_cursor' | 'reconnect_watermark' }) => Promise<void>;
             shouldRunStartupTranscriptCatchUp: () => boolean;
             scheduleNextStartupMessageCatchUpRetry: () => void;
         };
@@ -158,21 +185,40 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
         expect(client.catchUpSessionMessages).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps retrying startup transcript catch-up after non-auth failures', async () => {
+    it('bounds daemon startup retries after a transient failure and preserves the initial cursor', async () => {
         const client = Object.create(ApiSessionClient.prototype) as {
+            pendingMessageCallback: null;
+            userSocketDisconnectTimer: ReturnType<typeof setTimeout> | null;
+            kickUserSocketConnect: () => void;
+            pendingMessages: unknown[];
+            bufferedPendingMessageDeliveryInfoByLocalId: Map<string, unknown>;
+            startupMessageCatchUpStarted: boolean;
+            startupMessageCatchUpExplicitAfterSeq: number | null;
+            startedByDaemonProcess: boolean;
+            metadata: null;
             closed: boolean;
             currentConnectionState: ReturnType<typeof createOnlineConnectionState>;
+            lastObservedMessageSeq: number;
             startupMessageCatchUpInitialAfterSeq: number;
             startupMessageCatchUpInitialAfterSeqIsExplicit: boolean;
             startupMessageCatchUpRetryTimer: ReturnType<typeof setTimeout> | null;
             startupMessageCatchUpRetryIndex: number;
-            catchUpSessionMessages: (afterSeq: number, opts?: { afterSeqIsExplicit?: boolean }) => Promise<void>;
-            shouldRunStartupTranscriptCatchUp: () => boolean;
-            scheduleNextStartupMessageCatchUpRetry: () => void;
+            catchUpSessionMessages: (request: { afterSeq: number; replayPreviouslyObservedMessageIdsForObservation?: boolean }) => Promise<void>;
+            onUserMessage: (callback: () => void) => void;
         };
 
+        client.pendingMessageCallback = null;
+        client.userSocketDisconnectTimer = null;
+        client.kickUserSocketConnect = vi.fn();
+        client.pendingMessages = [];
+        client.bufferedPendingMessageDeliveryInfoByLocalId = new Map();
+        client.startupMessageCatchUpStarted = false;
+        client.startupMessageCatchUpExplicitAfterSeq = 7;
+        client.startedByDaemonProcess = true;
+        client.metadata = null;
         client.closed = false;
         client.currentConnectionState = createOnlineConnectionState();
+        client.lastObservedMessageSeq = 9;
         client.startupMessageCatchUpInitialAfterSeq = 0;
         client.startupMessageCatchUpInitialAfterSeqIsExplicit = false;
         client.startupMessageCatchUpRetryTimer = null;
@@ -181,17 +227,20 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
             .fn()
             .mockRejectedValueOnce(new Error('temporary server failure'))
             .mockResolvedValue(undefined);
-        client.shouldRunStartupTranscriptCatchUp = vi.fn(() => true);
 
-        client.scheduleNextStartupMessageCatchUpRetry();
+        client.onUserMessage(() => {});
 
-        await vi.advanceTimersByTimeAsync(300);
         await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(1_200);
-        await Promise.resolve();
+        await vi.runAllTimersAsync();
 
         expect(client.catchUpSessionMessages).toHaveBeenCalledTimes(2);
-        expect(client.catchUpSessionMessages).toHaveBeenNthCalledWith(1, 0, { afterSeqIsExplicit: false });
-        expect(client.catchUpSessionMessages).toHaveBeenNthCalledWith(2, 0, { afterSeqIsExplicit: false });
+        expect(client.catchUpSessionMessages).toHaveBeenNthCalledWith(1, {
+            afterSeq: 7,
+            replayPreviouslyObservedMessageIdsForObservation: true,
+        });
+        expect(client.catchUpSessionMessages).toHaveBeenNthCalledWith(2, {
+            afterSeq: 7,
+            replayPreviouslyObservedMessageIdsForObservation: true,
+        });
     });
 });

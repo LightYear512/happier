@@ -23,6 +23,32 @@ describe('createCodexAppServerExecutionRunBackend', () => {
     vi.resetModules();
   });
 
+  it('keeps committed assistant streams isolated by exact local-id bytes', async () => {
+    const { createCodexAppServerExecutionRunBackend } = await import('./createCodexAppServerExecutionRunBackend');
+    const backend = createCodexAppServerExecutionRunBackend({
+      cwd: '/tmp/happier-worktree',
+      env: {},
+      permissionMode: 'read-only' as any,
+      permissionHandler: null,
+    });
+    const observed: unknown[] = [];
+    backend.onMessage((message) => observed.push(message));
+
+    const runtimeParams = createCodexAppServerRuntimeMock.mock.calls[0]?.[0] as any;
+    const commit = runtimeParams.session.sendAgentMessageCommitted as (
+      provider: string,
+      body: { type: 'message'; message: string },
+      opts: { localId: string },
+    ) => Promise<void>;
+    await commit('codex', { type: 'message', message: 'Hello' }, { localId: 'assistant-1' });
+    await commit('codex', { type: 'message', message: 'Separate stream' }, { localId: ' assistant-1' });
+
+    expect(observed).toEqual([
+      { type: 'model-output', fullText: 'Hello' },
+      { type: 'model-output', fullText: 'Separate stream' },
+    ]);
+  });
+
   it('passes the isolated execution-run env through to the app-server runtime (no process.env fallback)', async () => {
     const { createCodexAppServerExecutionRunBackend } = await import('./createCodexAppServerExecutionRunBackend');
 
@@ -40,6 +66,36 @@ describe('createCodexAppServerExecutionRunBackend', () => {
     const params = createCodexAppServerRuntimeMock.mock.calls[0]?.[0] as any;
     expect(params?.processEnv?.HAPPIER_CODEX_APP_SERVER_BIN).toBe('/tmp/fake-codex-app-server');
     expect(params?.processEnv?.PATH).toBe('/tmp/isolated-bin:/usr/bin');
+  });
+
+  it('delegates setSessionModel + setSessionConfigOption to the app-server runtime', async () => {
+    const setSessionModel = vi.fn(async () => undefined);
+    const setSessionConfigOption = vi.fn(async () => undefined);
+    createCodexAppServerRuntimeMock.mockReturnValueOnce({
+      startOrLoad: async () => undefined,
+      getSessionId: () => 'thread_1',
+      sendPrompt: async () => undefined,
+      startReview: async () => undefined,
+      compactContext: async () => undefined,
+      cancel: async () => undefined,
+      reset: async () => undefined,
+      setSessionModel,
+      setSessionConfigOption,
+    });
+
+    const { createCodexAppServerExecutionRunBackend } = await import('./createCodexAppServerExecutionRunBackend');
+    const backend = createCodexAppServerExecutionRunBackend({
+      cwd: '/tmp/happier-worktree',
+      env: {},
+      permissionMode: 'read-only' as any,
+      permissionHandler: null,
+    });
+
+    await backend.setSessionModel('thread_1' as any, ' gpt-5.5\t');
+    await backend.setSessionConfigOption('thread_1' as any, ' reasoning_effort\t', 'high');
+
+    expect(setSessionModel).toHaveBeenCalledWith(' gpt-5.5\t');
+    expect(setSessionConfigOption).toHaveBeenCalledWith(' reasoning_effort\t', 'high');
   });
 
   it('loads existing execution-run sessions without importing provider history', async () => {
@@ -507,6 +563,36 @@ describe('createCodexAppServerExecutionRunBackend', () => {
     await backend.waitForResponseComplete?.();
 
     expect(startReview).toHaveBeenCalledTimes(1);
+    expect(sendPrompt).toHaveBeenCalledWith('prompt fallback text');
+  });
+
+  it('falls back to the prompt path when a generic review omits structured review input', async () => {
+    const sendPrompt = vi.fn(async () => undefined);
+    const startReview = vi.fn(async () => ({ ok: true as const }));
+    createCodexAppServerRuntimeMock.mockReturnValueOnce({
+      startOrLoad: async () => undefined,
+      getSessionId: () => 'thread_1',
+      sendPrompt,
+      startReview,
+      compactContext: async () => undefined,
+      cancel: async () => undefined,
+      reset: async () => undefined,
+    });
+
+    const { createCodexAppServerExecutionRunBackend } = await import('./createCodexAppServerExecutionRunBackend');
+    const backend = createCodexAppServerExecutionRunBackend({
+      cwd: '/tmp/happier-worktree',
+      env: {},
+      permissionMode: 'read-only' as any,
+      permissionHandler: null,
+      start: { intent: 'review' },
+    });
+
+    await backend.startSession();
+    await backend.sendPrompt('thread_1', 'prompt fallback text');
+    await backend.waitForResponseComplete?.();
+
+    expect(startReview).not.toHaveBeenCalled();
     expect(sendPrompt).toHaveBeenCalledWith('prompt fallback text');
   });
 

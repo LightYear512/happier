@@ -153,7 +153,7 @@ vi.mock('@/sync/domains/models/modelOptions', () => ({
 }));
 
 vi.mock('@/sync/domains/models/describeEffectiveModelMode', () => ({
-    describeEffectiveModelMode: () => ({ effectiveModelId: 'default' }),
+    describeEffectiveModelMode: () => ({ selectedModelId: 'default', appliedModelId: null, effectiveModelId: 'default' }),
 }));
 
 vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
@@ -195,10 +195,6 @@ vi.mock('@/components/ui/feedback/Shaker', () => ({
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: () => null,
-}));
-
-vi.mock('@/components/autocomplete/useActiveWord', () => ({
-    useActiveWord: () => ({ word: '', start: 0, end: 0 }),
 }));
 
 vi.mock('@/components/autocomplete/useActiveSuggestions', () => ({
@@ -281,13 +277,13 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
     useKeyboardHeight: () => 0,
 }));
 
-vi.mock('@/sync/acp/sessionModeControl', () => ({
+vi.mock('@/sync/domains/sessionControl/sessionModeControl', () => ({
     computeAcpPlanModeControl: () => null,
     computeAcpSessionModePickerControl: () => null,
 }));
 
-vi.mock('@/sync/acp/configOptionsControl', () => ({
-    computeAcpConfigOptionControls: () => null,
+vi.mock('@/sync/domains/sessionControl/configOptionsControl', () => ({
+    computeSessionConfigOptionControls: () => null,
 }));
 
 describe('AgentInput (context usage badge)', () => {
@@ -307,7 +303,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"codex" as any}
                 onAgentClick={() => {}}
@@ -358,7 +354,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"codex" as any}
                 onAgentClick={() => {}}
@@ -396,7 +392,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"codex" as any}
                 onAgentClick={() => {}}
@@ -427,7 +423,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"claude" as any}
                 onAgentClick={() => {}}
@@ -436,7 +432,7 @@ describe('AgentInput (context usage badge)', () => {
                     outputTokens: 0,
                     cacheCreation: 0,
                     cacheRead: 0,
-                    contextSize: 198_000,
+                    contextSize: 38_691,
                     contextWindowTokens: 200_000,
                 }}
                 alwaysShowContextSize={true}
@@ -463,7 +459,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 connectionStatus={{
                     text: 'online',
@@ -563,7 +559,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"claude" as any}
                 usageData={{
@@ -661,7 +657,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"claude" as any}
                 usageData={{
@@ -701,7 +697,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 connectionStatus={{
                     text: 'online',
@@ -757,7 +753,7 @@ describe('AgentInput (context usage badge)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={() => {}}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
                 agentType={"gemini" as any}
                 onAgentClick={() => {}}

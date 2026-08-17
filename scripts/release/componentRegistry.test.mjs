@@ -13,6 +13,7 @@ test('classifyChangedPaths flags components by prefixes and explicit files', () 
     'apps/stack/package.json',
     'apps/server/sources/main.ts',
     'packages/relay-server/bin/happier-server.mjs',
+    'packages/privacy-kit/src/index.ts',
   ]);
 
   assert.equal(flags.ui, true);
@@ -36,4 +37,18 @@ test('classifyChangedPaths treats sync-installers as a website change', () => {
 test('classifyChangedPaths ignores unknown paths', () => {
   const flags = classifyChangedPaths(['README.md', 'random/file.txt']);
   for (const v of Object.values(flags)) assert.equal(v, false);
+});
+
+test('release target registry owns every supported local release target', async () => {
+  const { releaseTargets } = await import('../pipeline/release/component-registry.mjs');
+
+  assert.deepEqual(releaseTargets, [
+    'ui',
+    'server',
+    'website',
+    'docs',
+    'cli',
+    'stack',
+    'server_runner',
+  ]);
 });

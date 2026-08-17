@@ -3,15 +3,25 @@ import { resolve } from 'node:path';
 
 import dotenv from 'dotenv';
 import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/featureTestGating';
+import {
+  workspacePackageAliases,
+  workspacePackageOptimizationExcludes,
+  workspacePackageSourcesPlugin,
+} from './scripts/vitestWorkspacePackageResolution';
 
 const testEnv = dotenv.config({
   path: '.env.integration-test',
 }).parsed ?? {};
 
 export default defineConfig({
+  optimizeDeps: {
+    exclude: workspacePackageOptimizationExcludes,
+  },
   test: {
     globals: false,
     environment: 'node',
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     include: ['src/**/*.slow.test.ts'],
     exclude: [...configDefaults.exclude, ...resolveVitestFeatureTestExcludeGlobs({ ...process.env, ...testEnv })],
     globalSetup: ['./src/test-setup.slow.ts'],
@@ -33,8 +43,7 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: {
-      '@': resolve('./src'),
-    },
+    alias: [...workspacePackageAliases, { find: '@', replacement: resolve('./src') }],
   },
+  plugins: [workspacePackageSourcesPlugin],
 });

@@ -8,6 +8,9 @@ import { Session } from './session';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import type { EnhancedMode } from './loop';
 import { getProjectPath } from './utils/path';
+import type {
+  SessionRuntimeActivityContributionHandle,
+} from '@/session/runtimeActivity/types';
 
 type SessionFoundHookData = NonNullable<Parameters<Session['onSessionFound']>[1]>;
 
@@ -24,7 +27,7 @@ function createMetadataStub(overrides?: Partial<Metadata>): Metadata {
 }
 
 function createSessionClientStub(overrides?: Partial<SessionClientPort>): SessionClientPort {
-  return {
+  const client: SessionClientPort = {
     sessionId: 'session-test',
     rpcHandlerManager: {
       registerHandler: vi.fn(),
@@ -37,6 +40,7 @@ function createSessionClientStub(overrides?: Partial<SessionClientPort>): Sessio
     keepAlive: vi.fn(),
     getMetadataSnapshot: () => null,
     waitForMetadataUpdate: vi.fn(async () => false),
+    waitForPendingEligibilityUpdate: vi.fn(async () => false),
     popPendingMessage: vi.fn(async () => false),
     peekPendingMessageQueueV2Count: vi.fn(async () => 0),
     discardPendingMessageQueueV2All: vi.fn(async () => 0),
@@ -50,9 +54,17 @@ function createSessionClientStub(overrides?: Partial<SessionClientPort>): Sessio
     off: vi.fn(),
     ...overrides,
   };
+  return client;
 }
 
-function createSession(client: SessionClientPort, claudeArgs?: string[]): Session {
+function createSession(
+  client: SessionClientPort,
+  claudeArgs?: string[],
+  reportSessionMetadataToDaemon?: (input: Readonly<{
+    sessionId: string;
+    metadata: Metadata;
+  }>) => Promise<void> | void,
+): Session {
   return new Session({
     client,
     path: '/tmp',
@@ -62,6 +74,7 @@ function createSession(client: SessionClientPort, claudeArgs?: string[]): Sessio
     messageQueue: new MessageQueue2<EnhancedMode>(() => 'mode'),
     onModeChange: () => {},
     hookSettingsPath: '/tmp/hooks.json',
+    reportSessionMetadataToDaemon,
   });
 }
 
@@ -148,6 +161,42 @@ function writeCurrentClaudeTranscriptStart(transcriptPath: string, sessionId: st
   writeFileSync(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
 }
 
+describe('Claude Unified terminal metadata publication', () => {
+  it('publishes the exact attached terminal through session metadata and the existing daemon reporter', async () => {
+    let metadata = createMetadataStub({});
+    const updateMetadata = vi.fn(async (updater: (current: Metadata) => Metadata) => {
+      metadata = updater(metadata);
+    });
+    const reportSessionMetadataToDaemon = vi.fn(async () => {});
+    const session = createSession(
+      createSessionClientStub({
+        sessionId: 'happy-session-id',
+        getMetadataSnapshot: () => metadata,
+        updateMetadata,
+      }),
+      undefined,
+      reportSessionMetadataToDaemon,
+    );
+    const terminal = {
+      mode: 'tmux',
+      tmux: {
+        target: 'happier-claude-unified-123:main',
+      },
+    } as const;
+
+    await session.publishUnifiedTerminalHostMetadata(terminal);
+
+    expect(metadata.terminal).toEqual(terminal);
+    expect(reportSessionMetadataToDaemon).toHaveBeenCalledWith({
+      sessionId: 'happy-session-id',
+      metadata: expect.objectContaining({
+        terminal,
+      }),
+    });
+    session.cleanup();
+  });
+});
+
 function createTempClaudeTranscript(
   sessionId: string,
   options?: Readonly<{ projectId?: string; transcriptSessionId?: string }>,
@@ -163,8 +212,91 @@ function createTempClaudeTranscript(
 }
 
 describe('Session', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
+  it('owns unavailable group truth from runtime control registration through cleanup', async () => {
+    const unregister = vi.fn();
+    const registerSessionRuntimeControls = vi.fn((
+      _controls: Parameters<NonNullable<SessionClientPort['registerSessionRuntimeControls']>>[0],
+    ) => unregister);
+    const client = createSessionClientStub({ registerSessionRuntimeControls });
+    const session = createSession(client);
+
+    expect(registerSessionRuntimeControls).toHaveBeenCalledOnce();
+    const controls = registerSessionRuntimeControls.mock.calls[0]?.[0];
+    expect(controls?.applyConnectedServiceAuthGeneration).toBeTypeOf('function');
+    await expect(controls?.applyConnectedServiceAuthGeneration?.({
+      serviceId: 'claude-subscription',
+      reason: 'diagnostic',
+      authGeneration: {
+        kind: 'current_auth_group_unavailable',
+        groupId: 'team',
+        unavailableReason: 'group_missing',
+      },
+    })).resolves.toEqual({ ok: true, appliedVia: 'current_truth_fence' });
+
+    const abortController = new AbortController();
+    let released = false;
+    const waiting = session.connectedServiceAuthGroupRequestFence
+      .waitUntilAvailable(abortController.signal)
+      .then(() => { released = true; });
+    await Promise.resolve();
+    expect(released).toBe(false);
+
+    await controls?.applyConnectedServiceAuthGeneration?.({
+      serviceId: 'claude-subscription',
+      reason: 'diagnostic',
+      authGeneration: {
+        kind: 'current_auth_group_available',
+        groupId: 'replacement-team',
+        generation: 3,
+        credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+      },
+    });
+    await waiting;
+    expect(released).toBe(true);
+
+    session.cleanup();
+    expect(unregister).toHaveBeenCalledOnce();
+  });
+
+  it('notifies the active Claude runtime after exact connected-service application without failing settlement', async () => {
+    const registerSessionRuntimeControls = vi.fn((
+      _controls: Parameters<NonNullable<SessionClientPort['registerSessionRuntimeControls']>>[0],
+    ) => () => undefined);
+    const client = createSessionClientStub({ registerSessionRuntimeControls });
+    const session = createSession(client);
+    const releaseRuntime = vi.fn(async () => {
+      throw new Error('terminal release is best effort');
+    });
+    const unregisterRelease = session.registerConnectedServiceExactApplicationHandler(releaseRuntime);
+
+    const controls = registerSessionRuntimeControls.mock.calls[0]?.[0];
+    await expect(controls?.applyConnectedServiceAuthGeneration?.({
+      serviceId: 'claude-subscription',
+      reason: 'diagnostic',
+      applicationSettled: true,
+      authGeneration: {
+        kind: 'current_auth_group_available',
+        groupId: 'team',
+        generation: 3,
+        credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+      },
+    })).resolves.toEqual({ ok: true, appliedVia: 'current_truth_fence' });
+    expect(releaseRuntime).toHaveBeenCalledOnce();
+
+    unregisterRelease();
+    await controls?.applyConnectedServiceAuthGeneration?.({
+      serviceId: 'claude-subscription',
+      reason: 'diagnostic',
+      applicationSettled: true,
+      authGeneration: {
+        kind: 'current_auth_group_available',
+        groupId: 'team',
+        generation: 4,
+        credentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
+      },
+    });
+    expect(releaseRuntime).toHaveBeenCalledOnce();
+    session.cleanup();
   });
 
   it('tracks recent user abort requests', () => {
@@ -460,13 +592,12 @@ describe('Session', () => {
       expect(updateMetadata).toHaveBeenCalledTimes(1);
       expect(metadata).toEqual(expect.objectContaining({
         claudeSessionId: 'sess_missing_initial',
-        claudeTranscriptPath: transcriptPath,
       }));
+      expect(metadata.claudeTranscriptPath).toBeUndefined();
       expect(reportSessionMetadataToDaemon).toHaveBeenCalledWith({
         sessionId: 'happy-session-1',
         metadata: expect.objectContaining({
           claudeSessionId: 'sess_missing_initial',
-          claudeTranscriptPath: transcriptPath,
         }),
       });
       expect(session.sessionId).toBe('sess_missing_initial');
@@ -810,7 +941,7 @@ describe('Session', () => {
     }
   });
 
-  it('persists id-only Claude-reported session ids with the native transcript path before the file exists', async () => {
+  it('persists id-only Claude-reported session ids without trusting a native transcript path before the file exists', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'happier-claude-session-'));
     vi.stubEnv('CLAUDE_CONFIG_DIR', tempDir);
     const transcriptPath = join(getProjectPath('/tmp', tempDir), 'sess_legacy_early.jsonl');
@@ -842,13 +973,12 @@ describe('Session', () => {
 
       expect(metadata).toEqual(expect.objectContaining({
         claudeSessionId: 'sess_legacy_early',
-        claudeTranscriptPath: transcriptPath,
       }));
+      expect(metadata.claudeTranscriptPath).toBeUndefined();
       expect(reportSessionMetadataToDaemon).toHaveBeenCalledWith({
         sessionId: 'happy-session-1',
         metadata: expect.objectContaining({
           claudeSessionId: 'sess_legacy_early',
-          claudeTranscriptPath: transcriptPath,
         }),
       });
       expect(session.transcriptPath).toBe(transcriptPath);
@@ -1014,8 +1144,8 @@ describe('Session', () => {
       expect(updateMetadata).toHaveBeenCalledTimes(1);
       expect(metadata).toEqual(expect.objectContaining({
         claudeSessionId: 'sess_delayed',
-        claudeTranscriptPath: transcriptPath,
       }));
+      expect(metadata.claudeTranscriptPath).toBeUndefined();
 
       writeClaudeTranscriptInit(transcriptPath, 'sess_delayed');
       session.onSessionFound('sess_delayed', hookWithTranscript(transcriptPath));
@@ -1256,6 +1386,38 @@ describe('Session', () => {
       session.setThinkingWithoutTaskLifecycle(false);
       expect(keepAlive).toHaveBeenLastCalledWith(false, 'local');
       expect(sendAgentMessage).not.toHaveBeenCalled();
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it('opens and completes the task even when thinking was optimistically latched first', () => {
+    // Incident 2d83312e: a remote-injected prompt fires the optimistic display latch
+    // (setThinkingWithoutTaskLifecycle) BEFORE the canonical hook-driven onThinkingChange(true).
+    // The task lifecycle must key off the task, not the thinking display flag, so the completed
+    // turn still emits task_started + task_complete (→ latestTurnStatus completed → ready/push).
+    const sendAgentMessage = vi.fn();
+    const client = createSessionClientStub({ sendAgentMessage });
+
+    const session = createSession(client);
+
+    try {
+      // Optimistic latch on remote prompt injection: thinking=true, no task opened yet.
+      session.setThinkingWithoutTaskLifecycle(true);
+      expect(sendAgentMessage).not.toHaveBeenCalled();
+
+      // Canonical turn goes active (hook). Even though thinking is already latched, the
+      // formal task must open.
+      session.onThinkingChange(true);
+      expect(sendAgentMessage).toHaveBeenCalledTimes(1);
+      const [, started] = sendAgentMessage.mock.calls[0] ?? [];
+      expect(started?.type).toBe('task_started');
+
+      // Turn end: task_complete must fire — this is the completed-status/notification trigger.
+      session.onThinkingChange(false);
+      expect(sendAgentMessage).toHaveBeenCalledTimes(2);
+      const [, completed] = sendAgentMessage.mock.calls[1] ?? [];
+      expect(completed).toEqual({ type: 'task_complete', id: started.id });
     } finally {
       session.cleanup();
     }

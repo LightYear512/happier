@@ -1,16 +1,28 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
 
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
+import { RowActionRevealSlot } from '@/components/sessions/transcript/messageActions/RowActionRevealSlot';
+import { readCoarsePrimaryPointer } from '@/components/sessions/transcript/messageActions/rowActionRevealHost';
+import {
+    shouldShowTranscriptRowActions,
+    shouldShowTranscriptRowPinAction,
+} from '@/components/sessions/transcript/messageCopyVisibility';
 import { ToolTimelineIconFrame } from './ToolTimelineIconFrame';
+import { ICON_SIZE, Icon, type IconName } from '@/components/ui/icons/Icon';
+
+export const TOOL_TIMELINE_ROW_REVEAL_SLOT_TEST_ID = 'tool-timeline-row-reveal-slot';
+export const TOOL_TIMELINE_ROW_PIN_SLOT_TEST_ID = 'tool-timeline-row-pin-slot';
+
+const TOOL_TIMELINE_ROW_OPEN_SLOT_WIDTH = 26;
+const TOOL_TIMELINE_ROW_REVEAL_ACTION_WIDTH = 28;
 
 export type ToolTimelineRowDensity = 'comfortable' | 'compact';
 
-type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+type IoniconName = IconName;
 
 export type ToolTimelineRowHeaderDisclosure =
     | { behavior: 'hover'; state: 'collapsed' | 'expanded' }
@@ -28,6 +40,14 @@ export const ToolTimelineRowHeader = React.memo(function ToolTimelineRowHeader(p
     canOpen?: boolean;
     onOpen?: (() => void) | null;
     rightElement?: React.ReactNode | null;
+    /**
+     * Hover-revealed row action (the pin). It owns its own reveal slot so a
+     * pinned row can keep the pin visible without dragging the open-details
+     * icon into view; both slots still follow this header's single hover state.
+     */
+    revealAction?: React.ReactNode | null;
+    /** Keeps `revealAction` visible without hover (a pinned row). */
+    revealActionSticky?: boolean;
     disclosure?: ToolTimelineRowHeaderDisclosure | null;
 }) {
     const { theme } = useUnistyles();
@@ -37,8 +57,9 @@ export const ToolTimelineRowHeader = React.memo(function ToolTimelineRowHeader(p
     const canOpen = props.canOpen === true && typeof props.onOpen === 'function';
     const disclosure = props.disclosure ?? null;
     const hoverEnabled = Platform.OS === 'web' && disclosure?.behavior === 'hover' && Boolean(props.onPress);
-    const hoverRevealOpenAction = Platform.OS === 'web' && Boolean(props.onPress);
-    const trackHoverState = hoverEnabled || hoverRevealOpenAction;
+    const revealAction = props.revealAction ?? null;
+    const hasRevealSlot = canOpen || revealAction != null;
+    const trackHoverState = hoverEnabled || (Platform.OS === 'web' && (Boolean(props.onPress) || hasRevealSlot));
     const [isHovered, setIsHovered] = React.useState(false);
 
     const handleHoverIn = React.useCallback(() => setIsHovered(true), []);
@@ -48,9 +69,23 @@ export const ToolTimelineRowHeader = React.memo(function ToolTimelineRowHeader(p
         props.onOpen?.();
     }, [props]);
 
+    const rowActionVisibility = {
+        platformOS: Platform.OS,
+        isRowHovered: isHovered,
+        isActionHovered: false,
+        coarsePrimaryPointer: readCoarsePrimaryPointer(),
+    } as const;
+    // A pinned row keeps its pin visible; the open-details icon still waits for
+    // hover, so pinning a row does not permanently add chrome to it.
+    const pinRevealed = !props.onPress || shouldShowTranscriptRowPinAction({
+        ...rowActionVisibility,
+        pinned: props.revealActionSticky === true,
+    });
+    const openRevealed = !props.onPress || shouldShowTranscriptRowActions(rowActionVisibility);
+
     const chevronSize = props.density === 'compact' ? 16 : 18;
     const disclosureChevronName: IoniconName | null =
-        disclosure?.state === 'expanded' ? 'chevron-up' : disclosure?.state === 'collapsed' ? 'chevron-down' : null;
+        disclosure?.state === 'expanded' ? 'caret-up' : disclosure?.state === 'collapsed' ? 'caret-down' : null;
 
     return (
         <View style={styles.container}>
@@ -68,7 +103,7 @@ export const ToolTimelineRowHeader = React.memo(function ToolTimelineRowHeader(p
             >
                 <View style={styles.icon}>
                     {disclosure?.behavior === 'persistent' && disclosureChevronName ? (
-                        <Ionicons name={disclosureChevronName} size={chevronSize} color={theme.colors.text.secondary} />
+                        <Icon name={disclosureChevronName} size={chevronSize} color={theme.colors.text.secondary} />
                     ) : hoverEnabled && disclosureChevronName ? (
                         <View style={styles.iconStack}>
                             <View
@@ -86,7 +121,7 @@ export const ToolTimelineRowHeader = React.memo(function ToolTimelineRowHeader(p
                                     isHovered ? null : styles.iconLayerHidden,
                                 ]}
                             >
-                                <Ionicons
+                                <Icon
                                     name={disclosureChevronName}
                                     size={chevronSize}
                                     color={theme.colors.text.secondary}
@@ -117,24 +152,42 @@ export const ToolTimelineRowHeader = React.memo(function ToolTimelineRowHeader(p
                 </View>
                 {props.rightElement ? <View style={styles.actions}>{props.rightElement}</View> : null}
             </Pressable>
-            {canOpen ? (
-                <View
-                    style={[
-                        styles.openSlot,
-                        hoverRevealOpenAction ? (isHovered ? styles.openSlotVisible : styles.openSlotHidden) : null,
-                    ]}
-                >
-                    <Pressable
-                        testID={props.openActionTestID}
-                        onPress={handleOpenPress}
-                        onHoverIn={trackHoverState ? handleHoverIn : undefined}
-                        onHoverOut={trackHoverState ? handleHoverOut : undefined}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('toolView.open')}
-                        style={({ pressed }) => [styles.open, pressed && styles.openPressed]}
-                    >
-                        <Ionicons name="open-outline" size={18} color={theme.colors.text.secondary} />
-                    </Pressable>
+            {hasRevealSlot ? (
+                <View style={styles.revealSlotGroup}>
+                    {revealAction != null ? (
+                        <RowActionRevealSlot
+                            revealed={pinRevealed}
+                            reserveWidth={TOOL_TIMELINE_ROW_REVEAL_ACTION_WIDTH}
+                            style={styles.revealSlot}
+                            onFocus={trackHoverState ? handleHoverIn : undefined}
+                            onBlur={trackHoverState ? handleHoverOut : undefined}
+                            testID={TOOL_TIMELINE_ROW_PIN_SLOT_TEST_ID}
+                        >
+                            {revealAction}
+                        </RowActionRevealSlot>
+                    ) : null}
+                    {canOpen ? (
+                        <RowActionRevealSlot
+                            revealed={openRevealed}
+                            reserveWidth={TOOL_TIMELINE_ROW_OPEN_SLOT_WIDTH}
+                            style={styles.revealSlot}
+                            onFocus={trackHoverState ? handleHoverIn : undefined}
+                            onBlur={trackHoverState ? handleHoverOut : undefined}
+                            testID={TOOL_TIMELINE_ROW_REVEAL_SLOT_TEST_ID}
+                        >
+                            <Pressable
+                                testID={props.openActionTestID}
+                                onPress={handleOpenPress}
+                                onHoverIn={trackHoverState ? handleHoverIn : undefined}
+                                onHoverOut={trackHoverState ? handleHoverOut : undefined}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('toolView.open')}
+                                style={({ pressed }) => [styles.open, pressed && styles.openPressed]}
+                            >
+                                <Icon name="arrow-square-out" size={ICON_SIZE.xs} color={theme.colors.text.secondary} />
+                            </Pressable>
+                        </RowActionRevealSlot>
+                    ) : null}
                 </View>
             ) : null}
         </View>
@@ -234,16 +287,14 @@ const styles = StyleSheet.create((theme, _runtime) => ({
         flexShrink: 1,
         justifyContent: 'flex-end',
     },
-    openSlot: {
-        width: 26,
-        alignItems: 'flex-end',
-        justifyContent: 'center',
+    revealSlotGroup: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
     },
-    openSlotHidden: {
-        opacity: 0,
-    },
-    openSlotVisible: {
-        opacity: 1,
+    revealSlot: {
+        alignItems: 'center',
+        justifyContent: 'flex-end',
     },
     open: {
         padding: 4,

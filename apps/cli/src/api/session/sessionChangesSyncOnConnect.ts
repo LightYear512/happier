@@ -3,16 +3,18 @@ import type { ManagedConnectionSupervisor } from '@happier-dev/connection-superv
 import { fetchChanges } from '../changes';
 import { serializeAxiosErrorForLog } from '../client/serializeAxiosErrorForLog';
 import { handleRequestAuthenticationFailure } from '@/api/connection/requestSupervision/reportRequestOutcomeToSupervisor';
-import { readLastChangesCursor, writeLastChangesCursor } from '@/persistence';
 import { readKnownPendingQueueState, type KnownPendingQueueState } from './pendingQueueState';
 import type { SessionSnapshotRefreshReasonInput } from './sessionSnapshotRefreshReason';
+import { readAccountSettingsVersionFromHint } from '@/settings/accountSettings/accountSettingsVersion';
 
 export type SessionChangesSyncReason =
     | 'connect'
-    | 'reconnect'
-    | 'socket-stale-safety-tick'
-    | 'version-gap-safety-tick'
-    | 'bulk-reattach-catchup';
+    | 'reconnect';
+
+export type SessionCatchUpRequest = Readonly<{
+    afterSeq: number;
+    replayPreviouslyObservedMessageIdsForObservation?: boolean;
+}>;
 
 export function isV2ChangesSyncEnabled(flagValue: string | undefined): boolean {
     if (!flagValue) return true;
@@ -44,9 +46,12 @@ export async function runSessionChangesSyncOnConnect(params: {
     sessionId: string;
     lastObservedMessageSeq: number;
     getAccountId: () => Promise<string | null>;
-    catchUpSessionMessages: (afterSeq: number) => Promise<void>;
-    syncSessionSnapshotFromServer: (opts: { reason: SessionSnapshotRefreshReasonInput }) => Promise<void>;
+    readChangesCursor: (accountId: string) => Promise<number>;
+    writeChangesCursor: (accountId: string, cursor: number) => Promise<void>;
+    catchUpSessionMessages: (request: SessionCatchUpRequest) => Promise<void>;
+    syncSessionSnapshotFromServer: (opts: { reason: SessionSnapshotRefreshReasonInput }) => Promise<boolean>;
     applyPendingQueueState?: (state: KnownPendingQueueState) => void;
+    refreshAccountSettingsForMinimumVersion?: (settingsVersion: number | null) => Promise<void>;
     connectionSupervisor?: ManagedConnectionSupervisor | null;
     onDebug: (message: string, data?: unknown) => void;
 }): Promise<void> {
@@ -54,20 +59,32 @@ export async function runSessionChangesSyncOnConnect(params: {
     if (!accountId) return;
 
     const CHANGES_PAGE_LIMIT = 200;
-    const after = await readLastChangesCursor(accountId);
-    const result = await fetchChanges({ token: params.token, after, limit: CHANGES_PAGE_LIMIT });
+    const after = await params.readChangesCursor(accountId);
+    const result = await fetchChanges({
+        token: params.token,
+        after,
+        limit: CHANGES_PAGE_LIMIT,
+        clientKind: 'session-runner',
+    });
     if (result.status === 'cursor-gone') {
-        await writeLastChangesCursor(accountId, result.currentCursor);
+        let reconnectTranscriptCatchUpSucceeded = true;
         // If the server indicates the cursor is invalid (future cursor or pruned floor),
         // force a snapshot rebuild so we don't miss deletion signals.
         if (params.reason === 'reconnect') {
             try {
-                await params.catchUpSessionMessages(params.lastObservedMessageSeq);
+                await params.catchUpSessionMessages({
+                    afterSeq: params.lastObservedMessageSeq,
+                });
             } catch (error) {
+                reconnectTranscriptCatchUpSucceeded = false;
                 reportReconnectCatchUpFailure(params, error);
             }
         }
-        void params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        await params.refreshAccountSettingsForMinimumVersion?.(null);
+        const snapshotSucceeded = await params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        if (reconnectTranscriptCatchUpSucceeded && snapshotSucceeded) {
+            await params.writeChangesCursor(accountId, result.currentCursor);
+        }
         return;
     }
     if (result.status !== 'ok') {
@@ -83,22 +100,41 @@ export async function runSessionChangesSyncOnConnect(params: {
         // On reconnect, fall back to the snapshot-based convergence path.
         if (params.reason === 'reconnect') {
             try {
-                await params.catchUpSessionMessages(params.lastObservedMessageSeq);
+                await params.catchUpSessionMessages({
+                    afterSeq: params.lastObservedMessageSeq,
+                });
             } catch (error) {
                 reportReconnectCatchUpFailure(params, error);
             }
-            void params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+            await params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
         }
         return;
     }
 
     const changes = result.response.changes;
     const nextCursor = result.response.nextCursor;
+    const accountSettingsVersions = changes
+        .filter((change) => change.kind === 'account' && change.entityId === 'self')
+        .map((change) => readAccountSettingsVersionFromHint(change.hint))
+        .filter((version): version is number => version !== null);
+    const highestAccountSettingsVersion = accountSettingsVersions.length > 0
+        ? Math.max(...accountSettingsVersions)
+        : null;
+
+    // Establish the authoritative settings projection before publishing any Pending hints from
+    // this page. Otherwise a waiter can materialize against stale delivery timing even though the
+    // changes cursor itself is not advanced until after settings convergence.
+    if (highestAccountSettingsVersion !== null) {
+        await params.refreshAccountSettingsForMinimumVersion?.(highestAccountSettingsVersion);
+    } else if (params.reason === 'reconnect' || changes.length >= CHANGES_PAGE_LIMIT) {
+        await params.refreshAccountSettingsForMinimumVersion?.(null);
+    }
 
     let transcriptCatchUpFailed = false;
-    const catchUpSessionMessages = async (afterSeq: number): Promise<void> => {
+    let snapshotSyncFailed = false;
+    const catchUpSessionMessages = async (request: SessionCatchUpRequest): Promise<void> => {
         try {
-            await params.catchUpSessionMessages(afterSeq);
+            await params.catchUpSessionMessages(request);
         } catch (error) {
             transcriptCatchUpFailed = true;
             reportReconnectCatchUpFailure(params, error);
@@ -136,33 +172,39 @@ export async function runSessionChangesSyncOnConnect(params: {
         // Slow-path: too many coalesced changes. Snapshot sync gets us back to a known-good state;
         // session transcript catch-up is only needed after reconnect.
         if (params.reason === 'reconnect') {
-            await catchUpSessionMessages(params.lastObservedMessageSeq);
+            await catchUpSessionMessages({
+                afterSeq: params.lastObservedMessageSeq,
+            });
         }
-        void params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
-        if (!transcriptCatchUpFailed) {
-            await writeLastChangesCursor(accountId, nextCursor);
+        const snapshotSucceeded = await params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        if (!transcriptCatchUpFailed && snapshotSucceeded) {
+            await params.writeChangesCursor(accountId, nextCursor);
         }
         return;
     }
 
     if (hasRelevantSessionChange && params.reason === 'reconnect') {
-        await catchUpSessionMessages(params.lastObservedMessageSeq);
-        void params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        await catchUpSessionMessages({
+            afterSeq: params.lastObservedMessageSeq,
+        });
+        const snapshotSucceeded = await params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        snapshotSyncFailed = !snapshotSucceeded;
     }
     if (shouldCatchUpSessionMessages && params.reason !== 'reconnect') {
-        await catchUpSessionMessages(params.lastObservedMessageSeq);
+        await catchUpSessionMessages({
+            afterSeq: params.lastObservedMessageSeq,
+        });
     }
     if (shouldSyncSnapshotFallback) {
-        void params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        const snapshotSucceeded = await params.syncSessionSnapshotFromServer({ reason: snapshotReasonForChangesFallback(params.reason) });
+        snapshotSyncFailed = snapshotSyncFailed || !snapshotSucceeded;
     }
 
-    if (!transcriptCatchUpFailed) {
-        await writeLastChangesCursor(accountId, nextCursor);
+    if (!transcriptCatchUpFailed && !snapshotSyncFailed) {
+        await params.writeChangesCursor(accountId, nextCursor);
     }
 }
 
 function snapshotReasonForChangesFallback(reason: SessionChangesSyncReason): SessionSnapshotRefreshReasonInput {
-    if (reason === 'connect') return 'socket-connect-catchup';
-    if (reason === 'reconnect') return 'socket-reconnect-catchup';
-    return 'degraded-socket';
+    return reason === 'connect' ? 'socket-connect-catchup' : 'socket-reconnect-catchup';
 }

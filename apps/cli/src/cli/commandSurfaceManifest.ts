@@ -6,6 +6,8 @@ export type CliCommandSurfaceEntry = Readonly<{
   allowTmux: boolean;
 }>;
 
+export const RESUME_COMMAND_USAGE = 'happier resume [<session-id-or-prefix>]';
+
 const COMMAND_SURFACE_MANIFEST: readonly CliCommandSurfaceEntry[] = [
   {
     command: null,
@@ -17,6 +19,12 @@ const COMMAND_SURFACE_MANIFEST: readonly CliCommandSurfaceEntry[] = [
     command: 'auth',
     rootHelpLabel: 'happier auth',
     rootHelpDescription: 'Manage authentication',
+    allowTmux: false,
+  },
+  {
+    command: 'automation',
+    rootHelpLabel: 'happier automation',
+    rootHelpDescription: 'Trigger and manage automations',
     allowTmux: false,
   },
   {
@@ -110,9 +118,23 @@ const COMMAND_SURFACE_MANIFEST: readonly CliCommandSurfaceEntry[] = [
   {
     command: 'session',
     allowTmux: false,
+    rootHelpLabel: 'happier session',
+    rootHelpDescription: 'Manage sessions and execution runs',
   },
   {
+    command: 'resume',
+    allowTmux: true,
+    rootHelpLabel: RESUME_COMMAND_USAGE,
+    rootHelpDescription: 'Resume an inactive session',
+  },
+  {
+    // Compatibility alias: intentionally accepted but omitted from root help.
     command: 'sessions',
+    allowTmux: false,
+  },
+  {
+    // Compatibility alias: intentionally accepted but omitted from root help.
+    command: 'automations',
     allowTmux: false,
   },
 ];

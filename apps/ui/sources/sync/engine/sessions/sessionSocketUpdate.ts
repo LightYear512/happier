@@ -3,13 +3,14 @@ import { normalizeRawMessage } from '@/sync/typesRaw';
 import { computeNextSessionSeqFromUpdate } from '@/sync/domains/session/sequence/realtimeSessionSeq';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { ApiMessage } from '@/sync/api/types/apiTypes';
+import { isRecoveredHistoryTranscriptObservationProvenance } from '@happier-dev/protocol';
 import { readStoredSessionMessage } from '@/sync/runtime/readStoredSessionContent';
 import { markStreamingMessagesAppliedForSessionUiTelemetry } from '@/sync/runtime/performance/sessionUiTelemetry';
 import { recordRealtimeFanoutSocketMessageRoute } from '@/sync/runtime/performance/realtimeFanoutTelemetry';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import {
-    storedSessionMessageContentAttentionImpact,
-    storedSessionMessageContentAttentionImpactOrNull,
+    storedSessionMessageAttentionImpact,
+    storedSessionMessageAttentionImpactOrNull,
 } from '@/sync/domains/messages/messageUserAttention';
 import type {
     SessionRealtimeProjectionCandidate,
@@ -18,6 +19,7 @@ import type {
 import { decideDurableSessionRealtimeRoute } from '@/sync/domains/session/realtime/sessionRealtimeRouting';
 import { getTaskLifecycleEventFromRawContent, type TaskLifecycleEvent } from './taskLifecycle';
 import { isLegacyMemoryArtifactTranscriptRow } from './legacyMemoryArtifactTranscriptRows';
+import { applyTranscriptObservationMetadata } from '@/sync/domains/messages/transcriptObservationProvenance';
 
 type SessionMessageEncryption = {
     decryptMessage: (message: any) => Promise<any>;
@@ -112,6 +114,15 @@ type HandleSessionMessageSocketUpdateParams = {
         updateType: 'new-message' | 'message-updated';
     }>) => boolean;
     fetchSessions: () => void;
+    /**
+     * Narrow alternative to `fetchSessions` for projection-only routing when a
+     * durable message cannot be projected locally (no extracted
+     * attentionImpact on encrypted content, or the session shell is unknown):
+     * refresh just that session's shell. Current servers always attach
+     * `attentionImpact` to message fan-outs, so this is a legacy-server
+     * fallback path. When absent, the full `fetchSessions()` fallback is used.
+     */
+    requestSessionShellRefresh?: (sessionId: string) => void;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => void;
     enqueueMessages?: (sessionId: string, messages: NormalizedMessage[]) => void;
     onNormalizedMessagesApplied?: (sessionId: string, messages: NormalizedMessage[]) => void;
@@ -136,6 +147,16 @@ type HandleSessionMessageSocketUpdateParams = {
         seq: number | null;
         messageId?: string;
     }) => void;
+    /**
+     * Invoked when a durable message update is routed away from full transcript apply
+     * (projection-only / stale marking) so side channels (e.g. SCM workspace-mutation
+     * detection) can consume the raw envelope without hydrating the transcript.
+     */
+    onTranscriptSkippedDurableMessage?: (params: Readonly<{
+        sessionId: string;
+        rawMessage: ApiMessage | undefined;
+        updateType: 'new-message' | 'message-updated';
+    }>) => void;
 };
 
 function normalizeMessageSeq(value: unknown): number | null {
@@ -190,9 +211,18 @@ function applyProjectionOnlySessionPatch(params: Readonly<{
     applySessions: HandleSessionMessageSocketUpdateParams['applySessions'];
     applyCacheOnlySessionProjectionPatch?: HandleSessionMessageSocketUpdateParams['applyCacheOnlySessionProjectionPatch'];
     fetchSessions: () => void;
+    requestSessionShellRefresh?: (sessionId: string) => void;
 }>): void {
-    if (storedSessionMessageContentAttentionImpactOrNull(params.rawMessage?.content) === null) {
+    const refreshSessionShell = () => {
+        if (params.requestSessionShellRefresh) {
+            params.requestSessionShellRefresh(params.sessionId);
+            return;
+        }
         params.fetchSessions();
+    };
+
+    if (storedSessionMessageAttentionImpactOrNull(params.rawMessage) === null) {
+        refreshSessionShell();
         return;
     }
 
@@ -206,7 +236,7 @@ function applyProjectionOnlySessionPatch(params: Readonly<{
         return;
     }
     if (!params.session) {
-        params.fetchSessions();
+        refreshSessionShell();
         return;
     }
     const patch = buildMessageSessionProjectionPatch({
@@ -270,7 +300,10 @@ function buildMessageSessionProjectionPatch(params: Readonly<{
     updateType: 'new-message' | 'message-updated';
 }>): SessionProjectionPatch {
     const currentSeq = params.session.seq ?? 0;
-    const attentionImpact = storedSessionMessageContentAttentionImpact(params.rawMessage?.content);
+    const isRecoveredHistory = isRecoveredHistoryTranscriptObservationProvenance(
+        params.rawMessage?.transcriptObservationProvenance,
+    );
+    const attentionImpact = storedSessionMessageAttentionImpact(params.rawMessage);
     const nextSessionSeq = computeNextSessionSeqFromUpdate({
         currentSessionSeq: currentSeq,
         updateType: 'new-message',
@@ -291,7 +324,8 @@ function buildMessageSessionProjectionPatch(params: Readonly<{
     // Loaded message edits can arrive for every streaming content update. When they only advance the
     // socket event timestamp, the transcript apply below is sufficient and a session projection update
     // just adds session-list churn.
-    const advancesUpdatedAt = updateCreatedAt !== null
+    const advancesUpdatedAt = !isRecoveredHistory
+        && updateCreatedAt !== null
         && updateCreatedAt > currentUpdatedAt
         && (params.updateType === 'new-message' || advancesSeq || advancesMeaningfulActivityAt);
 
@@ -337,6 +371,9 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
     const rawMessage = 'message' in body
         ? (body as { message?: ApiMessage }).message
         : undefined;
+    const isRecoveredHistory = isRecoveredHistoryTranscriptObservationProvenance(
+        rawMessage?.transcriptObservationProvenance,
+    );
     const updateType = inferLifecycle ? 'new-message' : 'message-updated';
     const prevMaterializedMaxSeq = getSessionMaterializedMaxSeq(sessionId);
     const sessionMessagesLoaded = isSessionMessagesLoaded(sessionId);
@@ -399,6 +436,7 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
             applySessions,
             applyCacheOnlySessionProjectionPatch: params.applyCacheOnlySessionProjectionPatch,
             fetchSessions,
+            requestSessionShellRefresh: params.requestSessionShellRefresh,
         });
         if (normalizedMessageSeq !== null) {
             params.markSessionKnownRemoteSeq?.(sessionId, normalizedMessageSeq);
@@ -408,6 +446,7 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
             seq: normalizedMessageSeq,
             messageId: rawMessage?.id,
         });
+        params.onTranscriptSkippedDurableMessage?.({ sessionId, rawMessage, updateType });
         return;
     }
     if (realtimeProjectionMode === 'enabled' && routeDecision.route === 'markTranscriptStale') {
@@ -421,6 +460,7 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
             applySessions,
             applyCacheOnlySessionProjectionPatch: params.applyCacheOnlySessionProjectionPatch,
             fetchSessions,
+            requestSessionShellRefresh: params.requestSessionShellRefresh,
         });
         if (normalizedMessageSeq !== null) {
             params.markSessionKnownRemoteSeq?.(sessionId, normalizedMessageSeq);
@@ -430,6 +470,7 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
             seq: normalizedMessageSeq,
             messageId: rawMessage?.id,
         });
+        params.onTranscriptSkippedDurableMessage?.({ sessionId, rawMessage, updateType });
         return;
     }
 
@@ -491,8 +532,12 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
                     normalizeMessage,
                 )
                 : normalizeMessage();
+            if (lastMessage) {
+                applyTranscriptObservationMetadata(lastMessage, rawMessage);
+            }
 
-            const { isTaskComplete, isTaskStarted, lifecycleEvent } = inferLifecycle
+            const shouldInferLifecycle = inferLifecycle && !isRecoveredHistory;
+            const { isTaskComplete, isTaskStarted, lifecycleEvent } = shouldInferLifecycle
                 ? inferTaskLifecycleFromMessageContent(decrypted.content, decrypted.createdAt)
                 : { isTaskComplete: false, isTaskStarted: false, lifecycleEvent: null };
             const latestTurnStatus = latestTurnStatusFromLifecycleEvent(lifecycleEvent);
@@ -514,8 +559,8 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
                     updateType,
                 });
                 const lifecyclePatch: Partial<Session> = {
-                    ...(inferLifecycle && isTaskComplete ? { thinking: false } : {}),
-                    ...(inferLifecycle && isTaskStarted && shouldApplyLifecycleStatus ? { thinking: true } : {}),
+                    ...(shouldInferLifecycle && isTaskComplete ? { thinking: false } : {}),
+                    ...(shouldInferLifecycle && isTaskStarted && shouldApplyLifecycleStatus ? { thinking: true } : {}),
                     ...(shouldApplyLifecycleStatus ? {
                         latestTurnStatus,
                         latestTurnStatusObservedAt: lifecycleEvent?.createdAt ?? updateData.createdAt,

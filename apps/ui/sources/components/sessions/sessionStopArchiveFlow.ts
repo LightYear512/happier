@@ -1,11 +1,14 @@
 import { HappyError } from '@/utils/errors/errors';
 import { storage } from '@/sync/domains/state/storage';
 import { delay } from '@/utils/timing/time';
+import { t } from '@/text';
+import type { SessionStopRecovery } from '@/sync/ops/sessionStopContract';
 
 type SessionMutationResult = Readonly<{
     success: boolean;
     message?: string;
     code?: string;
+    recovery?: SessionStopRecovery;
 }>;
 
 export type StopSessionAndMaybeArchiveParams = Readonly<{
@@ -37,6 +40,16 @@ function readSessionArchiveAfterStopTimeoutMsFromEnv(): number {
 
 export function isSessionActiveArchiveResult(result: SessionMutationResult): boolean {
     return result.success === false && result.code === 'session_active';
+}
+
+export function resolveSessionStopFailureMessage(
+    result: SessionMutationResult,
+    fallbackMessage: string,
+): string {
+    if (result.recovery === 'retry_when_runtime_available') {
+        return t('sessionInfo.stopSessionControlUnavailable');
+    }
+    return result.message || fallbackMessage;
 }
 
 async function archiveAfterStopWithRetry(params: Readonly<{
@@ -86,11 +99,14 @@ export async function stopSessionAndMaybeArchive(params: StopSessionAndMaybeArch
     }
 
     const stopResult = await params.stopSession();
-    if (!stopResult.success) {
+    const stopWasAcceptedAndPending = stopResult.success === false
+        && stopResult.code === 'session_stop_requested'
+        && stopResult.recovery === 'wait_for_inactive';
+    if (!stopResult.success && !stopWasAcceptedAndPending) {
         if (keepVisibleWhenStopping) {
             clearSessionVisibleWhenInactive(params.sessionId);
         }
-        throw new HappyError(stopResult.message || params.stopErrorMessage, false);
+        throw new HappyError(resolveSessionStopFailureMessage(stopResult, params.stopErrorMessage), false);
     }
 
     if (params.archiveAfterStop === 'never') {

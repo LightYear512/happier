@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
-import { Ionicons } from '@expo/vector-icons';
 
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { EmbeddedTerminalPane } from '@/components/terminal/embedded/EmbeddedTerminalPane.web';
@@ -17,6 +16,8 @@ import {
 } from './embeddedTerminalDocking';
 import type { EmbeddedTerminalRendererHandle } from './embeddedTerminalRendererHandle';
 import { useSessionEmbeddedTerminalPty } from './useSessionEmbeddedTerminalPty';
+import { useSessionTerminalMode, type SessionTerminalMode } from './sessionTerminalMode';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export type SessionEmbeddedTerminalPaneProps = Readonly<{
     sessionId: string;
@@ -24,6 +25,7 @@ export type SessionEmbeddedTerminalPaneProps = Readonly<{
     currentDockLocation: EmbeddedTerminalDockLocation;
     onRequestClose?: () => void;
     testIdPrefix?: string | null;
+    terminalMode?: SessionTerminalMode;
 }>;
 
 export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTerminalPaneWeb(props: SessionEmbeddedTerminalPaneProps) {
@@ -41,19 +43,27 @@ export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTe
         [testIdPrefix],
     );
 
+    const storedTerminalMode = useSessionTerminalMode(props.sessionId);
+    const terminalMode = props.terminalMode ?? storedTerminalMode;
     const terminalRendererRef = React.useRef<EmbeddedTerminalRendererHandle | null>(null);
-    const terminalKey = React.useMemo(() => `session:${props.sessionId}:terminal`, [props.sessionId]);
+    const terminalKey = React.useMemo(
+        () => terminalMode === 'session_attach'
+            ? `session-attach:${props.sessionId}`
+            : `session:${props.sessionId}:terminal`,
+        [props.sessionId, terminalMode],
+    );
 
     const controller = useSessionEmbeddedTerminalPty({
         sessionId: props.sessionId,
         terminalKey,
+        terminalMode,
         terminalRef: terminalRendererRef,
     });
 
     const dockItems = React.useMemo(() => ([
-        { id: 'sidebar', title: t('terminalEmbedded.location.sidebar'), icon: <Ionicons name="albums-outline" size={18} color={theme.colors.text.secondary} /> },
-        { id: 'details', title: t('terminalEmbedded.location.details'), icon: <Ionicons name="information-circle-outline" size={18} color={theme.colors.text.secondary} /> },
-        { id: 'bottom', title: t('terminalEmbedded.location.bottom'), icon: <Ionicons name="reorder-four-outline" size={18} color={theme.colors.text.secondary} /> },
+        { id: 'sidebar', title: t('terminalEmbedded.location.sidebar'), icon: <Icon name="stack" size={16} color={theme.colors.text.secondary} /> },
+        { id: 'details', title: t('terminalEmbedded.location.details'), icon: <Icon name="info" size={16} color={theme.colors.text.secondary} /> },
+        { id: 'bottom', title: t('terminalEmbedded.location.bottom'), icon: <Icon name="list" size={16} color={theme.colors.text.secondary} /> },
     ]), [theme.colors.text.secondary]);
 
     const onSelectDock = React.useCallback((id: string) => {
@@ -70,7 +80,9 @@ export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTe
     return (
         <View style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
             <EmbeddedTerminalPane
-                title={t('settings.terminal')}
+                title={terminalMode === 'session_attach'
+                    ? t('tools.askUserQuestion.claudeDialogNotice.openTerminal')
+                    : t('settings.terminal')}
                 controller={controller}
                 terminalRef={terminalRendererRef}
                 onRequestClose={props.onRequestClose}
@@ -93,7 +105,7 @@ export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTe
                                 accessibilityLabel={t('terminalEmbedded.dockMenuA11y')}
                                 onPress={toggle}
                             >
-                                <Ionicons name="move-outline" size={18} color={theme.colors.text.secondary} />
+                                <Icon name="arrows-out-cardinal" size={16} color={theme.colors.text.secondary} />
                             </Pressable>
                         )}
                         items={dockItems}

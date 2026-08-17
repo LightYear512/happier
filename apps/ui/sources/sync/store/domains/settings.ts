@@ -6,6 +6,7 @@ import type { MachineDisplayRenderable } from '../../domains/machines/machineDis
 import { applyLocalSettings, type LocalSettings } from '../../domains/settings/localSettings';
 import { customerInfoToPurchases, purchasesDefaults, type Purchases } from '../../domains/purchases/purchases';
 import { applySettings, settingsDefaults, settingsParse, type Settings } from '../../domains/settings/settings';
+import { reconcileSettingsReferences } from '../../domains/settings/reconcileSettingsReferences';
 import {
     loadAccountSettings,
     prepareAccountSettingsScopeForActivation,
@@ -72,15 +73,20 @@ function shouldRebuildSessionListViewData(previous: Settings, next: Settings): b
         next.sessionListSectionModeV1 !== previous.sessionListSectionModeV1 ||
         next.sessionListAttentionPromotionModeV1 !== previous.sessionListAttentionPromotionModeV1 ||
         next.sessionListWorkingPlacementModeV1 !== previous.sessionListWorkingPlacementModeV1 ||
+        next.sessionListSeparateBackgroundWork !== previous.sessionListSeparateBackgroundWork ||
         next.workspacePathDisplayModeV1 !== previous.workspacePathDisplayModeV1;
 }
 
 function buildSettingsProjectionState<S extends SettingsDomain & SettingsDomainDependencies>(
     state: S,
-    nextSettings: Settings,
+    incomingSettings: Settings,
     nextVersion: number | null,
     nextScope: AccountSettingsScope | null,
 ): S {
+    // Reuse the previous references for structurally unchanged keys so a server settings echo,
+    // which re-parses and re-seals the whole record, does not invalidate every settings subscriber.
+    const nextSettings = reconcileSettingsReferences(state.settings, incomingSettings);
+
     safeSetPreferredLanguageFromSettings(nextSettings.preferredLanguage);
 
     const shouldRebuildSessionListViewDataValue = shouldRebuildSessionListViewData(state.settings, nextSettings);

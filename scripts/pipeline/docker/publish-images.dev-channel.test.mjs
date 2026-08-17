@@ -26,14 +26,20 @@ test('docker publish supports dev channel (tags + embedded policy)', () => {
       ...process.env,
       // Keep the output deterministic: avoid GH Actions cache args.
       GITHUB_ACTIONS: 'false',
+      HAPPIER_DOCKER_SERVER_VERSION: '0.2.10-dev.docker-test',
+      HAPPIER_DOCKER_CLI_VERSION: '0.2.10-dev.docker-cli-test',
     },
   });
 
   assert.match(out, new RegExp(String.raw`--build-arg\s+HAPPIER_EMBEDDED_POLICY_ENV=preview`));
+  assert.match(out, new RegExp(String.raw`--build-arg\s+HAPPIER_RELAY_SERVER_RELEASE_TAG=server-v0\.2\.10-dev\.docker-test`));
+  assert.match(out, new RegExp(String.raw`--build-arg\s+HAPPIER_RELAY_SERVER_VERSION=0\.2\.10-dev\.docker-test`));
+  assert.doesNotMatch(out, /HAPPIER_RELAY_UI_WEB_/);
+  assert.match(out, new RegExp(String.raw`--build-arg\s+HAPPIER_DEVBOX_CLI_RELEASE_TAG=cli-v0\.2\.10-dev\.docker-cli-test`));
+  assert.match(out, new RegExp(String.raw`--build-arg\s+HAPPIER_DEVBOX_CLI_VERSION=0\.2\.10-dev\.docker-cli-test`));
 
   assert.match(out, new RegExp(String.raw`--tag\s+happierdev/relay-server:dev\b`));
   assert.match(out, new RegExp(String.raw`--tag\s+happierdev/relay-server:dev-${shortSha}\b`));
   assert.match(out, new RegExp(String.raw`--tag\s+happierdev/dev-box:dev\b`));
   assert.match(out, new RegExp(String.raw`--tag\s+happierdev/dev-box:dev-${shortSha}\b`));
 });
-

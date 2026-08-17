@@ -111,6 +111,49 @@ function supportsInTurnDirectLiveHotAuth(
   return directLiveHotAuth.refreshSelectionResync === 'not_applicable';
 }
 
+function supportsDirectLiveHotAuth(
+  capability: ConnectedServiceRuntimeAuthApplyCapability | null | undefined,
+): boolean {
+  const directLiveHotAuth = capability?.directLiveHotAuth;
+  if (typeof directLiveHotAuth !== 'object') return false;
+
+  const { authMode } = directLiveHotAuth;
+  if (authMode.kind === 'external_token_injection') {
+    return directLiveHotAuth.refreshSelectionResync === 'required'
+      && authMode.surface.trim().length > 0;
+  }
+
+  if (authMode.kind === 'provider_owned') {
+    return directLiveHotAuth.refreshSelectionResync === 'not_applicable'
+      && authMode.name.trim().length > 0;
+  }
+
+  return directLiveHotAuth.refreshSelectionResync === 'not_applicable';
+}
+
+/**
+ * Does this provider's runtime require a LIVE session-runtime identity probe to prove which account a
+ * live session is on, for same-account fanout reconciliation?
+ *
+ * - `true`  — the account binding lives INSIDE the runtime process and can drift without the daemon
+ *   knowing (codex: `requiresExactRuntimeIdentity: true`, external token injection). The fanout MUST
+ *   re-probe the live runtime before switching a candidate.
+ * - `false` — the account binding is DAEMON-authoritative via broker/shared-group indirection
+ *   (opencode/pi/claude: `requiresExactRuntimeIdentity: false`, `provider_owned` broker selection).
+ *   The daemon already owns the effective selection, so the daemon's own indexed identity is
+ *   authoritative and a live session-runtime probe is neither needed NOR answerable — demanding one
+ *   only strands the candidate on an unsupported RPC.
+ *
+ * Unknown / `unsupported` apply capability fails toward `true` (keep the conservative live-probe path).
+ */
+export function runtimeAuthApplyRequiresLiveIdentityProbe(
+  capability: ConnectedServiceRuntimeAuthApplyCapability | null | undefined,
+): boolean {
+  const directLiveHotAuth = capability?.directLiveHotAuth;
+  if (typeof directLiveHotAuth !== 'object') return true;
+  return directLiveHotAuth.requiresExactRuntimeIdentity === true;
+}
+
 export function evaluateConnectedServiceSwitchApplyPolicy(input: Readonly<{
   context: ConnectedServiceSwitchApplyContext;
   reason: PredictiveSoftSwitchReason | 'manual' | 'diagnostic' | string;
@@ -122,7 +165,12 @@ export function evaluateConnectedServiceSwitchApplyPolicy(input: Readonly<{
     input.context === 'healthy_sibling'
     || input.context === 'healthy_live_session'
     || input.reason === 'same_provider_account_exhausted'
-    || input.reason === 'soft_threshold';
+    || input.reason === 'soft_threshold'
+    || (
+      input.context === 'original_failed_session'
+      && input.reason === 'usage_limit'
+      && supportsDirectLiveHotAuth(input.runtimeAuthApply)
+    );
   if (directLiveOnly) {
     if (
       input.context === 'healthy_sibling'
@@ -285,6 +333,7 @@ export function evaluatePredictiveSoftSwitchSessionApplyPolicy(input: Readonly<{
   reason: PredictiveSoftSwitchReason;
   sessionId?: string | null;
   applyMode?: PredictiveSoftSwitchSessionApplyMode | null;
+  runtimeAuthApply?: ConnectedServiceRuntimeAuthApplyCapability | null;
 }>): PredictiveSoftSwitchSessionApplyDecision {
   const decision = evaluateConnectedServiceSwitchApplyPolicy({
     context: input.reason === 'same_provider_account_exhausted'
@@ -296,6 +345,7 @@ export function evaluatePredictiveSoftSwitchSessionApplyPolicy(input: Readonly<{
           : 'manual',
     reason: input.reason,
     applyMode: input.applyMode,
+    runtimeAuthApply: input.runtimeAuthApply,
   });
   if (decision.status === 'allow') return { status: 'allow' };
   if (typeof input.sessionId !== 'string' || input.sessionId.trim().length === 0) return { status: 'allow' };

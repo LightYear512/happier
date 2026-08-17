@@ -1,167 +1,80 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
 
 import { AgentInputContentPopover } from '@/components/sessions/agentInput/components/AgentInputContentPopover';
-import { Modal } from '@/modal';
-import { t } from '@/text';
 
-import { SessionGoalControlContent } from './SessionGoalControlContent';
-import { resolvePrimarySessionWorkStateItem } from './sessionWorkStatePresentation';
-import { SessionTaskListContent } from './SessionTaskListContent';
-import type { SessionWorkStateItem, SessionWorkStateSnapshot } from './sessionWorkStateTypes';
+import type { GoalActionCapabilities } from './goalActionVisibility';
+import { useSessionWorkStateActivitySection } from './SessionWorkStateActivitySection';
+import type { SessionWorkStateSnapshot } from './sessionWorkStateTypes';
+import {
+    useSessionWorkStateGoalController,
+    type SessionWorkStateGoalOperationResult,
+    type SessionWorkStateGoalSetRequest,
+} from './useSessionWorkStateGoalController';
 
-type OperationResult = { ok: true } | { ok: false; error: string };
-type GoalSetRequest = Readonly<{
-    objective?: string;
-    status?: 'active' | 'paused' | 'complete';
-    tokenBudget?: number | null;
-    resumeInactiveWithInitialGoal?: boolean;
-}>;
-
-function findGoal(snapshot: SessionWorkStateSnapshot | null): SessionWorkStateItem | null {
-    return snapshot?.items.find((item) => item.kind === 'goal') ?? null;
-}
-
-function omitGoalFromSnapshot(
-    snapshot: SessionWorkStateSnapshot | null,
-    goal: SessionWorkStateItem | null,
-): SessionWorkStateSnapshot | null {
-    if (!snapshot || !goal) return snapshot;
-    return {
-        ...snapshot,
-        primaryItemId: snapshot.primaryItemId === goal.id ? null : snapshot.primaryItemId,
-        items: snapshot.items.filter((item) => item.id !== goal.id),
-    };
-}
-
-export function SessionWorkStatePopover(props: Readonly<{
+type SessionWorkStatePopoverProps = Readonly<{
     open: boolean;
     anchorRef: React.RefObject<any>;
+    sessionId: string;
     snapshot: SessionWorkStateSnapshot | null;
     editableGoal: boolean;
+    goalActionCapabilityFallback?: GoalActionCapabilities | null;
+    /** Opens the expanded monitoring surface. Absent means there is nowhere to go. */
+    onOpenFullRoster?: () => void;
     onRequestClose: () => void;
-    onSetGoal?: (request: GoalSetRequest) => Promise<OperationResult>;
-    onClearGoal?: () => Promise<OperationResult>;
-}>) {
-    const goal = findGoal(props.snapshot);
-    const primary = resolvePrimarySessionWorkStateItem(props.snapshot);
-    const renderGoalControls = props.editableGoal && Boolean(goal || primary?.kind === 'goal' || !primary);
-    const taskListSnapshot = renderGoalControls ? omitGoalFromSnapshot(props.snapshot, goal) : props.snapshot;
-    const [draftObjective, setDraftObjective] = React.useState(goal?.title ?? '');
-    const [busy, setBusy] = React.useState(false);
+    onSetGoal?: (request: SessionWorkStateGoalSetRequest) => Promise<SessionWorkStateGoalOperationResult>;
+    onClearGoal?: () => Promise<SessionWorkStateGoalOperationResult>;
+}>;
 
-    React.useEffect(() => {
-        if (!props.open) return;
-        setDraftObjective(goal?.title ?? '');
-    }, [goal?.title, props.open]);
+/**
+ * The compact work-state surface: goal, live activity, tasks — in that order.
+ *
+ * **Nothing here is mounted while the popover is closed**, and that is the one line of this file
+ * worth reviewing. The body reads the roster variant of the unified model, which carries transcript
+ * enrichment and background-task records and therefore re-derives on every streamed commit; holding
+ * that subscription in the composer subtree would re-render it per token (R-11). The badge host only
+ * ever invokes `renderPopover` for the *active* badge, so the closed state already unmounts this —
+ * the gate below keeps that structural fact enforced here rather than merely relied upon.
+ */
+export function SessionWorkStatePopover(props: SessionWorkStatePopoverProps) {
+    if (!props.open) return null;
+    return <OpenSessionWorkStatePopover {...props} />;
+}
 
-    const dirty = draftObjective.trim() !== (goal?.title ?? '').trim();
-
-    const requestClose = React.useCallback(async () => {
-        if (dirty) {
-            const discard = await Modal.confirm(
-                t('session.workState.dirtyCloseTitle'),
-                t('session.workState.dirtyCloseBody'),
-                { confirmText: t('common.discard'), destructive: true },
-            );
-            if (!discard) return;
-        }
-        props.onRequestClose();
-    }, [dirty, props]);
-
-    const runGoalMutation = React.useCallback(async (request: GoalSetRequest) => {
-        if (!props.onSetGoal) return;
-        setBusy(true);
-        try {
-            const result = await props.onSetGoal(request);
-            if (result.ok) props.onRequestClose();
-            else {
-                props.onRequestClose();
-                Modal.alert(t('common.error'), result.error);
-            }
-        } finally {
-            setBusy(false);
-        }
-    }, [props]);
-
-    const clearGoal = React.useCallback(async () => {
-        if (!props.onClearGoal) return;
-        props.onRequestClose();
-        const confirmed = await Modal.confirm(
-            t('session.workState.goal.clearTitle'),
-            t('session.workState.goal.clearBody'),
-            { confirmText: t('session.workState.goal.clear'), destructive: true },
-        );
-        if (!confirmed) return;
-        setBusy(true);
-        try {
-            const result = await props.onClearGoal();
-            if (!result.ok) Modal.alert(t('common.error'), result.error);
-        } finally {
-            setBusy(false);
-        }
-    }, [props]);
+function OpenSessionWorkStatePopover(props: SessionWorkStatePopoverProps) {
+    // Presence is decided HERE, during this render, so a section that paints nothing never reaches
+    // the controller's section list — no divider for an absent section, and no "nothing to show"
+    // placeholder committed alongside live work and corrected a frame later.
+    const activitySection = useSessionWorkStateActivitySection({
+        sessionId: props.sessionId,
+        ...(props.onOpenFullRoster ? { onOpenFullRoster: props.onOpenFullRoster } : null),
+        // A row press routes to the agent's own transcript, so this popover dismisses itself first
+        // rather than staying anchored over the screen the reader just opened.
+        onRequestClose: props.onRequestClose,
+    });
+    const { content, guardedRequestClose } = useSessionWorkStateGoalController({
+        open: props.open,
+        snapshot: props.snapshot,
+        editableGoal: props.editableGoal,
+        goalActionCapabilityFallback: props.goalActionCapabilityFallback ?? null,
+        activitySection,
+        showEmptyGoalControls: false,
+        onRequestClose: props.onRequestClose,
+        onSetGoal: props.onSetGoal,
+        onClearGoal: props.onClearGoal,
+    });
 
     return (
         <AgentInputContentPopover
             open={props.open}
             anchorRef={props.anchorRef}
-            onRequestClose={requestClose}
+            onRequestClose={guardedRequestClose}
             maxWidthCap={420}
             maxHeightCap={520}
             testID="session-work-state-popover-surface"
-            content={() => (
-                <View
-                    testID="session-work-state-popover"
-                    style={styles.content}
-                >
-                    {renderGoalControls ? (
-                        <SessionGoalControlContent
-                            goal={goal}
-                            draftObjective={draftObjective}
-                            onDraftObjectiveChange={setDraftObjective}
-                            onSave={(budgetDraft) => {
-                                const objective = draftObjective.trim();
-                                if (!objective) return;
-                                const request: {
-                                    objective: string;
-                                    status?: 'active';
-                                    tokenBudget?: number | null;
-                                    resumeInactiveWithInitialGoal: false;
-                                } = { objective, resumeInactiveWithInitialGoal: false };
-                                if (goal?.status === 'complete' || goal?.statusReason === 'budgetLimited') {
-                                    request.status = 'active';
-                                }
-                                if (budgetDraft.tokenBudgetChanged) {
-                                    request.tokenBudget = budgetDraft.tokenBudget;
-                                }
-                                void runGoalMutation(request);
-                            }}
-                            onPause={() => { void runGoalMutation({ status: 'paused' }); }}
-                            onResume={() => { void runGoalMutation({ status: 'active' }); }}
-                            onComplete={() => { void runGoalMutation({ status: 'complete' }); }}
-                            onClear={clearGoal}
-                            busy={busy}
-                        />
-                    ) : null}
-                    <SessionTaskListContent
-                        snapshot={taskListSnapshot}
-                        primaryItemId={taskListSnapshot?.primaryItemId ?? null}
-                    />
-                </View>
-            )}
+            // U-4: the goal edit mode reveals the objective textarea inside this popover, so reserve
+            // the bottom keyboard inset to keep it clear of the software keyboard.
+            reserveKeyboardInset
+            content={() => content}
         />
     );
 }
-
-const styles = StyleSheet.create(() => ({
-    content: {
-        gap: 16,
-        minWidth: 0,
-        maxWidth: '100%',
-        paddingHorizontal: 14,
-        paddingTop: 12,
-        paddingBottom: 14,
-    },
-}));

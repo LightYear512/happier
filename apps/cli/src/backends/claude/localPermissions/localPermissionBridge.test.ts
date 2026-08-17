@@ -5,6 +5,10 @@ import { join } from 'node:path';
 
 import { createPermissionHandlerSessionStub } from '../utils/permissionHandler.testkit';
 import { ClaudeLocalPermissionBridge } from './localPermissionBridge';
+import {
+  CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
+  CLAUDE_LOCAL_PERMISSION_BRIDGE_STOPPED_REASON,
+} from '@happier-dev/agents';
 
 describe('ClaudeLocalPermissionBridge', () => {
   beforeEach(() => {
@@ -13,6 +17,70 @@ describe('ClaudeLocalPermissionBridge', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('retires only stale source-owned requests when a replacement bridge activates', async () => {
+    const { session, client } = createPermissionHandlerSessionStub('session-replacement-cleanup');
+    client.updateAgentState((current) => ({
+      ...current,
+      requests: {
+        stale_claude_question: {
+          tool: 'AskUserQuestion',
+          kind: 'user_action',
+          arguments: { questions: [{ question: 'No longer answerable' }] },
+          createdAt: 1,
+          source: CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
+        },
+        other_owner_question: {
+          tool: 'AskUserQuestion',
+          kind: 'user_action',
+          arguments: { questions: [{ question: 'Still owned elsewhere' }] },
+          createdAt: 2,
+          source: 'another_permission_owner',
+        },
+      },
+    }));
+
+    const bridge = new ClaudeLocalPermissionBridge(session);
+    bridge.activate();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.agentState.requests.stale_claude_question).toBeUndefined();
+    expect(client.agentState.completedRequests.stale_claude_question).toMatchObject({
+      status: 'canceled',
+      reason: CLAUDE_LOCAL_PERMISSION_BRIDGE_STOPPED_REASON,
+      source: CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
+    });
+    expect(client.agentState.requests.other_owner_question).toBeDefined();
+  });
+
+  it('leaves a source-owned opaque claimed request outstanding through activation and disposal', async () => {
+    const { session, client } = createPermissionHandlerSessionStub('session-claimed-replacement-cleanup');
+    const opaqueClaim = { malformed: ['future', { owner: true }] };
+    client.updateAgentState((current) => ({
+      ...current,
+      requests: {
+        claimed_claude_question: {
+          tool: 'AskUserQuestion',
+          kind: 'user_action',
+          arguments: { questions: [{ question: 'Reserved by newer runtime' }] },
+          createdAt: 1,
+          source: CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
+          permissionResponseClaimV1: opaqueClaim,
+        },
+      },
+    }));
+
+    const bridge = new ClaudeLocalPermissionBridge(session);
+    bridge.activate();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const retained = client.agentState.requests.claimed_claude_question as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(retained, 'permissionResponseClaimV1')).toBe(true);
+    expect(retained.permissionResponseClaimV1).toBe(opaqueClaim);
+    expect(client.agentState.completedRequests.claimed_claude_question).toBeUndefined();
   });
 
   it('times out non-interactive requests by default when no UI response arrives', async () => {
@@ -49,18 +117,18 @@ describe('ClaudeLocalPermissionBridge', () => {
       hook_event_name: 'PermissionRequest',
       tool_name: 'Write',
       tool_input: { file_path: '/tmp/test.txt', content: 'hello' },
-      tool_use_id: 'toolu_allow_1',
+      tool_use_id: ' toolu_allow_1\n',
     });
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(client.agentState.requests.toolu_allow_1).toMatchObject({
+    expect(client.agentState.requests[' toolu_allow_1\n']).toMatchObject({
       tool: 'Write',
       arguments: { file_path: '/tmp/test.txt', content: 'hello' },
     });
 
     const permissionHandler = client.rpcHandlerManager.getHandler('permission');
     expect(permissionHandler).toBeDefined();
-    await permissionHandler?.({ id: 'toolu_allow_1', approved: true });
+    await permissionHandler?.({ id: ' toolu_allow_1\n', approved: true });
 
     await expect(pending).resolves.toMatchObject({
       continue: true,
@@ -70,8 +138,8 @@ describe('ClaudeLocalPermissionBridge', () => {
         decision: { behavior: 'allow' },
       },
     });
-    expect(client.agentState.requests.toolu_allow_1).toBeUndefined();
-    expect(client.agentState.completedRequests.toolu_allow_1).toMatchObject({
+    expect(client.agentState.requests[' toolu_allow_1\n']).toBeUndefined();
+    expect(client.agentState.completedRequests[' toolu_allow_1\n']).toMatchObject({
       status: 'approved',
       tool: 'Write',
     });
@@ -662,7 +730,7 @@ describe('ClaudeLocalPermissionBridge', () => {
     const second = bridge.handlePermissionHook({
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
-      tool_input: { command: 'unset BAR; find src -maxdepth 1' },
+      tool_input: { command: 'find src -maxdepth 1' },
       tool_use_id: 'toolu_allowlist_2',
     });
 

@@ -1,10 +1,12 @@
 import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import cliDistBuildManifest from '../../cliDistBuildManifest.cjs';
 import { buildCliBinaryArtifactPayload } from './buildCliBinaryArtifactPayload.js';
 
 const tempDirs: string[] = [];
@@ -102,7 +104,7 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
         }));
     });
 
-    it('refreshes bundled workspace packages in apps/cli/node_modules before compiling a reused cli dist snapshot', async () => {
+    it('rebuilds a stale-version cli dist and forwards the exact release version', async () => {
         const repoRoot = await createTempDir();
         const payloadDir = join(repoRoot, 'artifacts', 'payload');
         const older = new Date('2026-04-13T18:00:00.000Z');
@@ -140,7 +142,9 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
                 '@happier-dev/cli-common': '0.0.0',
             },
         }, null, 2)}\n`, older);
-        await writeRepoFile(join(repoRoot, 'apps', 'cli', 'dist', 'index.mjs'), 'export default "cli-entrypoint";\n', newer);
+        const cliDistEntrypoint = join(repoRoot, 'apps', 'cli', 'dist', 'index.mjs');
+        await writeRepoFile(cliDistEntrypoint, 'export default "cli-entrypoint";\n', newer);
+        cliDistBuildManifest.writeCliDistBuildManifest(cliDistEntrypoint, { buildVersion: '0.2.10' });
         await writeRepoFile(join(repoRoot, 'apps', 'cli', 'src', 'index.ts'), 'export default "cli-source";\n', older);
         const staticRuntimeScriptAssets = await collectStaticRuntimeScriptAssetSegments();
         const sidecarPaths = [
@@ -206,13 +210,25 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
         }
 
         const compileObservedContents: string[] = [];
+        const buildVersions: string[] = [];
 
         await buildCliBinaryArtifactPayload({
             repoRoot,
             payloadDir,
+            releaseVersion: '0.2.10-dev.61',
+            ensureWorkspacePackagesBuiltByName: async (_root, packageNames) => ({
+                ok: true,
+                built: [],
+                skipped: packageNames,
+            }),
             commandProbe: (command) => command === 'bun' || command === 'yarn',
-            runCommand: () => {
-                throw new Error('buildCliBinaryArtifactPayload should not rebuild the cli dist in this scenario');
+            runCommand: (_command, _args, options) => {
+                buildVersions.push(String(options?.env?.HAPPIER_CLI_BUILD_VERSION ?? ''));
+                mkdirSync(dirname(cliDistEntrypoint), { recursive: true });
+                writeFileSync(cliDistEntrypoint, 'export default "release-cli-entrypoint";\n', 'utf8');
+                cliDistBuildManifest.writeCliDistBuildManifest(cliDistEntrypoint, {
+                    buildVersion: '0.2.10-dev.61',
+                });
             },
             compileBinary: async ({ outfile }) => {
                 compileObservedContents.push(await readFile(bundledWorkspaceInstallPath, 'utf8'));
@@ -220,6 +236,7 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
             },
         });
 
+        expect(buildVersions).toEqual(['0.2.10-dev.61']);
         expect(compileObservedContents).toEqual([currentSourceContent]);
         await expect(readFile(join(payloadDir, 'node_modules', '@happier-dev', 'cli-common', 'dist', 'firstPartyRuntime', 'installVersionedPayload.js'), 'utf8'))
             .resolves.toBe(currentSourceContent);

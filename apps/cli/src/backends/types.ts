@@ -1,9 +1,12 @@
 import type { AgentBackend } from '@/agent/core';
+import type { Metadata } from '@/api/types';
 import type { ChecklistId } from '@/capabilities/checklistIds';
 import type { Capability } from '@/capabilities/service';
 import type { CommandHandler } from '@/cli/commandRegistry';
 import type { CloudConnectTarget } from '@/cloud/connectTypes';
 import type { DaemonSpawnHooks } from '@/daemon/spawnHooks';
+import type { TrackedSession } from '@/daemon/types';
+import type { BoundTerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
 import type { DirectSessionsProviderId } from '@happier-dev/protocol';
 import type {
   BackendTargetRefV1,
@@ -23,6 +26,7 @@ import type { ConnectedServiceProviderRuntimeAuthAdapter } from '@/daemon/connec
 import type { ConnectedServiceRuntimeAuthSelectionMaterializer } from '@/daemon/connectedServices/sessionAuthSwitch/runtimeAuthSelectionMaterializerTypes';
 import type { ConnectedServicesProviderMaterializer } from '@/daemon/connectedServices/materialize/providerMaterializerTypes';
 import type { ConnectedServiceCredentialLifecycleDescriptor } from '@/daemon/connectedServices/credentials/lifecycleTypes';
+import type { ConnectedServiceQuotaFetcherDescriptor } from '@/daemon/connectedServices/quotas/types';
 import type {
   VerifyResumeReachableInput,
   VerifyResumeReachableResult,
@@ -64,6 +68,24 @@ export type VendorResumeSupportParams = Readonly<{
 export type VendorResumeSupportFn = (params: VendorResumeSupportParams) => boolean;
 
 export type HeadlessTmuxArgvTransform = (argv: string[]) => string[];
+
+export type ProviderRuntimeLocalHandoffMetadataBuilder = (params: Readonly<{
+  metadata: Readonly<Record<string, unknown>>;
+  trackedSession: TrackedSession;
+  vendorResumeId: string;
+}>) => Partial<Pick<Metadata, 'claudeSessionId' | 'codexSessionId' | 'opencodeSessionId' | 'directSessionV1'>>;
+
+export type ProviderTerminalAttachmentRetirementHook = (params: Readonly<{
+  happyHomeDir: string;
+  sessionId: string;
+  attachmentInfo: BoundTerminalAttachmentInfo;
+}>) => Promise<void>;
+
+export type ProviderTerminalAttachmentControlProbe = (params: Readonly<{
+  happyHomeDir: string;
+  sessionId: string;
+  attachmentId?: string;
+}>) => Promise<boolean>;
 
 export type ProviderAttachScope = 'local' | 'remote';
 
@@ -311,6 +333,14 @@ export type AgentCatalogEntry = Readonly<{
    */
   getProviderAttachOps?: () => Promise<ProviderAttachOps>;
   /**
+   * Optional provider-owned cleanup after an exact terminal attachment has been retired.
+   * Shared lifecycle code broadcasts the immutable retirement fact; providers clean only
+   * descriptors fenced to that attachment and must not infer host ownership here.
+   */
+  onTerminalAttachmentRetired?: ProviderTerminalAttachmentRetirementHook;
+  /** Whether this provider owns attachment-bound control state for a disconnected host. */
+  hasTerminalAttachmentControlDescriptor?: ProviderTerminalAttachmentControlProbe;
+  /**
    * Optional provider-owned connected-services materializer.
    *
    * Generic daemon code supplies resolved credentials and session-scoped directories;
@@ -346,6 +376,13 @@ export type AgentCatalogEntry = Readonly<{
    * provider folders own allowlists, state rules, and unsupported diagnostics.
    */
   getConnectedServiceStateSharingDescriptor?: () => Promise<ConnectedServiceStateSharingDescriptor | null>;
+  /**
+   * Optional provider-owned quota fetcher descriptor.
+   *
+   * Shared quota polling owns host policy such as generic stale windows; providers own private
+   * endpoint URLs, provider headers, kill switches, and service-specific placeholder behavior.
+   */
+  connectedServiceQuotaFetcherDescriptor?: ConnectedServiceQuotaFetcherDescriptor;
   /**
    * Optional provider-owned continuity resolver for existing-session auth switches.
    *
@@ -449,6 +486,13 @@ export type AgentCatalogEntry = Readonly<{
    */
   getProviderNativeForkHandler?: () => Promise<ProviderNativeForkHandler>;
   /**
+   * Optional provider-owned runtime-local metadata builder for session handoff.
+   *
+   * Shared daemon handoff code owns export/runtime-local splitting; providers own
+   * provider-specific resume ids and direct-session source metadata.
+   */
+  buildRuntimeLocalHandoffMetadata?: ProviderRuntimeLocalHandoffMetadataBuilder;
+  /**
    * Whether probe RPC handlers should load account settings before invoking probe methods.
    *
    * This is used for providers whose probe behavior depends on account settings even when the
@@ -466,6 +510,7 @@ export type AgentCatalogEntry = Readonly<{
   resolveModelsProbeVariant?: (params: Readonly<{
     backendTarget?: BackendTargetRefV1;
     accountSettings?: Readonly<Record<string, unknown>> | null;
+    connectedServices?: ConnectedServiceBindingsV1 | null;
   }>) => string | null;
   /**
    * Optional provider-owned backend options for catalog ACP model probes.

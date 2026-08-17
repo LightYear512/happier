@@ -42,6 +42,7 @@ vi.mock('./rpc/RpcHandlerManager', () => {
     async handleRequest() {
       return '';
     }
+    async waitForIdle() {}
   }
   return { RpcHandlerManager };
 });

@@ -119,4 +119,89 @@ describe('useSessionRuntimeStatusSource', () => {
             storage.setState(previousState, true);
         }
     });
+
+    it('wakes subscribers when provider runtime activity changes without a foreground turn change', async () => {
+        const previousState = storage.getState();
+        try {
+            const shellSession = createSession({
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: 1_000,
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: null,
+            });
+            storage.setState((state) => ({
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    [shellSession.id]: shellSession,
+                },
+            }));
+
+            const hook = await renderHook(() => useSessionRuntimeStatusSource(shellSession), {
+                flushOptions: { cycles: 1, turns: 4 },
+            });
+            const initial = hook.getCurrent();
+            expect(initial.runtimeActivityActiveCount).toBe(0);
+
+            await act(async () => {
+                storage.getState().applySessions([{
+                    ...shellSession,
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: 5_000,
+                }]);
+            });
+
+            expect(hook.getCurrent()).not.toBe(initial);
+            expect(hook.getCurrent()).toEqual(expect.objectContaining({
+                id: shellSession.id,
+                latestTurnStatus: 'completed',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: 5_000,
+            }));
+
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState, true);
+        }
+    });
+
+    it('does not wake foreground-only subscribers for Activity-only changes', async () => {
+        const previousState = storage.getState();
+        try {
+            const shellSession = createSession({
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: 1_000,
+                runtimeActivityState: 'idle',
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: null,
+                runtimeActivityRevision: 1,
+            });
+            storage.getState().applySessions([shellSession]);
+            const normalizedShellSession = storage.getState().sessions[shellSession.id]!;
+
+            const hook = await renderHook(
+                () => useSessionRuntimeStatusSource(normalizedShellSession, {
+                    subscribeToRuntimeActivity: false,
+                }),
+                { flushOptions: { cycles: 1, turns: 4 } },
+            );
+            const initial = hook.getCurrent();
+
+            await act(async () => {
+                storage.getState().applySessions([{
+                    ...normalizedShellSession,
+                    runtimeActivityState: 'active',
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: 5_000,
+                    runtimeActivityRevision: 2,
+                }]);
+            });
+
+            expect(hook.getCurrent()).toBe(initial);
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState, true);
+        }
+    });
+
 });

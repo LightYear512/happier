@@ -62,7 +62,7 @@ vi.mock('@/auth/context/AuthContext', () => ({
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-  useFeatureEnabled: (featureId: string) => featureId === 'connectedServices',
+  useFeatureEnabled: (featureId: string) => featureId !== 'connectedServices.accountGroups',
 }));
 
 vi.mock('@/sync/store/hooks', async () => {

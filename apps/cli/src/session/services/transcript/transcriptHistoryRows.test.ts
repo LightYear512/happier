@@ -24,6 +24,26 @@ const localCommandArtifactRows = [
     },
   },
   {
+    label: 'model command marker',
+    decrypted: {
+      role: 'user',
+      content: {
+        type: 'text',
+        text: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>',
+      },
+    },
+  },
+  {
+    label: 'effort command marker',
+    decrypted: {
+      role: 'user',
+      content: {
+        type: 'text',
+        text: '<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args></command-args>',
+      },
+    },
+  },
+  {
     label: 'compact hook stdout',
     decrypted: {
       role: 'user',
@@ -33,6 +53,29 @@ const localCommandArtifactRows = [
           '<local-command-stdout>Compacted',
           'PreCompact [/Users/test/.claude/hooks/pre-compact.sh] completed successfully',
           'PostCompact [/Users/test/.claude/hooks/post-compact.sh] completed successfully</local-command-stdout>',
+        ].join('\n'),
+      },
+    },
+  },
+  {
+    label: 'model command stdout',
+    decrypted: {
+      role: 'user',
+      content: {
+        type: 'text',
+        text: '<local-command-stdout>Set model to Opus 4.8 and saved as your default for new sessions</local-command-stdout>',
+      },
+    },
+  },
+  {
+    label: 'genuine multi-line local command stdout',
+    decrypted: {
+      role: 'user',
+      content: {
+        type: 'text',
+        text: [
+          '<local-command-stdout>Set model to Opus 4.8 and saved as your default for new sessions',
+          'Additional genuine multi-line Claude local-command stdout</local-command-stdout>',
         ].join('\n'),
       },
     },

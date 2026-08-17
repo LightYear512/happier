@@ -37,6 +37,19 @@ export async function writeStubHappierCliFiles(
     await writeFile(join(cliDir, 'tsconfig.json'), tsconfigContent, 'utf-8');
   }
 
+  if (typeof distIndexScript !== 'undefined') {
+    await writeFile(
+      join(cliDir, 'dist', '.build-manifest.json'),
+      JSON.stringify({
+        fingerprint: '0000000000000000',
+        builtAt: '2026-07-09T00:00:00.000Z',
+        fileCount: 1,
+        toolVersion: '1',
+      }) + '\n',
+      'utf-8',
+    );
+  }
+
   return {
     cliDir,
     cliDistDir: join(cliDir, 'dist'),

@@ -1,9 +1,33 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
+import type {
+  SessionRuntimeActivityContribution,
+  SessionRuntimeActivityContributionHandle,
+} from '@/session/runtimeActivity/types';
 
 import { ExecutionRunManager } from './ExecutionRunManager';
+
+async function flushAsyncEffects(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function createRuntimeActivityContributionHarness() {
+  const reports: SessionRuntimeActivityContribution[] = [];
+  return {
+    reports,
+    handle: {
+      report: vi.fn(async (snapshot: SessionRuntimeActivityContribution) => {
+        reports.push(snapshot);
+      }),
+      markUnknown: vi.fn(async () => {}),
+      dispose: vi.fn(async () => {}),
+    } satisfies SessionRuntimeActivityContributionHandle,
+  };
+}
 
 function createStaticJsonBackend(responseText: string): AgentBackend {
   let handler: AgentMessageHandler | null = null;
@@ -330,6 +354,96 @@ describe('ExecutionRunManager (review intent)', () => {
     }
     await manager.waitForTerminal(started.runId);
     expect(manager.get(started.runId)?.status).toBe('succeeded');
+  });
+
+  it('reports complete execution-run contributions from the canonical run map and isolates sibling completion', async () => {
+    const contribution = createRuntimeActivityContributionHarness();
+    const completions: Array<() => void> = [];
+    const createBackend = (): AgentBackend => {
+      let handler: AgentMessageHandler | null = null;
+      let complete!: () => void;
+      const completed = new Promise<void>((resolve) => {
+        complete = () => {
+          handler?.({
+            type: 'model-output',
+            fullText: JSON.stringify({ summary: 'Ok', findings: [] }),
+          } as AgentMessage);
+          resolve();
+        };
+      });
+      completions.push(complete);
+      return {
+        async startSession() { return { sessionId: `child-${completions.length}` as SessionId }; },
+        async sendPrompt() { await completed; },
+        async cancel() { complete(); },
+        onMessage(next) { handler = next; },
+        async dispose() {},
+        async waitForResponseComplete() {},
+      };
+    };
+    const manager = new ExecutionRunManager({
+      parentProvider: 'claude',
+      cwd: process.cwd(),
+      createBackend,
+      sendAcp: () => {},
+      getNowMs: () => 20_000,
+      runtimeActivityContributionHandle: contribution.handle,
+    });
+    const start = async () => await manager.start({
+      sessionId: 'parent_session_1',
+      intent: 'review',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      instructions: 'Review this repo.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+    });
+
+    const first = await start();
+    const second = await start();
+    expect(contribution.reports).toEqual([
+      { state: 'active', activeCount: 1 },
+      { state: 'active', activeCount: 2 },
+    ]);
+
+    completions[0]!();
+    await manager.waitForTerminal(first.runId);
+    expect(contribution.reports.at(-1)).toEqual({
+      state: 'active', activeCount: 1,
+    });
+
+    completions[1]!();
+    await manager.waitForTerminal(second.runId);
+    expect(contribution.reports.at(-1)).toEqual({ state: 'idle', activeCount: 0 });
+  });
+
+  it('rolls back only the exact provisional start when complete-contribution admission fails', async () => {
+    const contribution = createRuntimeActivityContributionHarness();
+    contribution.handle.report.mockRejectedValueOnce(new Error('activity report rejected'));
+    const createBackend = vi.fn(() => createStaticJsonBackend('{"summary":"should not run","findings":[]}'));
+    const manager = new ExecutionRunManager({
+      parentProvider: 'claude',
+      cwd: process.cwd(),
+      createBackend,
+      sendAcp: () => {},
+      runtimeActivityContributionHandle: contribution.handle,
+    });
+
+    await expect(manager.start({
+      sessionId: 'parent_session_1',
+      intent: 'review',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      instructions: 'Review this repo.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    })).rejects.toThrow('activity report rejected');
+
+    expect(createBackend).not.toHaveBeenCalled();
+    expect(manager.getRunningCount()).toBe(0);
+    expect(contribution.reports).toEqual([{ state: 'idle', activeCount: 0 }]);
   });
 
   it('forwards terminal output + file edits into the run sidechain transcript', async () => {
@@ -1367,7 +1481,12 @@ describe('ExecutionRunManager (long-lived runs)', () => {
       ioMode: 'request_response',
     });
 
-    expect((manager.getPublic(started.runId) as any)?.turnInFlight).toBe(true);
+    // Bounded kickoff is async (provisioning is bounded, QA2-F04); poll until the turn is in flight
+    // instead of pinning microtask timing.
+    await expect.poll(
+      () => (manager.getPublic(started.runId) as any)?.turnInFlight,
+      { timeout: 2_000 },
+    ).toBe(true);
 
     const stopped = await manager.stop(started.runId);
     expect(stopped.ok).toBe(true);

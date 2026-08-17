@@ -1,11 +1,118 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { primeAgentStateForUi, reportSessionToDaemonIfRunning } from '@/agent/runtime/startupSideEffects';
+import {
+  primeAgentStateForUi,
+  reportSessionToDaemonIfRunning,
+  resolveTerminalAttachmentPersistenceBinding,
+} from '@/agent/runtime/startupSideEffects';
 import type { Metadata } from '@/api/types';
 
 const metadataStub = {} as Metadata;
 
 describe('startup side effects: daemon session reporting retry', () => {
+  it('resolves the existing bound tmux identity for local attachment persistence', () => {
+    expect(resolveTerminalAttachmentPersistenceBinding({
+      mode: 'tmux',
+      tmux: { target: 'happy:window-1', tmpDir: '/tmp/custom-tmux' },
+      controlServiceabilityV1: {
+        v: 1,
+        attachmentId: 'attachment-1',
+        state: 'servable',
+        observedAt: 1,
+      },
+    })).toMatchObject({
+      attachmentId: 'attachment-1',
+      handle: {
+        attachmentId: 'attachment-1',
+        kind: 'tmux',
+        sessionName: 'happy',
+        paneId: 'window-1',
+        socketDir: '/tmp/custom-tmux',
+      },
+    });
+  });
+
+  it('reports newer concurrent metadata even when the older in-flight report succeeds', async () => {
+    let releaseFirstAttempt!: (value: { error?: string }) => void;
+    const firstAttempt = new Promise<{ error?: string }>((resolve) => {
+      releaseFirstAttempt = resolve;
+    });
+    const observedMetadata: Metadata[] = [];
+    const notifyDaemonSessionStartedFn = vi.fn(async (_sessionId: string, metadata: Metadata) => {
+      observedMetadata.push(metadata);
+      return observedMetadata.length === 1 ? await firstAttempt : {};
+    });
+    const deps = { notifyDaemonSessionStartedFn };
+
+    const first = reportSessionToDaemonIfRunning(
+      { sessionId: 'session-newer-metadata', metadata: { startedBy: 'terminal' } as Metadata },
+      deps,
+    );
+    await vi.waitFor(() => expect(notifyDaemonSessionStartedFn).toHaveBeenCalledTimes(1));
+    const latestMetadata = { startedBy: 'daemon', claudeSessionId: 'claude-current' } as Metadata;
+    const second = reportSessionToDaemonIfRunning(
+      { sessionId: 'session-newer-metadata', metadata: latestMetadata, requireDaemonAck: true },
+      deps,
+    );
+
+    releaseFirstAttempt({});
+    await Promise.all([first, second]);
+
+    expect(observedMetadata).toEqual([
+      { startedBy: 'terminal' },
+      latestMetadata,
+    ]);
+  });
+
+  it('coalesces concurrent reports for one session and retries with the latest metadata and strongest readiness requirement', async () => {
+    let releaseFirstAttempt!: (value: { error?: string }) => void;
+    const firstAttempt = new Promise<{ error?: string }>((resolve) => {
+      releaseFirstAttempt = resolve;
+    });
+    const observedMetadata: Metadata[] = [];
+    const onFirstReported = vi.fn(async () => {});
+    const onSecondReported = vi.fn(async () => {});
+    let calls = 0;
+    let now = 0;
+    const notifyDaemonSessionStartedFn = vi.fn(async (_sessionId: string, metadata: Metadata) => {
+      observedMetadata.push(metadata);
+      calls += 1;
+      if (calls === 1) return await firstAttempt;
+      return {};
+    });
+    const commonDeps = {
+      notifyDaemonSessionStartedFn,
+      sleepFn: async (ms: number) => {
+        now += ms;
+      },
+      nowFn: () => now,
+      retryTimeoutMs: 1_000,
+      retryIntervalMs: 100,
+    };
+
+    const first = reportSessionToDaemonIfRunning(
+      { sessionId: 'session-coalesced', metadata: { startedBy: 'terminal' } as Metadata },
+      { ...commonDeps, onReported: onFirstReported },
+    );
+    await vi.waitFor(() => expect(notifyDaemonSessionStartedFn).toHaveBeenCalledTimes(1));
+    const latestMetadata = { startedBy: 'daemon', claudeSessionId: 'claude-current' } as Metadata;
+    const second = reportSessionToDaemonIfRunning(
+      { sessionId: 'session-coalesced', metadata: latestMetadata, requireDaemonAck: true },
+      { ...commonDeps, onReported: onSecondReported },
+    );
+
+    releaseFirstAttempt({ error: 'No daemon running, no state file found' });
+    await Promise.all([first, second]);
+
+    expect(notifyDaemonSessionStartedFn).toHaveBeenCalledTimes(2);
+    expect(observedMetadata).toEqual([
+      { startedBy: 'terminal' },
+      latestMetadata,
+    ]);
+    expect(onFirstReported).toHaveBeenCalledTimes(1);
+    expect(onSecondReported).toHaveBeenCalledTimes(1);
+  });
+
   it('does not emit unhandledRejection when priming agent state fails', async () => {
     const onUnhandled = vi.fn();
     process.on('unhandledRejection', onUnhandled);
@@ -29,7 +136,7 @@ describe('startup side effects: daemon session reporting retry', () => {
   it('retries transient daemon-unavailable errors and succeeds', async () => {
     const errors = [
       { error: 'No daemon running, no state file found' },
-      { error: 'No daemon running, no state file found' },
+      { error: 'Request failed: /session-started, HTTP 503 (session_startup_reconciliation_failed)' },
       {},
     ];
     let calls = 0;
@@ -157,6 +264,21 @@ describe('startup side effects: daemon session reporting retry', () => {
     // With retryInterval=30s and daemon-default retryTimeout=90s, we should observe:
     // attempt at t=0, 30s, 60s, 90s (then stop).
     expect(calls).toBe(4);
+  });
+
+  it('fails closed when a readiness report exhausts retries without daemon acknowledgement', async () => {
+    await expect(reportSessionToDaemonIfRunning(
+      {
+        sessionId: 'session-readiness',
+        metadata: { startedBy: 'daemon' } as Metadata,
+        requireDaemonAck: true,
+      },
+      {
+        notifyDaemonSessionStartedFn: async () => ({ error: 'No daemon running, no state file found' }),
+        nowFn: () => 1_000,
+        retryTimeoutMs: 0,
+      },
+    )).rejects.toThrow('Claude runtime readiness was not acknowledged by the daemon');
   });
 
   it('uses a longer default retry window when daemon autostart is enabled for terminal sessions', async () => {

@@ -1,11 +1,13 @@
 import type { SessionMessageRole } from '@happier-dev/protocol';
 
 import type { MessageMeta } from '../domains/messages/messageMetaTypes';
+import type { TranscriptObservationMetadata } from '../domains/messages/transcriptObservationProvenance';
 import {
     hasSyntheticNoResponseMeta,
     markSyntheticNoResponseMeta,
     SYNTHETIC_NO_RESPONSE_TEXT,
 } from '../domains/messages/syntheticNoResponseMessageMeta';
+import { markUnsupportedContentMeta } from '../domains/messages/unsupportedContentMeta';
 import { hasSessionMediaRenderItems } from '../domains/sessionMedia/sessionMediaMessageMeta';
 import { rawRecordSchema, type AgentEvent, type RawAgentContent, type RawRecord, type UsageData } from './schemas';
 import { buildUsageDataFromTokenCountMessage } from './tokenCountUsage';
@@ -97,7 +99,7 @@ export type NormalizedMessage = ({
     sidechainId?: string,
     meta?: MessageMeta,
     usage?: UsageData,
-};
+} & TranscriptObservationMetadata;
 
 function readNonEmptyString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
@@ -166,23 +168,13 @@ function filterNormalizedEventRoleOutput(
     return shouldKeepNormalizedEventRoleOutput(message, messageRole) ? message : null;
 }
 
-function isCompactHookLocalCommandStdoutText(text: unknown): boolean {
-    if (typeof text !== 'string') return false;
-    const trimmed = text.trim();
-    if (!trimmed.startsWith('<local-command-stdout>')) return false;
-    return /\b(?:PreCompact|PostCompact)\b/.test(trimmed);
-}
-
-function isCompactHookLocalCommandStdout(value: unknown): boolean {
-    return isCompactHookLocalCommandStdoutText(firstMessageText(value));
-}
-
 function isClaudeLocalCommandText(text: unknown): boolean {
     if (typeof text !== 'string') return false;
     const trimmed = text.trim();
-    if (trimmed.startsWith('<local-command-caveat>')) return true;
-    if (trimmed.includes('<command-name>/compact</command-name>')) return true;
-    return isCompactHookLocalCommandStdoutText(trimmed);
+    // Boundary compatibility only: raw Claude JSONL classification is owned by the CLI
+    // `controlCommandRows` + `isClaudeInternalTranscriptMessage` path.
+    const prefixes = ['<local-command-caveat>', '<command-name>', '<local-command-stdout>'] as const;
+    return prefixes.some((prefix) => trimmed.startsWith(prefix));
 }
 
 function isClaudeLocalCommandTranscriptValue(value: unknown): boolean {
@@ -348,7 +340,7 @@ export function normalizeRawMessage(
                 role: 'user',
                 isSidechain: false,
                 content: { type: 'text', text },
-                meta: rawInputRecord?.meta as MessageMeta | undefined,
+                meta: markUnsupportedContentMeta(rawInputRecord?.meta as MessageMeta | undefined, 'unparsed-user-message'),
             }
             : {
                 id,
@@ -358,7 +350,7 @@ export function normalizeRawMessage(
                 role: 'agent',
                 isSidechain: false,
                 content: [{ type: 'text', text, uuid: id, parentUUID: null }],
-                meta: rawInputRecord?.meta as MessageMeta | undefined,
+                meta: markUnsupportedContentMeta(rawInputRecord?.meta as MessageMeta | undefined, 'unparsed-agent-message'),
             };
     }
     const raw = parsed.data as RawRecord;
@@ -575,7 +567,7 @@ export function normalizeRawMessage(
             }
 
             // Progress records are transport-level status updates and are not rendered in transcript.
-            if (raw.content.data.type === 'progress') {
+            if (raw.content.data.type === 'progress' || raw.content.data.type === 'tool_progress') {
                 return null;
             }
 
@@ -753,6 +745,12 @@ export function normalizeRawMessage(
                 return filterNormalizedEventRoleOutput(normalized, opts?.messageRole);
             }
             // Any other output payload should be surfaced as an opaque message rather than dropped.
+            // Name the payload type: agent CLIs keep adding record types, and an unnamed placeholder
+            // leaves nothing to grep for when one starts leaking into transcripts.
+            const unsupportedType = (raw.content.data as { type?: unknown }).type;
+            const unsupportedLabel = typeof unsupportedType === 'string' && unsupportedType.length > 0
+                ? `[Unsupported agent output: ${unsupportedType}]`
+                : '[Unsupported agent output]';
             const normalized = {
                 id,
                 ...(seq !== undefined ? { seq } : {}),
@@ -762,11 +760,11 @@ export function normalizeRawMessage(
                 isSidechain: false,
                 content: [{
                     type: 'text',
-                    text: '[Unsupported agent output]',
+                    text: unsupportedLabel,
                     uuid: id,
                     parentUUID: null,
                 }],
-                meta: raw.meta,
+                meta: markUnsupportedContentMeta(raw.meta, 'unsupported-agent-output'),
             } satisfies NormalizedMessage;
             return filterNormalizedEventRoleOutput(normalized, opts?.messageRole);
         }
@@ -1178,6 +1176,6 @@ export function normalizeRawMessage(
             uuid: id,
             parentUUID: null,
         }],
-        meta: (raw as any)?.meta,
+        meta: markUnsupportedContentMeta((raw as any)?.meta, 'unsupported-transcript-record'),
     };
 }

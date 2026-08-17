@@ -150,8 +150,6 @@ ARG POSTHOG_API_KEY=""
 ARG POSTHOG_HOST=""
 ARG SENTRY_DSN=""
 ARG SENTRY_RELEASE=""
-ARG SENTRY_AUTH_TOKEN=""
-ARG SENTRY_URL=""
 ARG REVENUE_CAT_STRIPE=""
 ARG EXPO_PUBLIC_HAPPIER_SERVER_URL=""
 ARG EXPO_PUBLIC_HAPPY_SERVER_URL=""
@@ -188,7 +186,6 @@ RUN yarn workspace @happier-dev/protocol postinstall:real \
 RUN yarn workspace @happier-dev/app postinstall:real
 RUN rm -rf apps/ui/dist
 RUN yarn workspace @happier-dev/app expo export --platform web --output-dir dist --max-workers 1
-RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then cd apps/ui && SENTRY_AUTH_TOKEN="$SENTRY_AUTH_TOKEN" SENTRY_URL="$SENTRY_URL" SENTRY_RELEASE="$SENTRY_RELEASE" npx --yes sentry-expo-upload-sourcemaps dist; else echo "[docker] SENTRY_AUTH_TOKEN not set; skipping Sentry source maps upload"; fi
 RUN node scripts/pipeline/release/precompress-ui-web-assets.mjs --dir apps/ui/dist --gzip-only
 
 FROM nginxinc/nginx-unprivileged:alpine AS webapp
@@ -289,12 +286,15 @@ RUN yarn workspace @happier-dev/server build
 
 FROM node:${NODE_VERSION} AS server
 WORKDIR /repo
+ARG SENTRY_RELEASE=""
 RUN apt-get update \
     && apt-get install -y --no-install-recommends -o APT::Keep-Downloaded-Packages=false python3 ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 ENV PORT=3005
 ENV RUN_MIGRATIONS=1
+ENV SENTRY_RELEASE=$SENTRY_RELEASE
+ENV HAPPIER_RELEASE_SOURCE_SHA=$SENTRY_RELEASE
 COPY --from=server-builder --chown=node:node /repo/node_modules /repo/node_modules
 COPY --from=server-builder --chown=node:node /repo/packages/agents /repo/packages/agents
 COPY --from=server-builder --chown=node:node /repo/packages/cli-common /repo/packages/cli-common
@@ -312,26 +312,98 @@ CMD ["run-server"]
 FROM server AS server-worker
 ENV SERVER_ROLE=worker
 
-# Relay server (self-host default: light + sqlite)
-FROM server AS relay-server
-# Embed the web UI bundle so self-hosted deployments can serve UI from the server.
-# Disable at runtime by clearing HAPPIER_SERVER_UI_DIR (e.g. `-e HAPPIER_SERVER_UI_DIR=`).
-COPY --from=webapp-builder --chown=node:node /repo/apps/ui/dist /repo/apps/ui/dist
-ARG SENTRY_RELEASE=""
-ENV SENTRY_RELEASE=$SENTRY_RELEASE
-ARG SENTRY_SERVER_CENTRAL_DSN=""
-ENV HAPPIER_SENTRY_CENTRAL_DSN=$SENTRY_SERVER_CENTRAL_DSN
-ENV HAPPIER_SENTRY_USE_CENTRAL_DSN=1
+# Local relay server image for source-backed release candidate upgrade QA.
+FROM server AS relay-server-local-source
+USER root
+RUN mkdir -p /opt/happier/ui-web \
+    && chown -R node:node /opt/happier
+COPY --from=webapp-builder --chown=node:node /repo/apps/ui/dist /opt/happier/ui-web
 ENV HAPPIER_SERVER_FLAVOR=light
 ENV HAPPY_SERVER_FLAVOR=light
 ENV HAPPIER_DB_PROVIDER=sqlite
 ENV HAPPY_DB_PROVIDER=sqlite
 ENV HAPPIER_SERVER_LIGHT_DATA_DIR=/data
 ENV HAPPY_SERVER_LIGHT_DATA_DIR=/data
-ENV HAPPIER_SERVER_UI_DIR=/repo/apps/ui/dist
+ENV HAPPIER_SERVER_UI_DIR=/opt/happier/ui-web
 ENV HAPPIER_SERVER_UI_PREFIX=/
 ENV HAPPIER_SERVER_UI_REQUIRED=1
+ENV HAPPIER_SQLITE_AUTO_MIGRATE=1
+USER node
+
+# Relay server (self-host default: light + sqlite)
+FROM debian:12-slim AS relay-artifacts
+ARG TARGETARCH
+ARG HAPPIER_RELEASE_BASE_URL="https://github.com/happier-dev/happier/releases/download"
+ARG HAPPIER_RELAY_SERVER_RELEASE_TAG=""
+ARG HAPPIER_RELAY_SERVER_VERSION=""
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar minisign \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/pipeline/docker/fetch-verified-release-artifact.sh /usr/local/bin/fetch-verified-release-artifact
+COPY scripts/release/installers/happier-release.pub /tmp/happier-release.pub
+RUN chmod +x /usr/local/bin/fetch-verified-release-artifact
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) artifact_arch="x64" ;; \
+      arm64) artifact_arch="arm64" ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    fetch-verified-release-artifact \
+      --base-url "$HAPPIER_RELEASE_BASE_URL" \
+      --release-tag "$HAPPIER_RELAY_SERVER_RELEASE_TAG" \
+      --product happier-server \
+      --version "$HAPPIER_RELAY_SERVER_VERSION" \
+      --os linux \
+      --arch "$artifact_arch" \
+      --dest /opt/happier/server \
+      --pubkey /tmp/happier-release.pub; \
+    rm -rf /opt/happier/server/generated/mysql-client; \
+    case "$TARGETARCH" in \
+      amd64) \
+        find /opt/happier/server/generated/sqlite-client -name '*.node' \
+            ! -name "libquery_engine-debian-openssl-3.0.x.so.node" -delete; \
+        rm -rf /opt/happier/server/node_modules/@img/sharp-libvips-linuxmusl-x64 \
+               /opt/happier/server/node_modules/@img/sharp-linuxmusl-x64 ;; \
+      arm64) \
+        find /opt/happier/server/generated/sqlite-client -name '*.node' \
+            ! -name "libquery_engine-linux-arm64-openssl-3.0.x.so.node" -delete; \
+        rm -rf /opt/happier/server/node_modules/@img/sharp-libvips-linuxmusl-arm64 \
+               /opt/happier/server/node_modules/@img/sharp-linuxmusl-arm64 ;; \
+    esac
+
+FROM debian:12-slim AS relay-server
+WORKDIR /opt/happier/server
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -s /bin/bash happier \
+    && mkdir -p /data /opt/happier/server \
+    && chown -R happier:happier /data /opt/happier
+COPY --from=relay-artifacts --chown=happier:happier /opt/happier/server /opt/happier/server
+ARG SENTRY_RELEASE=""
+ENV SENTRY_RELEASE=$SENTRY_RELEASE
+ENV HAPPIER_RELEASE_SOURCE_SHA=$SENTRY_RELEASE
+ARG SENTRY_SERVER_CENTRAL_DSN=""
+ENV HAPPIER_SENTRY_CENTRAL_DSN=$SENTRY_SERVER_CENTRAL_DSN
+ENV HAPPIER_SENTRY_USE_CENTRAL_DSN=1
+ENV NODE_ENV=production
+ENV PORT=3005
+ENV HAPPIER_SERVER_FLAVOR=light
+ENV HAPPY_SERVER_FLAVOR=light
+ENV HAPPIER_DB_PROVIDER=sqlite
+ENV HAPPY_DB_PROVIDER=sqlite
+ENV HAPPIER_SERVER_LIGHT_DATA_DIR=/data
+ENV HAPPY_SERVER_LIGHT_DATA_DIR=/data
+ENV HAPPIER_SERVER_UI_DIR=/opt/happier/server/ui-web/current
+ENV HAPPIER_SERVER_UI_PREFIX=/
+ENV HAPPIER_SERVER_UI_REQUIRED=1
+ENV HAPPIER_SQLITE_AUTO_MIGRATE=1
+ENV HAPPIER_SQLITE_MIGRATIONS_DIR=/opt/happier/server/prisma/sqlite/migrations
+ENV HAPPY_SQLITE_MIGRATIONS_DIR=/opt/happier/server/prisma/sqlite/migrations
+USER happier
+EXPOSE 3005
 VOLUME ["/data"]
+CMD ["/opt/happier/server/happier-server"]
 
 # Default target when building without --target
 FROM server AS default

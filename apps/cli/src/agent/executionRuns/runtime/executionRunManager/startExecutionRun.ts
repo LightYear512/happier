@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { buildExecutionRunConnectedServicesLaunchV1 } from '@/daemon/connectedServices/runsBridge/contract';
 
 import type { AgentBackend, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
-import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
+import type { ACPProvider } from '@/api/session/sessionMessageTypes';
+import type { AcpSendFn } from '@/agent/acp/bridge/acpSessionForwarding';
 import { resolveExecutionRunIntentProfile } from '@/agent/executionRuns/profiles/intentRegistry';
 import type { ExecutionRunStructuredMeta } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
-import type { BackendTargetRefV1 } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, BackendTargetRefV1 } from '@happier-dev/protocol';
 import type {
   ExecutionRunManagerStartParams,
   ExecutionRunStartResult,
@@ -27,7 +29,18 @@ import {
   resolveExecutionRunRuntimeBackendId,
 } from '@/agent/executionRuns/runtime/backendTargets';
 
-type SendAcp = (provider: ACPProvider, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => void;
+type SendAcp = AcpSendFn;
+
+export function settleExecutionRunControllerOccurrence<T extends Readonly<{ resolveTerminal(): void }>>(
+  controllers: Map<string, T>,
+  runId: string,
+  controller: T,
+): void {
+  controller.resolveTerminal();
+  if (controllers.get(runId) === controller) {
+    controllers.delete(runId);
+  }
+}
 
 type FinishRunNext = Omit<
   ExecutionRunState,
@@ -64,6 +77,49 @@ function normalizeVoiceAgentModelId(value: unknown): string {
   return trimmed === 'default' ? '' : trimmed;
 }
 
+/**
+ * QA2-F04: backend session PROVISIONING (process spawn + vendor handshake) must be bounded even when
+ * the run itself is unbounded (boundedTimeoutMs=null is an intentional default). A backend whose
+ * startSession/loadSession never settles otherwise leaves the run "running" forever with no process,
+ * no error, and no stop affordance. Generous default: a cold backend CLI boot can take minutes.
+ */
+const BACKEND_PROVISION_TIMEOUT_ENV_KEY = 'HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS';
+const DEFAULT_BACKEND_PROVISION_TIMEOUT_MS = 5 * 60_000;
+
+function readBackendProvisionTimeoutMs(): number {
+  const raw = process.env[BACKEND_PROVISION_TIMEOUT_ENV_KEY];
+  if (typeof raw !== 'string' || raw.trim().length === 0) return DEFAULT_BACKEND_PROVISION_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_BACKEND_PROVISION_TIMEOUT_MS;
+  return Math.min(parsed, 30 * 60_000);
+}
+
+export class ExecutionRunBackendProvisionTimeoutError extends Error {
+  readonly code = 'execution_run_backend_provision_timeout' as const;
+
+  constructor(params: Readonly<{ backendId: string; timeoutMs: number }>) {
+    super(`Execution run backend session provisioning timed out after ${params.timeoutMs}ms (${params.backendId})`);
+    this.name = 'ExecutionRunBackendProvisionTimeoutError';
+  }
+}
+
+async function awaitBackendProvisionBounded<T>(
+  provision: Promise<T>,
+  backendId: string,
+): Promise<T> {
+  const timeoutMs = readBackendProvisionTimeoutMs();
+  let timer: NodeJS.Timeout | undefined;
+  const backstop = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ExecutionRunBackendProvisionTimeoutError({ backendId, timeoutMs })), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([provision, backstop]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type ExecuteBoundedRun = (args: {
   runId: string;
   callId: string;
@@ -83,11 +139,17 @@ export async function startExecutionRun(args: Readonly<{
       backendTarget?: BackendTargetRefV1;
       permissionMode: string;
       modelId?: string;
+      sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
       accountSettings?: Readonly<Record<string, unknown>> | null;
       start?: ExecutionRunBackendStartContext;
+      connectedServicesEnv?: Readonly<Record<string, string>> | null;
+      connectedServicesCleanup?: (() => Promise<void>) | null;
     }) => AgentBackend;
   getNowMs: () => number;
   budgetRegistry: ExecutionBudgetRegistry | null;
+  admitRuntimeActivity: (runId: string) => Promise<void>;
+  rollbackRuntimeActivityAfterFailedAdmission: (reason: string) => Promise<void>;
+  waitForRuntimeActivityTerminal: (runId: string) => Promise<void>;
   runs: Map<string, ExecutionRunState>;
   controllers: Map<string, ExecutionRunController>;
   enqueueMarkerWrite: (runId: string, write: () => Promise<void>) => Promise<void>;
@@ -132,6 +194,21 @@ export async function startExecutionRun(args: Readonly<{
 
   const startedAtMs = args.getNowMs();
   const backendId = resolveExecutionRunRuntimeBackendId(args.params.backendTarget);
+  // Immutable launch record: capture the re-resolvable launch intent so every resume recreates the
+  // backend with the SAME model, config overrides, and connected-service account (fail-closed) rather
+  // than ambient auth + default model. Safe inputs only — no credentials/env values/closures.
+  const launch = {
+    ...(args.params.modelId ? { modelId: args.params.modelId } : {}),
+    ...(args.params.sessionConfigOptionOverrides
+      ? { sessionConfigOptionOverrides: args.params.sessionConfigOptionOverrides }
+      : {}),
+    ...(args.params.connectedServicesSelection
+      ? { connectedServicesSelection: args.params.connectedServicesSelection }
+      : {}),
+    ...(args.params.connectedServicesRegistration
+      ? { connectedServicesRegistration: args.params.connectedServicesRegistration }
+      : {}),
+  } as const;
   args.runs.set(runId, {
     runId,
     callId,
@@ -148,10 +225,22 @@ export async function startExecutionRun(args: Readonly<{
     retentionPolicy: args.params.retentionPolicy,
     runClass: args.params.runClass,
     ioMode: args.params.ioMode,
+    ...(Object.keys(launch).length > 0 ? { launch } : {}),
     status: 'running',
     startedAtMs,
     resumeHandle: null,
   });
+
+  try {
+    // The canonical map is the complete contribution owner. Insert the provisional run first, but
+    // expose no marker, transcript, controller, backend, or public callback until its report lands.
+    await args.admitRuntimeActivity(runId);
+  } catch (error) {
+    args.runs.delete(runId);
+    args.budgetRegistry?.releaseExecutionRun(runId);
+    await args.rollbackRuntimeActivityAfterFailedAdmission('execution-run-start-admission-rolled-back');
+    throw error;
+  }
   args.onPublicStateUpdated?.(runId);
 
   // Persist a daemon-visible marker so machine-wide UIs can see the run immediately.
@@ -172,6 +261,11 @@ export async function startExecutionRun(args: Readonly<{
     startedAtMs,
     updatedAtMs: startedAtMs,
     resumeHandle: null,
+    ...(args.params.connectedServicesRegistration ? {
+      executionRunConnectedServicesLaunchV1: buildExecutionRunConnectedServicesLaunchV1(
+        args.params.connectedServicesRegistration,
+      ),
+    } : {}),
   } as const;
   await args.enqueueMarkerWrite(runId, () => writeExecutionRunMarker(startMarkerPayload)).catch(() => {});
 
@@ -197,6 +291,7 @@ export async function startExecutionRun(args: Readonly<{
     });
   }
 
+  let controllerOccurrence: ExecutionRunController | null = null;
   try {
     if (args.params.intent === 'voice_agent' && args.params.ioMode === 'streaming') {
       let resolveTerminal!: () => void;
@@ -252,6 +347,11 @@ export async function startExecutionRun(args: Readonly<{
         bootstrapMode,
         ...(typeof bootstrapTimeoutMs === 'number' ? { bootstrapTimeoutMs } : {}),
         disabledActionIds,
+        // R3-2: consume the daemon-materialized CS env (else voice runs execute native = fail-closed
+        // violation) and own the run-scoped release exactly once at voice-agent dispose (else the
+        // materialized run root leaks).
+        ...(args.params.connectedServicesEnv ? { connectedServicesEnv: args.params.connectedServicesEnv } : {}),
+        ...(args.params.connectedServicesCleanup ? { connectedServicesCleanup: args.params.connectedServicesCleanup } : {}),
       });
 
       const resumeHandle = args.voiceAgentManager.getResumeHandle(startedVoice.voiceAgentId);
@@ -291,6 +391,7 @@ export async function startExecutionRun(args: Readonly<{
         persistedDoneByExternalStreamId: new Set(),
       };
       args.controllers.set(runId, ctrl);
+      controllerOccurrence = ctrl;
       await args.writeActivityMarker(runId, args.getNowMs(), { force: true }).catch(() => {});
       return { runId, callId, sidechainId };
     }
@@ -300,8 +401,14 @@ export async function startExecutionRun(args: Readonly<{
       backendId,
       backendTarget: args.params.backendTarget,
       permissionMode: args.params.permissionMode,
+      ...(args.params.modelId ? { modelId: args.params.modelId } : {}),
+      ...(args.params.sessionConfigOptionOverrides
+        ? { sessionConfigOptionOverrides: args.params.sessionConfigOptionOverrides }
+        : {}),
       accountSettings: args.params.accountSettings ?? null,
       start: args.params,
+      ...(args.params.connectedServicesEnv ? { connectedServicesEnv: args.params.connectedServicesEnv } : {}),
+      ...(args.params.connectedServicesCleanup ? { connectedServicesCleanup: args.params.connectedServicesCleanup } : {}),
     });
     let resolveTerminal!: () => void;
     const terminalPromise = new Promise<void>((resolve) => {
@@ -336,6 +443,7 @@ export async function startExecutionRun(args: Readonly<{
       resolveTerminal,
     };
     args.controllers.set(runId, ctrl);
+    controllerOccurrence = ctrl;
 
     const onMessage: AgentMessageHandler = createBackendControllerMessageHandler({
       ctrl,
@@ -349,6 +457,7 @@ export async function startExecutionRun(args: Readonly<{
       backendSupportsResume,
       writeActivityMarker: args.writeActivityMarker,
       getNowMs: args.getNowMs,
+      isCurrentController: () => args.controllers.get(runId) === ctrl,
       onPublicStateUpdated: args.onPublicStateUpdated,
     });
 
@@ -359,7 +468,9 @@ export async function startExecutionRun(args: Readonly<{
       // the UI draft card immediately after the SubAgentRun tool-call is injected.
       void (async () => {
         try {
-          const childSessionId = await (async () => {
+          // QA2-F04: bound provisioning — a never-settling backend start must fail the run, not
+          // leave it "running" forever with no process and no stop affordance.
+          const childSessionId = await awaitBackendProvisionBounded((async () => {
             const handle = args.params.retentionPolicy === 'resumable' ? (args.params.resumeHandle ?? null) : null;
             const wantsResume =
               handle?.kind === 'vendor_session.v1' && areExecutionRunBackendTargetsEqual(handle.backendTarget, args.params.backendTarget)
@@ -378,7 +489,7 @@ export async function startExecutionRun(args: Readonly<{
             }
             const started = await backend.startSession();
             return started.sessionId;
-          })();
+          })(), backendId);
           ctrl.childSessionId = childSessionId;
 
           const existing = args.runs.get(runId);
@@ -395,14 +506,16 @@ export async function startExecutionRun(args: Readonly<{
             .executeBoundedRun({ runId, callId, sidechainId, startedAtMs, params: args.params })
             .finally(() => {
               // Ensure terminal promise resolves even if executeBoundedRun throws unexpectedly.
-              const ctrl = args.controllers.get(runId);
-              ctrl?.resolveTerminal();
-              args.controllers.delete(runId);
+              settleExecutionRunControllerOccurrence(args.controllers, runId, ctrl);
             });
         } catch (e: any) {
           const message = e instanceof Error ? e.message : 'Execution failed';
           const finishedAtMs = args.getNowMs();
-          const code = e instanceof VoiceAgentError ? e.code : 'execution_run_failed';
+          const code = e instanceof VoiceAgentError
+      ? e.code
+      : e instanceof ExecutionRunBackendProvisionTimeoutError
+        ? e.code
+        : 'execution_run_failed';
           try {
             args.finishRun(
               runId,
@@ -426,16 +539,12 @@ export async function startExecutionRun(args: Readonly<{
           } catch {
             // best effort
           }
-          const ctrl = args.controllers.get(runId) ?? null;
-          if (ctrl) {
-            try {
-              if (ctrl.kind === 'backend') await ctrl.backend.dispose();
-            } catch {
-              // best effort
-            }
-            ctrl.resolveTerminal();
-            args.controllers.delete(runId);
+          try {
+            await ctrl.backend.dispose();
+          } catch {
+            // best effort
           }
+          settleExecutionRunControllerOccurrence(args.controllers, runId, ctrl);
         }
       })();
 
@@ -443,8 +552,9 @@ export async function startExecutionRun(args: Readonly<{
     }
 
     // Long-lived runs are expected to be usable immediately after start(); await session provisioning
-    // so follow-up execution.run.send calls don't race the vendor session startup.
-    const childSessionId = await (async () => {
+    // so follow-up execution.run.send calls don't race the vendor session startup. Bounded (QA2-F04):
+    // a hung provisioning must fail the run instead of hanging start() and leaking a running entry.
+    const childSessionId = await awaitBackendProvisionBounded((async () => {
       const handle = args.params.retentionPolicy === 'resumable' ? (args.params.resumeHandle ?? null) : null;
       const wantsResume =
         handle?.kind === 'vendor_session.v1' && areExecutionRunBackendTargetsEqual(handle.backendTarget, args.params.backendTarget)
@@ -463,7 +573,7 @@ export async function startExecutionRun(args: Readonly<{
       }
       const started = await backend.startSession();
       return started.sessionId;
-    })();
+    })(), backendId);
     ctrl.childSessionId = childSessionId;
 
     const existing = args.runs.get(runId);
@@ -500,7 +610,11 @@ export async function startExecutionRun(args: Readonly<{
   } catch (e: any) {
     const message = e instanceof Error ? e.message : 'Execution failed';
     const finishedAtMs = args.getNowMs();
-    const code = e instanceof VoiceAgentError ? e.code : 'execution_run_failed';
+    const code = e instanceof VoiceAgentError
+      ? e.code
+      : e instanceof ExecutionRunBackendProvisionTimeoutError
+        ? e.code
+        : 'execution_run_failed';
     try {
       args.finishRun(
         runId,
@@ -524,16 +638,15 @@ export async function startExecutionRun(args: Readonly<{
     } catch {
       // best effort
     }
-    const ctrl = args.controllers.get(runId) ?? null;
-    if (ctrl) {
+    if (controllerOccurrence) {
       try {
-        if (ctrl.kind === 'backend') await ctrl.backend.dispose();
+        if (controllerOccurrence.kind === 'backend') await controllerOccurrence.backend.dispose();
       } catch {
         // best effort
       }
-      ctrl.resolveTerminal();
-      args.controllers.delete(runId);
+      settleExecutionRunControllerOccurrence(args.controllers, runId, controllerOccurrence);
     }
+    await args.waitForRuntimeActivityTerminal(runId);
     throw e;
   }
 }

@@ -24,7 +24,20 @@ export type SessionRowPresentation = Readonly<{
     attentionIndicator: SessionRowAttentionIndicator;
     titleTone: SessionRowTitleTone;
     secondaryLine: SessionRowSecondaryLine;
-    statusTextKey?: 'status.readyForReview' | 'status.error';
+    statusTextKey?: 'status.readyForReview' | 'status.error' | 'status.workingRetained';
+    /**
+     * The status line is the session's background-activity line.
+     *
+     * It carries no key of its own, deliberately: that line now states HOW MUCH work is running in
+     * the background, and the count belongs to `getSessionStatus`, which is the one owner of what a
+     * session's status says. A key here would have to be re-interpolated with a second copy of the
+     * count, and the list row and the session view would start disagreeing the moment one of them
+     * changed. The row renders `sessionStatus.statusText` instead.
+     *
+     * It is still flagged, because the row treats this line differently from an attention line: it
+     * takes ordinary secondary ink and is not announced as an attention state.
+     */
+    backgroundActivityStatusLine?: true;
 }>;
 
 export function resolveLegacySessionRowAttentionState(input: Readonly<{
@@ -48,8 +61,22 @@ export function resolveSessionRowPresentation(input: Readonly<{
     density: SessionRowDensity;
     requestedSecondaryLineMode: SessionListSecondaryLineMode;
     hasPathSubtitle: boolean;
+    backgroundActive?: boolean;
+    /**
+     * Retained working placement: the session is held in the working group
+     * while its live signals are stale, so the status line must not imply
+     * live activity (e.g. "online") under the paused indicator.
+     */
+    workingRetained?: boolean;
 }>): SessionRowPresentation {
-    const attentionIndicator = resolveAttentionIndicator(input.attentionState);
+    const backgroundActiveUsesWorkingIndicator = input.backgroundActive === true
+        && input.attentionState !== 'working'
+        && input.attentionState !== 'failed'
+        && input.attentionState !== 'permission_required'
+        && input.attentionState !== 'action_required';
+    const attentionIndicator = backgroundActiveUsesWorkingIndicator
+        ? 'working'
+        : resolveAttentionIndicator(input.attentionState);
     const titleTone = input.attentionState === 'quiet'
         ? 'quiet'
         : attentionIndicator === 'none'
@@ -60,20 +87,12 @@ export function resolveSessionRowPresentation(input: Readonly<{
         return { attentionIndicator, titleTone, secondaryLine: 'none' };
     }
 
-    if (input.attentionState === 'ready') {
-        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.readyForReview' };
-    }
-
     if (input.attentionState === 'failed') {
         return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.error' };
     }
 
-    if (input.attentionState === 'quiet') {
-        return {
-            attentionIndicator,
-            titleTone,
-            secondaryLine: input.requestedSecondaryLineMode === 'path' && input.hasPathSubtitle ? 'path' : 'none',
-        };
+    if (input.attentionState === 'working' && input.workingRetained === true) {
+        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.workingRetained' };
     }
 
     if (
@@ -82,6 +101,14 @@ export function resolveSessionRowPresentation(input: Readonly<{
         || input.attentionState === 'action_required'
     ) {
         return { attentionIndicator, titleTone, secondaryLine: 'status' };
+    }
+
+    if (input.backgroundActive === true) {
+        return { attentionIndicator, titleTone, secondaryLine: 'status', backgroundActivityStatusLine: true };
+    }
+
+    if (input.attentionState === 'ready') {
+        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.readyForReview' };
     }
 
     if (input.requestedSecondaryLineMode === 'path' && input.hasPathSubtitle) {

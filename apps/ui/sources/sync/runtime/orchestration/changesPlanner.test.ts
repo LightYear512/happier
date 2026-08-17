@@ -80,6 +80,29 @@ describe('planSyncActionsFromChanges', () => {
         expect(planned.kv).toEqual({ type: 'none' });
     });
 
+    it('plans exact transcript revision repair from durable message-update hints', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({
+                cursor: 1,
+                kind: 'session',
+                entityId: 's1',
+                hint: { updatedMessageSeq: 15, updatedMessageId: 'm15' },
+            }),
+            buildChange({
+                cursor: 2,
+                kind: 'session',
+                entityId: 's1',
+                hint: { updatedMessageSeq: 10, updatedMessageId: 'm10' },
+            }),
+        ]);
+
+        expect(planned.sessionTranscriptRepairs).toEqual([{
+            sessionId: 's1',
+            minSeq: 10,
+            messageIds: ['m10', 'm15'],
+        }]);
+    });
+
     it('plans session folder assignment refresh without session materialization', () => {
         const planned = planSyncActionsFromChanges([
             buildChange({
@@ -96,6 +119,16 @@ describe('planSyncActionsFromChanges', () => {
             mode: 'sessions',
             sessionIds: ['s1'],
             folderIds: ['folder-a'],
+        });
+        expect(planned.sessionOrganization).toEqual({
+            mode: 'snapshot',
+            assignmentSessionIds: ['s1'],
+            folderIds: ['folder-a'],
+            tagIds: [],
+            orderScopes: [],
+            includeFolders: false,
+            includeTags: false,
+            includeLabels: false,
         });
     });
 
@@ -115,6 +148,112 @@ describe('planSyncActionsFromChanges', () => {
             mode: 'folders',
             folderIds: ['folder-a', 'folder-b'],
         });
+        expect(planned.sessionOrganization).toEqual({
+            mode: 'snapshot',
+            assignmentSessionIds: [],
+            folderIds: ['folder-a', 'folder-b'],
+            tagIds: [],
+            orderScopes: [],
+            includeFolders: false,
+            includeTags: false,
+            includeLabels: false,
+        });
+    });
+
+    it('plans scoped session organization refresh from organization hints', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({
+                cursor: 1,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: {
+                    sessionOrganization: true,
+                    scope: 'order',
+                    sessionIds: ['s2', 's1', 's1'],
+                    folderIds: ['folder-a'],
+                    tagIds: ['tag-a'],
+                    orderScopes: [{ scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo' }],
+                },
+            }),
+        ]);
+
+        expect(planned.invalidate.settings).toBe(false);
+        expect(planned.sessionOrganization).toEqual({
+            mode: 'snapshot',
+            assignmentSessionIds: ['s1', 's2'],
+            folderIds: ['folder-a'],
+            tagIds: ['tag-a'],
+            orderScopes: [{ scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo' }],
+            includeFolders: false,
+            includeTags: false,
+            includeLabels: false,
+        });
+    });
+
+    it('plans actual server session organization scope hints as scoped snapshot refreshes', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({
+                cursor: 1,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'pins', sessionIds: ['s-pin'] },
+            }),
+            buildChange({
+                cursor: 2,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'folders', folderIds: ['folder-a'] },
+            }),
+            buildChange({
+                cursor: 3,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'tags', tagIds: ['tag-a'] },
+            }),
+            buildChange({
+                cursor: 4,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'labels', scopeKeys: ['workspace-a'] },
+            }),
+            buildChange({
+                cursor: 5,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'order', scopeKeys: ['root'] },
+            }),
+        ]);
+
+        expect(planned.invalidate.settings).toBe(false);
+        expect(planned.sessionFolderAssignments).toEqual({ mode: 'none' });
+        expect(planned.sessionOrganization).toEqual({
+            mode: 'snapshot',
+            assignmentSessionIds: ['s-pin'],
+            folderIds: ['folder-a'],
+            tagIds: ['tag-a'],
+            orderScopes: [],
+            includeFolders: true,
+            includeTags: true,
+            includeLabels: true,
+        });
+    });
+
+    it('plans a session-list refresh for pin organization hints without message catch-up', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({
+                cursor: 1,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'pins', sessionIds: ['s-pin'] },
+            }),
+        ]);
+
+        expect(planned.invalidate.sessions).toBe(true);
+        expect(planned.sessionIdsToCatchUp).toEqual([]);
+        expect(planned.sessionOrganization).toMatchObject({
+            mode: 'snapshot',
+            assignmentSessionIds: ['s-pin'],
+        });
     });
 
     it('records unknown kinds as unsupported without treating them as safe invalidations', () => {
@@ -132,7 +271,7 @@ describe('planSyncActionsFromChanges', () => {
         expect(Object.keys(CHANGE_CHECKPOINT_COVERAGE).sort()).toEqual([...ChangeKindSchema.options].sort());
     });
 
-    it('classifies loaded session rows as critical and unloaded session rows as explicit skips', () => {
+    it('classifies every session shell as critical regardless of transcript load state', () => {
         const loaded = classifyChangeForCheckpoint(
             buildChange({ cursor: 1, kind: 'session', entityId: 'loaded' }),
             { isSessionMessagesLoaded: (sessionId) => sessionId === 'loaded' },
@@ -143,7 +282,37 @@ describe('planSyncActionsFromChanges', () => {
         );
 
         expect(loaded.decision).toBe('critical');
-        expect(unloaded.decision).toBe('intentionally-skipped-by-explicit-policy');
+        expect(unloaded.decision).toBe('critical');
+    });
+
+    it('classifies all session organization hints as critical organization materialization', () => {
+        for (const change of [
+            buildChange({
+                cursor: 1,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: { sessionOrganization: true, scope: 'pins', sessionIds: ['s1'] },
+            }),
+            buildChange({
+                cursor: 2,
+                kind: 'session',
+                entityId: 's1',
+                hint: { sessionOrganization: true, scope: 'tagAssignments', sessionIds: ['s1'], tagIds: ['tag-a'] },
+            }),
+            buildChange({
+                cursor: 3,
+                kind: 'account',
+                entityId: 'session-folder-assignments',
+                hint: { sessionFolderAssignments: true, sessionOrganization: true, scope: 'folderAssignments', folderIds: ['folder-a'] },
+            }),
+        ]) {
+            expect(classifyChangeForCheckpoint(change, { isSessionMessagesLoaded: () => false })).toMatchObject({
+                decision: 'critical',
+                plannerOwner: 'session-organization',
+                snapshotDomain: 'session-organization',
+                materializationProof: 'session-organization',
+            });
+        }
     });
 
     it('plans automation invalidation when automation change kind is present', () => {

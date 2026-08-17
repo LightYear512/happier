@@ -89,4 +89,5 @@ describe('SessionRowAttentionIndicator', () => {
         }
         expect(flattenStyle(dot.props.style).animationName).toBeUndefined();
     });
+
 });

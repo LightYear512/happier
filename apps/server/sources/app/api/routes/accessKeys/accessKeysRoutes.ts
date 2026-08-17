@@ -2,6 +2,29 @@ import { Fastify } from "../../types";
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
+import { validateCurrentMachineSocket } from "@/app/machines/validateCurrentMachineSocket";
+
+async function findOwnedSessionAndMachine(params: Readonly<{
+    userId: string;
+    sessionId: string;
+    machineId: string;
+}>): Promise<Readonly<{ sessionExists: boolean; machineExists: boolean }>> {
+    const [session, machine] = await Promise.all([
+        db.session.findFirst({
+            where: { id: params.sessionId, accountId: params.userId },
+            select: { id: true },
+        }),
+        validateCurrentMachineSocket({
+            accountId: params.userId,
+            machineId: params.machineId,
+        }),
+    ]);
+
+    return {
+        sessionExists: session !== null,
+        machineExists: machine.ok,
+    };
+}
 
 export function accessKeysRoutes(app: Fastify) {
     // Get Access Key API
@@ -35,16 +58,9 @@ export function accessKeysRoutes(app: Fastify) {
 
         try {
             // Verify session and machine belong to user
-            const [session, machine] = await Promise.all([
-                db.session.findFirst({
-                    where: { id: sessionId, accountId: userId }
-                }),
-                db.machine.findFirst({
-                    where: { id: machineId, accountId: userId }
-                })
-            ]);
+            const ownership = await findOwnedSessionAndMachine({ userId, sessionId, machineId });
 
-            if (!session || !machine) {
+            if (!ownership.sessionExists || !ownership.machineExists) {
                 return reply.code(404).send({ error: 'Session or machine not found' });
             }
 
@@ -117,16 +133,9 @@ export function accessKeysRoutes(app: Fastify) {
 
         try {
             // Verify session and machine belong to user
-            const [session, machine] = await Promise.all([
-                db.session.findFirst({
-                    where: { id: sessionId, accountId: userId }
-                }),
-                db.machine.findFirst({
-                    where: { id: machineId, accountId: userId }
-                })
-            ]);
+            const ownership = await findOwnedSessionAndMachine({ userId, sessionId, machineId });
 
-            if (!session || !machine) {
+            if (!ownership.sessionExists || !ownership.machineExists) {
                 return reply.code(404).send({ error: 'Session or machine not found' });
             }
 
@@ -213,6 +222,14 @@ export function accessKeysRoutes(app: Fastify) {
         const { data, expectedVersion } = request.body;
 
         try {
+            const currentMachine = await validateCurrentMachineSocket({
+                accountId: userId,
+                machineId,
+            });
+            if (!currentMachine.ok) {
+                return reply.code(404).send({ error: 'Access key not found' });
+            }
+
             // Get current access key for version check
             const currentAccessKey = await db.accessKey.findUnique({
                 where: {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AcpBackend } from '@/agent/acp/AcpBackend';
-import { createAcpRuntime } from '@/agent/acp/runtime/createAcpRuntime';
+import { createTestAcpRuntime as createAcpRuntime } from '@/testkit/backends/acpRuntime';
 import { createRuntimeOverrideSynchronizers } from '@/agent/runtime/createRuntimeOverrideSynchronizers';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { combinePermissionModeQueuedPrompts, type PermissionModeQueuedPrompt } from '@/agent/runtime/permission/permissionModeQueuedPrompt';
@@ -119,16 +119,6 @@ function createModeQueue() {
 }
 
 describe('runPermissionModePromptLoop with real ACP runtime idle overrides', () => {
-  const originalIdleWakePollIntervalMs = configuration.pendingQueueIdleWakePollIntervalMs;
-
-  beforeEach(() => {
-    (configuration as any).pendingQueueIdleWakePollIntervalMs = 10;
-  });
-
-  afterEach(() => {
-    (configuration as any).pendingQueueIdleWakePollIntervalMs = originalIdleWakePollIntervalMs;
-  });
-
   it('applies an ACP session mode override after the first turn becomes idle', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'happier-acp-runtime-loop-'));
     const scriptPath = writeFakeOpenCodeAcpAgentScript({ dir });

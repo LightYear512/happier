@@ -12,8 +12,9 @@ import type { TranscriptTurn } from '@/components/sessions/transcript/turnGroupi
 import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/TranscriptEnterWrapper';
 import { ToolCallsGroupRow, ToolCallsGroupRowWithSessionCommon } from '@/components/sessions/transcript/toolCalls/ToolCallsGroupRow';
 import * as FlashListCompat from '@/components/ui/lists/flashListCompat/FlashListCompat';
-import { TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/webTranscriptPrependAnchor';
+import { TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/viewport/prepend/webTranscriptPrependAnchor';
 import { isMessageRolledBack, type SessionRollbackRangeV1, type TranscriptRollbackAction } from '@/sync/domains/sessionRollback/rollbackUiSupport';
+import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { deriveReadOnlyTranscriptInteraction } from '@/components/sessions/transcript/forkContext/deriveReadOnlyTranscriptInteraction';
 import {
@@ -21,6 +22,7 @@ import {
     type TranscriptSessionCommonProps,
     useTranscriptSessionCommon,
 } from '@/components/sessions/transcript/transcriptSessionCommon';
+import type { TranscriptEventEmphasisByMessageId } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
 
 type TranscriptItemOriginLookup = (messageId: string) => {
     sessionId: string;
@@ -34,6 +36,7 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
     forcePermissionPromptsInTranscript?: boolean;
     activeThinkingMessageId: string | null;
     getMessageById?: (messageId: string) => Message | null;
+    getMessageRevisionById?: (messageId: string) => number | null;
     getMessageOrigin?: TranscriptItemOriginLookup;
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
     resolveThinkingExpanded?: (messageId: string) => boolean;
@@ -41,6 +44,9 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
     interaction: TranscriptInteraction;
     rollbackRanges?: readonly SessionRollbackRangeV1[];
     resolveRollbackAction?: (messageId: string) => TranscriptRollbackAction | null;
+    eventEmphasisByMessageId?: TranscriptEventEmphasisByMessageId;
+    messagePins?: readonly PersistedSessionMessagePinV1[];
+    onToggleMessagePin?: (pin: PersistedSessionMessagePinV1) => void;
 } & Partial<TranscriptSessionCommonProps>) {
     const origin = props.getMessageOrigin?.(props.messageId) ?? null;
     const effectiveSessionId = origin?.sessionId ?? props.sessionId;
@@ -65,6 +71,7 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
     const messageView = canUseParentCommon ? (
         <MessageViewWithSessionCommon
             message={message}
+            messageRevision={props.getMessageRevisionById?.(message.id) ?? null}
             metadata={props.metadata}
             sessionId={effectiveSessionId}
             forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
@@ -74,7 +81,11 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
             onThinkingExpandedChange={controlledThinking ? (next) => setThinkingExpanded(message.id, next) : undefined}
             interaction={effectiveInteraction}
             historical={historical}
+            eventEmphasis={props.eventEmphasisByMessageId?.[message.id]}
             rollbackAction={props.resolveRollbackAction?.(message.id) ?? null}
+            messagePins={props.messagePins}
+            onToggleMessagePin={props.onToggleMessagePin}
+            onToggleToolPin={props.onToggleMessagePin}
             forkCommon={props.forkCommon}
             messageDisplayCommon={props.messageDisplayCommon}
             toolChromeCommon={props.toolChromeCommon}
@@ -83,6 +94,7 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
     ) : (
         <MessageView
             message={message}
+            messageRevision={props.getMessageRevisionById?.(message.id) ?? null}
             metadata={props.metadata}
             sessionId={effectiveSessionId}
             forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
@@ -92,7 +104,11 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
             onThinkingExpandedChange={controlledThinking ? (next) => setThinkingExpanded(message.id, next) : undefined}
             interaction={effectiveInteraction}
             historical={historical}
+            eventEmphasis={props.eventEmphasisByMessageId?.[message.id]}
             rollbackAction={props.resolveRollbackAction?.(message.id) ?? null}
+            messagePins={props.messagePins}
+            onToggleMessagePin={props.onToggleMessagePin}
+            onToggleToolPin={props.onToggleMessagePin}
         />
     );
 
@@ -138,6 +154,7 @@ type TurnViewProps = Readonly<{
     forcePermissionPromptsInTranscript?: boolean;
     activeThinkingMessageId: string | null;
     getMessageById?: (messageId: string) => Message | null;
+    getMessageRevisionById?: (messageId: string) => number | null;
     getMessageOrigin?: TranscriptItemOriginLookup;
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
     expandedToolCallsAnchorMessageIds: ReadonlySet<string>;
@@ -147,6 +164,9 @@ type TurnViewProps = Readonly<{
     interaction: TranscriptInteraction;
     rollbackRanges?: readonly SessionRollbackRangeV1[];
     resolveRollbackAction?: (messageId: string) => TranscriptRollbackAction | null;
+    eventEmphasisByMessageId?: TranscriptEventEmphasisByMessageId;
+    messagePins?: readonly PersistedSessionMessagePinV1[];
+    onToggleMessagePin?: (pin: PersistedSessionMessagePinV1) => void;
 }>;
 
 export const TurnView = React.memo((props: TurnViewProps) => {
@@ -176,6 +196,7 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                     forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
                     activeThinkingMessageId={resolveActiveThinkingMessageIdForTurnMessage(props.turn.userMessageId, props.activeThinkingMessageId)}
                     getMessageById={props.getMessageById}
+                    getMessageRevisionById={props.getMessageRevisionById}
                     getMessageOrigin={props.getMessageOrigin}
                     approvalRequests={props.approvalRequests}
                     resolveThinkingExpanded={props.resolveThinkingExpanded}
@@ -183,6 +204,9 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                     interaction={props.interaction}
                     rollbackRanges={props.rollbackRanges}
                     resolveRollbackAction={props.resolveRollbackAction}
+                    eventEmphasisByMessageId={props.eventEmphasisByMessageId}
+                    messagePins={props.messagePins}
+                    onToggleMessagePin={props.onToggleMessagePin}
                     forkCommon={props.forkCommon}
                     messageDisplayCommon={props.messageDisplayCommon}
                     toolChromeCommon={props.toolChromeCommon}
@@ -200,6 +224,7 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                             forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
                             activeThinkingMessageId={resolveActiveThinkingMessageIdForTurnMessage(c.messageId, props.activeThinkingMessageId)}
                             getMessageById={props.getMessageById}
+                            getMessageRevisionById={props.getMessageRevisionById}
                             getMessageOrigin={props.getMessageOrigin}
                             approvalRequests={props.approvalRequests}
                             resolveThinkingExpanded={props.resolveThinkingExpanded}
@@ -207,6 +232,9 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                             interaction={props.interaction}
                             rollbackRanges={props.rollbackRanges}
                             resolveRollbackAction={props.resolveRollbackAction}
+                            eventEmphasisByMessageId={props.eventEmphasisByMessageId}
+                            messagePins={props.messagePins}
+                            onToggleMessagePin={props.onToggleMessagePin}
                             forkCommon={props.forkCommon}
                             messageDisplayCommon={props.messageDisplayCommon}
                             toolChromeCommon={props.toolChromeCommon}
@@ -229,6 +257,8 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                         expanded={c.toolMessageIds.some((id) => props.expandedToolCallsAnchorMessageIds.has(id))}
                         onSetExpanded={props.setToolCallsGroupExpanded}
                         interaction={interaction}
+                        messagePins={props.messagePins}
+                        onToggleToolPin={props.onToggleMessagePin}
                         forkCommon={props.forkCommon}
                         messageDisplayCommon={props.messageDisplayCommon}
                         toolChromeCommon={props.toolChromeCommon}

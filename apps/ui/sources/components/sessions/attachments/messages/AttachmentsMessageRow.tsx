@@ -1,10 +1,10 @@
 import * as React from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import * as FlashListCompat from '@/components/ui/lists/flashListCompat/FlashListCompat';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 export type MessageAttachmentSummary = Readonly<{
     name: string;
@@ -69,11 +69,11 @@ function formatBytes(bytes: number): string {
     return `${gb.toFixed(gb >= 100 ? 0 : 1)} GB`;
 }
 
-function resolveAttachmentIconName(mimeType?: string): React.ComponentProps<typeof Ionicons>['name'] {
-    if (!mimeType) return 'document-outline';
-    if (mimeType.startsWith('image/')) return 'image-outline';
-    if (mimeType.startsWith('text/')) return 'document-text-outline';
-    return 'document-outline';
+function resolveAttachmentIconName(mimeType?: string): IconName {
+    if (!mimeType) return 'file';
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('text/')) return 'file-text';
+    return 'file';
 }
 
 export const AttachmentsMessageRow = React.memo(function AttachmentsMessageRow(props: Readonly<{
@@ -89,17 +89,28 @@ export const AttachmentsMessageRow = React.memo(function AttachmentsMessageRow(p
     return (
         <View testID="message-attachments-row" style={styles.container}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
-                {props.attachments.map((a, index) => (
-                    <Pressable
-                        key={getMappingKey(`${a.path}:${a.name}`, index)}
-                        onPress={props.onOpenPath ? () => props.onOpenPath?.(a.path) : undefined}
-                        style={styles.attachmentChip}
-                    >
-                        <Ionicons name={resolveAttachmentIconName(a.mimeType)} size={14} color={theme.colors.text.secondary} />
+                {props.attachments.map((a, index) => {
+                    const content = (
+                        <>
+                        <Icon name={resolveAttachmentIconName(a.mimeType)} size={14} color={theme.colors.text.secondary} />
                         <Text numberOfLines={1} style={styles.attachmentText}>{a.name}</Text>
                         <Text style={styles.attachmentMeta}>{formatBytes(a.sizeBytes)}</Text>
-                    </Pressable>
-                ))}
+                        </>
+                    );
+                    return props.onOpenPath ? (
+                        <Pressable
+                            key={getMappingKey(`${a.path}:${a.name}`, index)}
+                            onPress={() => props.onOpenPath?.(a.path)}
+                            style={styles.attachmentChip}
+                        >
+                            {content}
+                        </Pressable>
+                    ) : (
+                        <View key={getMappingKey(`${a.path}:${a.name}`, index)} style={styles.attachmentChip}>
+                            {content}
+                        </View>
+                    );
+                })}
             </ScrollView>
         </View>
     );

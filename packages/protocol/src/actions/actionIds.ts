@@ -31,6 +31,11 @@ export const ACTION_IDS = [
   'review.engines.list',
   'agents.backends.list',
   'agents.models.list',
+  'agents.session_modes.list',
+  'agents.config_options.list',
+  'sessions.spawn.profiles.list',
+  'sessions.spawn.connected_services.list',
+  'sessions.spawn.mcp_servers.preview',
   // Session messaging
   'session.message.send',
   // Session control plane (CLI/MCP)
@@ -46,6 +51,7 @@ export const ACTION_IDS = [
   'session.goal.set',
   'session.goal.clear',
   'session.terminalComposer.clear',
+  'session.pendingInput.interruptAndRun',
   'session.usageLimit.waitResume.enable',
   'session.usageLimit.waitResume.cancel',
   'session.usageLimit.checkNow',

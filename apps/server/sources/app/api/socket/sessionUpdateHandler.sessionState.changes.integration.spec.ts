@@ -141,12 +141,24 @@ installDbModuleMock(() => ({
     db,
 }));
 
+/**
+ * `mark-unread` resolves the newest unread-affecting main-transcript message before it decides where
+ * to put the cursor, so the transaction it runs in must expose `sessionMessage` too. While it did
+ * not, every `mark-unread` case threw a TypeError that `applySessionReadCursorOperation`'s own catch
+ * turned into `{ ok: false, error: "internal" }` — the tests below reached their assertions with the
+ * write never issued.
+ */
+const txSessionMessageFindMany = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+
 vi.mock("@/storage/inTx", () => {
     const { inTx, afterTx } = createInTxHarness(() => ({
             session: {
                 findUnique: sessionFindUnique,
                 updateMany: sessionUpdateMany,
                 update: txSessionUpdate,
+            },
+            sessionMessage: {
+                findMany: txSessionMessageFindMany,
             },
     }));
 
@@ -163,6 +175,8 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
         markAccountChanged.mockClear();
         markSessionInactive.mockClear();
         sessionUpdateMany.mockClear();
+        txSessionMessageFindMany.mockClear();
+        txSessionMessageFindMany.mockResolvedValue([]);
         txSessionUpdate.mockClear();
         txSessionUpdate.mockResolvedValue({ id: "s1" });
         resetDbMocks();
@@ -204,6 +218,14 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
 
         const callback = vi.fn();
         await handler({ sid: "s1", lastViewedSessionSeq: 9 }, callback);
+
+        // The badge refresh is debounced (`SESSION_PARTICIPANT_BADGE_REFRESH_DEBOUNCE_MS`), so it is
+        // scheduled rather than sent by the time the handler resolves. Reading the spy immediately
+        // could only ever observe zero calls, which is how this expectation stopped running at all.
+        await vi.waitFor(() => expect(sendPushNotificationsAsyncSpy).toHaveBeenCalled(), {
+            timeout: 10_000,
+            interval: 25,
+        });
 
         const [chunk] = sendPushNotificationsAsyncSpy.mock.calls[0] ?? [];
         expect(Array.isArray(chunk)).toBe(true);
@@ -363,7 +385,9 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
 
         expect(sessionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: "s1", OR: [{ lastViewedSessionSeq: { lt: 7 } }, { lastViewedSessionSeq: null }] },
-            data: { lastViewedSessionSeq: 7 },
+            // Catching the cursor up clears the unread edge instant in the same statement. The
+            // attention flag needs no write: it is generated from the very cursor being moved.
+            data: { lastViewedSessionSeq: 7, unreadSince: null },
         }));
         expect(buildUpdateSessionUpdate).toHaveBeenNthCalledWith(1, "s1", 201, "upd-g", undefined, undefined, {
             lastViewedSessionSeq: 7,
@@ -416,7 +440,9 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
 
         expect(sessionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: "s1", lastViewedSessionSeq: { gt: 6 } },
-            data: { lastViewedSessionSeq: 6 },
+            // Marking unread stamps the read -> unread edge instant in the same statement. The
+            // attention flag needs no write: it is generated from the very cursor being moved.
+            data: { lastViewedSessionSeq: 6, unreadSince: expect.any(Date) },
         }));
         expect(buildUpdateSessionUpdate).toHaveBeenNthCalledWith(1, "s1", 201, "upd-g", undefined, undefined, {
             lastViewedSessionSeq: 6,
@@ -473,7 +499,9 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
 
         expect(sessionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: "s1", OR: [{ lastViewedSessionSeq: { lt: 7 } }, { lastViewedSessionSeq: null }] },
-            data: { lastViewedSessionSeq: 7 },
+            // Catching the cursor up clears the unread edge instant in the same statement. The
+            // attention flag needs no write: it is generated from the very cursor being moved.
+            data: { lastViewedSessionSeq: 7, unreadSince: null },
         }));
         expect(callback).toHaveBeenCalledWith({
             result: "success",
@@ -524,7 +552,9 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
 
         expect(sessionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: "s1", lastViewedSessionSeq: { gt: 6 } },
-            data: { lastViewedSessionSeq: 6 },
+            // Marking unread stamps the read -> unread edge instant in the same statement. The
+            // attention flag needs no write: it is generated from the very cursor being moved.
+            data: { lastViewedSessionSeq: 6, unreadSince: expect.any(Date) },
         }));
         expect(callback).toHaveBeenCalledWith({
             result: "success",
@@ -572,97 +602,4 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
         expect(callback).toHaveBeenCalledWith({ result: "error" });
     });
 
-    it("marks cached presence inactive before persisting session-end", async () => {
-        const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000);
-        directSessionFindUnique.mockResolvedValue({
-            id: "s1",
-            seq: 7,
-            pendingCount: 0,
-            lastViewedSessionSeq: 2,
-            pendingPermissionRequestCount: 0,
-            pendingUserActionRequestCount: 0,
-            active: true,
-            lastActiveAt: new Date(500),
-            archivedAt: null,
-        });
-
-        try {
-            const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
-
-            const socket = createFakeSocket();
-            sessionUpdateHandler(
-                "owner",
-                socket as any,
-                { connectionType: "session-scoped", socket: socket as any, userId: "owner", sessionId: "s1" } as any,
-            );
-
-            const handler = getSocketHandler(socket, "session-end");
-
-            const callback = vi.fn();
-            await handler({ sid: "s1", time: 1_000 }, callback);
-
-            expect(markSessionInactive).toHaveBeenCalledWith("s1", "owner", expect.any(Number));
-            expect(txSessionUpdate).toHaveBeenCalledWith(expect.objectContaining({
-                where: { id: "s1" },
-                data: expect.objectContaining({ active: false, lastActiveAt: expect.any(Date) }),
-            }));
-            expect(callback).toHaveBeenCalledWith(expect.objectContaining({
-                ok: true,
-                applied: true,
-                time: 1_000,
-                active: false,
-                activeAt: expect.any(Number),
-            }));
-        } finally {
-            dateNow.mockRestore();
-        }
-    });
-
-    it("uses the server clock when socket session-end retries arrive with stale timestamps", async () => {
-        const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000 * 60 * 20);
-        directSessionFindUnique.mockResolvedValue({
-            id: "s1",
-            seq: 7,
-            pendingCount: 0,
-            lastViewedSessionSeq: 2,
-            pendingPermissionRequestCount: 0,
-            pendingUserActionRequestCount: 0,
-            latestTurnStatus: null,
-            lastRuntimeIssue: null,
-            active: true,
-            archivedAt: null,
-        });
-
-        try {
-            const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
-
-            const socket = createFakeSocket();
-            sessionUpdateHandler(
-                "owner",
-                socket as any,
-                { connectionType: "session-scoped", socket: socket as any, userId: "owner", sessionId: "s1" } as any,
-            );
-
-            const handler = getSocketHandler(socket, "session-end");
-            await handler({ sid: "s1", time: 1_000 }, vi.fn());
-
-            expect(markSessionInactive).toHaveBeenCalledWith("s1", "owner", 1_000 * 60 * 20);
-            expect(txSessionUpdate).toHaveBeenCalledWith({
-                where: { id: "s1" },
-                data: {
-                    lastActiveAt: new Date(1_000 * 60 * 20),
-                    active: false,
-                    thinking: false,
-                    thinkingAt: new Date(1_000 * 60 * 20),
-                },
-            });
-            expect(buildSessionActivityEphemeral).toHaveBeenCalledWith("s1", false, 1_000 * 60 * 20, false);
-            expect(emitEphemeral).toHaveBeenCalledWith(expect.objectContaining({
-                userId: "owner",
-                recipientFilter: { type: "user-scoped-only" },
-            }));
-        } finally {
-            dateNow.mockRestore();
-        }
-    });
 });

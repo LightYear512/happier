@@ -11,6 +11,7 @@ import {
 } from '@/dev/testkit';
 
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -174,12 +175,12 @@ describe('NewSessionSimplePanel keyboard scaffold integration', () => {
                     newSessionBottomPadding={12}
                     shouldBottomAnchor
                     containerStyle={{}}
-                    sessionPrompt=""
+                    promptStore={createNewSessionPromptStore('')}
                     setSessionPrompt={() => {}}
                     handleCreateSession={() => {}}
                     canCreate
                     isCreating={false}
-                    emptyAutocompletePrefixes={[]}
+                    emptyAutocompleteKinds={[]}
                     emptyAutocompleteSuggestions={async () => []}
                     sessionPromptInputMaxHeight={200}
                     agentType="codex"
@@ -231,12 +232,12 @@ describe('NewSessionSimplePanel keyboard scaffold integration', () => {
             newSessionBottomPadding: 12,
             shouldBottomAnchor: true,
             containerStyle: {},
-            sessionPrompt: '',
+            promptStore: createNewSessionPromptStore(''),
             setSessionPrompt: () => {},
             handleCreateSession: () => {},
             canCreate: true,
             isCreating: false,
-            emptyAutocompletePrefixes: [],
+            emptyAutocompleteKinds: [],
             emptyAutocompleteSuggestions: async () => [],
             sessionPromptInputMaxHeight: 200,
             agentType: 'codex',

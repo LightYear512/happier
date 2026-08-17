@@ -26,8 +26,9 @@ export type RegisterSessionSimulatorPreviewForCliResult =
       ok: false;
       code:
         | 'feature_disabled'
-        | 'session_not_found'
-        | 'session_id_ambiguous'
+	        | 'session_not_found'
+	        | 'session_lookup_timeout'
+	        | 'session_id_ambiguous'
         | 'unsupported'
         | 'message_commit_failed';
       candidates?: string[];

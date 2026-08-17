@@ -7,6 +7,7 @@ import {
     getSessionParticipantUserIds,
     txSessionFindUnique,
     txSessionUpdate,
+    txSessionUpdateMany,
     markAccountChanged,
     buildUpdateSessionUpdate,
     emitUpdate,
@@ -21,7 +22,16 @@ describe("sessionRoutes v2 archive", () => {
         const now = new Date(1234);
         checkSessionAccess.mockResolvedValue({ level: "admin" });
         getSessionParticipantUserIds.mockResolvedValue(["owner", "u2"]);
-        txSessionFindUnique.mockResolvedValue({ id: "s1", active: false, archivedAt: null });
+        txSessionFindUnique.mockResolvedValue({
+            id: "s1",
+            active: false,
+            archivedAt: null,
+            runtimeActivityState: "active",
+            runtimeActivityRevision: BigInt(5),
+            runtimeActivityActiveCount: 1,
+            runtimeActivityObservedAt: BigInt(1_000),
+        });
+        txSessionUpdateMany.mockResolvedValue({ count: 1 });
         txSessionUpdate.mockResolvedValue({ id: "s1", archivedAt: now });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/archive");
@@ -29,6 +39,12 @@ describe("sessionRoutes v2 archive", () => {
 
         expect(reply.code).not.toHaveBeenCalledWith(403);
         expect(res).toEqual({ success: true, archivedAt: now.getTime() });
+        expect(txSessionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                runtimeActivityState: "unknown",
+                runtimeActivityActiveCount: 0,
+            }),
+        }));
         expect(markAccountChanged).toHaveBeenCalledTimes(2);
         expect(buildUpdateSessionUpdate).toHaveBeenCalledTimes(2);
         expect(buildUpdateSessionUpdate).toHaveBeenCalledWith(
@@ -37,7 +53,11 @@ describe("sessionRoutes v2 archive", () => {
             expect.any(String),
             undefined,
             undefined,
-            expect.objectContaining({ archivedAt: now.getTime() }),
+            expect.objectContaining({
+                archivedAt: now.getTime(),
+                runtimeActivityState: "unknown",
+                runtimeActivityActiveCount: 0,
+            }),
         );
         expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
             recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
@@ -70,12 +90,16 @@ describe("sessionRoutes v2 archive", () => {
         checkSessionAccess.mockResolvedValue({ level: "admin" });
         getSessionParticipantUserIds.mockResolvedValue(["owner"]);
         txSessionFindUnique.mockResolvedValue({ id: "s1", active: false, archivedAt: new Date(1) });
-        txSessionUpdate.mockResolvedValue({ id: "s1", archivedAt: null });
+        txSessionUpdateMany.mockResolvedValue({ count: 1 });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/unarchive");
         const { response: res } = await route.invoke({ params: { sessionId: "s1" } });
 
         expect(res).toEqual({ success: true, archivedAt: null });
+        expect(txSessionUpdateMany).toHaveBeenCalledWith({
+            where: { id: "s1", archivedAt: new Date(1) },
+            data: { archivedAt: null },
+        });
         expect(markAccountChanged).toHaveBeenCalledTimes(1);
         expect(buildUpdateSessionUpdate).toHaveBeenCalledWith(
             "s1",
@@ -85,5 +109,34 @@ describe("sessionRoutes v2 archive", () => {
             undefined,
             expect.objectContaining({ archivedAt: null }),
         );
+    });
+
+    it("treats an already-unarchived retry as an idempotent no-op without revoking new authority", async () => {
+        checkSessionAccess.mockResolvedValue({ level: "admin" });
+        txSessionFindUnique.mockResolvedValue({ id: "s1", active: false, archivedAt: null });
+
+        const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/unarchive");
+        const { response: res } = await route.invoke({ params: { sessionId: "s1" } });
+
+        expect(res).toEqual({ success: true, archivedAt: null });
+        expect(txSessionUpdate).not.toHaveBeenCalled();
+        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(buildUpdateSessionUpdate).not.toHaveBeenCalled();
+        expect(emitUpdate).not.toHaveBeenCalled();
+    });
+
+    it("treats a concurrent unarchive winner as an idempotent no-op without revoking authority", async () => {
+        checkSessionAccess.mockResolvedValue({ level: "admin" });
+        txSessionFindUnique
+            .mockResolvedValueOnce({ id: "s1", active: false, archivedAt: new Date(1) })
+            .mockResolvedValueOnce({ archivedAt: null });
+        txSessionUpdateMany.mockResolvedValue({ count: 0 });
+
+        const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/unarchive");
+        const { response: res } = await route.invoke({ params: { sessionId: "s1" } });
+
+        expect(res).toEqual({ success: true, archivedAt: null });
+        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(emitUpdate).not.toHaveBeenCalled();
     });
 });

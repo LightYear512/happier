@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ConnectedServiceAuthGroupV1 } from '@happier-dev/protocol';
+import {
+  buildProviderAccountUsageRecordId,
+  type ConnectedServiceAuthGroupV1,
+  type ProviderAccountUsageRecordKeyV1,
+  type ProviderAccountUsageSnapshotV1,
+} from '@happier-dev/protocol';
 
 import { ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore } from '../accountGroups/quotas/ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore';
+import { mapCommittedGenerationApplyResult } from '../accountGroups/generation/mapCommittedGenerationApplyResult';
+import { buildConnectedServiceAuthGroupCommittedGenerationFact } from '../sessionAuthSwitch/connectedServiceAuthSwitchOutcome';
 import { DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1 } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
 import { createDaemonConnectedServiceAuthGroupSwitchCoordinator } from './createDaemonConnectedServiceAuthGroupSwitchCoordinator';
 
@@ -14,6 +21,7 @@ function group(activeProfileId: string, generation: number): ConnectedServiceAut
     policy: { ...DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, autoSwitch: true },
     activeProfileId,
     generation,
+    runtimeStateRevision: 0,
     state: { v: 1 as const },
     members: [
       {
@@ -44,20 +52,124 @@ function group(activeProfileId: string, generation: number): ConnectedServiceAut
   };
 }
 
+function claudeIncidentGroup(input: Readonly<{
+  activeProfileId: string;
+  generation: number;
+  memberStateByProfileId?: Readonly<Record<string, ConnectedServiceAuthGroupV1['members'][number]['state']>>;
+}>): ConnectedServiceAuthGroupV1 {
+  const profileIds = [
+    'batiplus_ai',
+    'edison_bat',
+    'lb_bat',
+    'leeroy_bat',
+    'leeroy_batiplus',
+    'leeroy',
+  ];
+  return {
+    v: 1,
+    serviceId: 'claude-subscription',
+    groupId: 'claude',
+    displayName: null,
+    policy: { ...DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, strategy: 'least_limited', autoSwitch: true },
+    activeProfileId: input.activeProfileId,
+    generation: input.generation,
+    runtimeStateRevision: 0,
+    state: { v: 1 },
+    members: profileIds.map((profileId, index) => ({
+      v: 1 as const,
+      serviceId: 'claude-subscription' as const,
+      groupId: 'claude',
+      profileId,
+      enabled: true,
+      priority: index + 1,
+      state: input.memberStateByProfileId?.[profileId] ?? { v: 1 as const },
+      createdAt: index + 1,
+      updatedAt: index + 1,
+    })),
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function accountUsageSnapshot(profileId: string, remainingPct: number): ProviderAccountUsageSnapshotV1 {
+  const recordKey: ProviderAccountUsageRecordKeyV1 = {
+    providerId: 'codex',
+    accountSubjectId: `acct_${profileId}`,
+    subjectKind: 'account',
+    quotaScope: 'account',
+  };
+  return {
+    v: 1,
+    recordId: buildProviderAccountUsageRecordId(recordKey),
+    recordKey,
+    providerId: 'codex',
+    accountSubject: { kind: 'providerSubject', id: recordKey.accountSubjectId },
+    observedAtMs: 1_000,
+    fetchedAtMs: 1_000,
+    staleAfterMs: 300_000,
+    source: 'runtimeSignal',
+    confidence: 'confirmed',
+    state: 'loaded_data',
+    meters: [{
+      meterId: 'weekly',
+      label: 'Weekly',
+      used: 100 - remainingPct,
+      limit: 100,
+      remaining: remainingPct,
+      remainingPct,
+      usedPct: 100 - remainingPct,
+      utilizationPct: 100 - remainingPct,
+      resetsAt: 10_000,
+      resetAtMs: 10_000,
+      unit: 'credits',
+      status: 'ok',
+      limitScope: 'account',
+      confidence: 'exact',
+      details: { limitCategory: 'usage_limit' },
+    }],
+  };
+}
+
+type TestCoordinatorParams =
+  Omit<
+    Parameters<typeof createDaemonConnectedServiceAuthGroupSwitchCoordinator>[0],
+    'resolveCurrentCredentialRevision'
+  >
+  & Readonly<{
+    resolveCurrentCredentialRevision?: Parameters<
+      typeof createDaemonConnectedServiceAuthGroupSwitchCoordinator
+    >[0]['resolveCurrentCredentialRevision'];
+  }>;
+
+function createTestDaemonConnectedServiceAuthGroupSwitchCoordinator(
+  params: TestCoordinatorParams,
+) {
+  return createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    resolveCredentialRevision: () => 'csr_testcredentialrevision',
+    resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
+    ...params,
+  });
+}
+
 describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
   it('loads group state, commits the selected member, and requests a session restart for rematerialization', async () => {
+    const backupRevision = 'csr_abcdefghijklmnopqrstuv';
     const api = {
       getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
     };
     const restartSession = vi.fn(async () => {});
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
       restartSession,
+      resolveCredentialRevision: () => null,
+      resolveCurrentCredentialRevision: vi.fn(async (_serviceId, profileId) => (
+        profileId === 'backup' ? backupRevision : null
+      )),
     });
 
     await expect(coordinator.switchAfterClassifiedFailure({
@@ -69,6 +181,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       status: 'switched',
       activeProfileId: 'backup',
       generation: 2,
+      credentialRevision: backupRevision,
       providerApplication: 'applied',
     });
 
@@ -84,8 +197,121 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       activeProfileId: 'backup',
       generation: 2,
+      credentialRevision: backupRevision,
       reason: 'usage_limit',
     });
+  });
+
+  it('fails the committed generation when the canonical target credential is legacy-unfenced', async () => {
+    const restartSession = vi.fn(async () => {});
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api: {
+        getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
+        updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
+        updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
+      },
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession,
+      resolveCredentialRevision: () => 'csr_staleprojectionrevision',
+      resolveCurrentCredentialRevision: vi.fn(async () => null),
+    });
+
+    await expect(coordinator.switchAfterClassifiedFailure({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      reason: 'usage_limit',
+      switchesThisTurn: 0,
+    })).resolves.toMatchObject({
+      status: 'generation_apply_failed',
+      activeProfileId: 'backup',
+      generation: 2,
+      errorCode: 'credential_revision_missing',
+    });
+
+    expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  it('records runtime auth_failed as credential-unhealthy before selecting a fresh-quota candidate', async () => {
+    let currentGroup = claudeIncidentGroup({ activeProfileId: 'batiplus_ai', generation: 205 });
+    const snapshots = new Map<string, ProviderAccountUsageSnapshotV1>([
+      ['leeroy_bat', accountUsageSnapshot('leeroy_bat', 78)],
+      ['leeroy_batiplus', accountUsageSnapshot('leeroy_batiplus', 71)],
+      ['leeroy', accountUsageSnapshot('leeroy', 0)],
+    ]);
+    const api = {
+      getConnectedServiceAuthGroup: vi.fn(async () => currentGroup),
+      listConnectedServiceProfiles: vi.fn(async () => ({
+        serviceId: 'claude-subscription' as const,
+        profiles: currentGroup.members.map((member) => ({
+          profileId: member.profileId,
+          status: 'connected' as const,
+        })),
+      })),
+      updateConnectedServiceAuthGroupRuntimeState: vi.fn(async (input: {
+        memberStates: ReadonlyArray<Readonly<{
+          profileId: string;
+          state: ConnectedServiceAuthGroupV1['members'][number]['state'];
+        }>>;
+      }) => {
+        const patch = new Map(input.memberStates.map((entry) => [entry.profileId, entry.state]));
+        currentGroup = {
+          ...currentGroup,
+          members: currentGroup.members.map((member) => ({
+            ...member,
+            state: patch.get(member.profileId) ?? member.state,
+          })),
+        };
+        return currentGroup;
+      }),
+      updateConnectedServiceAuthGroupActiveProfile: vi.fn(async (input: {
+        activeProfileId: string;
+      }) => {
+        currentGroup = {
+          ...currentGroup,
+          activeProfileId: input.activeProfileId,
+          generation: currentGroup.generation + 1,
+        };
+        return currentGroup;
+      }),
+    };
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api,
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      accountUsageStore: {
+        resolveBySource: (source) => snapshots.get(source.profileId) ?? null,
+      },
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: vi.fn(async () => {}),
+    });
+
+    await expect(coordinator.switchAfterClassifiedFailure({
+      sessionId: 'session-1',
+      serviceId: 'claude-subscription',
+      groupId: 'claude',
+      reason: 'auth_failed',
+      observedProfileId: 'leeroy_bat',
+      limitCategory: 'auth_invalid',
+      switchesThisTurn: 0,
+    })).resolves.toEqual(expect.objectContaining({
+      activeProfileId: expect.not.stringMatching(/^leeroy_bat$/),
+    }));
+
+    expect(api.updateConnectedServiceAuthGroupRuntimeState).toHaveBeenCalledWith(expect.objectContaining({
+      memberStates: [
+        expect.objectContaining({
+          profileId: 'leeroy_bat',
+          state: expect.objectContaining({
+            credentialHealthStatus: 'needs_reauth',
+          }),
+        }),
+      ],
+    }));
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalledWith(expect.objectContaining({
+      activeProfileId: 'leeroy_bat',
+    }));
   });
 
   it('marks metadata-only generation updates as observed rather than provider-applied', async () => {
@@ -99,7 +325,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       ok: true as const,
       action: 'metadata_updated' as const,
     }));
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -143,7 +369,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       action: 'metadata_updated' as const,
       diagnostics: { continuity },
     }));
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -182,7 +408,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       ok: true as const,
       action: 'unchanged' as const,
     }));
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -222,7 +448,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     };
     const restartSession = vi.fn(async () => {});
     const sleepMs = vi.fn(async () => {});
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -244,7 +470,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     expect(sleepMs).toHaveBeenCalledTimes(1);
   });
 
-  it('does not let a slow quota probe block reactive recovery indefinitely', async () => {
+  it('does not detach a timed-out quota probe and commit while it can still refresh the candidate', async () => {
     vi.useFakeTimers();
     try {
       const api = {
@@ -252,18 +478,21 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
         updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
       };
+      let releaseProbe!: () => void;
+      const probePending = new Promise<void>((resolve) => {
+        releaseProbe = resolve;
+      });
       const restartSession = vi.fn(async () => {});
       const probeQuotaSnapshotsForGroup = vi.fn(async () => {
-        await new Promise<void>(() => {});
+        await probePending;
       });
-      const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
         api,
         runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
         quotaFreshnessMs: 60_000,
         nowMs: () => 1_000,
         restartSession,
         probeQuotaSnapshotsForGroup,
-        quotaProbeTimeoutMs: 25,
       });
 
       const result = coordinator.switchAfterClassifiedFailure({
@@ -275,6 +504,8 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
 
       await vi.advanceTimersByTimeAsync(25);
 
+      expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
+      releaseProbe();
       await expect(result).resolves.toMatchObject({
         status: 'switched',
         activeProfileId: 'backup',
@@ -307,6 +538,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
       restartSession,
       applyConnectedServiceAuthGeneration,
     } satisfies Parameters<typeof createDaemonConnectedServiceAuthGroupSwitchCoordinator>[0] & Readonly<{
@@ -333,12 +565,181 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       activeProfileId: 'backup',
       generation: 2,
+      credentialRevision: 'csr_testcredentialrevision',
       reason: 'usage_limit',
       switchReason: 'automatic_runtime_failure',
       // Pre-switch active member, threaded so the transcript "from" is the real member, not null.
       fromProfileId: 'primary',
     });
     expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  it('forwards one exact hot-apply verification unchanged into committed-generation settlement', async () => {
+    const credentialRevision = 'csr_aaaaaaaaaaaaaaaaaaaaaa';
+    const exactVerification = {
+      status: 'verified' as const,
+      proofStrength: 'exact' as const,
+      providerAccountId: 'acct_backup',
+      source: 'runtime_hot_apply',
+      generationApplication: {
+        serviceId: 'openai-codex' as const,
+        groupId: 'main',
+        profileId: 'backup',
+        generation: 2,
+        credentialRevision,
+        credentialFingerprint: 'sha256:abcdef12',
+      },
+    };
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => ({
+      ok: true as const,
+      action: 'hot_applied' as const,
+      verificationByServiceId: {
+        'openai-codex': exactVerification,
+      },
+    }));
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api: {
+        getConnectedServiceAuthGroup: vi.fn(async () => group('backup', 2)),
+        updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
+      },
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: vi.fn(async () => {}),
+      applyConnectedServiceAuthGeneration,
+      resolveCredentialRevision: () => credentialRevision,
+      resolveCurrentCredentialRevision: async () => credentialRevision,
+    });
+    const committedGeneration = buildConnectedServiceAuthGroupCommittedGenerationFact({
+      decisionId: 'decision-exact-forwarding',
+      provenance: 'reconciliation',
+      decisionCommittedTarget: {
+        serviceId: 'openai-codex',
+        groupId: 'main',
+        profileId: 'backup',
+        generation: 2,
+        credentialRevision,
+      },
+    });
+
+    const result = await coordinator.applyCommittedGeneration({
+      sessionId: 'sess_exact_forwarding',
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision,
+      reason: 'reconciliation',
+    });
+
+    expect(result.status).toBe('observed_generation');
+    if (result.status !== 'observed_generation') {
+      throw new Error(`expected observed_generation, received ${result.status}`);
+    }
+    expect(result.verificationByServiceId).toEqual({
+      'openai-codex': exactVerification,
+    });
+    expect(mapCommittedGenerationApplyResult({
+      committedGeneration,
+      result,
+    })).toMatchObject({
+      reconciliationDisposition: 'converged',
+      providerAdoptedTarget: {
+        serviceId: 'openai-codex',
+        groupId: 'main',
+        profileId: 'backup',
+        generation: 2,
+        credentialRevision,
+        proof: {
+          status: 'verified',
+          source: 'runtime_hot_apply',
+          providerAccountId: 'acct_backup',
+          credentialRevision,
+          credentialFingerprint: 'sha256:abcdef12',
+        },
+      },
+    });
+  });
+
+  it('threads exact revisions through application and post-fences a revision-only supersession', async () => {
+    const adoptedRevision = 'csr_aaaaaaaaaaaaaaaaaaaaaa';
+    const authoritativeRevision = 'csr_bbbbbbbbbbbbbbbbbbbbbb';
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => ({
+      ok: true as const,
+      action: 'hot_applied' as const,
+    }));
+    const params = {
+      api: {
+        getConnectedServiceAuthGroup: vi.fn(async () => group('backup', 2)),
+        updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
+      },
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: vi.fn(async () => {}),
+      applyConnectedServiceAuthGeneration,
+      resolveCredentialRevision: (_serviceId: string, profileId: string | null) => (
+        profileId === 'backup' ? authoritativeRevision : null
+      ),
+      resolveCurrentCredentialRevision: async () => authoritativeRevision,
+    };
+    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator(params);
+
+    await expect(coordinator.applyCommittedGeneration({
+      sessionId: 'sess_revision',
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision: adoptedRevision,
+      reason: 'credential_revision_changed',
+    })).resolves.toMatchObject({
+      status: 'superseded_after_apply',
+      generation: 2,
+      credentialRevision: authoritativeRevision,
+      adoptedGeneration: 2,
+      adoptedCredentialRevision: adoptedRevision,
+    });
+    expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      credentialRevision: adoptedRevision,
+    }));
+  });
+
+  it('does not let a stale projection author a revision-only supersession after apply', async () => {
+    const adoptedRevision = 'csr_aaaaaaaaaaaaaaaaaaaaaa';
+    const staleProjectionRevision = 'csr_bbbbbbbbbbbbbbbbbbbbbb';
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => ({
+      ok: true as const,
+      action: 'hot_applied' as const,
+    }));
+    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api: {
+        getConnectedServiceAuthGroup: vi.fn(async () => group('backup', 2)),
+        updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
+      },
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: vi.fn(async () => {}),
+      applyConnectedServiceAuthGeneration,
+      resolveCredentialRevision: () => staleProjectionRevision,
+      resolveCurrentCredentialRevision: async () => adoptedRevision,
+    });
+
+    await expect(coordinator.applyCommittedGeneration({
+      sessionId: 'sess_stale_projection',
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision: adoptedRevision,
+      reason: 'credential_revision_changed',
+    })).resolves.toMatchObject({
+      status: 'observed_generation',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision: adoptedRevision,
+    });
   });
 
   it('notifies committed group switches before post-commit generation apply work', async () => {
@@ -365,6 +766,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
       restartSession,
       applyConnectedServiceAuthGeneration,
       onCommittedSwitch,
@@ -407,7 +809,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       ok: false as const,
       errorCode: 'provider_session_state_unavailable_for_resume',
     }));
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -422,7 +824,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       reason: 'usage_limit',
       switchesThisTurn: 0,
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       status: 'generation_apply_failed',
       activeProfileId: 'backup',
       generation: 2,
@@ -451,7 +853,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         },
       },
     }));
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -467,7 +869,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       reason: 'usage_limit',
       switchesThisTurn: 0,
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       status: 'generation_apply_failed',
       activeProfileId: 'bot',
       generation: 2,
@@ -524,7 +926,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         generation: 2,
       })),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -578,7 +980,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         generation: 2,
       })),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -597,7 +999,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     }));
   });
 
-  it('commits automated switches with runtime-cooldown override after fresher quota proves the target usable', async () => {
+  it('does not use runtime quota snapshots to clear persisted target limiter state without source-backed account usage', async () => {
     const initial = group('primary', 1);
     const groupWithStaleBackupLimiter: ConnectedServiceAuthGroupV1 = {
       ...initial,
@@ -661,7 +1063,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         };
       }),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
@@ -674,16 +1076,12 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       reason: 'usage_limit',
       observedProfileId: 'primary',
-    })).resolves.toMatchObject({ status: 'switched', activeProfileId: 'backup' });
+    })).resolves.toMatchObject({ status: 'no_eligible_member' });
 
-    expect(api.updateConnectedServiceAuthGroupActiveProfile).toHaveBeenCalledWith(expect.objectContaining({
-      activeProfileId: 'backup',
-      expectedGeneration: 1,
-      overrideRuntimeCooldown: true,
-    }));
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
   });
 
-  it('hydrates persisted quota snapshots for group members before pre-turn selection', async () => {
+  it('does not use persisted quota snapshots for group members before pre-turn selection', async () => {
     const runtimeQuotaSnapshots = new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore();
     const api = {
       getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
@@ -694,67 +1092,53 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         generation: 2,
       })),
     };
-    const hydratePersistedQuotaSnapshotsForGroup = vi.fn(async () => {
-      runtimeQuotaSnapshots.recordProfileSnapshot({
-        serviceId: 'openai-codex',
-        profileId: 'primary',
-        snapshot: {
-          v: 1,
-          serviceId: 'openai-codex',
-          profileId: 'primary',
-          fetchedAt: 900,
-          staleAfterMs: 60_000,
-          planLabel: null,
-          accountLabel: null,
-          meters: [{
-            meterId: 'weekly',
-            label: 'Weekly',
-            used: null,
-            limit: null,
-            unit: 'unknown',
-            utilizationPct: 100,
-            resetsAt: null,
-            status: 'ok',
-            details: {},
-          }],
-        },
-      });
-      runtimeQuotaSnapshots.recordProfileSnapshot({
-        serviceId: 'openai-codex',
-        profileId: 'backup',
-        snapshot: {
-          v: 1,
-          serviceId: 'openai-codex',
-          profileId: 'backup',
-          fetchedAt: 900,
-          staleAfterMs: 60_000,
-          planLabel: null,
-          accountLabel: null,
-          meters: [{
-            meterId: 'weekly',
-            label: 'Weekly',
-            used: null,
-            limit: null,
-            unit: 'unknown',
-            utilizationPct: 20,
-            resetsAt: null,
-            status: 'ok',
-            details: {},
-          }],
-        },
-      });
-    });
-    const params = {
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
       restartSession: async () => {},
-      hydratePersistedQuotaSnapshotsForGroup,
-    } satisfies Parameters<typeof createDaemonConnectedServiceAuthGroupSwitchCoordinator>[0] & Readonly<{
-      hydratePersistedQuotaSnapshotsForGroup: typeof hydratePersistedQuotaSnapshotsForGroup;
-    }>;
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator(params);
+    });
+
+    await expect(coordinator.switchBeforeTurn({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      reason: 'soft_threshold',
+    })).resolves.toMatchObject({ status: 'observed_generation', activeProfileId: 'primary' });
+
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
+  });
+
+  it('drives pre-turn soft switching from source-backed provider account usage without runtime quota snapshots', async () => {
+    const primary = accountUsageSnapshot('primary', 0);
+    const backup = accountUsageSnapshot('backup', 90);
+    const api = {
+      getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
+      updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
+      updateConnectedServiceAuthGroupActiveProfile: vi.fn(async ({ activeProfileId }: { activeProfileId: string }) => ({
+        ...group(activeProfileId, 2),
+        activeProfileId,
+        generation: 2,
+      })),
+    };
+    const accountUsageStore = {
+      resolveBySource: vi.fn((source: { profileId: string; groupGeneration?: number }) => {
+        if (source.groupGeneration !== 1) return null;
+        if (source.profileId === 'primary') return primary;
+        if (source.profileId === 'backup') return backup;
+        return null;
+      }),
+    };
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api,
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      accountUsageStore,
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: async () => {},
+    } as TestCoordinatorParams & Readonly<{
+      accountUsageStore: typeof accountUsageStore;
+    }>);
 
     await expect(coordinator.switchBeforeTurn({
       serviceId: 'openai-codex',
@@ -762,11 +1146,160 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       reason: 'soft_threshold',
     })).resolves.toMatchObject({ status: 'switched', activeProfileId: 'backup' });
 
-    expect(hydratePersistedQuotaSnapshotsForGroup).toHaveBeenCalledWith({
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).toHaveBeenCalledWith(expect.objectContaining({
+      activeProfileId: 'backup',
+      expectedGeneration: 1,
+    }));
+  });
+
+  it('preflights a session-scoped soft switch before CAS without requiring an exact revision', async () => {
+    const primary = accountUsageSnapshot('primary', 0);
+    const backup = accountUsageSnapshot('backup', 90);
+    let currentGroup = group('primary', 1);
+    const api = {
+      getConnectedServiceAuthGroup: vi.fn(async () => currentGroup),
+      updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => currentGroup),
+      updateConnectedServiceAuthGroupActiveProfile: vi.fn(async ({ activeProfileId }: { activeProfileId: string }) => {
+        currentGroup = group(activeProfileId, 2);
+        return currentGroup;
+      }),
+    };
+    const preflightConnectedServiceAuthGeneration = vi.fn(async () => ({
+      ok: true as const,
+      action: 'hot_applied' as const,
+    }));
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => ({
+      ok: true as const,
+      action: 'hot_applied' as const,
+    }));
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api,
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      accountUsageStore: {
+        resolveBySource: vi.fn((source: { profileId: string; groupGeneration?: number }) => {
+          if (source.groupGeneration !== 1) return null;
+          if (source.profileId === 'primary') return primary;
+          if (source.profileId === 'backup') return backup;
+          return null;
+        }),
+      },
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: vi.fn(async () => {}),
+      preflightConnectedServiceAuthGeneration,
+      applyConnectedServiceAuthGeneration,
+      resolveCredentialRevision: (_serviceId, profileId) => (
+        profileId === 'backup' ? 'csr_bbbbbbbbbbbbbbbbbbbbbb' : 'csr_aaaaaaaaaaaaaaaaaaaaaa'
+      ),
+      resolveCurrentCredentialRevision: async () => 'csr_bbbbbbbbbbbbbbbbbbbbbb',
+    });
+
+    await expect(coordinator.switchBeforeTurn({
+      sessionId: 'sess_soft_preflight',
       serviceId: 'openai-codex',
       groupId: 'main',
-      profileIds: ['primary', 'backup'],
+      reason: 'soft_threshold',
+    })).resolves.toMatchObject({
+      status: 'switched',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
+      mode: 'hot_apply',
     });
+
+    expect(preflightConnectedServiceAuthGeneration).toHaveBeenCalledWith(expect.not.objectContaining({
+      credentialRevision: expect.anything(),
+    }));
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).toHaveBeenCalledOnce();
+    expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      credentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
+    }));
+  });
+
+  it('treats an existing empty account-usage store as authoritative for pre-turn evidence', async () => {
+    const runtimeQuotaSnapshots = new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore();
+    runtimeQuotaSnapshots.recordSnapshot({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      profileId: 'primary',
+      snapshot: {
+        v: 1,
+        serviceId: 'openai-codex',
+        profileId: 'primary',
+        fetchedAt: 1_000,
+        staleAfterMs: 60_000,
+        planLabel: null,
+        accountLabel: null,
+        meters: [{
+          meterId: 'weekly',
+          label: 'Weekly',
+          used: null,
+          limit: null,
+          unit: 'unknown',
+          utilizationPct: 100,
+          remainingPct: 0,
+          resetsAt: null,
+          status: 'ok',
+          details: {},
+        }],
+      },
+    });
+    runtimeQuotaSnapshots.recordSnapshot({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      profileId: 'backup',
+      snapshot: {
+        v: 1,
+        serviceId: 'openai-codex',
+        profileId: 'backup',
+        fetchedAt: 1_000,
+        staleAfterMs: 60_000,
+        planLabel: null,
+        accountLabel: null,
+        meters: [{
+          meterId: 'weekly',
+          label: 'Weekly',
+          used: null,
+          limit: null,
+          unit: 'unknown',
+          utilizationPct: 10,
+          remainingPct: 90,
+          resetsAt: null,
+          status: 'ok',
+          details: {},
+        }],
+      },
+    });
+    const api = {
+      getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
+      updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
+      updateConnectedServiceAuthGroupActiveProfile: vi.fn(async ({ activeProfileId }: { activeProfileId: string }) => ({
+        ...group(activeProfileId, 2),
+        activeProfileId,
+        generation: 2,
+      })),
+    };
+    const accountUsageStore = {
+      resolveBySource: vi.fn(() => null),
+    };
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api,
+      runtimeQuotaSnapshots,
+      accountUsageStore,
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: async () => {},
+    } as TestCoordinatorParams & Readonly<{
+      accountUsageStore: typeof accountUsageStore;
+    }>);
+
+    await expect(coordinator.switchBeforeTurn({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      reason: 'soft_threshold',
+    })).resolves.toMatchObject({ status: 'observed_generation', activeProfileId: 'primary' });
+
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
   });
 
   it('persists observed quota failure state before relying on selector state', async () => {
@@ -775,7 +1308,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -796,6 +1329,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       serviceId: 'openai-codex',
       groupId: 'main',
       expectedGeneration: 1,
+      expectedRuntimeStateRevision: 0,
       memberStates: [{
         profileId: 'primary',
           state: expect.objectContaining({
@@ -808,7 +1342,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     });
   });
 
-  it('uses the group cooldown as a usage-limit exhaustion fallback when provider timing is missing', async () => {
+  it('records only short herd-backoff evidence when usage-limit provider timing is missing', async () => {
     const api = {
       getConnectedServiceAuthGroup: vi.fn(async () => ({
         ...group('primary', 1),
@@ -821,7 +1355,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -840,8 +1374,15 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     expect(api.updateConnectedServiceAuthGroupRuntimeState).toHaveBeenCalledWith(expect.objectContaining({
       memberStates: [{
         profileId: 'primary',
+        state: expect.not.objectContaining({
+          quotaExhaustedUntilMs: expect.any(Number),
+        }),
+      }],
+    }));
+    expect(api.updateConnectedServiceAuthGroupRuntimeState).toHaveBeenCalledWith(expect.objectContaining({
+      memberStates: [{
+        profileId: 'primary',
         state: expect.objectContaining({
-          quotaExhaustedUntilMs: 46_000,
           lastFailureKind: 'usage_limit',
           lastObservedAtMs: 1_000,
         }),
@@ -849,7 +1390,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     }));
   });
 
-  it('uses the group cooldown as a rate-limit and capacity fallback when provider timing is missing', async () => {
+  it('records only short herd-backoff evidence for rate-limit and capacity failures without provider timing', async () => {
     const loadedGroup = {
       ...group('primary', 1),
       policy: {
@@ -863,7 +1404,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => loadedGroup),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -889,8 +1430,23 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     expect(api.updateConnectedServiceAuthGroupRuntimeState).toHaveBeenNthCalledWith(1, expect.objectContaining({
       memberStates: [{
         profileId: 'primary',
+        state: expect.not.objectContaining({
+          rateLimitedUntilMs: expect.any(Number),
+        }),
+      }],
+    }));
+    expect(api.updateConnectedServiceAuthGroupRuntimeState).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      memberStates: [{
+        profileId: 'primary',
+        state: expect.not.objectContaining({
+          capacityLimitedUntilMs: expect.any(Number),
+        }),
+      }],
+    }));
+    expect(api.updateConnectedServiceAuthGroupRuntimeState).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      memberStates: [{
+        profileId: 'primary',
         state: expect.objectContaining({
-          rateLimitedUntilMs: 46_000,
           lastFailureKind: 'rate_limit',
           lastObservedAtMs: 1_000,
         }),
@@ -900,7 +1456,6 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       memberStates: [{
         profileId: 'primary',
         state: expect.objectContaining({
-          capacityLimitedUntilMs: 46_000,
           lastFailureKind: 'capacity',
           lastObservedAtMs: 1_000,
         }),
@@ -908,13 +1463,13 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
     }));
   });
 
-  it('switches away from disabled accounts using auth policy', async () => {
+  it('does not switch away from disabled accounts through raw auth policy', async () => {
     const api = {
       getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -928,7 +1483,34 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       reason: 'account_disabled',
       observedProfileId: 'primary',
       retryAfterMs: 5_000,
-    })).resolves.toMatchObject({ status: 'switched', activeProfileId: 'backup' });
+    })).resolves.toMatchObject({ status: 'switch_reason_disabled', generation: 1 });
+
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
+  });
+
+  it('does not switch away from spawn-confirmed unusable credentials through auth policy', async () => {
+    const api = {
+      getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
+      updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
+      updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
+    };
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
+      api,
+      runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      restartSession: async () => {},
+    });
+
+    await expect(coordinator.switchAfterClassifiedFailure({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      reason: 'credential_unusable',
+      observedProfileId: 'primary',
+      retryAfterMs: 5_000,
+    })).resolves.toMatchObject({ status: 'switch_reason_disabled', generation: 1 });
+
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
   });
 
   it('treats API generation conflicts as observed cross-daemon switches', async () => {
@@ -975,7 +1557,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
         throw generationConflict;
       }),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
@@ -988,7 +1570,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       reason: 'usage_limit',
       observedProfileId: 'primary',
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       status: 'observed_generation',
       activeProfileId: 'backup',
       generation: 2,
@@ -1001,6 +1583,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       activeProfileId: 'backup',
       generation: 2,
+      credentialRevision: 'csr_testcredentialrevision',
       reason: 'usage_limit',
     });
   });
@@ -1028,7 +1611,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       })),
     };
     const restartSession = vi.fn(async () => {});
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -1041,7 +1624,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       reason: 'usage_limit',
       observedProfileId: 'primary',
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       status: 'switched',
       activeProfileId: 'backup',
       generation: 3,
@@ -1065,6 +1648,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       activeProfileId: 'backup',
       generation: 3,
+      credentialRevision: 'csr_testcredentialrevision',
       reason: 'usage_limit',
     });
   });
@@ -1075,7 +1659,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -1109,7 +1693,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
       updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),
       updateConnectedServiceAuthGroupActiveProfile: vi.fn(async () => group('backup', 2)),
     };
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api,
       runtimeQuotaSnapshots: new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore(),
       quotaFreshnessMs: 60_000,
@@ -1138,7 +1722,7 @@ describe('createDaemonConnectedServiceAuthGroupSwitchCoordinator', () => {
 
   it('forwards structured switch events from the daemon factory', async () => {
     const events: unknown[] = [];
-    const coordinator = createDaemonConnectedServiceAuthGroupSwitchCoordinator({
+    const coordinator = createTestDaemonConnectedServiceAuthGroupSwitchCoordinator({
       api: {
         getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
         updateConnectedServiceAuthGroupRuntimeState: vi.fn(async () => group('primary', 1)),

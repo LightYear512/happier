@@ -1,70 +1,111 @@
 import chalk from 'chalk';
+import { randomUUID } from 'node:crypto';
+import { AGENTS_CORE, resolveAgentIdFromFlavor, type AgentId } from '@happier-dev/agents';
+import { parseBackendTargetKey } from '@happier-dev/protocol';
 
-import { DEFAULT_CATALOG_AGENT_ID } from '@/backends/types';
-import { readFlagValue, hasFlag } from '@/cli/commands/shared/argvFlags';
-import { normalizeBackendTargetKeysFromCsv } from '@/cli/commands/session/shared/normalizeBackendTargetKeys';
-import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
+import { hasFlag } from '@/cli/commands/shared/argvFlags';
+import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import type { Credentials } from '@/persistence';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { normalizeActionExecuteResult } from '@/cli/commands/session/shared/normalizeActionExecuteResult';
 import { tryHandleApprovalRequestCreated } from '@/cli/commands/session/shared/tryHandleApprovalRequestCreated';
-import { resolveRequestedSessionDirectory } from '@/agent/runtime/resolveRequestedSessionDirectory';
+import { parseSessionCreateSpawnOptions, SESSION_CREATE_USAGE } from './create/parseSessionCreateSpawnOptions';
+import { resolveConnectedServicesLaunchAuthWithInventory } from '@/cli/connectedServicesLaunchAuth';
+
+function hasSpawnNonce(details: unknown): boolean {
+  return Boolean(details && typeof details === 'object'
+    && (details as { accepted?: unknown }).accepted === true
+    && typeof (details as { spawnNonce?: unknown }).spawnNonce === 'string'
+    && (details as { spawnNonce: string }).spawnNonce.trim());
+}
+
+async function resolveSessionCreateConnectedServices(params: Readonly<{
+  executor: ReturnType<typeof createCliActionExecutorFromCredentials>;
+  parsedOptions: ReturnType<typeof parseSessionCreateSpawnOptions>;
+}>): Promise<Record<string, unknown>> {
+  const intent = params.parsedOptions.connectedServicesAuthIntent;
+  if (!intent || intent.kind === 'default') return params.parsedOptions.actionInput;
+
+  const targetAgentId = params.parsedOptions.backendTargetKey
+    ? (() => {
+        const target = parseBackendTargetKey(params.parsedOptions.backendTargetKey!);
+        return target.kind === 'builtInAgent' ? target.agentId : null;
+      })()
+    : null;
+  const agentId = resolveAgentIdFromFlavor(
+    params.parsedOptions.actionInput.agentId
+      ?? targetAgentId
+      ?? params.parsedOptions.backendRaw,
+  ) as AgentId | null;
+  if (!agentId) throw new Error('connected_service_auth_unsupported');
+  const supportedServiceIds = AGENTS_CORE[agentId].connectedServices?.supportedServiceIds ?? [];
+  const connectedServices = await resolveConnectedServicesLaunchAuthWithInventory({
+    intent,
+    supportedServiceIds,
+    listInventory: async () => {
+      const inventoryResult = normalizeActionExecuteResult(await params.executor.execute(
+        'sessions.spawn.connected_services.list',
+        { agentId, includeUnavailable: false },
+        { surface: 'cli', defaultSessionId: null },
+      ));
+      if (!inventoryResult.ok) {
+        throw new Error(inventoryResult.errorMessage ?? inventoryResult.errorCode);
+      }
+      return inventoryResult.data ?? null;
+    },
+  });
+  return connectedServices
+    ? { ...params.parsedOptions.actionInput, connectedServices }
+    : params.parsedOptions.actionInput;
+}
 
 export async function cmdSessionCreate(
   argv: string[],
   deps: Readonly<{ readCredentialsFn: () => Promise<Credentials | null> }>,
 ): Promise<void> {
   const json = wantsJson(argv);
-  const path = resolveRequestedSessionDirectory({
-    requestedDirectory: readFlagValue(argv, '--path') ?? null,
-  });
-  const tag = (readFlagValue(argv, '--tag') ?? '').trim();
-  const title = (readFlagValue(argv, '--title') ?? '').trim();
-  const initialPrompt = (readFlagValue(argv, '--message') ?? readFlagValue(argv, '--prompt') ?? '').trim();
-  const backendRaw = (readFlagValue(argv, '--backend') ?? readFlagValue(argv, '--agent') ?? '').trim();
-  const backendTargetKeys = normalizeBackendTargetKeysFromCsv(backendRaw);
-  const backendTargetKey = backendTargetKeys.length === 1 ? backendTargetKeys[0] : null;
+  const parsedOptions = parseSessionCreateSpawnOptions(argv);
+  const spawnAttemptId = parsedOptions.spawnAttemptId ?? randomUUID();
   if (hasFlag(argv, '--help') || hasFlag(argv, '-h')) {
-    throw new Error(
-      'Usage: happier session create [--path <path>] [--backend <backend-target>] [--title <text>] [--tag <tag>] [--prompt <text>|--message <text>] [--json]',
-    );
+    throw new Error(`Usage: ${SESSION_CREATE_USAGE}`);
   }
 
   const credentials = await deps.readCredentialsFn();
   if (!credentials) {
     if (json) {
-      printJsonEnvelope({ ok: false, kind: 'session_create', error: { code: 'not_authenticated' } });
+      await printJsonEnvelope({ ok: false, kind: 'session_create', error: { code: 'not_authenticated' } });
       return;
     }
     console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
     process.exit(1);
   }
 
-  if (backendRaw && !backendTargetKey) {
-    throw new Error(
-      'Usage: happier session create [--path <path>] [--backend <backend-target>] [--title <text>] [--tag <tag>] [--prompt <text>|--message <text>] [--json]',
-    );
+  if (parsedOptions.backendRaw && !parsedOptions.backendTargetKey) {
+    throw new Error(`Usage: ${SESSION_CREATE_USAGE}`);
   }
 
   const executor = createCliActionExecutorFromCredentials({ credentials });
   let actionRes;
   try {
+    const actionInput = await resolveSessionCreateConnectedServices({
+      executor,
+      parsedOptions,
+    });
     actionRes = await executor.execute(
       'session.spawn_new',
+      actionInput,
       {
-        path,
-        ...(backendTargetKey ? { backendTargetKey } : { agentId: DEFAULT_CATALOG_AGENT_ID }),
-        ...(title ? { title } : {}),
-        ...(tag ? { tag } : {}),
-        ...(initialPrompt ? { initialMessage: initialPrompt } : {}),
+        surface: 'cli',
+        defaultSessionId: null,
+        actionRequestId: spawnAttemptId,
+        ...(parsedOptions.resumeSpawnAttempt ? { resumeActionRequest: true } : {}),
       },
-      { surface: 'cli', defaultSessionId: null },
     );
   } catch (error) {
     const mapped = mapUnknownErrorToControlError(error);
     if (json) {
-      printJsonEnvelope({
+      await printJsonEnvelope({
         ok: false,
         kind: 'session_create',
         error: {
@@ -82,22 +123,31 @@ export async function cmdSessionCreate(
 
   const result = normalizeActionExecuteResult(actionRes);
   if (!result.ok) {
+    const isAmbiguousSpawn = hasSpawnNonce(result.details);
     if (json) {
-      printJsonEnvelope({
+      await printJsonEnvelope({
         ok: false,
         kind: 'session_create',
         error: {
           code: result.errorCode,
           ...(result.errorMessage ? { message: result.errorMessage } : {}),
           ...(result.candidates ? { candidates: result.candidates } : {}),
+          ...(result.details !== undefined ? { details: result.details } : {}),
+          ...(isAmbiguousSpawn ? { spawnAttemptId } : {}),
         },
       });
       return;
     }
-    throw Object.assign(new Error(result.errorMessage ?? result.errorCode), { code: result.errorCode });
+    const retryHint = isAmbiguousSpawn
+      ? ` Retry with --spawn-attempt-id ${spawnAttemptId} --resume-spawn-attempt.`
+      : '';
+    throw Object.assign(new Error(`${result.errorMessage ?? result.errorCode}${retryHint}`), {
+      code: result.errorCode,
+      ...(result.details !== undefined ? { details: result.details } : {}),
+    });
   }
   const created = result.data as any;
-  if (tryHandleApprovalRequestCreated({ envelopeKind: 'session_create', json, result: created })) {
+  if (await tryHandleApprovalRequestCreated({ envelopeKind: 'session_create', json, result: created })) {
     return;
   }
   if (!created || typeof created !== 'object') {
@@ -106,7 +156,7 @@ export async function cmdSessionCreate(
   if (created.type === 'error') {
     const code = typeof created.errorCode === 'string' ? created.errorCode : 'session_create_failed';
     if (json) {
-      printJsonEnvelope({
+      await printJsonEnvelope({
         ok: false,
         kind: 'session_create',
         error: {
@@ -121,10 +171,10 @@ export async function cmdSessionCreate(
   }
 
   if (json) {
-    printJsonEnvelope({ ok: true, kind: 'session_create', data: { session: created.session, created: created.created } });
+    await printJsonEnvelope({ ok: true, kind: 'session_create', data: { session: created.session, created: created.created } });
     return;
   }
 
   console.log(chalk.green('✓'), 'session created');
-  console.log(JSON.stringify({ created: true, session: created.session }, null, 2));
+  await writeJsonStdout({ created: true, session: created.session }, { pretty: true });
 }

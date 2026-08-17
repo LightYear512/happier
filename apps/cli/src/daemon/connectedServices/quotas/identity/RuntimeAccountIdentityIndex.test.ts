@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { RuntimeAccountIdentityIndex } from './RuntimeAccountIdentityIndex';
-import { resolveSessionsSharingProviderAccount } from './resolveSessionsSharingProviderAccount';
 
 describe('RuntimeAccountIdentityIndex', () => {
   it('resolves only fresh sessions proven on the same live provider account', () => {
@@ -48,7 +47,7 @@ describe('RuntimeAccountIdentityIndex', () => {
       groupGeneration: 4,
     });
 
-    expect(resolveSessionsSharingProviderAccount(index, {
+    expect(index.listByProviderAccount({
       serviceId: 'openai-codex',
       providerAccountId: 'acct-a',
       excludeSessionId: 'source',
@@ -59,7 +58,7 @@ describe('RuntimeAccountIdentityIndex', () => {
     }).map((entry) => entry.sessionId)).toEqual(['same-account']);
 
     now = 20_001;
-    expect(resolveSessionsSharingProviderAccount(index, {
+    expect(index.listByProviderAccount({
       serviceId: 'openai-codex',
       providerAccountId: 'acct-a',
     })).toEqual([]);
@@ -124,5 +123,36 @@ describe('RuntimeAccountIdentityIndex', () => {
     })).toEqual({ status: 'suppressed', reason: 'missing_group_generation' });
 
     expect(index.readSessionIdentity('codex-session')).toBeNull();
+  });
+
+  it('does not return group-bound identities when the current group generation is unavailable', () => {
+    const index = new RuntimeAccountIdentityIndex({
+      nowMs: () => 1_000,
+      ttlMs: 60_000,
+    });
+
+    expect(index.record({
+      sessionId: 'codex-session',
+      serviceId: 'openai-codex',
+      groupId: 'codex-team',
+      profileId: 'primary',
+      providerAccountId: 'acct-codex',
+      accountLabel: null,
+      observedAtMs: 1_000,
+      source: 'runtime_quota_snapshot',
+      proofStrength: 'exact',
+      groupGeneration: 8,
+    })).toEqual({ status: 'recorded' });
+
+    expect(index.listByProviderAccount({
+      serviceId: 'openai-codex',
+      providerAccountId: 'acct-codex',
+      currentGroupGenerationBySessionId: new Map(),
+    })).toEqual([]);
+    expect(index.listByProviderAccount({
+      serviceId: 'openai-codex',
+      providerAccountId: 'acct-codex',
+      currentGroupGenerationBySessionId: new Map([['codex-session', 8]]),
+    }).map((entry) => entry.sessionId)).toEqual(['codex-session']);
   });
 });

@@ -3,7 +3,7 @@ import { join, win32 as win32Path } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const DEFAULT_PRISMA_SQLITE_BUSY_TIMEOUT_MS = 30_000;
-export const DEFAULT_PRISMA_SQLITE_CONNECTION_LIMIT = 1;
+export const DEFAULT_SERVER_LIGHT_SQLITE_CONNECTION_LIMIT = 1;
 const PRISMA_SQLITE_BUSY_TIMEOUT_MS_MAX = 600_000;
 const PRISMA_SQLITE_CONNECTION_LIMIT_MAX = 64;
 
@@ -12,6 +12,7 @@ const SELF_HOST_SERVER_ENV_MANAGED_KEYS = new Set<string>([
     'HAPPIER_DB_PROVIDER',
     'HAPPIER_FILES_BACKEND',
     'HAPPIER_SERVER_UI_DIR',
+    'HAPPIER_SERVER_UI_DEPLOYMENT_ID',
     'HAPPIER_SQLITE_AUTO_MIGRATE',
     'HAPPIER_SQLITE_MIGRATIONS_DIR',
     'HAPPIER_SERVER_LIGHT_DATA_DIR',
@@ -24,6 +25,11 @@ const SELF_HOST_SERVER_ENV_MANAGED_KEYS = new Set<string>([
     'PRISMA_CLIENT_ENGINE_TYPE',
     'PRISMA_QUERY_ENGINE_LIBRARY',
 ]);
+const SELF_HOST_SERVER_ENV_INSTALLER_OWNED_OVERRIDE_KEYS = new Set<string>([
+    'HAPPIER_SERVER_UI_DIR',
+    'HAPPIER_SERVER_LIGHT_UI_DIR',
+    'HAPPIER_SERVER_UI_DEPLOYMENT_ID',
+]);
 
 export function renderSelfHostServerEnvTextFromResolvedValues(params: Readonly<{
     port: number;
@@ -35,6 +41,7 @@ export function renderSelfHostServerEnvTextFromResolvedValues(params: Readonly<{
     sqliteAutoMigrate: string;
     sqliteMigrationsDir: string;
     uiDir?: string;
+    uiDeploymentId?: string;
     nodeModulesPath?: string;
     prismaEnginePath?: string;
 }>): string {
@@ -50,6 +57,7 @@ export function renderSelfHostServerEnvTextFromResolvedValues(params: Readonly<{
         `PORT=${params.port}`,
         `HAPPIER_SERVER_HOST=${params.host}`,
         ...(uiDir ? [`HAPPIER_SERVER_UI_DIR=${uiDir}`] : []),
+        ...(params.uiDeploymentId ? [`HAPPIER_SERVER_UI_DEPLOYMENT_ID=${params.uiDeploymentId}`] : []),
         'METRICS_ENABLED=false',
         'HAPPIER_DB_PROVIDER=sqlite',
         `DATABASE_URL=${params.databaseUrl}`,
@@ -77,6 +85,7 @@ export function renderSelfHostServerEnvText(params: Readonly<{
     filesDir: string;
     dbDir: string;
     uiDir?: string;
+    uiDeploymentId?: string;
     serverBinDir?: string;
     arch?: string;
     platform?: NodeJS.Platform;
@@ -98,7 +107,7 @@ export function renderSelfHostServerEnvText(params: Readonly<{
     const databaseUrl = renderPrismaCompatibleSqliteDatabaseUrl({
         dbPath,
         platform,
-        sqlite: resolvePrismaSqliteDatabaseUrlOptionsFromEnv(process.env),
+        sqlite: resolveServerLightSqliteDatabaseUrlOptionsFromEnv(process.env),
     });
 
     const prismaEngineCandidates: string[] = [];
@@ -131,6 +140,7 @@ export function renderSelfHostServerEnvText(params: Readonly<{
         sqliteAutoMigrate: autoMigrateSqlite,
         sqliteMigrationsDir: migrationsDir,
         uiDir,
+        uiDeploymentId: params.uiDeploymentId,
         nodeModulesPath,
         prismaEnginePath,
     });
@@ -225,7 +235,17 @@ export function resolvePrismaSqliteDatabaseUrlOptionsFromEnv(
                 min: 1,
                 max: PRISMA_SQLITE_CONNECTION_LIMIT_MAX,
             })
-            : DEFAULT_PRISMA_SQLITE_CONNECTION_LIMIT,
+            : undefined,
+    };
+}
+
+export function resolveServerLightSqliteDatabaseUrlOptionsFromEnv(
+    env: Readonly<Record<string, unknown>>,
+): PrismaSqliteDatabaseUrlOptions {
+    const options = resolvePrismaSqliteDatabaseUrlOptionsFromEnv(env);
+    return {
+        ...options,
+        connectionLimit: options.connectionLimit ?? DEFAULT_SERVER_LIGHT_SQLITE_CONNECTION_LIMIT,
     };
 }
 
@@ -375,9 +395,22 @@ export function mergeSelfHostServerEnvText(params: Readonly<{
         merged = applyEnvOverridesToEnvText(merged, preservedExistingEntries);
     }
     if (params.overrides && Object.keys(params.overrides).length > 0) {
+        assertNoInstallerOwnedSelfHostServerEnvOverrides(params.overrides);
         merged = applyEnvOverridesToEnvText(merged, params.overrides);
     }
     return merged;
+}
+
+function assertNoInstallerOwnedSelfHostServerEnvOverrides(overrides: Readonly<Record<string, string>>): void {
+    for (const rawKey of Object.keys(overrides ?? {})) {
+        const key = String(rawKey ?? '').trim();
+        if (!key) continue;
+        assertValidEnvOverrideKey(key);
+        if (!SELF_HOST_SERVER_ENV_INSTALLER_OWNED_OVERRIDE_KEYS.has(key)) continue;
+        throw new Error(
+            `Invalid env override: ${key} is owned by the relay runtime installer and cannot be overridden.`,
+        );
+    }
 }
 
 function assertValidEnvOverrideKey(key: string): void {

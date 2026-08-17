@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { accountSettingsParse } from '@happier-dev/protocol';
 
 import {
     CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
@@ -26,6 +27,33 @@ class FakeSession {
 }
 
 describe('AgentStateRequestStore', () => {
+    it('can persist private request input without forwarding it to push notification rendering', () => {
+        const session = new FakeSession();
+        const sendToAllDevicesAsync = vi.fn(async () => {});
+        const settings = accountSettingsParse({
+            notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
+        });
+        const store = new AgentStateRequestStore({
+            session,
+            logPrefix: '[Test]',
+            pushSender: { sendToAllDevicesAsync },
+            getAccountSettings: () => settings,
+        });
+
+        store.publishRequest({
+            requestId: 'private-1',
+            toolName: 'AskUserQuestion',
+            toolInput: { questions: [{ question: 'private terminal context' }] },
+            createdAt: 123,
+            notifyPush: false,
+        });
+
+        expect(session.agentState.requests!['private-1']).toMatchObject({
+            arguments: { questions: [{ question: 'private terminal context' }] },
+        });
+        expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
+    });
+
     it('publishes and completes a request', () => {
         const session = new FakeSession();
         const store = new AgentStateRequestStore({
@@ -116,6 +144,7 @@ describe('AgentStateRequestStore', () => {
             decision: 'approved',
         };
         session.agentState.completedRequests!.toolu_test = olderCompletedRequest;
+
         const store = new AgentStateRequestStore({
             session,
             logPrefix: '[Test]',
@@ -136,6 +165,63 @@ describe('AgentStateRequestStore', () => {
             }),
         );
         expect(session.agentState.completedRequests!.toolu_test).toBeUndefined();
+    });
+
+    it('preserves an opaque claim through republish and leaves it outstanding across terminal and cancellation paths', async () => {
+        const session = new FakeSession();
+        const store = new AgentStateRequestStore({
+            session,
+            logPrefix: '[Test]',
+        });
+        const opaqueClaim = { unexpected: ['malformed', { payload: true }] };
+        const claimedRequest: NonNullable<AgentState['requests']>[string] & Record<'permissionResponseClaimV1', unknown> = {
+            tool: 'Bash',
+            kind: 'permission',
+            arguments: { command: ['bash', '-lc', 'echo old'] },
+            createdAt: 1,
+            permissionResponseClaimV1: opaqueClaim,
+        };
+        session.agentState.requests!.claimed = claimedRequest;
+
+        store.publishRequest({
+            requestId: 'claimed',
+            toolName: 'Bash',
+            toolInput: { command: ['bash', '-lc', 'echo republished'] },
+            createdAt: 2,
+        });
+        store.publishRequest({
+            requestId: 'unclaimed',
+            toolName: 'Write',
+            toolInput: { path: '/tmp/x', content: 'x' },
+            createdAt: 3,
+        });
+
+        const republished = session.agentState.requests!.claimed as Record<string, unknown>;
+        expect(Object.prototype.hasOwnProperty.call(republished, 'permissionResponseClaimV1')).toBe(true);
+        expect(republished.permissionResponseClaimV1).toBe(opaqueClaim);
+
+        await store.completeRequest({
+            requestId: 'claimed',
+            status: 'approved',
+            decision: 'approved_for_session',
+            allowedTools: ['Bash(*)'],
+        });
+        store.recordCompletedRequest({
+            requestId: 'claimed',
+            toolName: 'Bash',
+            toolInput: { command: ['bash', '-lc', 'echo terminal'] },
+            status: 'approved',
+            decision: 'approved_for_session',
+            allowedTools: ['Bash(*)'],
+        });
+        store.cancelAllRequests({ reason: 'Session ended', decision: 'abort' });
+
+        const retained = session.agentState.requests!.claimed as Record<string, unknown>;
+        expect(Object.prototype.hasOwnProperty.call(retained, 'permissionResponseClaimV1')).toBe(true);
+        expect(retained.permissionResponseClaimV1).toBe(opaqueClaim);
+        expect(session.agentState.completedRequests!.claimed).toBeUndefined();
+        expect(session.agentState.requests!.unclaimed).toBeUndefined();
+        expect(session.agentState.completedRequests!.unclaimed).toMatchObject({ status: 'canceled' });
     });
 
     it('skips publishing a generated local-bridge request covered by a recent canonical bridge cancellation', () => {

@@ -1,7 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TerminalHostHandle } from '@/integrations/terminalHost/_types';
 import { TerminalHostStartupError } from '@/integrations/terminalHost/errors';
+import { ZellijActionTimeoutError } from '@/integrations/zellij/actions';
 import type { TerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
 import type { AccountSettings } from '@happier-dev/protocol';
 import type { Metadata } from '@/api/types';
@@ -21,10 +25,20 @@ const mocks = vi.hoisted(() => ({
     statusCode: null,
     statusMessage: null,
   })),
+  // Defaults to `null`, which is exactly what the real factory returns for this file's session stub
+  // (it exposes no system-record writer). Cases that need to observe the source inject one per call;
+  // the return type is widened here so an injected fake needs no cast at the call site.
+  createClaudeWorkflowActivitySourceForSession: vi.fn(
+    async (_params: Readonly<Record<string, unknown>>): Promise<unknown> => null,
+  ),
 }));
 
 vi.mock('./runClaudeUnifiedTerminalSession', () => ({
   runClaudeUnifiedTerminalSession: mocks.runClaudeUnifiedTerminalSession,
+}));
+
+vi.mock('../workflows/createClaudeWorkflowActivitySourceForSession', () => ({
+  createClaudeWorkflowActivitySourceForSession: mocks.createClaudeWorkflowActivitySourceForSession,
 }));
 
 vi.mock('@/terminal/attachment/tmuxAttach', () => ({
@@ -48,6 +62,7 @@ import { ClaudeUnifiedTerminalManagedSettingsOptionError } from './buildClaudeUn
 import { ClaudeUnifiedTerminalReadinessTimeoutError } from './createClaudeUnifiedTerminalReadinessBridge';
 import { createFakeControlPort } from './tuiControls/fakeControlPort';
 import { parseClaudeScreenState } from './tuiControls/screenState';
+import { PendingQueueMaterializationAuthError } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
 
 const originalStdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 const originalStdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
@@ -65,6 +80,20 @@ const IDLE_COMPOSER = [
   '❯ ',
   '──────────────────────────────',
 ].join('\n');
+
+const EFFORT_CHANGE_DIALOG_HIGH = [
+  'Change effort level?',
+  'This conversation is cached for the current effort level.',
+  'Switching to high means the full history gets re-read before Claude can continue.',
+  '',
+  '❯ 1. Yes, switch to high',
+  '  2. No, go back',
+].join('\n');
+
+const USAGE_LIMIT_DIALOG = readFileSync(
+  resolve(__dirname, 'tuiControls/__fixtures__/incident-89861-ratelimit-resume.ansi'),
+  'utf8',
+);
 
 function setProcessTty(value: boolean): void {
   Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value });
@@ -84,6 +113,24 @@ function restoreProcessTty(): void {
   }
 }
 
+function waitUntilAborted(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    signal?.addEventListener('abort', () => resolve(false), { once: true });
+  });
+}
+
+function abortLauncherOnEmptyQueueWait(session: Session, waitNumber = 1): AbortSignal {
+  const controller = new AbortController();
+  let queueWaits = 0;
+  vi.mocked(session.queue.waitForMessagesSignal).mockImplementation(async (signal?: AbortSignal) => {
+    queueWaits += 1;
+    if (queueWaits === waitNumber) controller.abort();
+    return await waitUntilAborted(signal);
+  });
+  return controller.signal;
+}
+
 function createSession(overrides: Readonly<{
   terminalRuntime?: Session['terminalRuntime'];
   metadata?: Metadata;
@@ -94,11 +141,18 @@ function createSession(overrides: Readonly<{
       sessionId: 'happy-session-id',
       sendSessionEvent: vi.fn(),
       sendClaudeSessionMessage: vi.fn(),
+      sendClaudeSessionMessageCommitted: vi.fn(async () => ({
+        persisted: true,
+        delivered: true,
+      })),
       getMetadataSnapshot: vi.fn(() => overrides.metadata ?? {}),
       recordClaudeJsonlMessageConsumed: vi.fn(),
-      deferDeliveredUserMessageWatermarkToProviderAcceptance: vi.fn(),
-      confirmUserMessageDeliveredToProvider: vi.fn(),
-      hasUserMessageProviderAcceptance: vi.fn(() => false),
+      bindProviderInputOutcomeProducer: vi.fn(() => vi.fn()),
+      hasPendingProviderInputAcceptance: vi.fn(() => false),
+      hasCanonicalPendingProviderInputDelivery: vi.fn(() => true),
+      hasActiveCanonicalTurn: vi.fn(() => false),
+      blockPendingMessageDelivery: vi.fn(async () => false),
+      wakePendingMaterialization: vi.fn(),
       registerSessionRuntimeControls: vi.fn(() => vi.fn()),
       updateAgentState: vi.fn((updater: (state: unknown) => unknown) => updater({ capabilities: {} })),
       fetchCommittedClaudeJsonlMessageBaseline: vi.fn(async () => ({ keys: new Set<string>(), complete: true, oldestCoveredAtMs: null })),
@@ -114,11 +168,15 @@ function createSession(overrides: Readonly<{
       },
       flush: vi.fn(async () => undefined),
       // Pending-queue drain surface consumed by the launcher's session input consumer.
-      // Defaults keep legacy tests inert: nothing pending, metadata wait never fires.
+      // Defaults keep tests inert: nothing pending, metadata wait never fires.
       shouldAttemptPendingMaterialization: vi.fn(() => false),
-      popPendingMessage: vi.fn(async () => false),
+      materializeNextPendingMessageSafely: vi.fn(async () => ({ type: 'no_pending' as const })),
       reconcilePendingQueueState: vi.fn(async () => false),
       waitForMetadataUpdate: vi.fn(() => new Promise<boolean>(() => undefined)),
+      waitForPendingEligibilityUpdate: vi.fn((signal?: AbortSignal) => new Promise<boolean>((resolve) => {
+        if (signal?.aborted) return resolve(false);
+        signal?.addEventListener('abort', () => resolve(false), { once: true });
+      })),
     },
     pushSender: null,
     accountSettings: null,
@@ -133,14 +191,20 @@ function createSession(overrides: Readonly<{
     hookPluginDir: null,
     queue: {
       size: vi.fn(() => 0),
-      waitForMessagesSignal: vi.fn(async () => true),
+      waitForMessagesSignal: vi.fn(waitUntilAborted),
       waitForMessagesAndGetAsString: vi.fn(),
       unshift: vi.fn(),
     },
     getOrCreateHappierMcpBridge: vi.fn(async () => ({ mcpConfigJson: '{}' })),
     addClaudeSessionHookCallback: vi.fn(),
     removeClaudeSessionHookCallback: vi.fn(),
+    getProviderTaskRuntimeActivityAdapter: vi.fn(() => null),
+    getProviderTaskActivityLedger: vi.fn(() => null),
+    registerProviderInputConsumer: vi.fn(),
+    registerConnectedServiceExactApplicationHandler: vi.fn(() => vi.fn()),
+    isWorkflowOwnedTaskReference: vi.fn(() => false),
     onSessionFound: vi.fn(),
+    publishUnifiedTerminalHostMetadata: vi.fn(async () => {}),
     onThinkingChange: vi.fn(),
     setThinkingWithoutTaskLifecycle: vi.fn(),
     noteUserAbortRequested: vi.fn(),
@@ -170,7 +234,115 @@ function getFailTurnSpy(session: Session) {
 describe('claudeUnifiedTerminalLauncher', () => {
   afterEach(() => {
     restoreProcessTty();
+    mocks.runClaudeUnifiedTerminalSession.mockReset();
     vi.clearAllMocks();
+  });
+
+  it('wires one generalized dialog-choice broker into the unified runtime', async () => {
+    setProcessTty(false);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: Record<string, unknown>) => {
+      expect(opts.dialogChoiceBroker).toBeDefined();
+      expect(opts).not.toHaveProperty('safeguardChoiceBroker');
+    });
+
+    await claudeUnifiedTerminalLauncher(createSession(), {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+  });
+
+  it('does not manufacture an active turn when a native resume adopts its existing host', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    session.claudeArgs = ['--resume', 'claude-session-id'];
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onProviderLaunchStarting?: () => Promise<void>;
+    }) => {
+      expect(opts.onProviderLaunchStarting).toBeTypeOf('function');
+      // Successful exact-host adoption returns without starting another provider process.
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+
+    expect(session.client.sessionTurnLifecycle?.beginTurn).not.toHaveBeenCalled();
+  });
+
+  it('tees the exact unified steer evaluator snapshot to UI publication and Pending claim authority', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    vi.mocked(session.client.hasActiveCanonicalTurn!).mockReturnValue(true);
+    vi.mocked(session.client.shouldAttemptPendingMaterialization!).mockReturnValue(true);
+    const materializeNextPendingMessageSafely = vi.mocked(
+      session.client.materializeNextPendingMessageSafely!,
+    );
+
+    const refreshAvailability = vi.fn()
+      .mockResolvedValueOnce({ available: true, reason: null } as const)
+      .mockResolvedValueOnce({ available: false, reason: 'unsafe_window' } as const)
+      .mockResolvedValueOnce({ available: true, reason: null } as const);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onInFlightSteerAvailabilitySnapshot?: (snapshot: Readonly<{
+        available: boolean;
+        reason: 'unsafe_window' | 'user_terminal_draft' | null;
+      }>) => void;
+      registerInFlightSteerAvailabilityRefresh?: (refresh: () => Promise<Readonly<{
+        available: boolean;
+        reason: 'unsafe_window' | 'user_terminal_draft' | null;
+      }>>) => (() => void);
+    }) => {
+      const consumer = vi.mocked(session.registerProviderInputConsumer).mock.calls[0]?.[0];
+      if (!consumer) throw new Error('expected the canonical Pending input consumer to be registered');
+
+      const unregisterRefresh = opts.registerInFlightSteerAvailabilityRefresh?.(async () => {
+        const snapshot = await refreshAvailability();
+        opts.onInFlightSteerAvailabilitySnapshot?.(snapshot);
+        return snapshot;
+      });
+      if (!unregisterRefresh) throw new Error('expected provider-owned pre-claim steer refresh registration');
+
+      opts.onInFlightSteerAvailabilitySnapshot?.({ available: true, reason: null });
+      await consumer.drainPending({ reason: 'test-exact-steer-available' });
+      expect(materializeNextPendingMessageSafely).toHaveBeenLastCalledWith({
+        reconcileWhenEmpty: 'force',
+        activeTurnSteerability: 'steerable',
+        pendingQueueDeliveryTiming: 'after_foreground_ready',
+      });
+
+      // A stale positive publication is presentation only. The request-scoped recapture is the
+      // sole claim proof and must be able to revoke it immediately before materialization.
+      opts.onInFlightSteerAvailabilitySnapshot?.({ available: true, reason: null });
+      await consumer.drainPending({ reason: 'test-exact-steer-unavailable' });
+      expect(materializeNextPendingMessageSafely).toHaveBeenLastCalledWith({
+        reconcileWhenEmpty: 'force',
+        activeTurnSteerability: 'unsteerable',
+        pendingQueueDeliveryTiming: 'after_foreground_ready',
+      });
+
+      await consumer.drainPending({ reason: 'test-pre-claim-steer-refresh' });
+      expect(materializeNextPendingMessageSafely).toHaveBeenLastCalledWith({
+        reconcileWhenEmpty: 'force',
+        activeTurnSteerability: 'steerable',
+        pendingQueueDeliveryTiming: 'after_foreground_ready',
+      });
+      expect(refreshAvailability).toHaveBeenCalledTimes(3);
+      unregisterRefresh();
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.updateAgentState).toHaveBeenCalled();
   });
 
   it('foreground-attaches tty-started tmux unified sessions after the host is ready', async () => {
@@ -196,7 +368,8 @@ describe('claudeUnifiedTerminalLauncher', () => {
       opts.onTerminalHostReady?.({ handle, terminal });
     });
 
-    await claudeUnifiedTerminalLauncher(createSession(), {
+    const session = createSession();
+    await claudeUnifiedTerminalLauncher(session, {
       initialMode: {
         permissionMode: 'default',
         claudeUnifiedTerminalHost: 'tmux',
@@ -207,6 +380,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
       sessionId: 'happy-session-id',
       terminal,
     });
+    expect(session.publishUnifiedTerminalHostMetadata).toHaveBeenCalledWith(terminal);
   });
 
   it('foreground-attaches tty-started zellij unified sessions after the host is ready', async () => {
@@ -372,7 +546,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
     );
   });
 
-  it('requeues a message the runner could not deliver back onto the session queue (silent queue-swallow fix)', async () => {
+  it('fails closed when the runner returns input without canonical Pending identity', async () => {
     setProcessTty(false);
     const session = createSession();
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
@@ -391,11 +565,80 @@ describe('claudeUnifiedTerminalLauncher', () => {
       },
     });
 
-    expect(session.queue.unshift).toHaveBeenCalledWith(
-      'arrived during unwind',
-      { permissionMode: 'default', claudeUnifiedTerminalEnabled: true },
-      { userMessageSeq: null, userMessageLocalIds: [] },
-    );
+    expect(session.queue.unshift).not.toHaveBeenCalled();
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+  });
+
+  it('blocks a returned server-owned pending delivery instead of hiding it in the local queue', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      returnUnconsumedMessage?: (input: {
+        message: string;
+        mode: unknown;
+        maxUserMessageSeq?: number | null;
+        userMessageLocalIds?: readonly string[] | null;
+      }) => void;
+    }) => {
+      opts.returnUnconsumedMessage?.({
+        message: 'server-owned during unwind',
+        mode: { permissionMode: 'default', claudeUnifiedTerminalEnabled: true },
+        maxUserMessageSeq: 27,
+        userMessageLocalIds: ['pending-local-27'],
+      });
+      await Promise.resolve();
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+
+    expect(blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['pending-local-27'],
+      reason: 'runtime_disposed_before_delivery',
+    });
+    expect(session.queue.unshift).not.toHaveBeenCalled();
+  });
+
+  it('blocks and visibly surfaces a parked pending-pump delivery failure without relaunching the host', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    const failure = Object.assign(new Error('pending server stalled'), { localId: 'durable-pump-row' });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onPendingQueuePumpPark?: (params: { error: unknown; failureCount: number }) => Promise<void>;
+    }) => {
+      await opts.onPendingQueuePumpPark?.({ error: failure, failureCount: 3 });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+
+    expect(blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['durable-pump-row'],
+      reason: 'unknown',
+    });
+    expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'message',
+      message: expect.stringContaining('queued message is paused'),
+    }));
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(1);
   });
 
   it('passes a startup resume-choice resolver that uses the startup mode preference', async () => {
@@ -427,7 +670,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
         abortSignal: new AbortController().signal,
       })).resolves.toEqual({ status: 'handled' });
       expect(port.sentLiteral).toEqual(['2']);
-      expect(port.sentKeys).toEqual(['Enter']);
+      expect(port.sentKeys).toEqual([]);
     });
 
     await claudeUnifiedTerminalLauncher(session, {
@@ -439,7 +682,48 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
   });
 
-  it('defers the delivered watermark until provider acceptance and preserves seq on handback', async () => {
+  it('passes a startup dialog resolver that handles orphan effort dialogs with the startup mode effort', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      createStartupDialogResolver?: (input: {
+        controlPort: ReturnType<typeof createFakeControlPort>;
+        startupMode: EnhancedMode;
+      }) => ((input: {
+        screenState: ReturnType<typeof parseClaudeScreenState>;
+        observedAtMs: number;
+        abortSignal: AbortSignal;
+      }) => Promise<{ status: string }>);
+    }) => {
+      const port = createFakeControlPort({ captures: [EFFORT_CHANGE_DIALOG_HIGH, IDLE_COMPOSER] });
+      const resolver = opts.createStartupDialogResolver?.({
+        controlPort: port,
+        startupMode: {
+          permissionMode: 'default',
+          claudeUnifiedTerminalEnabled: true,
+          reasoningEffort: 'high',
+        },
+      });
+      expect(resolver).toBeDefined();
+      await expect(resolver?.({
+        screenState: parseClaudeScreenState(EFFORT_CHANGE_DIALOG_HIGH),
+        observedAtMs: 1,
+        abortSignal: new AbortController().signal,
+      })).resolves.toEqual({ status: 'handled' });
+      expect(port.sentLiteral).toEqual(['1']);
+      expect(port.sentKeys).toEqual([]);
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+        reasoningEffort: 'high',
+      },
+    });
+  });
+
+  it('emits exact typed localId acceptance only at provider acceptance and preserves transcript seq on handback', async () => {
     setProcessTty(false);
     const session = createSession();
     const mode = {
@@ -448,9 +732,11 @@ describe('claudeUnifiedTerminalLauncher', () => {
       claudeUnifiedTerminalHost: 'tmux',
     };
     const client = session.client as unknown as {
-      deferDeliveredUserMessageWatermarkToProviderAcceptance: ReturnType<typeof vi.fn>;
-      confirmUserMessageDeliveredToProvider: ReturnType<typeof vi.fn>;
+      bindProviderInputOutcomeProducer: ReturnType<typeof vi.fn>;
+      blockPendingMessageDelivery: ReturnType<typeof vi.fn>;
     };
+    const observeProviderInputOutcome = vi.fn();
+    client.bindProviderInputOutcomeProducer = vi.fn(() => observeProviderInputOutcome);
     const queue = session.queue as unknown as {
       size: ReturnType<typeof vi.fn>;
       waitForMessagesAndGetAsString: ReturnType<typeof vi.fn>;
@@ -476,16 +762,12 @@ describe('claudeUnifiedTerminalLauncher', () => {
         maxUserMessageSeq: 17,
         userMessageLocalIds: ['l17'],
       });
-      expect(client.confirmUserMessageDeliveredToProvider).not.toHaveBeenCalled();
-
       opts.returnUnconsumedMessage?.({
         message: 'queued before acceptance',
         mode,
         maxUserMessageSeq: batch?.maxUserMessageSeq ?? null,
         userMessageLocalIds: batch?.userMessageLocalIds ?? [],
       });
-      expect(client.confirmUserMessageDeliveredToProvider).not.toHaveBeenCalled();
-
       opts.onPromptAcceptedByProvider?.({
         message: 'queued before acceptance',
         maxUserMessageSeq: batch?.maxUserMessageSeq ?? null,
@@ -500,35 +782,97 @@ describe('claudeUnifiedTerminalLauncher', () => {
       },
     });
 
-    expect(client.deferDeliveredUserMessageWatermarkToProviderAcceptance).toHaveBeenCalledTimes(1);
-    expect(queue.unshift).toHaveBeenCalledWith(
-      'queued before acceptance',
-      mode,
-      { userMessageSeq: 17, userMessageLocalIds: ['l17'] },
-    );
-    expect(client.confirmUserMessageDeliveredToProvider).toHaveBeenCalledTimes(1);
-    expect(client.confirmUserMessageDeliveredToProvider).toHaveBeenCalledWith(17, { localIds: ['l17'] });
+    expect(client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['l17'],
+      reason: 'runtime_disposed_before_delivery',
+    });
+    expect(queue.unshift).not.toHaveBeenCalled();
+    expect(client.bindProviderInputOutcomeProducer).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'claude',
+      mode: 'unifiedTerminal',
+      matchesCurrentSession: expect.any(Function),
+    }));
+    expect(observeProviderInputOutcome).toHaveBeenCalledWith({
+      kind: 'accepted',
+      localId: 'l17',
+    });
   });
 
-  it('passes core provider-acceptance state to the unified terminal runner', async () => {
+  it('preserves an inactive exact command and deferred provider custody through startup buffering', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const mode = {
+      permissionMode: 'default',
+      claudeUnifiedTerminalEnabled: true,
+      claudeUnifiedTerminalHost: 'tmux',
+    };
+    const queue = session.queue as unknown as {
+      size: ReturnType<typeof vi.fn>;
+      waitForMessagesAndGetAsString: ReturnType<typeof vi.fn>;
+    };
+    queue.size.mockReturnValueOnce(1).mockReturnValue(0);
+    queue.waitForMessagesAndGetAsString.mockResolvedValueOnce({
+      message: 'resume this exact row',
+      mode,
+      isolate: false,
+      hash: 'unified-mode',
+      maxUserMessageSeq: null,
+      userMessageLocalIds: ['exact-resume'],
+      providerAcceptancePending: true,
+      pendingProviderAction: 'send',
+    });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      nextMessage: () => Promise<{
+        message: string;
+        mode: typeof mode;
+        maxUserMessageSeq: number | null;
+        userMessageLocalIds: readonly string[];
+        providerAcceptancePending?: boolean;
+        pendingProviderAction?: import('@/agent/runtime/modeMessageQueue').PendingProviderAction;
+      } | null>;
+    }) => {
+      await expect(opts.nextMessage()).resolves.toEqual(expect.objectContaining({
+        message: 'resume this exact row',
+        userMessageLocalIds: ['exact-resume'],
+        providerAcceptancePending: true,
+        pendingProviderAction: 'send',
+      }));
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+  });
+
+  it('passes canonical Pending delivery state to the unified terminal runner', async () => {
     setProcessTty(false);
     const session = createSession();
     const client = session.client as unknown as {
-      hasUserMessageProviderAcceptance: ReturnType<typeof vi.fn>;
+      hasPendingProviderInputAcceptance: ReturnType<typeof vi.fn>;
+      hasCanonicalPendingProviderInputDelivery: ReturnType<typeof vi.fn>;
     };
-    client.hasUserMessageProviderAcceptance.mockReturnValueOnce(true);
+    client.hasPendingProviderInputAcceptance.mockReturnValueOnce(true);
+    client.hasCanonicalPendingProviderInputDelivery.mockReturnValueOnce(false);
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
-      isPromptDeliveryAccepted?: (batch: {
+      resolvePromptDeliveryState?: (batch: {
         message: string;
         maxUserMessageSeq?: number | null;
         userMessageLocalIds?: readonly string[];
-      }) => boolean;
+      }) => 'pending' | 'accepted' | 'retired';
     }) => {
-      expect(opts.isPromptDeliveryAccepted?.({
+      expect(opts.resolvePromptDeliveryState?.({
         message: 'already accepted',
         maxUserMessageSeq: 739,
         userMessageLocalIds: ['prompt-739'],
-      })).toBe(true);
+      })).toBe('accepted');
+      expect(opts.resolvePromptDeliveryState?.({
+        message: 'discarded row',
+        maxUserMessageSeq: 740,
+        userMessageLocalIds: ['prompt-740'],
+      })).toBe('retired');
     });
 
     await claudeUnifiedTerminalLauncher(session, {
@@ -538,10 +882,8 @@ describe('claudeUnifiedTerminalLauncher', () => {
       },
     });
 
-    expect(client.hasUserMessageProviderAcceptance).toHaveBeenCalledWith({
-      userMessageSeq: 739,
-      localIds: ['prompt-739'],
-    });
+    expect(client.hasPendingProviderInputAcceptance).toHaveBeenCalledWith('prompt-739');
+    expect(client.hasCanonicalPendingProviderInputDelivery).toHaveBeenCalledWith('prompt-740');
   });
 
   it('registers terminal composer clear through additive session runtime controls', async () => {
@@ -577,7 +919,34 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
   });
 
-  it('terminalizes deterministic pre-provider rejections through the delivered watermark', async () => {
+  it('wires exact connected-service application to the Claude host and canonical Pending wake', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const register = vi.mocked(session.registerConnectedServiceExactApplicationHandler);
+
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      registerConnectedServiceExactApplicationHandler?: (
+        handler: () => Promise<void>,
+      ) => (() => void) | void;
+      onConnectedServiceExactApplicationReleased?: () => void;
+    }) => {
+      const handler = vi.fn(async () => undefined);
+      opts.registerConnectedServiceExactApplicationHandler?.(handler);
+      expect(register).toHaveBeenCalledWith(handler);
+
+      opts.onConnectedServiceExactApplicationReleased?.();
+      expect(session.client.wakePendingMaterialization).toHaveBeenCalledOnce();
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+  });
+
+  it('blocks deterministic pre-provider rejections without confirming provider acceptance', async () => {
     setProcessTty(false);
     const session = createSession();
     const mode = {
@@ -586,9 +955,11 @@ describe('claudeUnifiedTerminalLauncher', () => {
       claudeUnifiedTerminalHost: 'tmux',
     };
     const client = session.client as unknown as {
-      deferDeliveredUserMessageWatermarkToProviderAcceptance: ReturnType<typeof vi.fn>;
-      confirmUserMessageDeliveredToProvider: ReturnType<typeof vi.fn>;
+      blockPendingMessageDelivery: ReturnType<typeof vi.fn>;
+      bindProviderInputOutcomeProducer: ReturnType<typeof vi.fn>;
     };
+    const observeProviderInputOutcome = vi.fn();
+    client.bindProviderInputOutcomeProducer = vi.fn(() => observeProviderInputOutcome);
     const queue = session.queue as unknown as {
       size: ReturnType<typeof vi.fn>;
       waitForMessagesAndGetAsString: ReturnType<typeof vi.fn>;
@@ -618,8 +989,6 @@ describe('claudeUnifiedTerminalLauncher', () => {
         maxUserMessageSeq: 73,
         userMessageLocalIds: ['l73'],
       });
-      expect(client.confirmUserMessageDeliveredToProvider).not.toHaveBeenCalled();
-
       opts.onPromptTerminallyRejectedBeforeProvider?.({
         message: 'bad\u0000prompt',
         maxUserMessageSeq: batch?.maxUserMessageSeq ?? null,
@@ -635,16 +1004,37 @@ describe('claudeUnifiedTerminalLauncher', () => {
       },
     });
 
-    expect(client.deferDeliveredUserMessageWatermarkToProviderAcceptance).toHaveBeenCalledTimes(1);
     expect(queue.unshift).not.toHaveBeenCalled();
-    expect(client.confirmUserMessageDeliveredToProvider).toHaveBeenCalledTimes(1);
-    expect(client.confirmUserMessageDeliveredToProvider).toHaveBeenCalledWith(73, { localIds: ['l73'] });
+    expect(client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    expect(observeProviderInputOutcome).toHaveBeenCalledWith({
+      kind: 'rejected_before_effect',
+      localId: 'l73',
+      reason: 'invalid_prompt_text',
+    });
   });
 
   it('suppresses Claude transcript user echoes for accepted UI prompts', async () => {
     setProcessTty(false);
     const session = createSession();
+    const queue = session.queue as unknown as {
+      size: ReturnType<typeof vi.fn>;
+      waitForMessagesAndGetAsString: ReturnType<typeof vi.fn>;
+    };
+    queue.size.mockReturnValueOnce(1).mockReturnValue(0);
+    queue.waitForMessagesAndGetAsString.mockResolvedValueOnce({
+      message: 'hello from ui',
+      mode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalEnabled: true,
+        claudeUnifiedTerminalHost: 'auto',
+      },
+      isolate: false,
+      hash: 'unified-mode',
+      maxUserMessageSeq: 17,
+      userMessageLocalIds: ['durable-echo-local-id'],
+    });
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      nextMessage?: () => Promise<unknown>;
       onTerminalPromptInjected?: (accepted: {
         message: string;
         mode: unknown;
@@ -653,6 +1043,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
       }) => void | Promise<void>;
       onMessage?: (message: unknown) => void;
     }) => {
+      await opts.nextMessage?.();
       await opts.onTerminalPromptInjected?.({
         message: 'hello from ui',
         mode: {
@@ -666,6 +1057,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
       opts.onMessage?.({
         type: 'user',
         uuid: 'user-echo',
+        timestamp: new Date(Date.now() + 60_000).toISOString(),
         message: { role: 'user', content: 'hello from ui' },
       });
       opts.onMessage?.({
@@ -747,6 +1139,41 @@ describe('claudeUnifiedTerminalLauncher', () => {
       type: 'assistant',
       uuid: 'assistant-reply',
     }));
+  });
+
+  it('uses durable committed custody for historical resume backfill rows', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onHistoricalMessage?: (message: unknown) => Promise<void>;
+    }) => {
+      await opts.onHistoricalMessage?.({
+        type: 'assistant',
+        uuid: 'historical-row',
+        timestamp: '2026-08-04T10:11:12.345Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'caught up' }] },
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'auto',
+      },
+    });
+
+    expect(session.client.sendClaudeSessionMessageCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'assistant',
+        uuid: 'historical-row',
+      }),
+      {
+        createdAt: Date.parse('2026-08-04T10:11:12.345Z'),
+        updatedAt: Date.parse('2026-08-04T10:11:12.345Z'),
+        provenance: { kind: 'non_dependent', source: 'history' },
+      },
+    );
+    expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
   });
 
   it('does not persist Claude compact summary or compact local-command artifacts from unified transcripts', async () => {
@@ -942,6 +1369,28 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
   });
 
+  it('opens the canonical continuation barrier only when explicit --continue starts a provider launch', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    session.claudeArgs = ['--continue'];
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      claudeArgs?: readonly string[];
+      onProviderLaunchStarting?: () => void | Promise<void>;
+    }) => {
+      expect(opts.claudeArgs).toEqual(['--continue']);
+      expect(session.client.sessionTurnLifecycle?.beginTurn).not.toHaveBeenCalled();
+      await opts.onProviderLaunchStarting?.();
+      expect(session.client.sessionTurnLifecycle?.beginTurn).toHaveBeenCalledWith({ provider: 'claude' });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'auto',
+      },
+    });
+  });
+
   it('does not start a second canonical turn for in-flight steering injections', async () => {
     setProcessTty(false);
     const session = createSession();
@@ -1113,6 +1562,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
   it('allows the first session-queue prompt before Claude lifecycle starts', async () => {
     setProcessTty(false);
     const session = createSession();
+    vi.mocked(session.queue.size).mockReturnValueOnce(1);
     vi.mocked(session.queue.waitForMessagesAndGetAsString).mockResolvedValueOnce({
       message: 'daemon queued prompt',
       mode: {
@@ -1120,6 +1570,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
         claudeUnifiedTerminalEnabled: true,
         localId: 'daemon-initial-prompt:happy-session-id',
       },
+      userMessageLocalIds: ['daemon-initial-prompt:happy-session-id'],
     } as never);
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
       allowFirstInputBeforeSessionStart?: boolean;
@@ -1133,7 +1584,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
           claudeUnifiedTerminalEnabled: true,
         }),
         maxUserMessageSeq: null,
-        userMessageLocalIds: [],
+        userMessageLocalIds: ['daemon-initial-prompt:happy-session-id'],
       });
     });
 
@@ -1157,7 +1608,12 @@ describe('claudeUnifiedTerminalLauncher', () => {
       materializeNextPendingMessageSafely;
     vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(async () => {
       queueSize = 0;
-      return { message: 'queued on server', mode: { permissionMode: 'default' }, hash: 'h1' } as never;
+      return {
+        message: 'queued on server',
+        mode: { permissionMode: 'default' },
+        hash: 'h1',
+        userMessageLocalIds: ['pending-server-queued'],
+      } as never;
     });
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (runOpts: {
       nextMessage: () => Promise<{ message: string; mode: unknown } | null>;
@@ -1176,7 +1632,8 @@ describe('claudeUnifiedTerminalLauncher', () => {
 
     expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
       reconcileWhenEmpty: 'skip',
-      activeTurnDeliveryPolicy: 'allow_live_delivery',
+      activeTurnSteerability: 'unsteerable',
+      pendingQueueDeliveryTiming: 'after_foreground_ready',
     });
   });
 
@@ -1186,17 +1643,31 @@ describe('claudeUnifiedTerminalLauncher', () => {
     const hostDeadError = Object.assign(new Error('Claude unified terminal host is not alive'), {
       code: 'claude_unified_terminal_host_dead',
     });
-    const materializeNextPendingMessageSafely = vi.fn(async () => ({ type: 'no_pending' as const }));
+    let queueSize = 0;
+    vi.mocked(session.queue.size).mockImplementation(() => queueSize);
+    const materializeNextPendingMessageSafely = vi.fn(async () => {
+      queueSize = 1;
+      return { type: 'materialized' as const, localId: 'pending-host-recovery' };
+    });
     (session.client as unknown as Record<string, unknown>).materializeNextPendingMessageSafely =
       materializeNextPendingMessageSafely;
-    vi.mocked(session.queue.waitForMessagesAndGetAsString)
-      .mockResolvedValueOnce({ message: 'try again', mode: { permissionMode: 'default' }, hash: 'h1' } as never)
-      .mockResolvedValue(null as never);
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(async () => {
+      queueSize = 0;
+      return {
+        message: 'try again',
+        mode: { permissionMode: 'default' },
+        hash: 'h1',
+        maxUserMessageSeq: 1,
+        userMessageLocalIds: ['pending-host-recovery'],
+      } as never;
+    });
     mocks.runClaudeUnifiedTerminalSession
       .mockRejectedValueOnce(hostDeadError)
       .mockImplementationOnce(async (runOpts: {
+        claudeArgs?: readonly string[];
         nextMessage: () => Promise<{ message: string; mode: unknown } | null>;
       }) => {
+        expect(runOpts.claudeArgs).toEqual(['--resume', 'claude-session-id']);
         await expect(runOpts.nextMessage()).resolves.toEqual(expect.objectContaining({ message: 'try again' }));
       });
 
@@ -1208,6 +1679,48 @@ describe('claudeUnifiedTerminalLauncher', () => {
     })).resolves.toEqual({ type: 'exit', code: 0 });
 
     // The parked wait must include the daemon-owned pending drain, not just the local queue.
+    expect(materializeNextPendingMessageSafely).toHaveBeenCalled();
+  });
+
+  it('parks after a live pump auth materialization failure and relaunches when pending input recovers', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    let queueSize = 0;
+    vi.mocked(session.queue.size).mockImplementation(() => queueSize);
+    const materializeNextPendingMessageSafely = vi.fn(async () => {
+      queueSize = 1;
+      return { type: 'materialized' as const };
+    });
+    (session.client as unknown as Record<string, unknown>).materializeNextPendingMessageSafely =
+      materializeNextPendingMessageSafely;
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(async () => {
+      queueSize = 0;
+      return {
+        message: 'queued after daemon auth recovery',
+        mode: { permissionMode: 'default' },
+        hash: 'h-auth',
+        userMessageLocalIds: ['pending-after-auth-recovery'],
+      } as never;
+    });
+
+    mocks.runClaudeUnifiedTerminalSession
+      .mockRejectedValueOnce(new PendingQueueMaterializationAuthError())
+      .mockImplementationOnce(async (runOpts: {
+        nextMessage: () => Promise<{ message: string; mode: unknown } | null>;
+      }) => {
+        await expect(runOpts.nextMessage()).resolves.toEqual(expect.objectContaining({
+          message: 'queued after daemon auth recovery',
+        }));
+      });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(2);
     expect(materializeNextPendingMessageSafely).toHaveBeenCalled();
   });
 
@@ -1562,7 +2075,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
   });
 
-  it('keeps provider auth evidence primary when terminal host death follows in the same failure window', async () => {
+  it('keeps provider auth evidence primary and parks when terminal host death follows in the same failure window', async () => {
     setProcessTty(false);
     const previousSelectionEnv = process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
     process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY] = JSON.stringify([{
@@ -1577,21 +2090,41 @@ describe('claudeUnifiedTerminalLauncher', () => {
     const hostDeadError = Object.assign(new Error('Claude unified terminal host is not alive'), {
       code: 'claude_unified_terminal_host_dead',
     });
-    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
-      onRuntimeAuthFailureEvent?: (error: unknown) => void | Promise<void>;
-    }) => {
-      expect(opts.onRuntimeAuthFailureEvent).toBeTypeOf('function');
-      await opts.onRuntimeAuthFailureEvent?.({
-        type: 'assistant',
-        isApiErrorMessage: true,
-        error: 'authentication_failed',
-        message: {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'Not logged in · Please run /login' }],
-        },
-      });
-      throw hostDeadError;
+    let queueSize = 1;
+    vi.mocked(session.queue.size).mockImplementation(() => queueSize);
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(async () => {
+      queueSize = 0;
+      return {
+        message: 'retry after login',
+        mode: { permissionMode: 'default' },
+        hash: 'h-auth-retry',
+        maxUserMessageSeq: 2,
+        userMessageLocalIds: ['pending-auth-retry'],
+      } as never;
     });
+    mocks.runClaudeUnifiedTerminalSession
+      .mockImplementationOnce(async (opts: {
+        onRuntimeAuthFailureEvent?: (error: unknown) => void | Promise<void>;
+      }) => {
+        expect(opts.onRuntimeAuthFailureEvent).toBeTypeOf('function');
+        await opts.onRuntimeAuthFailureEvent?.({
+          type: 'assistant',
+          isApiErrorMessage: true,
+          error: 'authentication_failed',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Not logged in · Please run /login' }],
+          },
+        });
+        throw hostDeadError;
+      })
+      .mockImplementationOnce(async (opts: {
+        claudeArgs?: readonly string[];
+        nextMessage: () => Promise<{ message: string; mode: unknown } | null>;
+      }) => {
+        expect(opts.claudeArgs).toEqual(['--resume', 'claude-session-id']);
+        await expect(opts.nextMessage()).resolves.toEqual(expect.objectContaining({ message: 'retry after login' }));
+      });
 
     try {
       await expect(claudeUnifiedTerminalLauncher(session, {
@@ -1599,7 +2132,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
           permissionMode: 'default',
           claudeUnifiedTerminalHost: 'zellij',
         },
-      })).rejects.toBe(hostDeadError);
+      })).resolves.toEqual({ type: 'exit', code: 0 });
     } finally {
       if (previousSelectionEnv === undefined) {
         delete process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
@@ -1628,8 +2161,74 @@ describe('claudeUnifiedTerminalLauncher', () => {
       type: 'message',
       message: expect.stringContaining('Claude unified terminal host is not alive'),
     }));
-    expect(session.client.flush).toHaveBeenCalledTimes(1);
+    expect(session.client.flush).toHaveBeenCalled();
     expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('relaunches once while runtime auth recovery continues without consuming the park failure latch', async () => {
+    setProcessTty(false);
+    const previousSelectionEnv = process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
+    process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY] = JSON.stringify([{
+      kind: 'group',
+      serviceId: 'claude-subscription',
+      groupId: 'claude',
+      activeProfileId: 'claude-main',
+      fallbackProfileId: 'claude-main',
+      generation: 1,
+    }]);
+    mocks.reportConnectedServiceRuntimeAuthFailureToDaemon.mockResolvedValueOnce({
+      handled: true,
+      report: { status: 'credential_refreshed', restartRequested: true },
+      statusCode: 'credential_refreshed_restart_requested',
+      statusMessage: 'Credential refreshed',
+      projection: {
+        handled: true,
+        statusCode: 'credential_refreshed_restart_requested',
+        statusMessage: 'Credential refreshed',
+      },
+    } as never);
+    const session = createSession();
+    const hostDeadError = Object.assign(new Error('Claude unified terminal host is not alive'), {
+      code: 'claude_unified_terminal_host_dead',
+    });
+    mocks.runClaudeUnifiedTerminalSession
+      .mockImplementationOnce(async (opts: {
+        onRuntimeAuthFailureEvent?: (error: unknown) => void | Promise<void>;
+      }) => {
+        await opts.onRuntimeAuthFailureEvent?.({
+          type: 'assistant',
+          isApiErrorMessage: true,
+          error: 'authentication_failed',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Not logged in · Please run /login' }],
+          },
+        });
+        throw hostDeadError;
+      })
+      .mockResolvedValueOnce(undefined);
+
+    try {
+      await expect(claudeUnifiedTerminalLauncher(session, {
+        initialMode: {
+          permissionMode: 'default',
+          claudeUnifiedTerminalHost: 'zellij',
+        },
+      })).resolves.toEqual({ type: 'exit', code: 0 });
+    } finally {
+      if (previousSelectionEnv === undefined) {
+        delete process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
+      } else {
+        process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY] = previousSelectionEnv;
+      }
+    }
+
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(2);
+    expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'message',
+      message: expect.stringContaining('Not retrying automatically'),
+    }));
   });
 
   it('surfaces unified transcript provider API errors through the session runtime issue path', async () => {
@@ -1681,6 +2280,58 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
   });
 
+  it('surfaces unobserved failed terminal prompt turns through the runtime issue path before terminalizing', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalPromptInjected?: (acceptedPrompt: {
+        message: string;
+        mode: { permissionMode: 'default'; claudeUnifiedTerminalEnabled: true };
+        acceptedAs: 'new_turn';
+        turnStateAtInjection: 'idle';
+      }) => void | Promise<void>;
+      onPromptTurnTerminal?: (event: {
+        reason: 'failed';
+        source: string;
+        providerAcceptanceFailureObserved?: boolean;
+      }) => void | Promise<void>;
+    }) => {
+      await opts.onTerminalPromptInjected?.({
+        message: 'hello',
+        mode: { permissionMode: 'default', claudeUnifiedTerminalEnabled: true },
+        acceptedAs: 'new_turn',
+        turnStateAtInjection: 'idle',
+      });
+      await opts.onPromptTurnTerminal?.({
+        reason: 'failed',
+        source: 'claude_hook_stop_failure',
+        providerAcceptanceFailureObserved: false,
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'auto',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
+        provider: 'claude',
+        issue: expect.objectContaining({
+          code: 'provider_session_error',
+          source: 'provider_session_error',
+          provider: 'claude',
+        }),
+        allocateWhenIdle: true,
+      });
+    });
+    expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalledWith({ provider: 'claude' });
+    expect(session.client.flush).toHaveBeenCalled();
+    expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+  });
+
   it('cancels aborted terminal prompt turns without also marking them failed', async () => {
     setProcessTty(false);
     const session = createSession();
@@ -1720,7 +2371,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
     expect(session.abortCurrentTaskTurn).toHaveBeenCalled();
   });
 
-  it('surfaces terminal host death through the primary turn runtime issue path and exits gracefully instead of escaping as a fatal command error', async () => {
+  it('surfaces terminal host death through the primary turn runtime issue path and stays parked until shutdown', async () => {
     setProcessTty(false);
     const session = createSession();
     const hostDeadError = Object.assign(new Error('Claude unified terminal host is not alive'), {
@@ -1728,12 +2379,22 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
     mocks.runClaudeUnifiedTerminalSession.mockRejectedValueOnce(hostDeadError);
 
-    await expect(claudeUnifiedTerminalLauncher(session, {
+    const abortController = new AbortController();
+    const result = claudeUnifiedTerminalLauncher(session, {
       initialMode: {
         permissionMode: 'default',
         claudeUnifiedTerminalHost: 'zellij',
       },
-    })).resolves.toEqual({ type: 'exit', code: 1 });
+      signal: abortController.signal,
+    });
+
+    await vi.waitFor(() => {
+      expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalled();
+    });
+    let resolved = false;
+    void result.then(() => { resolved = true; });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    expect(resolved).toBe(false);
 
     expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
       provider: 'claude',
@@ -1760,17 +2421,70 @@ describe('claudeUnifiedTerminalLauncher', () => {
       readFirstInvocationOrder(vi.mocked(session.client.sendSessionEvent), 'sendSessionEvent'),
     );
     expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+
+    abortController.abort();
+    await expect(result).resolves.toEqual({ type: 'exit', code: 1 });
+  });
+
+  it('escalates once to a durable attention state after repeated inconclusive recovery probes without disposing', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    // A wedged-but-alive host (socket present, client probe times out) throws recovery_probe_inconclusive
+    // on every relaunch. The launcher must never auto-dispose (no positive death evidence) yet must not
+    // livelock silently: after a bounded number of consecutive inconclusive probes it surfaces one
+    // durable, user-visible attention event.
+    const inconclusiveError = new TerminalHostStartupError({
+      hostKind: 'zellij',
+      reason: 'recovery_probe_inconclusive',
+      message: 'Terminal host recovery probe was inconclusive; retaining the saved host for retry',
+    });
+    // Feed a message on every park wake so the loop keeps relaunching until the budget runs out.
+    vi.mocked(session.queue.size).mockReturnValue(1);
+    vi.mocked(session.queue.waitForMessagesAndGetAsString)
+      .mockResolvedValue({
+        message: 'still there?',
+        mode: { permissionMode: 'default' },
+        hash: 'h',
+        userMessageLocalIds: ['pending-inconclusive-recovery'],
+      } as never);
+    mocks.runClaudeUnifiedTerminalSession.mockRejectedValue(inconclusiveError);
+
+    const result = await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+    expect(result).toEqual({ type: 'exit', code: 1 });
+
+    const escalationCalls = vi.mocked(session.client.sendSessionEvent).mock.calls.filter(([event]) =>
+      typeof event === 'object'
+      && event !== null
+      && (event as { message?: unknown }).message !== undefined
+      && String((event as { message: unknown }).message).includes('not responding to liveness checks'),
+    );
+    expect(escalationCalls).toHaveLength(1);
   });
 
   it('parks for the next message and relaunches the unified host after terminal host death', async () => {
     setProcessTty(false);
     const session = createSession();
+    session.claudeArgs = ['--model', 'sonnet', '--session-id', 'initial-session-id', '--fork-session'];
     const hostDeadError = Object.assign(new Error('Claude unified terminal host is not alive'), {
       code: 'claude_unified_terminal_host_dead',
     });
-    vi.mocked(session.queue.waitForMessagesAndGetAsString)
-      .mockResolvedValueOnce({ message: 'try again', mode: { permissionMode: 'default' }, hash: 'h1' } as never)
-      .mockResolvedValue(null as never);
+    let queueSize = 1;
+    vi.mocked(session.queue.size).mockImplementation(() => queueSize);
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(async () => {
+      queueSize = 0;
+      return {
+        message: 'try again',
+        mode: { permissionMode: 'default' },
+        hash: 'h1',
+        maxUserMessageSeq: 3,
+        userMessageLocalIds: ['pending-host-retry'],
+      } as never;
+    });
     mocks.runClaudeUnifiedTerminalSession
       .mockRejectedValueOnce(hostDeadError)
       .mockImplementationOnce(async (runOpts: {
@@ -1787,11 +2501,73 @@ describe('claudeUnifiedTerminalLauncher', () => {
     })).resolves.toEqual({ type: 'exit', code: 0 });
 
     expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(2);
+    expect(mocks.runClaudeUnifiedTerminalSession.mock.calls[1]?.[0]).toMatchObject({
+      claudeArgs: ['--model', 'sonnet', '--resume', 'claude-session-id'],
+    });
+  });
+
+  it('keeps a host-dead runner parked across an empty queue wake until durable input arrives', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const hostDeadError = Object.assign(new Error('Claude unified terminal host is not alive'), {
+      code: 'claude_unified_terminal_host_dead',
+    });
+    let queueReady = false;
+    let queueWakeCount = 0;
+    vi.mocked(session.queue.size).mockImplementation(() => queueReady ? 1 : 0);
+    vi.mocked(session.queue.waitForMessagesSignal).mockImplementation(async () => {
+      queueWakeCount += 1;
+      if (queueWakeCount === 1) {
+        return false;
+      }
+      queueReady = true;
+      return true;
+    });
+    vi.mocked(session.queue.waitForMessagesAndGetAsString)
+      .mockImplementationOnce(async () => {
+        queueReady = false;
+        return {
+          message: 'durable prompt after host recovery',
+          mode: { permissionMode: 'default' },
+          hash: 'h-recovery',
+          maxUserMessageSeq: 42,
+          userMessageLocalIds: ['local-recovery-42'],
+        } as never;
+      });
+    mocks.runClaudeUnifiedTerminalSession
+      .mockRejectedValueOnce(hostDeadError)
+      .mockImplementationOnce(async (runOpts: {
+        claudeArgs?: readonly string[];
+        nextMessage: () => Promise<{
+          message: string;
+          mode: unknown;
+          maxUserMessageSeq: number | null;
+          userMessageLocalIds: readonly string[];
+        } | null>;
+      }) => {
+        expect(runOpts.claudeArgs).toEqual(['--resume', 'claude-session-id']);
+        await expect(runOpts.nextMessage()).resolves.toEqual(expect.objectContaining({
+          message: 'durable prompt after host recovery',
+          maxUserMessageSeq: 42,
+          userMessageLocalIds: ['local-recovery-42'],
+        }));
+      });
+
+    const result = await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    expect(result).toEqual({ type: 'exit', code: 0 });
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces terminal injection failures through the primary turn runtime issue path and exits gracefully instead of escaping as a fatal command error (incident cmq7pyqkj)', async () => {
     setProcessTty(false);
     const session = createSession();
+    const signal = abortLauncherOnEmptyQueueWait(session);
     const injectionError = Object.assign(new Error('Claude unified terminal injection failed: timeout'), {
       code: 'claude_unified_terminal_injection_failed',
     });
@@ -1805,6 +2581,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
         permissionMode: 'default',
         claudeUnifiedTerminalHost: 'zellij',
       },
+      signal,
     })).resolves.toEqual({ type: 'exit', code: 1 });
 
     expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
@@ -1817,6 +2594,30 @@ describe('claudeUnifiedTerminalLauncher', () => {
       allocateWhenIdle: true,
     });
     expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+  });
+
+  it('never propagates a zellij action timeout as a runner-fatal error', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const signal = abortLauncherOnEmptyQueueWait(session);
+    mocks.runClaudeUnifiedTerminalSession.mockRejectedValueOnce(new ZellijActionTimeoutError('list-panes'));
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+      signal,
+    })).resolves.toEqual({ type: 'exit', code: 1 });
+
+    expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
+      provider: 'claude',
+      issue: expect.objectContaining({
+        code: 'provider_session_error',
+        provider: 'claude',
+      }),
+      allocateWhenIdle: true,
+    });
   });
 
   it('surfaces invalid prompt text once without parking, requeueing, or relaunching', async () => {
@@ -1896,8 +2697,18 @@ describe('claudeUnifiedTerminalLauncher', () => {
       code: 'claude_unified_terminal_injection_failed',
       failureState: 'failed_terminal',
     });
+    let queueSize = 1;
+    vi.mocked(session.queue.size).mockImplementation(() => queueSize);
     vi.mocked(session.queue.waitForMessagesAndGetAsString)
-      .mockResolvedValueOnce({ message: 'resume after failure', mode: { permissionMode: 'default' }, hash: 'h1' } as never)
+      .mockImplementationOnce(async () => {
+        queueSize = 0;
+        return {
+          message: 'resume after failure',
+          mode: { permissionMode: 'default' },
+          hash: 'h1',
+          userMessageLocalIds: ['pending-resume-after-failure'],
+        } as never;
+      })
       .mockResolvedValue(null as never);
     const secondRunFirstBatch: Array<{ message: string } | null> = [];
     mocks.runClaudeUnifiedTerminalSession
@@ -1980,6 +2791,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
   it('requeues a parked message when relaunch fails during terminal-host startup before runner handback', async () => {
     setProcessTty(false);
     const session = createSession();
+    const signal = abortLauncherOnEmptyQueueWait(session, 2);
     const mode = { permissionMode: 'default' };
     const injectionError = Object.assign(new Error('Claude unified terminal prompt injection failed'), {
       code: 'claude_unified_terminal_injection_failed',
@@ -1990,13 +2802,19 @@ describe('claudeUnifiedTerminalLauncher', () => {
       reason: 'pane_disappeared_after_bootstrap_cleanup',
       message: 'zellij launched terminal pane disappeared after cleanup',
     });
+    let queueSize = 1;
+    vi.mocked(session.queue.size).mockImplementation(() => queueSize);
     vi.mocked(session.queue.waitForMessagesAndGetAsString)
-      .mockResolvedValueOnce({
-        message: 'retry after startup failure',
-        mode,
-        hash: 'h1',
-        maxUserMessageSeq: 31,
-      } as never)
+      .mockImplementationOnce(async () => {
+        queueSize = 0;
+        return {
+          message: 'retry after startup failure',
+          mode,
+          hash: 'h1',
+          maxUserMessageSeq: 31,
+          userMessageLocalIds: ['pending-retry-after-startup-failure'],
+        } as never;
+      })
       .mockResolvedValue(null as never);
     mocks.runClaudeUnifiedTerminalSession
       .mockRejectedValueOnce(injectionError)
@@ -2015,12 +2833,13 @@ describe('claudeUnifiedTerminalLauncher', () => {
         permissionMode: 'default',
         claudeUnifiedTerminalHost: 'zellij',
       },
+      signal,
     })).resolves.toEqual({ type: 'exit', code: 1 });
 
     expect(session.queue.unshift).toHaveBeenCalledWith(
       'retry after startup failure',
       mode,
-      { userMessageSeq: 31, userMessageLocalIds: [] },
+      { userMessageSeq: 31, userMessageLocalIds: ['pending-retry-after-startup-failure'] },
     );
   });
 
@@ -2033,8 +2852,14 @@ describe('claudeUnifiedTerminalLauncher', () => {
     });
     // A deterministically failing host with an always-available bounced message (the HIGH-2
     // handback re-pends the failed batch) must not relaunch unboundedly.
+    vi.mocked(session.queue.size).mockReturnValue(1);
     vi.mocked(session.queue.waitForMessagesAndGetAsString)
-      .mockResolvedValue({ message: 'poison message', mode: { permissionMode: 'default' }, hash: 'h1' } as never);
+      .mockResolvedValue({
+        message: 'poison message',
+        mode: { permissionMode: 'default' },
+        hash: 'h1',
+        userMessageLocalIds: ['pending-poison-message'],
+      } as never);
     mocks.runClaudeUnifiedTerminalSession.mockRejectedValue(injectionError);
 
     await expect(claudeUnifiedTerminalLauncher(session, {
@@ -2050,7 +2875,86 @@ describe('claudeUnifiedTerminalLauncher', () => {
     expect(events.some((event) => event.type === 'message' && String(event.message).includes('Not retrying automatically'))).toBe(true);
   });
 
-  it('surfaces a startup readiness timeout as a structured runtime issue and exits without a generic fatal command error (D18 standalone class)', async () => {
+  it('pauses durable pending rows and stays alive parked after exhausting the relaunch budget instead of exiting (RC-RESUMEFLAP)', async () => {
+    // Live incident 2026-07-08 (session cmr377jsr, runner pid 5526): four deterministic
+    // host-startup failures burned the park budget in ~50s and the runner exited code 1,
+    // leaving a dead session the user had to resume manually (the flap). With durable
+    // server-owned rows the exhaustion path must instead BLOCK the poisoned rows
+    // (terminal_host_unreachable) and keep the runner alive parked for genuinely new input.
+    setProcessTty(false);
+    const session = createSession();
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt injection failed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_terminal',
+    });
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) throw new Error('test fixture missing blockPendingMessageDelivery');
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValue(true);
+
+    // The poisoned batch keeps re-materializing (its rows stay deliverable) until the launcher
+    // blocks them; after the block the queue goes quiet (blocked rows no longer materialize).
+    let rowsBlocked = false;
+    vi.mocked(blockPendingMessageDelivery).mockImplementation(async () => {
+      rowsBlocked = true;
+      return true;
+    });
+    // Keep the queue wait observable after the row is blocked so the harness can model the
+    // live parked runner until the test-owned abort closes that wait.
+    vi.mocked(session.queue.size).mockReturnValue(1);
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation((async (abortSignal?: AbortSignal) => {
+      if (!rowsBlocked) {
+        return {
+          message: 'poison message',
+          mode: { permissionMode: 'default' },
+          hash: 'h1',
+          maxUserMessageSeq: 7,
+          userMessageLocalIds: ['local-poison-1'],
+        };
+      }
+      return await new Promise((resolveWait) => {
+        if (abortSignal?.aborted) {
+          resolveWait(null);
+          return;
+        }
+        abortSignal?.addEventListener('abort', () => resolveWait(null), { once: true });
+      });
+    }) as never);
+    mocks.runClaudeUnifiedTerminalSession.mockRejectedValue(injectionError);
+
+    const abortController = new AbortController();
+    const result = claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+      signal: abortController.signal,
+    });
+
+    await vi.waitFor(() => {
+      expect(blockPendingMessageDelivery).toHaveBeenCalledWith({
+        localIds: ['local-poison-1'],
+        reason: 'terminal_host_unreachable',
+      });
+    });
+
+    // Budget consumed: 1 initial run + 3 relaunches, then the rows were paused — and the
+    // launcher must still be alive parked (not resolved) with no fifth relaunch.
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(4);
+    let resolved = false;
+    void result.then(() => { resolved = true; });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    expect(resolved).toBe(false);
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(4);
+
+    const events = vi.mocked(session.client.sendSessionEvent).mock.calls.map(([event]) => event as Record<string, unknown>);
+    expect(events.some((event) => event.type === 'message' && String(event.message).includes('paused'))).toBe(true);
+
+    abortController.abort();
+    // Same terminal shape as the existing park-wait-aborted paths.
+    await expect(result).resolves.toEqual({ type: 'exit', code: 1 });
+  });
+
+  it('surfaces a startup readiness timeout and re-adopts the preserved live host without making the wrapper inactive', async () => {
     setProcessTty(false);
     const session = createSession();
     const readinessError = new ClaudeUnifiedTerminalReadinessTimeoutError({
@@ -2074,16 +2978,59 @@ describe('claudeUnifiedTerminalLauncher', () => {
         lastScreenTail: 'Initializing Claude Code…',
       },
     });
-    mocks.runClaudeUnifiedTerminalSession.mockRejectedValueOnce(readinessError);
+    mocks.runClaudeUnifiedTerminalSession
+      .mockImplementationOnce(async (runOpts: {
+        nextMessage: () => Promise<{ message: string; mode: { permissionMode: string } } | null>;
+        onTerminalHostReady?: (input: { handle: TerminalHostHandle; terminal: TerminalAttachmentInfo['terminal'] }) => Promise<void>;
+      }) => {
+        await expect(runOpts.nextMessage()).resolves.toEqual(expect.objectContaining({
+          message: 'resume after readiness timeout',
+        }));
+        await runOpts.onTerminalHostReady?.({
+          handle: {
+            kind: 'zellij',
+            sessionName: 'happier-claude-session-test',
+            paneId: '1',
+            attachmentId: 'attachment-created-by-first-attempt' as NonNullable<TerminalHostHandle['attachmentId']>,
+            attachMetadata: {
+              attachStrategy: 'terminal_host',
+              topology: 'shared',
+              locality: 'same_machine',
+              liveProbe: 'required',
+            },
+          },
+          terminal: {
+            mode: 'plain',
+          },
+        });
+        throw readinessError;
+      })
+      .mockImplementationOnce(async (runOpts: { expectedExistingTerminalHostAttachmentId?: string }) => {
+        expect(runOpts.expectedExistingTerminalHostAttachmentId).toBe('attachment-created-by-first-attempt');
+      });
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockResolvedValueOnce({
+      message: 'resume after readiness timeout',
+      mode: { permissionMode: 'default' },
+      hash: 'resume-timeout-hash',
+      userMessageLocalIds: ['pending-readiness-timeout'],
+    } as never);
+    vi.mocked(session.queue.size).mockReturnValueOnce(1);
 
-    // Resolves (no re-throw) so the readiness timeout never becomes a `[claude] Fatal command error`
-    // / silent dead session, while still surfacing the structured runtime issue to the UI.
+    // The readiness issue remains visible, but the same wrapper retries the exact preserved host;
+    // returning exit 1 here would publish session death while Claude keeps running underneath.
     await expect(claudeUnifiedTerminalLauncher(session, {
       initialMode: {
         permissionMode: 'default',
         claudeUnifiedTerminalHost: 'zellij',
       },
-    })).resolves.toEqual({ type: 'exit', code: 1 });
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(mocks.runClaudeUnifiedTerminalSession).toHaveBeenCalledTimes(2);
+    expect(session.queue.unshift).toHaveBeenCalledWith(
+      'resume after readiness timeout',
+      expect.objectContaining({ permissionMode: 'default' }),
+      { userMessageSeq: null, userMessageLocalIds: ['pending-readiness-timeout'] },
+    );
 
     expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
       provider: 'claude',
@@ -2101,6 +3048,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
   it('surfaces terminal-host startup failures as structured runtime issues and exits without generic fatal handling', async () => {
     setProcessTty(false);
     const session = createSession();
+    const signal = abortLauncherOnEmptyQueueWait(session);
     const startupError = new TerminalHostStartupError({
       hostKind: 'zellij',
       reason: 'pane_disappeared_after_bootstrap_cleanup',
@@ -2113,6 +3061,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
         permissionMode: 'default',
         claudeUnifiedTerminalHost: 'zellij',
       },
+      signal,
     })).resolves.toEqual({ type: 'exit', code: 1 });
 
     expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
@@ -2134,6 +3083,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
     const injectionError = Object.assign(new Error('Claude unified terminal prompt submission could not be confirmed'), {
       code: 'claude_unified_terminal_injection_failed',
       failureState: 'failed_ambiguous',
+      userMessageLocalIds: [],
     });
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
       onTerminalInjectionFailure?: (error: Error) => void | Promise<void>;
@@ -2151,6 +3101,497 @@ describe('claudeUnifiedTerminalLauncher', () => {
     expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalled();
     expect(session.onThinkingChange).not.toHaveBeenCalledWith(false);
   });
+
+  it('surfaces Windows-console submit failures after Enter as primary turn failures', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt submission could not be confirmed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_ambiguous',
+      reason: 'host_unreachable',
+      phase: 'after_enter_unknown',
+      duplicateRisk: 'possible',
+      recoverable: true,
+      userMessageLocalIds: ['pending-local-visible-after-enter'],
+    });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalInjectionFailure?: (error: Error) => void | Promise<void>;
+    }) => {
+      await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'auto',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
+      provider: 'claude',
+      issue: expect.objectContaining({
+        code: 'provider_session_error',
+        source: 'provider_session_error',
+        provider: 'claude',
+      }),
+      allocateWhenIdle: true,
+    });
+    expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+  });
+
+  it('surfaces provider-acceptance timeouts that have no pending delivery owner', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt submission could not be confirmed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_ambiguous',
+      reason: 'timeout',
+      phase: 'after_enter_unknown',
+      duplicateRisk: 'likely',
+      recoverable: true,
+      userMessageLocalIds: [],
+    });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalInjectionFailure?: (error: Error) => void | Promise<void>;
+    }) => {
+      await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'auto',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
+      provider: 'claude',
+      issue: expect.objectContaining({
+        code: 'provider_session_error',
+        source: 'provider_session_error',
+        provider: 'claude',
+      }),
+      allocateWhenIdle: true,
+    });
+    expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+  });
+
+  it('blocks provider-owned pending delivery for deterministic oversized terminal prompts', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt injection failed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_terminal',
+      reason: 'payload_too_large',
+      phase: 'before_write',
+      duplicateRisk: 'none',
+      recoverable: true,
+      userMessageLocalIds: ['pending-local-too-large'],
+    });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalInjectionFailure?: (error: Error) => void | Promise<void>;
+    }) => {
+      await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['pending-local-too-large'],
+      reason: 'payload_too_large',
+    });
+    expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalled();
+    expect(session.onThinkingChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it('routes provider-acceptance timeout uncertainty through the typed generation before later exact acceptance', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    const observeProviderInputOutcome = vi.fn();
+    (session.client as unknown as {
+      bindProviderInputOutcomeProducer: ReturnType<typeof vi.fn>;
+    }).bindProviderInputOutcomeProducer = vi.fn(() => observeProviderInputOutcome);
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt submission could not be confirmed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_ambiguous',
+      reason: 'timeout',
+      phase: 'after_enter_unknown',
+      duplicateRisk: 'likely',
+      recoverable: true,
+      maxUserMessageSeq: 87,
+      userMessageLocalIds: ['pending-local-timeout'],
+    });
+    let failureHandlingResult: unknown;
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalInjectionFailure?: (error: Error) => unknown;
+      onPromptAcceptedByProvider?: (input: {
+        maxUserMessageSeq: number | null;
+        userMessageLocalIds: readonly string[];
+      }) => void;
+    }) => {
+      failureHandlingResult = await opts.onTerminalInjectionFailure?.(injectionError);
+      opts.onPromptAcceptedByProvider?.({
+        maxUserMessageSeq: 87,
+        userMessageLocalIds: ['pending-local-timeout'],
+      });
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    expect(observeProviderInputOutcome.mock.calls).toEqual([
+      [{ kind: 'effect_may_have_occurred', localId: 'pending-local-timeout' }],
+      [{ kind: 'accepted', localId: 'pending-local-timeout' }],
+    ]);
+    expect(failureHandlingResult).toEqual({ action: 'surfaced_runtime_issue' });
+    expect(session.queue.unshift).not.toHaveBeenCalled();
+    expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
+      provider: 'claude',
+      issue: expect.objectContaining({
+        code: 'provider_session_error',
+        source: 'provider_session_error',
+        provider: 'claude',
+      }),
+      allocateWhenIdle: true,
+    });
+    expect(session.onThinkingChange).toHaveBeenCalledWith(false);
+    expect(session.client.flush).toHaveBeenCalled();
+  });
+
+  it('preserves a fresh primary usage-limit cause when pending delivery acceptance times out', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    const resetAtMs = Date.now() + 60_000;
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt submission could not be confirmed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_ambiguous',
+      reason: 'timeout',
+      phase: 'after_enter_unknown',
+      duplicateRisk: 'likely',
+      recoverable: true,
+      userMessageLocalIds: ['pending-local-rate-limited'],
+    });
+    let failureHandlingResult: unknown;
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onUsageLimitDetails?: (details: unknown) => void | Promise<void>;
+      onTerminalInjectionFailure?: (error: Error) => unknown;
+    }) => {
+      opts.onUsageLimitDetails?.({
+        v: 1,
+        resetAtMs,
+        retryAfterMs: null,
+        quotaScope: 'account',
+        recoverability: 'wait',
+        providerLimitId: 'rate_limit',
+        planType: null,
+        utilization: null,
+        overage: null,
+        action: null,
+        connectedService: null,
+      });
+      failureHandlingResult = await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    expect(failureHandlingResult).toEqual({ action: 'surfaced_runtime_issue' });
+    await vi.waitFor(() => {
+      expect(session.client.sessionTurnLifecycle?.failTurn).toHaveBeenCalledWith({
+        provider: 'claude',
+        issue: expect.objectContaining({
+          code: 'usage_limit',
+          source: 'usage_limit',
+          provider: 'claude',
+          usageLimit: expect.objectContaining({
+            providerLimitId: 'rate_limit',
+            resetAtMs,
+          }),
+        }),
+      });
+    });
+    expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalledWith({
+      provider: 'claude',
+      issue: expect.objectContaining({
+        code: 'provider_session_error',
+        source: 'provider_session_error',
+      }),
+      allocateWhenIdle: true,
+    });
+  });
+
+  it('preserves a usage-limit screen dialog cause when pending delivery acceptance times out', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValue(true);
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt submission could not be confirmed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_ambiguous',
+      reason: 'timeout',
+      phase: 'after_enter_unknown',
+      duplicateRisk: 'likely',
+      recoverable: true,
+      userMessageLocalIds: ['pending-local-screen-rate-limited'],
+    });
+    let failureHandlingResult: unknown;
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalScreenObserved?: (observation: {
+        screenState: ReturnType<typeof parseClaudeScreenState>;
+        userMessageLocalIds?: readonly string[];
+      }) => void;
+      onTerminalInjectionFailure?: (error: Error) => unknown;
+    }) => {
+      const screenState = parseClaudeScreenState(USAGE_LIMIT_DIALOG);
+      expect(screenState.usageLimitDialogVisible).toBe(true);
+      opts.onTerminalScreenObserved?.({
+        screenState,
+        userMessageLocalIds: ['pending-local-screen-rate-limited'],
+      });
+      failureHandlingResult = await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['pending-local-screen-rate-limited'],
+      reason: 'provider_unavailable_before_acceptance',
+    });
+    expect(failureHandlingResult).toEqual({ action: 'surfaced_runtime_issue' });
+    expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalledWith({
+      provider: 'claude',
+      issue: expect.objectContaining({
+        code: 'provider_session_error',
+        source: 'provider_session_error',
+      }),
+      allocateWhenIdle: true,
+    });
+  });
+
+  it('wakes the shared pending-materialization owner without retrying rows when a usage-limit dialog clears', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalScreenObserved?: (observation: {
+        screenState: ReturnType<typeof parseClaudeScreenState>;
+        userMessageLocalIds?: readonly string[];
+      }) => void;
+    }) => {
+      opts.onTerminalScreenObserved?.({
+        screenState: parseClaudeScreenState(USAGE_LIMIT_DIALOG),
+        userMessageLocalIds: ['retry-provider-unavailable-local'],
+      });
+      await Promise.resolve();
+      opts.onTerminalScreenObserved?.({
+        screenState: parseClaudeScreenState(IDLE_COMPOSER),
+        userMessageLocalIds: ['retry-provider-unavailable-local'],
+      });
+      opts.onTerminalScreenObserved?.({
+        screenState: parseClaudeScreenState(IDLE_COMPOSER),
+        userMessageLocalIds: ['retry-provider-unavailable-local'],
+      });
+      await vi.waitFor(() => {
+        expect(session.client.wakePendingMaterialization).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+  });
+
+  it('blocks provider-owned pending delivery when the terminal host is lost after writing', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    const injectionError = Object.assign(new Error('Claude unified terminal prompt injection failed'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_terminal',
+      reason: 'host_unreachable',
+      phase: 'after_write_before_enter',
+      duplicateRisk: 'possible',
+      recoverable: true,
+      userMessageLocalIds: ['pending-local-host-lost'],
+    });
+    let failureHandlingResult: unknown;
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalInjectionFailure?: (error: Error) => unknown;
+    }) => {
+      failureHandlingResult = await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['pending-local-host-lost'],
+      reason: 'terminal_host_unreachable',
+    });
+    expect(failureHandlingResult).toEqual({ action: 'claimed_pending_delivery' });
+    expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalled();
+    expect(session.onThinkingChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it('blocks an exact pre-write no-target steer without terminalizing the provider turn', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    const injectionError = Object.assign(new Error('Claude unified terminal steer target is unavailable'), {
+      code: 'claude_unified_terminal_injection_failed',
+      failureState: 'failed_terminal',
+      reason: 'no_target',
+      phase: 'before_write',
+      duplicateRisk: 'none',
+      recoverable: false,
+      pendingProviderAction: 'steer',
+      userMessageLocalIds: ['pending-local-steer'],
+    });
+    let failureHandlingResult: unknown;
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onTerminalInjectionFailure?: (error: Error) => unknown;
+    }) => {
+      failureHandlingResult = await opts.onTerminalInjectionFailure?.(injectionError);
+    });
+
+    await expect(claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    })).resolves.toEqual({ type: 'exit', code: 0 });
+
+    expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['pending-local-steer'],
+      reason: 'steering_unavailable',
+    });
+    expect(failureHandlingResult).toEqual({ action: 'claimed_pending_delivery' });
+    expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalled();
+    expect(session.onThinkingChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it.each([
+    ['is unavailable', 'unavailable'],
+    ['returns false', 'returns_false'],
+    ['rejects', 'rejects'],
+  ] as const)(
+    'keeps the foreground provider turn open when exact steer rejection bookkeeping %s',
+    async (_label, bookkeepingOutcome) => {
+      setProcessTty(false);
+      const session = createSession();
+      const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+      if (!blockPendingMessageDelivery) {
+        throw new Error('test fixture missing blockPendingMessageDelivery');
+      }
+      const hasActiveCanonicalTurn = session.client.hasActiveCanonicalTurn;
+      if (!hasActiveCanonicalTurn) {
+        throw new Error('test fixture missing hasActiveCanonicalTurn');
+      }
+      vi.mocked(hasActiveCanonicalTurn).mockReturnValue(true);
+      if (bookkeepingOutcome === 'unavailable') {
+        session.client.blockPendingMessageDelivery = undefined;
+      } else if (bookkeepingOutcome === 'rejects') {
+        vi.mocked(blockPendingMessageDelivery).mockRejectedValueOnce(new Error('pending block write failed'));
+      } else {
+        vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(false);
+      }
+      const injectionError = Object.assign(new Error('Claude unified terminal steer target is unavailable'), {
+        code: 'claude_unified_terminal_injection_failed',
+        failureState: 'failed_terminal',
+        reason: 'no_target',
+        phase: 'before_write',
+        duplicateRisk: 'none',
+        recoverable: false,
+        pendingProviderAction: 'steer',
+        userMessageLocalIds: ['pending-local-steer-bookkeeping-failure'],
+      });
+      let failureHandlingResult: unknown;
+      mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+        onThinkingChange?: (thinking: boolean) => void;
+        onTerminalInjectionFailure?: (error: Error) => unknown;
+      }) => {
+        opts.onThinkingChange?.(true);
+        failureHandlingResult = await opts.onTerminalInjectionFailure?.(injectionError);
+      });
+
+      await expect(claudeUnifiedTerminalLauncher(session, {
+        initialMode: {
+          permissionMode: 'default',
+          claudeUnifiedTerminalHost: 'tmux',
+        },
+      })).resolves.toEqual({ type: 'exit', code: 0 });
+
+      if (bookkeepingOutcome === 'unavailable') {
+        expect(blockPendingMessageDelivery).not.toHaveBeenCalled();
+      } else {
+        expect(blockPendingMessageDelivery).toHaveBeenCalledWith({
+          localIds: ['pending-local-steer-bookkeeping-failure'],
+          reason: 'steering_unavailable',
+        });
+      }
+      expect(failureHandlingResult).toBeUndefined();
+      expect(session.client.sessionTurnLifecycle?.failTurn).not.toHaveBeenCalled();
+      expect(session.onThinkingChange).not.toHaveBeenCalledWith(false);
+    },
+  );
 
   it('registers UI abort as a terminal-host turn interrupt for CLI-started unified sessions', async () => {
     setProcessTty(false);
@@ -2313,15 +3754,17 @@ describe('claudeUnifiedTerminalLauncher', () => {
       },
     });
 
-    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
-      .map(([event]) => event as { type?: string; reason?: string })
-      .filter((event) => event.type === 'terminal-composer-draft-blocked');
-    expect(draftBlockedEvents).toEqual([
-      expect.objectContaining({
-        type: 'terminal-composer-draft-blocked',
-        reason: 'idle_draft_guard',
-      }),
-    ]);
+    await vi.waitFor(() => {
+      const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+        .map(([event]) => event as { type?: string; reason?: string })
+        .filter((event) => event.type === 'terminal-composer-draft-blocked');
+      expect(draftBlockedEvents).toEqual([
+        expect.objectContaining({
+          type: 'terminal-composer-draft-blocked',
+          reason: 'idle_draft_guard',
+        }),
+      ]);
+    });
     expect(session.client.updateAgentState).toHaveBeenCalledWith(expect.any(Function));
     const published = vi.mocked(session.client.updateAgentState).mock.calls
       .map(([updater]) => updater({ capabilities: {} } as never) as { capabilities?: Record<string, unknown> });
@@ -2329,6 +3772,93 @@ describe('claudeUnifiedTerminalLauncher', () => {
       state.capabilities?.terminalComposerDraftPresent === true
       && state.capabilities?.terminalComposerClearSupported === true
     )).toBe(true);
+  });
+
+  it('blocks a pending row for sustained runtime-config blockers without a duplicate composer event', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      tuiRuntimeControl?: {
+        onBlockedApplyStarvation?: (info: {
+          consecutiveBlockedApplies: number;
+          blockedReason?: string | null;
+          userMessageLocalIds?: readonly string[];
+        }) => void;
+      };
+    }) => {
+      opts.tuiRuntimeControl?.onBlockedApplyStarvation?.({
+        consecutiveBlockedApplies: 6,
+        blockedReason: 'user_draft',
+        userMessageLocalIds: ['pending-local-runtime-config'],
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+        localIds: ['pending-local-runtime-config'],
+        reason: 'runtime_config_blocked',
+      });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+      .map(([event]) => event as { type?: string })
+      .filter((event) => event.type === 'terminal-composer-draft-blocked');
+    expect(draftBlockedEvents).toEqual([]);
+  });
+
+  it('keeps active-turn runtime-config user-draft starvation transient', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const hasActiveCanonicalTurn = session.client.hasActiveCanonicalTurn;
+    if (!hasActiveCanonicalTurn) {
+      throw new Error('test fixture missing hasActiveCanonicalTurn');
+    }
+    vi.mocked(hasActiveCanonicalTurn).mockReturnValue(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      tuiRuntimeControl?: {
+        onBlockedApplyStarvation?: (info: {
+          consecutiveBlockedApplies: number;
+          blockedReason?: string | null;
+          userMessageLocalIds?: readonly string[];
+          isCanonicalTurnActive?: boolean;
+        }) => void;
+      };
+    }) => {
+      opts.tuiRuntimeControl?.onBlockedApplyStarvation?.({
+        consecutiveBlockedApplies: 6,
+        blockedReason: 'user_draft',
+        userMessageLocalIds: ['active-runtime-config-local'],
+        isCanonicalTurnActive: true,
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+      .map(([event]) => event as { type?: string; reason?: string })
+      .filter((event) => event.type === 'terminal-composer-draft-blocked');
+    expect(draftBlockedEvents).toEqual([
+      expect.objectContaining({ reason: 'idle_draft_guard' }),
+    ]);
   });
 
   it('wires idle draft-guard starvation honesty: escalation surfaces ONE user-visible session message', async () => {
@@ -2357,13 +3887,14 @@ describe('claudeUnifiedTerminalLauncher', () => {
       },
     });
 
-    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
-      .map(([event]) => event as { type?: string; reason?: string; message?: string })
-      .filter((event) => event.type === 'terminal-composer-draft-blocked');
-    expect(draftBlockedEvents).toHaveLength(1);
-    expect(draftBlockedEvents[0]).toMatchObject({
-      reason: 'idle_draft_guard',
-      message: expect.stringContaining('terminal composer'),
+    await vi.waitFor(() => {
+      const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+        .map(([event]) => event as { type?: string; reason?: string; message?: string })
+        .filter((event) => event.type === 'terminal-composer-draft-blocked');
+      expect(draftBlockedEvents).toEqual([expect.objectContaining({
+        reason: 'idle_draft_guard',
+        message: expect.stringContaining('terminal composer'),
+      })]);
     });
     expect(session.client.updateAgentState).toHaveBeenCalledWith(expect.any(Function));
     const published = vi.mocked(session.client.updateAgentState).mock.calls
@@ -2374,24 +3905,282 @@ describe('claudeUnifiedTerminalLauncher', () => {
     )).toBe(true);
   });
 
+  it('blocks a pending row for sustained foreign-draft guard blockers without a duplicate composer event', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onDraftGuardStarvation?: (info: {
+        consecutiveDeferrals: number;
+        guardStatus: 'foreign_draft';
+        originKind: 'ui_pending';
+        draftLength: number;
+        userMessageLocalIds?: readonly string[];
+      }) => void;
+    }) => {
+      opts.onDraftGuardStarvation?.({
+        consecutiveDeferrals: 4,
+        guardStatus: 'foreign_draft',
+        originKind: 'ui_pending',
+        draftLength: 32,
+        userMessageLocalIds: ['pending-local-foreign-draft'],
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+        localIds: ['pending-local-foreign-draft'],
+        reason: 'terminal_composer_draft',
+      });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+      .map(([event]) => event as { type?: string })
+      .filter((event) => event.type === 'terminal-composer-draft-blocked');
+    expect(draftBlockedEvents).toEqual([]);
+  });
+
+  it('durably blocks a pending row when a recognized dialog starves idle injection', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onDraftGuardStarvation?: (info: {
+        consecutiveDeferrals: number;
+        guardStatus: 'blocked_non_input_state';
+        blockedReason: string;
+        originKind: 'ui_pending';
+        userMessageLocalIds?: readonly string[];
+        isCanonicalTurnActive?: boolean;
+      }) => void;
+    }) => {
+      opts.onDraftGuardStarvation?.({
+        consecutiveDeferrals: 4,
+        guardStatus: 'blocked_non_input_state',
+        blockedReason: 'safeguard_pause_dialog',
+        originKind: 'ui_pending',
+        userMessageLocalIds: ['pending-local-dialog'],
+        isCanonicalTurnActive: false,
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(session.client.blockPendingMessageDelivery).toHaveBeenCalledWith({
+        localIds: ['pending-local-dialog'],
+        reason: 'runtime_config_blocked',
+      });
+    });
+    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+      .map(([event]) => event as { type?: string })
+      .filter((event) => event.type === 'terminal-composer-draft-blocked');
+    expect(draftBlockedEvents).toEqual([]);
+  });
+
+  it('keeps active-turn draft-guard starvation transient until turn end', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const hasActiveCanonicalTurn = session.client.hasActiveCanonicalTurn;
+    if (!hasActiveCanonicalTurn) {
+      throw new Error('test fixture missing hasActiveCanonicalTurn');
+    }
+    vi.mocked(hasActiveCanonicalTurn).mockReturnValue(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onDraftGuardStarvation?: (info: {
+        consecutiveDeferrals: number;
+        guardStatus: 'foreign_draft';
+        originKind: 'ui_pending';
+        draftLength: number;
+        userMessageLocalIds?: readonly string[];
+        isCanonicalTurnActive?: boolean;
+      }) => void;
+    }) => {
+      opts.onDraftGuardStarvation?.({
+        consecutiveDeferrals: 4,
+        guardStatus: 'foreign_draft',
+        originKind: 'ui_pending',
+        draftLength: 32,
+        userMessageLocalIds: ['active-turn-draft-local'],
+        isCanonicalTurnActive: true,
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+      .map(([event]) => event as { type?: string; reason?: string })
+      .filter((event) => event.type === 'terminal-composer-draft-blocked');
+    expect(draftBlockedEvents).toEqual([
+      expect.objectContaining({ reason: 'idle_draft_guard' }),
+    ]);
+  });
+
+  it.each([
+    'capture_style_unavailable',
+    'clear_failed',
+  ] as const)('keeps %s draft-guard starvation transient even while idle', async (guardStatus) => {
+    setProcessTty(false);
+    const session = createSession();
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onDraftGuardStarvation?: (info: {
+        consecutiveDeferrals: number;
+        guardStatus: typeof guardStatus;
+        originKind: 'ui_pending';
+        draftLength: number;
+        userMessageLocalIds?: readonly string[];
+        isCanonicalTurnActive?: boolean;
+      }) => void;
+    }) => {
+      opts.onDraftGuardStarvation?.({
+        consecutiveDeferrals: 4,
+        guardStatus,
+        originKind: 'ui_pending',
+        draftLength: 32,
+        userMessageLocalIds: [`${guardStatus}-local`],
+        isCanonicalTurnActive: false,
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+    const draftBlockedEvents = vi.mocked(session.client.sendSessionEvent).mock.calls
+      .map(([event]) => event as { type?: string; reason?: string })
+      .filter((event) => event.type === 'terminal-composer-draft-blocked');
+    expect(draftBlockedEvents).toEqual([
+      expect.objectContaining({ reason: 'idle_draft_guard' }),
+    ]);
+  });
+
+  it('wakes the shared pending-materialization owner without retrying rows when the draft guard clears', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onDraftGuardStarvation?: (info: {
+        consecutiveDeferrals: number;
+        guardStatus: 'foreign_draft';
+        originKind: 'ui_pending';
+        draftLength: number;
+        userMessageLocalIds?: readonly string[];
+        isCanonicalTurnActive?: boolean;
+      }) => void;
+      onDraftGuardClear?: () => void;
+    }) => {
+      opts.onDraftGuardStarvation?.({
+        consecutiveDeferrals: 4,
+        guardStatus: 'foreign_draft',
+        originKind: 'ui_pending',
+        draftLength: 32,
+        userMessageLocalIds: ['retry-draft-local'],
+        isCanonicalTurnActive: false,
+      });
+      await Promise.resolve();
+      opts.onDraftGuardClear?.();
+      opts.onDraftGuardClear?.();
+      await vi.waitFor(() => {
+        expect(session.client.wakePendingMaterialization).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+  });
+
+  it('wakes the shared pending-materialization owner without retrying rows when runtime config clears', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    const blockPendingMessageDelivery = session.client.blockPendingMessageDelivery;
+    if (!blockPendingMessageDelivery) {
+      throw new Error('test fixture missing blockPendingMessageDelivery');
+    }
+    vi.mocked(blockPendingMessageDelivery).mockResolvedValueOnce(true);
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      tuiRuntimeControl?: {
+        onBlockedApplyStarvation?: (info: {
+          consecutiveBlockedApplies: number;
+          blockedReason?: string | null;
+          userMessageLocalIds?: readonly string[];
+          isCanonicalTurnActive?: boolean;
+        }) => void;
+        onBlockedApplyClear?: () => void;
+      };
+    }) => {
+      opts.tuiRuntimeControl?.onBlockedApplyStarvation?.({
+        consecutiveBlockedApplies: 6,
+        blockedReason: 'user_draft',
+        userMessageLocalIds: ['retry-runtime-config-local'],
+        isCanonicalTurnActive: false,
+      });
+      await Promise.resolve();
+      opts.tuiRuntimeControl?.onBlockedApplyClear?.();
+      opts.tuiRuntimeControl?.onBlockedApplyClear?.();
+      await vi.waitFor(() => {
+        expect(session.client.wakePendingMaterialization).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'zellij',
+      },
+    });
+
+  });
+
   it('applies metadata-only permission changes through the standalone unified runtime-control bridge', async () => {
     setProcessTty(false);
     const session = createSession();
     const applyMode = vi.fn(async () => ({ promptMayProceed: true, attempted: true } as const));
-    let metadataWakeCount = 0;
-    let queueReady = false;
+    let queueReady = true;
     vi.mocked(session.client.getMetadataSnapshot).mockReturnValue({
       permissionMode: 'yolo',
       permissionModeUpdatedAt: 25,
     } as never);
-    vi.mocked(session.client.waitForMetadataUpdate).mockImplementation(async () => {
-      metadataWakeCount += 1;
-      if (metadataWakeCount === 1) {
-        queueReady = true;
-        return true;
-      }
-      return false;
-    });
     vi.mocked(session.queue.size).mockImplementation(() => queueReady ? 1 : 0);
     vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(async () => {
       queueReady = false;
@@ -2405,7 +4194,7 @@ describe('claudeUnifiedTerminalLauncher', () => {
         isolate: false,
         hash: 'mode-yolo',
         maxUserMessageSeq: 25,
-        userMessageLocalIds: [],
+        userMessageLocalIds: ['pending-after-metadata'],
       };
     });
     mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
@@ -2433,6 +4222,62 @@ describe('claudeUnifiedTerminalLauncher', () => {
     }));
   });
 
+  it('does not block pending delivery when a metadata-only permission change is runtime-control blocked', async () => {
+    setProcessTty(false);
+    const session = createSession();
+    let queueReady = true;
+    const applyMode = vi.fn(async () => {
+      return {
+        promptMayProceed: false,
+        attempted: true,
+        blockedReason: 'user_draft',
+      } as const;
+    });
+    vi.mocked(session.client.getMetadataSnapshot).mockReturnValue({
+      permissionMode: 'yolo',
+      permissionModeUpdatedAt: 25,
+    } as never);
+    vi.mocked(session.queue.size).mockImplementation(() => queueReady ? 1 : 0);
+    vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementationOnce(async () => {
+      queueReady = false;
+      return {
+        message: 'after blocked metadata apply',
+        mode: {
+          permissionMode: 'yolo',
+          claudeUnifiedTerminalEnabled: true,
+          claudeUnifiedTerminalHost: 'tmux',
+        },
+        hash: 'mode-yolo-blocked',
+        maxUserMessageSeq: 26,
+        userMessageLocalIds: ['pending-after-blocked-metadata'],
+      } as never;
+    });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      nextMessage: () => Promise<{ message: string } | null>;
+      tuiRuntimeControl?: {
+        registerMetadataRuntimeModeApplier?: (
+          apply: (mode: Record<string, unknown>) => Promise<{ promptMayProceed: boolean; attempted: boolean }>,
+        ) => void;
+      };
+    }) => {
+      opts.tuiRuntimeControl?.registerMetadataRuntimeModeApplier?.(applyMode);
+      await opts.nextMessage();
+    });
+
+    await claudeUnifiedTerminalLauncher(session, {
+      initialMode: {
+        permissionMode: 'default',
+        claudeUnifiedTerminalHost: 'tmux',
+      },
+    });
+
+    expect(applyMode).toHaveBeenCalledWith(expect.objectContaining({
+      permissionMode: 'yolo',
+      claudeUnifiedTerminalEnabled: true,
+    }));
+    expect(session.client.blockPendingMessageDelivery).not.toHaveBeenCalled();
+  });
+
   // QA-B B6 (live 2026-06-12, session cmqawdqzj): gate OFF dropped a permission-mode change
   // between turns SILENTLY (no requires_restart notice, prompt ran under the stale mode). The
   // standalone launcher must surface the same legacy notices as the daemon launcher.
@@ -2442,6 +4287,8 @@ describe('claudeUnifiedTerminalLauncher', () => {
     process.env.HAPPIER_FEATURE_CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL__ENABLED = '0';
     try {
       const session = createSession();
+      let queueSize = 2;
+      vi.mocked(session.queue.size).mockImplementation(() => queueSize);
       mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
         nextMessage: () => Promise<{ message: string; mode: Record<string, unknown> } | null>;
         tuiRuntimeControl?: { featureEnabled: boolean };
@@ -2451,8 +4298,14 @@ describe('claudeUnifiedTerminalLauncher', () => {
         await opts.nextMessage();
       });
       vi.mocked(session.queue.waitForMessagesAndGetAsString)
-        .mockResolvedValueOnce({ message: 'first', mode: { permissionMode: 'default', claudeUnifiedTerminalEnabled: true }, isolate: false, hash: 'h1', maxUserMessageSeq: null, userMessageLocalIds: [] })
-        .mockResolvedValueOnce({ message: 'second', mode: { permissionMode: 'plan', claudeUnifiedTerminalEnabled: true }, isolate: false, hash: 'h2', maxUserMessageSeq: null, userMessageLocalIds: [] });
+        .mockImplementationOnce(async () => {
+          queueSize -= 1;
+          return { message: 'first', mode: { permissionMode: 'default', claudeUnifiedTerminalEnabled: true }, isolate: false, hash: 'h1', maxUserMessageSeq: null, userMessageLocalIds: ['pending-first-mode'] };
+        })
+        .mockImplementationOnce(async () => {
+          queueSize -= 1;
+          return { message: 'second', mode: { permissionMode: 'plan', claudeUnifiedTerminalEnabled: true }, isolate: false, hash: 'h2', maxUserMessageSeq: null, userMessageLocalIds: ['pending-second-mode'] };
+        });
 
       await claudeUnifiedTerminalLauncher(session, {});
 
@@ -2465,5 +4318,163 @@ describe('claudeUnifiedTerminalLauncher', () => {
       if (previousGateEnv === undefined) delete process.env.HAPPIER_FEATURE_CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL__ENABLED;
       else process.env.HAPPIER_FEATURE_CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL__ENABLED = previousGateEnv;
     }
+  });
+
+  // RULING-14. This launcher's teardown IS the observation that the Claude process is gone, so a
+  // workflow run and its agents that were still live at that moment must be resolved — otherwise the
+  // roster paints them "Working" forever. The remote launcher already did this; this one only
+  // drained, which is why the fix was live on one launcher out of three.
+  it('resolves live workflow runs and agents when the provider dies (RULING-14)', async () => {
+    setProcessTty(false);
+    const lifecycle: string[] = [];
+    mocks.createClaudeWorkflowActivitySourceForSession.mockResolvedValueOnce({
+      observeTranscriptMessage: vi.fn(),
+      getWorkflowOwnedAgentToolUseIds: vi.fn(() => new Set<string>()),
+      isWorkflowOwnedProviderTaskId: vi.fn(() => false),
+      isWorkflowOwnedTaskReference: vi.fn(() => false),
+      finalizeInterruptedActivityOnShutdown: vi.fn(() => { lifecycle.push('finalize'); }),
+      flush: vi.fn(async () => { lifecycle.push('flush'); }),
+      reconcileStartupInterruptedRuns: vi.fn(async () => {}),
+      armStartupReconciliation: vi.fn(),
+      dispose: vi.fn(() => { lifecycle.push('dispose'); }),
+    });
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async () => {});
+
+    await claudeUnifiedTerminalLauncher(createSession(), {
+      initialMode: { permissionMode: 'default', claudeUnifiedTerminalHost: 'tmux' },
+    });
+
+    // Resolve BEFORE the drain, or the durable write carries the still-live state.
+    expect(lifecycle).toEqual(['finalize', 'flush', 'dispose']);
+  });
+
+  // A background shell is the one kind nothing ever finalizes, and it is also the one kind that can
+  // OUTLIVE its parent — so it may only be resolved when the kill was ours and we watched it. The
+  // explicit-stop path destroys the terminal host the shell lives in, which is that observation.
+  // Every other way out of this launcher (a provider crash, a runtime issue, a plain exit that
+  // leaves the detached host running) is NOT, and must leave the record alone.
+  it('resolves background-task records only when it destroyed the host for an explicit stop', async () => {
+    setProcessTty(false);
+    const terminal = {
+      mode: 'tmux',
+      tmux: { target: 'happy:unified-window' },
+    } as NonNullable<TerminalAttachmentInfo['terminal']>;
+    const handle: TerminalHostHandle = {
+      kind: 'tmux',
+      sessionName: 'happy',
+      paneId: 'unified-window',
+      attachMetadata: {
+        attachStrategy: 'terminal_host',
+        topology: 'shared',
+        locality: 'same_machine',
+        liveProbe: 'required',
+      },
+    };
+
+    const runLauncher = async (explicitStop: boolean): Promise<string[]> => {
+      const lifecycle: string[] = [];
+      // The wrapper the launcher hands UP to its caller — the one `requestClaudeExplicitRunnerStop`
+      // actually invokes on a user stop.
+      let forwardedDestroyOwnedHost: (() => Promise<void>) | null = null;
+      mocks.createClaudeWorkflowActivitySourceForSession.mockResolvedValueOnce({
+        observeTranscriptMessage: vi.fn(),
+        getWorkflowOwnedAgentToolUseIds: vi.fn(() => new Set<string>()),
+        isWorkflowOwnedProviderTaskId: vi.fn(() => false),
+        isWorkflowOwnedTaskReference: vi.fn(() => false),
+        finalizeInterruptedActivityOnShutdown: vi.fn(),
+        finalizeBackgroundTaskRecordsOnOrderlyStop: vi.fn(() => { lifecycle.push('finalize-background'); }),
+        flush: vi.fn(async () => { lifecycle.push('flush'); }),
+        reconcileStartupInterruptedRuns: vi.fn(async () => {}),
+        armStartupReconciliation: vi.fn(),
+        dispose: vi.fn(),
+      });
+      mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+        onTerminalHostReady?: (params: Readonly<{
+          handle: TerminalHostHandle;
+          terminal: NonNullable<TerminalAttachmentInfo['terminal']>;
+          destroyOwnedHostForExplicitStop: () => Promise<void>;
+        }>) => void | Promise<void>;
+      }) => {
+        await opts.onTerminalHostReady?.({
+          handle,
+          terminal,
+          destroyOwnedHostForExplicitStop: async () => { lifecycle.push('destroy-host'); },
+        });
+        if (explicitStop) await forwardedDestroyOwnedHost?.();
+      });
+
+      await claudeUnifiedTerminalLauncher(createSession(), {
+        initialMode: { permissionMode: 'default', claudeUnifiedTerminalHost: 'tmux' },
+        onTerminalHostReady: ({ destroyOwnedHostForExplicitStop }) => {
+          forwardedDestroyOwnedHost = destroyOwnedHostForExplicitStop;
+        },
+      });
+      return lifecycle;
+    };
+
+    // Explicit stop: we destroyed the host, so the shells inside it died with it — a recorded
+    // observation, and the resolution must land BEFORE the drain that writes it.
+    expect(await runLauncher(true)).toEqual(['destroy-host', 'finalize-background', 'flush']);
+    // Same teardown, no explicit stop: the detached host may still be running the shell. Silence.
+    expect(await runLauncher(false)).toEqual(['flush']);
+  });
+
+  // INV-R C-1. Workflow-agent transcript import was built in wave 23 and wired on exactly ONE
+  // launcher — the remote one. This runtime is the one the reporting user actually runs, so the
+  // whole vertical was dormant here: no registrar reached the journal follower, no sidechain id was
+  // ever minted, and zero workflow-agent rows could open. Bind it to the SAME importer that already
+  // owns `Task` sub-agent transcripts (one follower budget, one dedupe, one marking rule), through
+  // the same late holder the remote launcher uses — and keep wave 25's fail-closed rule: with no
+  // importer the registration must FAIL so the follower withholds the id, never silently no-op.
+  it('registers workflow-agent sidecars with the session sidechain importer, fail-closed (INV-R C-1)', async () => {
+    setProcessTty(false);
+    let publishImporter: ((collector: unknown) => void) | null = null;
+    mocks.runClaudeUnifiedTerminalSession.mockImplementationOnce(async (opts: {
+      onSubagentFileCollectorChanged?: (collector: unknown) => void;
+    }) => {
+      publishImporter = opts.onSubagentFileCollectorChanged ?? null;
+    });
+
+    await claudeUnifiedTerminalLauncher(createSession(), {
+      initialMode: { permissionMode: 'default', claudeUnifiedTerminalHost: 'tmux' },
+    });
+
+    const sourceParams = mocks.createClaudeWorkflowActivitySourceForSession.mock.calls.at(-1)?.[0] as
+      | Readonly<{
+        registerWorkflowAgentTranscript?: (registration: Readonly<{
+          sidechainId: string;
+          agentId: string;
+          filePath: string;
+        }>) => Promise<void>;
+      }>
+      | undefined;
+    const register = sourceParams?.registerWorkflowAgentTranscript;
+    if (typeof register !== 'function') {
+      throw new Error('unified launcher did not hand the workflow source a transcript registrar');
+    }
+    const registration = {
+      sidechainId: 'workflow_agent_sidechain:toolu_1:agent-a',
+      agentId: 'agent-a',
+      filePath: '/tmp/wf/agent-agent-a.jsonl',
+    };
+
+    // No importer yet (the runtime never reached transcript observation): claim nothing.
+    await expect(register(registration)).rejects.toThrow(/no sidechain importer/i);
+
+    const registerSidechainFile = vi.fn(async () => {});
+    const publish = publishImporter as unknown as ((collector: unknown) => void) | null;
+    if (!publish) {
+      throw new Error('unified launcher did not subscribe to the session sidechain importer');
+    }
+    publish({ registerSidechainFile });
+    await register(registration);
+    expect(registerSidechainFile).toHaveBeenCalledWith({
+      ...registration,
+      source: 'workflow-agent',
+    });
+
+    // The importer dies with its scanner; a later journal entry must not attach a follower to it.
+    publish(null);
+    await expect(register(registration)).rejects.toThrow(/no sidechain importer/i);
   });
 });

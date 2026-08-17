@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile, unlink } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
@@ -24,6 +24,18 @@ type NormalizedDaemonState = Readonly<{
 
 type StopDaemonOptions = Readonly<{
   stopSessions?: boolean;
+}>;
+
+type SameHomeDaemonStateRecord = Readonly<{
+  serverId: string;
+  statePath: string;
+  state: NormalizedDaemonState;
+}>;
+
+export type SameHomeDaemonOrphanReapResult = Readonly<{
+  stoppedPids: readonly number[];
+  preservedPids: readonly number[];
+  failedPids: readonly number[];
 }>;
 
 function parseDaemonStateFromJson(value: unknown): NormalizedDaemonState | null {
@@ -94,6 +106,51 @@ async function resolveDaemonStatePath(serverId: string): Promise<string> {
     }
   }
   return firstReadablePath ?? canonicalPath;
+}
+
+async function listSameHomeServerIds(): Promise<string[]> {
+  const settings = await readSettings();
+  const serverIds = new Set<string>(Object.keys(settings.servers ?? {}));
+  const activeServerId = String(configuration.activeServerId ?? '').trim();
+  if (activeServerId) {
+    serverIds.add(activeServerId);
+  }
+
+  try {
+    const entries = await readdir(configuration.serversDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.trim()) {
+        serverIds.add(entry.name);
+      }
+    }
+  } catch {
+    // Missing servers dir is fine for fresh homes.
+  }
+
+  return [...serverIds].sort();
+}
+
+async function listSameHomeDaemonStateRecords(): Promise<SameHomeDaemonStateRecord[]> {
+  const records: SameHomeDaemonStateRecord[] = [];
+  const seenPaths = new Set<string>();
+  for (const serverId of await listSameHomeServerIds()) {
+    const serverDir = join(configuration.serversDir, serverId);
+    for (const statePath of resolveDaemonStateCandidatePaths({
+      serverDir,
+      preferredRing: configuration.publicReleaseRing,
+    })) {
+      if (seenPaths.has(statePath)) {
+        continue;
+      }
+      seenPaths.add(statePath);
+      const state = await readDaemonStateFromPath(statePath);
+      if (!state) {
+        continue;
+      }
+      records.push({ serverId, statePath, state });
+    }
+  }
+  return records;
 }
 
 export type DaemonStatusEntry = Readonly<{
@@ -285,10 +342,14 @@ async function stopDaemonViaHttpBestEffort(state: NormalizedDaemonState, opts: S
   }
 }
 
+function hasUsableControlToken(state: NormalizedDaemonState): boolean {
+  return typeof state.controlToken === 'string' && state.controlToken.trim().length > 0;
+}
+
 /**
  * Best-effort stop for all daemons found in known server profiles.
  * Safety: does not force-kill processes; uses the daemon control HTTP endpoint.
- * Also clears stale state files when the PID is not alive.
+ * Daemon publication cleanup remains owned by the daemon lifecycle lock.
  */
 export async function stopAllDaemonsBestEffort(opts: StopDaemonOptions = {}): Promise<void> {
   const statuses = await listDaemonStatusesForAllKnownServers();
@@ -297,25 +358,66 @@ export async function stopAllDaemonsBestEffort(opts: StopDaemonOptions = {}): Pr
     const state = await readDaemonStateFromPath(statePath);
     if (!state) continue;
 
-    if (!isPidAlive(state.pid)) {
-      try {
-        await unlink(statePath);
-      } catch {
-        // ignore
-      }
-      continue;
-    }
+    if (!isPidAlive(state.pid)) continue;
 
     const stopped = await stopDaemonViaHttpBestEffort(state, opts);
     if (!stopped) continue;
 
-    const exited = await waitForProcessDeath(state.pid, 2500);
-    if (!exited) continue;
-
-    try {
-      await unlink(statePath);
-    } catch {
-      // ignore
-    }
+    await waitForProcessDeath(state.pid, 2500);
   }
+}
+
+export async function reapSameHomeDaemonOrphansBeforeStart(
+  opts: Readonly<{
+    preservePids?: readonly number[];
+  }> = {},
+): Promise<SameHomeDaemonOrphanReapResult> {
+  const preservePids = new Set(
+    [process.pid, ...(opts.preservePids ?? [])]
+      .filter((pid): pid is number => Number.isInteger(pid) && pid > 0),
+  );
+  const stoppedPids = new Set<number>();
+  const preservedPids = new Set<number>();
+  const failedPids = new Set<number>();
+  const stoppedOrAttemptedPids = new Set<number>();
+
+  for (const record of await listSameHomeDaemonStateRecords()) {
+    const { state } = record;
+    if (preservePids.has(state.pid)) {
+      preservedPids.add(state.pid);
+      continue;
+    }
+
+    if (!isPidAlive(state.pid)) continue;
+
+    if (stoppedOrAttemptedPids.has(state.pid)) {
+      continue;
+    }
+    stoppedOrAttemptedPids.add(state.pid);
+
+    if (!hasUsableControlToken(state)) {
+      failedPids.add(state.pid);
+      continue;
+    }
+
+    const stopped = await stopDaemonViaHttpBestEffort(state, { stopSessions: false });
+    if (!stopped) {
+      failedPids.add(state.pid);
+      continue;
+    }
+
+    const exited = await waitForProcessDeath(state.pid, 2500);
+    if (!exited) {
+      failedPids.add(state.pid);
+      continue;
+    }
+
+    stoppedPids.add(state.pid);
+  }
+
+  return {
+    stoppedPids: [...stoppedPids],
+    preservedPids: [...preservedPids],
+    failedPids: [...failedPids],
+  };
 }

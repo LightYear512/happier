@@ -8,12 +8,15 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
     SessionCockpitBottomChromeHeightContext,
     useSessionCockpitBottomChromeHeight,
+    useSessionCockpitChromeRegister,
 } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { useDetailsTabCount } from '@/components/appShell/panes/hooks/useDetailsTabCount';
 import type { AttachmentDraft } from '@/components/sessions/attachments/attachmentDraftModel';
 import { SessionLocalServicePreviewPane } from '@/components/sessions/devPreview/SessionLocalServicePreviewPane';
 import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { SessionDetailsPanel } from '@/components/sessions/panes/SessionDetailsPanel';
+import { SessionTranscriptNavigationPane } from '@/components/sessions/panes/SessionTranscriptNavigationPane';
 import {
     createSessionCommitDetailsTab,
     createSessionDetailsTerminalTab,
@@ -84,6 +87,8 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
     const isFocused = useIsFocused();
     const pane = useAppPaneScope(props.scopeId);
     const surfaceNavigation = useSessionCockpitSurfaceNavigation();
+    const registerCockpitChrome = useSessionCockpitChromeRegister();
+    const openDetailsTabCount = useDetailsTabCount(props.scopeId);
     const activeRightTabId = pane.scopeState?.right?.activeTabId ?? null;
     const rightIsOpen = pane.scopeState?.right?.isOpen ?? false;
     const detailsIsOpen = pane.scopeState?.details?.isOpen ?? false;
@@ -134,6 +139,38 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
     paneRef.current = pane;
     localServicePreviewsRef.current = localServicePreviews;
     surfaceNavigationRef.current = surfaceNavigation;
+
+    const switchSurface = React.useCallback((surface: SessionMobileSurface) => {
+        surfaceNavigationRef.current?.switchSurface(surface);
+    }, []);
+
+    // The cockpit's only exit from a fullscreen surface back to the transcript. The
+    // navigation pane uses it both as its close affordance (button / Escape) and as the
+    // reveal that must precede a jump, since jumping into a hidden scene moves a viewport
+    // the reader cannot see.
+    const revealChatSurface = React.useCallback(() => {
+        switchSurface('chat');
+    }, [switchSurface]);
+
+    React.useEffect(() => {
+        if (!isFocused || !surfaceNavigation) return;
+        return registerCockpitChrome({
+            sessionId: props.sessionId,
+            activeSurface: props.surface,
+            terminalTabAvailable,
+            openDetailsTabCount,
+            switchSurface,
+        });
+    }, [
+        isFocused,
+        openDetailsTabCount,
+        props.sessionId,
+        props.surface,
+        registerCockpitChrome,
+        surfaceNavigation,
+        switchSurface,
+        terminalTabAvailable,
+    ]);
 
     const targetRightTabId = resolveSessionRightTabIdForSurface(props.surface, terminalTabAvailable);
     React.useEffect(() => {
@@ -273,10 +310,12 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
             routeHydrationState={props.routeHydrationState}
             safeAreaTopMode={safeAreaTopMode}
             headerSafeAreaTopMode={headerSafeAreaTopMode}
+            surfaceFocusedOverride={isFocused}
             chatBottomSpacing="none"
         />
     ), [
         headerSafeAreaTopMode,
+        isFocused,
         props.initialAttachmentDrafts,
         props.jumpToSeq,
         props.paneUrlState,
@@ -318,6 +357,18 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
                         onOpenStashDetails={openStashDetails}
                     />
                 </React.Suspense>
+            </SessionCockpitFullscreenSurface>,
+        );
+    }
+
+    if (props.surface === 'navigation') {
+        return renderSessionChrome(
+            <SessionCockpitFullscreenSurface screenTestID="session-transcript-navigation-screen" safeAreaPadding={false}>
+                <SessionTranscriptNavigationPane
+                    onRequestClose={revealChatSurface}
+                    onRevealTranscript={revealChatSurface}
+                    sessionId={props.sessionId}
+                />
             </SessionCockpitFullscreenSurface>,
         );
     }

@@ -14,9 +14,21 @@ import type {
   TerminalInputInjectionResult,
   TerminalInputState,
   TerminalPromptInput,
+  TerminalPromptWriteBoundaryV1,
 } from '../terminalHost/_types';
 import { buildTerminalControlCapture } from '../terminalHost/controlCapture';
 import { TERMINAL_SHIFT_TAB_SEQUENCE } from '../terminalHost/controlTypes';
+import {
+  createTerminalHostDeadline,
+  remainingTerminalHostDeadlineMs,
+} from '../terminalHost/deadline';
+import {
+  runTerminalPromptSubmission,
+  resolveTerminalPromptSubmissionFailureReason,
+  type TerminalPromptSubmitVerificationPolicy,
+} from '../terminalHost/promptSubmitVerification';
+import { wrapBracketedPaste } from '@/agent/runtime/terminal/injection/bracketedPaste';
+import { resolveTerminalPromptWriteTimeoutMs } from '@/agent/runtime/terminal/injection/promptWriteTimeout';
 import type { Disposable, PtyProcess, PtyProvider } from '@/integrations/pty/ptyProvider';
 import { createNodePtyProvider } from '@/integrations/pty/ptyProvider';
 import { delay } from '@/utils/time';
@@ -99,6 +111,7 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
   rows?: number;
   inputStabilityDelayMs?: number;
   postWriteLivenessDelayMs?: number;
+  promptSubmitVerification?: TerminalPromptSubmitVerificationPolicy | undefined;
   now?: () => number;
 }>): TerminalHostAdapter {
   const ptyProvider = params?.ptyProvider ?? createNodePtyProvider();
@@ -106,6 +119,7 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
   const rows = Math.max(2, Math.trunc(params?.rows ?? DEFAULT_ROWS));
   const inputStabilityDelayMs = Math.max(0, Math.trunc(params?.inputStabilityDelayMs ?? INPUT_STABILITY_DELAY_MS));
   const postWriteLivenessDelayMs = Math.max(0, Math.trunc(params?.postWriteLivenessDelayMs ?? POST_WRITE_LIVENESS_DELAY_MS));
+  const promptSubmitVerification = params?.promptSubmitVerification;
   const now = params?.now ?? (() => Date.now());
   const sessions = new Map<string, PtyTerminalHostSession>();
 
@@ -140,7 +154,15 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
     const firstInput = session.screen.capture();
     await delay(inputStabilityDelayMs);
     const currentInput = session.screen.capture();
-    return { stable: firstInput === currentInput, currentInput, observedAt: now() };
+    return {
+      stable:
+        firstInput.text === currentInput.text
+        && firstInput.cursor.x === currentInput.cursor.x
+        && firstInput.cursor.y === currentInput.cursor.y,
+      currentInput: currentInput.text,
+      cursor: currentInput.cursor,
+      observedAt: now(),
+    };
   }
 
   function createControlPort(handle: TerminalHostHandle): TerminalControlPort | null {
@@ -172,10 +194,12 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
         const session = readSession(handle);
         if (!session) return { status: 'host_dead', recoverable: true };
         if (session.ended) return { status: 'host_dead', recoverable: false };
+        const screen = session.screen.capture();
         return {
           status: 'captured',
           capture: buildTerminalControlCapture({
-            rawText: session.screen.capture(),
+            rawText: screen.text,
+            cursor: screen.cursor,
             hostKind: 'windows_console',
             capturedAtMs: now(),
           }),
@@ -255,7 +279,7 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
         },
       };
     },
-    async injectUserPrompt(handle, input) {
+    async injectUserPrompt(handle, input, writeBoundary?: TerminalPromptWriteBoundaryV1) {
       const deferral = scheduledDeferral(input);
       if (deferral) return deferral;
 
@@ -286,7 +310,25 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
           };
         }
       }
-      if (!writeToSession(session, `${input.text}\r`)) {
+      if (writeBoundary) {
+        let authorized = false;
+        try {
+          authorized = await writeBoundary.authorizeBeforeWrite();
+        } catch {
+          authorized = false;
+        }
+        if (!authorized) {
+          return failedInjectionResult({
+            reason: 'no_target',
+            phase: 'before_write',
+            duplicateRisk: 'none',
+            recoverable: false,
+          });
+        }
+      }
+      const shouldStagePrompt = promptSubmitVerification?.shouldVerifyAfterSubmit(input.text) === true;
+      const textToWrite = input.multiline && shouldStagePrompt ? wrapBracketedPaste(input.text) : input.text;
+      if (!writeToSession(session, textToWrite)) {
         return failedInjectionResult({
           reason: 'host_unreachable',
           phase: 'during_write',
@@ -294,11 +336,37 @@ export function createPtyTerminalHostAdapter(params?: Readonly<{
           recoverable: true,
         });
       }
-      if (!await waitForPostWriteLiveness(session)) {
+      // Writing and submitting are independent PTY operations. Preserve the bounded timeout for
+      // each phase instead of letting a slow successful write exhaust staging/Enter verification.
+      const submissionDeadline = createTerminalHostDeadline(
+        input.scheduling.timeoutMs ?? resolveTerminalPromptWriteTimeoutMs(input.text),
+      );
+      const submission = await runTerminalPromptSubmission({
+        promptText: input.text,
+        ...(shouldStagePrompt
+          ? {
+            verifyStagedBeforeSubmit: async ({ promptText }) => promptSubmitVerification.isPromptStagedBeforeSubmit({
+              promptText,
+              screenText: session.screen.capture().text,
+            }),
+            verifyAfterSubmit: async ({ promptText }) => promptSubmitVerification.isPromptStillPendingAfterSubmit({
+              promptText,
+              screenText: session.screen.capture().text,
+            }),
+          }
+          : {}),
+        submitEnter: async ({ remainingTimeoutMs }) => {
+          if (remainingTimeoutMs === 0) return 'timeout';
+          if (!writeToSession(session, '\r')) return 'failed';
+          return await waitForPostWriteLiveness(session) ? 'success' : 'failed';
+        },
+        remainingTimeoutMs: () => remainingTerminalHostDeadlineMs(submissionDeadline),
+      });
+      if (!submission.success) {
         return failedInjectionResult({
-          reason: 'host_unreachable',
-          phase: 'after_enter_unknown',
-          duplicateRisk: 'possible',
+          reason: resolveTerminalPromptSubmissionFailureReason(submission.reason),
+          phase: submission.phase,
+          duplicateRisk: submission.duplicateRisk,
           recoverable: true,
         });
       }

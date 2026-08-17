@@ -17,8 +17,11 @@ import { getPendingTerminalConnect } from "@/sync/domains/pending/pendingTermina
 import { isSafeExternalAuthUrl } from "@/auth/providers/externalAuthUrl";
 import { fireAndForget } from "@/utils/system/fireAndForget";
 import { formatOperationFailedDebugMessage } from "@/utils/errors/formatOperationFailedDebugMessage";
+import { HappyError } from "@/utils/errors/errors";
 import { getActiveServerSnapshot } from "@/sync/domains/server/serverRuntime";
 import { getServerFeaturesSnapshot } from "@/sync/api/capabilities/serverFeaturesClient";
+import { getServerRetentionPolicy } from '@/sync/api/capabilities/serverRetentionPolicyClient';
+import { formatServerRetentionDisclosure } from '@/sync/domains/server/retention/formatServerRetentionPolicy';
 import { buildDataKeyCredentialsForToken } from "@/auth/flows/buildDataKeyCredentialsForToken";
 import { digest } from "@/platform/digest";
 import { encodeHex } from "@/encryption/hex";
@@ -142,6 +145,7 @@ function NotAuthenticated() {
         keylessProviderIds: Object.freeze([]),
         preferredKeylessProviderId: null,
     });
+    const [retentionSummary, setRetentionSummary] = React.useState<string | null>(null);
     const autoRedirectAttemptedRef = React.useRef(false);
     const hasPendingTerminalConnect = Boolean(getPendingTerminalConnect());
     const firstLaunchSetupRedirectedRef = React.useRef(false);
@@ -209,6 +213,10 @@ function NotAuthenticated() {
                     setLoginOptions(capabilityOptions.loginOptions);
                     setServerAvailability(capabilityOptions.serverAvailability);
                 }
+                fireAndForget((async () => {
+                    const retentionPolicy = await getServerRetentionPolicy();
+                    if (mounted) setRetentionSummary(formatServerRetentionDisclosure(retentionPolicy));
+                })(), { tag: 'welcome.retentionPolicy' });
 
                 if (
                     !autoRedirectAttemptedRef.current &&
@@ -252,6 +260,11 @@ function NotAuthenticated() {
                 trackAccountCreated();
             }
         } catch (error) {
+            if (error instanceof HappyError && error.code === 'signup-disabled') {
+                setServerCheckNonce((value) => value + 1);
+                await Modal.alert(t('common.error'), t('errors.signupDisabled'));
+                return;
+            }
             const message = process.env.EXPO_PUBLIC_DEBUG
                 ? formatOperationFailedDebugMessage(t('errors.operationFailed'), error)
                 : t('errors.operationFailed');
@@ -440,6 +453,7 @@ function NotAuthenticated() {
             allowMobileBrandHero
             onOpenRelayCustomFlow={() => router.push('/setup?openCustom=1')}
             onBrandHeroGetStarted={applyBrandHeroSeen}
+            retentionSummary={retentionSummary}
             testID="unauth-shell-route-welcome"
         >
             <View style={styles.welcomeBody}>

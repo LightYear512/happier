@@ -133,6 +133,8 @@ function buildQuotaResult(overrides: Partial<UseConnectedServiceQuotaSnapshotRes
         nowMs: NOW_MS,
         recoveryCreditSummary: { availableCount: 1, nextExpiresAtMs: NOW_MS + 3 * DAY_MS, providerCreditId: 'pc-1' },
         recoveryCreditMachineId: 'machine-1',
+        canConsumeRecoveryCredit: true,
+        canRefresh: true,
         isRefreshing: false,
         refresh: vi.fn(async () => {}),
         consumeRecoveryCredit: vi.fn(async () => {}),
@@ -215,6 +217,31 @@ describe('AccountBlock', () => {
         const screen = await renderAccountBlock({ status: 'needs_reauth' });
 
         expect(screen.findByTestId('acct:reauth-badge')).toBeTruthy();
+    });
+
+    it('lets credential health dominate quota display and polling when re-auth is required', async () => {
+        const screen = await renderAccountBlock({ status: 'needs_reauth' });
+
+        expect(quotaHookState.callSpy).not.toHaveBeenCalled();
+        expect(screen.findByTestId('acct:reauth-badge')).toBeTruthy();
+        expect(screen.findAllByTestId('acct:meter:weekly')).toHaveLength(0);
+        expect(screen.getTextContent()).not.toContain('connectedServices.account.usageCaption');
+        expect(screen.findByTestId('acct:avatar:capacity')).toBeNull();
+    });
+
+    it('renders usage for a healthy account whose status is empty/unknown (fails OPEN)', async () => {
+        // Regression: an absent status coerced to '' must NOT blank the capacity
+        // avatar. Only an EXPLICIT needs_reauth hides usage; '' is presumed
+        // healthy for display, so the snapshot hook mounts and quota renders.
+        const screen = await renderAccountBlock({
+            // Boundary cast: the runtime feed can carry an absent/coerced '' that
+            // the enum-typed prop does not model; the display gate must fail open.
+            status: '' as React.ComponentProps<typeof import('./AccountBlock')['AccountBlock']>['status'],
+        });
+
+        expect(quotaHookState.callSpy).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('acct:avatar:capacity')).toBeTruthy();
+        expect(screen.findAllByTestId('acct:reauth-badge').length).toBe(0);
     });
 
     it('shows a default-account star glyph (not a pill) for the default account', async () => {
@@ -309,29 +336,31 @@ describe('AccountBlock', () => {
         ).length).toBeGreaterThan(0);
     });
 
-    it('disables the reset Use action when the credit is not individually consumable', async () => {
-        quotaHookState.value = buildQuotaResult({
+    it('keeps aggregate Use available when a detail cannot be consumed individually', async () => {
+        const quota = buildQuotaResult({
             snapshot: buildSnapshot({
                 recoveryCredits: {
                     kind: 'usage_limit_resets',
                     availableCount: 1,
                     nextExpiresAtMs: NOW_MS + 3 * DAY_MS,
-                    // No providerCreditId -> row.canUse is false.
+                    // No providerCreditId: this detail must not suppress aggregate redemption.
                     credits: [{ kind: 'usage_limit_reset', status: 'available', expiresAtMs: NOW_MS + 3 * DAY_MS }],
                 },
             }),
         });
+        quotaHookState.value = quota;
 
         const screen = await renderAccountBlock();
 
-        expect(screen.findByTestId('acct:reset-use:0')?.props.disabled).toBe(true);
+        await screen.pressByTestIdAsync('acct:reset-use:aggregate-remainder');
+        expect(quota.consumeRecoveryCredit).toHaveBeenCalledWith(null);
     });
 
     it('persists collapse state to connectedServicesCollapsedItemKeysV1 (sparse deviation)', async () => {
         const screen = await renderAccountBlock();
 
         // Account default is expanded -> toggling collapses it, persisting the deviation only.
-        screen.findByTestId('acct:header')?.props.onPress?.();
+        await screen.pressByTestIdAsync('acct:header');
 
         expect(settingsState.writes).toContainEqual({ 'anthropic:account:work': true });
     });
@@ -341,7 +370,7 @@ describe('AccountBlock', () => {
         quotaHookState.value = quota;
         const screen = await renderAccountBlock();
 
-        screen.findByTestId('acct:pin:weekly')?.props.onPress?.();
+        await screen.pressByTestIdAsync('acct:pin:weekly');
 
         expect(quota.togglePinnedMeter).toHaveBeenCalledWith('weekly');
     });
@@ -361,6 +390,71 @@ describe('AccountBlock', () => {
 
         expect(screen.findByTestId('acct:usage-skeleton')).toBeTruthy();
         expect(screen.findAllByTestId('acct:meter:weekly').length).toBe(0);
+    });
+
+    it('shows a loading avatar (not an empty capacity ring) while the first snapshot loads', async () => {
+        // Regression: a slow load previously rendered EMPTY rings + no center label,
+        // which reads as "no usage". The avatar must surface a loading indicator and
+        // suppress the numeric capacity until a snapshot resolves.
+        quotaHookState.value = buildQuotaResult({ snapshot: null, loading: true });
+        const screen = await renderAccountBlock();
+
+        expect(screen.findByTestId('acct:avatar:loading')).toBeTruthy();
+        expect(screen.findAllByTestId('acct:avatar:capacity').length).toBe(0);
+    });
+
+    it('shows quota errors inline without hiding the account row', async () => {
+        quotaHookState.value = buildQuotaResult({
+            snapshot: null,
+            loading: false,
+            error: 'quota load failed',
+        });
+
+        const screen = await renderAccountBlock();
+
+        expect(screen.findByTestId('acct:header')).toBeTruthy();
+        expect(screen.findByTestId('acct:quota-error')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('quota load failed');
+    });
+
+    it('shows the refresh-in-flight state and disables duplicate refresh presses', async () => {
+        quotaHookState.value = buildQuotaResult({ isRefreshing: true });
+
+        const screen = await renderAccountBlock();
+        const refresh = screen.findByTestId('acct:refresh');
+
+        expect(screen.findByTestId('acct:refreshing')).toBeTruthy();
+        expect(refresh?.props.disabled).toBe(true);
+        expect(refresh?.props.accessibilityState).toEqual(expect.objectContaining({
+            busy: true,
+            disabled: true,
+        }));
+    });
+
+    it('invokes the quota refresh once per refresh-button press', async () => {
+        const refresh = vi.fn(async () => {});
+        quotaHookState.value = buildQuotaResult({ refresh });
+
+        const screen = await renderAccountBlock();
+
+        await screen.pressByTestIdAsync('acct:refresh');
+
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders the account header as a group when the trailing refresh button is present', async () => {
+        const screen = await renderAccountBlock();
+
+        expect(screen.findByTestId('acct:header')?.props.role).toBe('group');
+    });
+
+    it('keeps reset credits visible but disabled when no target machine is resolved', async () => {
+        quotaHookState.value = buildQuotaResult({ recoveryCreditMachineId: null });
+
+        const screen = await renderAccountBlock();
+
+        expect(screen.findByTestId('acct:resets-hint')).toBeTruthy();
+        expect(screen.findByTestId('acct:reset-use:pc-1')?.props.disabled).toBe(true);
     });
 
     describe('poolMember variant', () => {
@@ -400,7 +494,7 @@ describe('AccountBlock', () => {
             });
             const radio = screen.findByTestId('acct:active-radio');
             expect(radio).toBeTruthy();
-            expect(radio?.props.accessibilityState?.selected).toBe(false);
+            expect(radio?.props.accessibilityState?.checked).toBe(false);
             radio?.props.onPress?.({});
             expect(onSetActive).toHaveBeenCalled();
         });
@@ -415,15 +509,15 @@ describe('AccountBlock', () => {
                 reorderGesture: await makeReorderGesture(),
             });
             const radio = screen.findByTestId('acct:active-radio');
-            expect(radio?.props.accessibilityState?.selected).toBe(true);
+            expect(radio?.props.accessibilityState?.checked).toBe(true);
             expect(radio?.props.accessibilityState?.disabled).toBe(true);
         });
 
         it('renders the inline reorder handle in the trailing cluster and collapses member actions into a single kebab', async () => {
             const actions: ItemAction[] = [
-                { id: 'act:move-up', title: 'Move up', icon: 'arrow-up-outline', onPress: () => {} },
-                { id: 'act:move-down', title: 'Move down', icon: 'arrow-down-outline', onPress: () => {} },
-                { id: 'act:set-active', title: 'Set active', icon: 'radio-button-off-outline', onPress: () => {} },
+                { id: 'act:move-up', title: 'Move up', icon: 'arrow-up', onPress: () => {} },
+                { id: 'act:move-down', title: 'Move down', icon: 'arrow-down', onPress: () => {} },
+                { id: 'act:set-active', title: 'Set active', icon: 'circle', onPress: () => {} },
             ];
             const screen = await renderAccountBlock({
                 variant: 'poolMember',

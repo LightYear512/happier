@@ -4,6 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
+import { resolveRemoteReleasePlanningRefs } from './lib/release-planning-remote-refs.mjs';
+
+const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 function fail(message) {
   console.error(message);
@@ -94,26 +97,6 @@ function anyMatch(patterns, paths) {
 
 /**
  * @param {string} cwd
- * @param {string} remote
- * @param {string[]} refs
- */
-function fetchRefs(cwd, remote, refs, required) {
-  if (refs.length === 0) return;
-  for (const ref of refs) {
-    run('git', ['fetch', remote, ref, '--prune', '--no-tags'], { cwd, stdio: 'pipe', allowFailure: !required });
-  }
-}
-
-/**
- * @param {string} cwd
- * @param {string} ref
- */
-function revParseOrEmpty(cwd, ref) {
-  return run('git', ['rev-parse', ref], { cwd, stdio: 'pipe', allowFailure: true });
-}
-
-/**
- * @param {string} cwd
  * @param {string} fromSha
  * @param {string} toSha
  */
@@ -168,6 +151,7 @@ function main() {
   const sourceRef = String(values['source-ref'] ?? '').trim();
   if (!deployEnvironment) fail('--deploy-environment is required');
   if (!sourceRef) fail('--source-ref is required');
+  const sourceIsImmutableObjectId = OBJECT_ID_PATTERN.test(sourceRef);
 
   const forceDeploy = parseBoolString(values['force-deploy'], '--force-deploy');
   const deployUi = parseBoolString(values['deploy-ui'], '--deploy-ui');
@@ -176,22 +160,21 @@ function main() {
   const deployDocs = parseBoolString(values['deploy-docs'], '--deploy-docs');
 
   const remote = String(values.remote ?? '').trim() || 'origin';
-
-  fetchRefs(repoRoot, remote, [sourceRef], true);
-  fetchRefs(
+  const deployRefs = [
+    `deploy/${deployEnvironment}/ui`,
+    `deploy/${deployEnvironment}/server`,
+    `deploy/${deployEnvironment}/website`,
+    `deploy/${deployEnvironment}/docs`,
+  ];
+  const remoteRefs = resolveRemoteReleasePlanningRefs({
     repoRoot,
     remote,
-    [
-      `deploy/${deployEnvironment}/ui`,
-      `deploy/${deployEnvironment}/server`,
-      `deploy/${deployEnvironment}/website`,
-      `deploy/${deployEnvironment}/docs`,
-    ],
-    false,
-  );
-
-  const sourceSha = revParseOrEmpty(repoRoot, `${remote}/${sourceRef}`);
-  if (!sourceSha) fail(`Unable to resolve ${remote}/${sourceRef}`);
+    branchNames: sourceIsImmutableObjectId ? [] : [sourceRef],
+    optionalBranchNames: deployRefs,
+    tagPrefixes: [],
+    objectIds: sourceIsImmutableObjectId ? [sourceRef] : [],
+  });
+  const sourceSha = sourceIsImmutableObjectId ? sourceRef : remoteRefs.branches[sourceRef];
 
   /**
    * @param {string} key
@@ -200,7 +183,7 @@ function main() {
    * @param {string[]} patterns
    */
   function planOne(key, deployRef, enabled, patterns) {
-    const deploySha = revParseOrEmpty(repoRoot, `${remote}/${deployRef}`);
+    const deploySha = remoteRefs.branches[deployRef] ?? '';
     if (!deploySha) {
       return { needed: Boolean(enabled && forceDeploy), commits_behind: 0, relevant_changes: false };
     }
@@ -220,6 +203,7 @@ function main() {
   const server = planOne('deploy_server', `deploy/${deployEnvironment}/server`, deployServer, [
     'apps/server/*',
     'packages/relay-server/*',
+    'packages/privacy-kit/*',
     'packages/agents/*',
     'packages/protocol/*',
   ]);

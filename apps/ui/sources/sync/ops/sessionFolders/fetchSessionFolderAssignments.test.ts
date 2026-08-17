@@ -22,6 +22,22 @@ function jsonErrorResponse(body: unknown, status: number): Response {
     });
 }
 
+function organizationSnapshotResponse(assignments: unknown[]) {
+    return {
+        snapshot: {
+            schemaVersion: 1,
+            version: 1,
+            pins: [],
+            folders: [],
+            folderAssignments: assignments,
+            tags: [],
+            tagAssignments: [],
+            orderEntries: [],
+            labels: [],
+        },
+    };
+}
+
 describe('fetchAndApplySessionFolderAssignments', () => {
     beforeEach(async () => {
         mocks.serverFetch.mockReset();
@@ -32,9 +48,9 @@ describe('fetchAndApplySessionFolderAssignments', () => {
     it('applies fetched assignments to the session folder store', async () => {
         const { getStorage } = await import('@/sync/domains/state/storageStore');
         const { fetchAndApplySessionFolderAssignments } = await import('./fetchSessionFolderAssignments');
-        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({
-            assignments: [{ sessionId: 's1', folderId: 'folder-a' }],
-        }));
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse(organizationSnapshotResponse([
+            { sessionId: 's1', folderId: 'folder-a' },
+        ])));
 
         await fetchAndApplySessionFolderAssignments({
             credentials: { token: 'token-a', secret: 'secret-a' },
@@ -52,9 +68,9 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         getStorage().getState().applySessionFolderAssignments('server-a', [
             { sessionId: 's1', folderId: 'folder-a' },
         ]);
-        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({
-            assignments: [{ sessionId: 's2', folderId: 'folder-b' }],
-        }));
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse(organizationSnapshotResponse([
+            { sessionId: 's2', folderId: 'folder-b' },
+        ])));
 
         await fetchAndApplySessionFolderAssignments({
             credentials: { token: 'token-a', secret: 'secret-a' },
@@ -64,7 +80,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         });
 
         expect(mocks.serverFetch).toHaveBeenCalledWith(
-            '/v2/session-folder-assignments?sessionIds=s2',
+            '/v2/session-organization?includeFolders=false&includeTags=false&includeLabels=false&assignmentSessionIds=s2',
             expect.anything(),
             expect.anything(),
         );
@@ -75,9 +91,9 @@ describe('fetchAndApplySessionFolderAssignments', () => {
     it('marks requested sessions without returned assignments as unassigned', async () => {
         const { getStorage } = await import('@/sync/domains/state/storageStore');
         const { fetchAndApplySessionFolderAssignments } = await import('./fetchSessionFolderAssignments');
-        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({
-            assignments: [{ sessionId: 's2', folderId: 'folder-b' }],
-        }));
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse(organizationSnapshotResponse([
+            { sessionId: 's2', folderId: 'folder-b' },
+        ])));
 
         await fetchAndApplySessionFolderAssignments({
             credentials: { token: 'token-a', secret: 'secret-a' },
@@ -110,7 +126,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         getStorage().getState().applySessionFolderAssignments('server-a', [
             { sessionId: 's1', folderId: 'folder-local' },
         ]);
-        resolveResponse?.(jsonResponse({ assignments: [] }));
+        resolveResponse?.(jsonResponse(organizationSnapshotResponse([])));
         await fetchPromise;
 
         expect(getStorage().getState().sessionFolderAssignmentsBySessionKey['server-a:s1']).toBe('folder-local');
@@ -125,7 +141,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         });
         mocks.serverFetch.mockImplementation(async () => {
             await responseGate;
-            return jsonResponse({ assignments: [{ sessionId: 's1', folderId: 'folder-a' }] });
+            return jsonResponse(organizationSnapshotResponse([{ sessionId: 's1', folderId: 'folder-a' }]));
         });
 
         const firstFetch = fetchAndApplySessionFolderAssignments({
@@ -172,9 +188,9 @@ describe('fetchAndApplySessionFolderAssignments', () => {
     it('does not apply stale assignments after scope changes', async () => {
         const { getStorage } = await import('@/sync/domains/state/storageStore');
         const { fetchAndApplySessionFolderAssignments } = await import('./fetchSessionFolderAssignments');
-        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({
-            assignments: [{ sessionId: 's1', folderId: 'folder-a' }],
-        }));
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse(organizationSnapshotResponse([
+            { sessionId: 's1', folderId: 'folder-a' },
+        ])));
 
         await fetchAndApplySessionFolderAssignments({
             credentials: { token: 'token-a', secret: 'secret-a' },

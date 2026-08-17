@@ -1,8 +1,20 @@
 import type { StreamedTranscriptWriterSession } from '@/api/session/streamedTranscriptWriter';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
+import type { EphemeralSendResult } from '@/api/session/ephemeralSendOutcome';
+import type { SessionTranscriptObservationProvenanceV1 } from '@happier-dev/protocol';
 
 type StreamedTranscriptEphemeralOptions = Readonly<{
   localId: string;
+  createdAt: number;
+  updatedAt?: number;
+  meta?: Record<string, unknown>;
+  tick?: number;
+}>;
+
+type StreamedTranscriptEphemeralDeltaOptions = Readonly<{
+  localId: string;
+  tick: number;
+  baseLength: number;
   createdAt: number;
   updatedAt?: number;
   meta?: Record<string, unknown>;
@@ -22,13 +34,23 @@ export type OpenCodeTranscriptStreamSessionSource = Readonly<{
   enqueueAgentMessageCommitted?: (
     provider: ACPProvider,
     body: ACPMessageData,
-    opts: { localId: string; meta?: Record<string, unknown> },
+    opts: {
+      localId: string;
+      meta?: Record<string, unknown>;
+      provenance: SessionTranscriptObservationProvenanceV1;
+    },
   ) => Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
   sendAgentMessageEphemeral?: (
     provider: ACPProvider,
     body: ACPMessageData,
     opts: StreamedTranscriptEphemeralOptions,
-  ) => void | Promise<void>;
+  ) => EphemeralSendResult;
+  sendAgentMessageEphemeralDelta?: (
+    provider: ACPProvider,
+    body: ACPMessageData,
+    opts: StreamedTranscriptEphemeralDeltaOptions,
+  ) => EphemeralSendResult;
+  getEphemeralStreamConnectionEpoch?: () => number;
 }>;
 
 export type OpenCodeTranscriptStreamSession = StreamedTranscriptWriterSession & Readonly<{
@@ -36,7 +58,7 @@ export type OpenCodeTranscriptStreamSession = StreamedTranscriptWriterSession & 
     provider: ACPProvider,
     body: ACPMessageData,
     opts: StreamedTranscriptEphemeralOptions,
-  ) => void | Promise<void>;
+  ) => EphemeralSendResult;
 }>;
 
 function mergeBaseMeta(
@@ -48,11 +70,12 @@ function mergeBaseMeta(
     ...(optsMeta ?? {}),
   };
 }
-
 export function createOpenCodeTranscriptStreamSession(params: Readonly<{
   session: OpenCodeTranscriptStreamSessionSource;
   baseMeta: Record<string, unknown>;
 }>): OpenCodeTranscriptStreamSession {
+  const sendEphemeral = params.session.sendAgentMessageEphemeral?.bind(params.session);
+  const sendEphemeralDelta = params.session.sendAgentMessageEphemeralDelta?.bind(params.session);
   return {
     sendAgentMessage: (provider, body, opts) =>
       params.session.sendAgentMessage(provider, body, {
@@ -73,13 +96,30 @@ export function createOpenCodeTranscriptStreamSession(params: Readonly<{
 	            }) ?? Promise.resolve({ persisted: false, delivered: false }),
 	        }
       : {}),
-    ...(typeof params.session.sendAgentMessageEphemeral === 'function'
+    ...(typeof sendEphemeral === 'function'
       ? {
           sendAgentMessageEphemeral: (provider, body, opts) =>
-            params.session.sendAgentMessageEphemeral?.(provider, body, {
+            sendEphemeral(provider, body, {
               ...opts,
               meta: mergeBaseMeta(params.baseMeta, opts.meta),
             }),
+        }
+      : {}),
+    ...(typeof sendEphemeralDelta === 'function'
+      ? {
+          sendAgentMessageEphemeralDelta: (
+            provider: ACPProvider,
+            body: ACPMessageData,
+            opts: StreamedTranscriptEphemeralDeltaOptions,
+          ) => sendEphemeralDelta(provider, body, {
+            ...opts,
+            meta: mergeBaseMeta(params.baseMeta, opts.meta),
+          }),
+        }
+      : {}),
+    ...(typeof params.session.getEphemeralStreamConnectionEpoch === 'function'
+      ? {
+          getEphemeralStreamConnectionEpoch: () => params.session.getEphemeralStreamConnectionEpoch?.() ?? 0,
         }
       : {}),
   };

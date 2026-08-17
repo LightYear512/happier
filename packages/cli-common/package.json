@@ -10,6 +10,32 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./jsonOwnerBuildLockState": {
+      "import": "./jsonOwnerBuildLockState.cjs",
+      "require": "./jsonOwnerBuildLockState.cjs",
+      "default": "./jsonOwnerBuildLockState.cjs"
+    },
+    "./cliDistBuildManifest": {
+      "types": "./cliDistBuildManifest.d.cts",
+      "import": "./cliDistBuildManifest.cjs",
+      "require": "./cliDistBuildManifest.cjs",
+      "default": "./cliDistBuildManifest.cjs"
+    },
+    "./workspaceLockLease": {
+      "types": "./workspaceLockLease.d.mts",
+      "import": "./workspaceLockLease.mjs",
+      "default": "./workspaceLockLease.mjs"
+    },
+    "./workspaceBundleLock": {
+      "types": "./workspaceBundleLock.d.mts",
+      "import": "./workspaceBundleLock.mjs",
+      "default": "./workspaceBundleLock.mjs"
+    },
+    "./processInstance": {
+      "types": "./processInstance.d.mts",
+      "import": "./processInstance.mjs",
+      "default": "./processInstance.mjs"
+    },
     "./links": {
       "types": "./dist/links.d.ts",
       "default": "./dist/links.js"
@@ -29,6 +55,12 @@
     "./providers": {
       "types": "./dist/providers/index.d.ts",
       "default": "./dist/providers/index.js"
+    },
+    "./expandHomeDirPath": {
+      "types": "./expandHomeDirPath.d.cts",
+      "import": "./expandHomeDirPath.cjs",
+      "require": "./expandHomeDirPath.cjs",
+      "default": "./expandHomeDirPath.cjs"
     },
     "./providers/managedJavaScriptRuntime": {
       "types": "./dist/providers/managedJavaScriptRuntime.d.ts",
@@ -50,6 +82,10 @@
       "types": "./dist/nodeModulesIsolation/index.d.ts",
       "default": "./dist/nodeModulesIsolation/index.js"
     },
+    "./fs/windowsProtectedAcl": {
+      "types": "./dist/fs/windowsProtectedAcl.d.ts",
+      "default": "./dist/fs/windowsProtectedAcl.js"
+    },
     "./componentArtifacts": {
       "types": "./dist/componentArtifacts/index.d.ts",
       "default": "./dist/componentArtifacts/index.js"
@@ -62,6 +98,14 @@
       "types": "./dist/firstPartyRuntime/index.d.ts",
       "default": "./dist/firstPartyRuntime/index.js"
     },
+    "./firstPartyRuntime/relayRuntime": {
+      "types": "./dist/firstPartyRuntime/relayRuntime.d.ts",
+      "default": "./dist/firstPartyRuntime/relayRuntime.js"
+    },
+    "./firstPartyRuntime/selfHostServerEnv": {
+      "types": "./dist/firstPartyRuntime/selfHostServerEnv.d.ts",
+      "default": "./dist/firstPartyRuntime/selfHostServerEnv.js"
+    },
     "./relayHost": {
       "types": "./dist/relayHost/index.d.ts",
       "default": "./dist/relayHost/index.js"
@@ -72,6 +116,7 @@
     }
   },
   "scripts": {
+    "tsc": "node ../../scripts/workspaces/runTypeScriptCli.mjs",
     "build": "node scripts/build.mjs",
     "postinstall:real": "yarn -s build",
     "postinstall": "node -e \"const fs=require('fs');const cp=require('child_process');if(/(^|[\\\\\\\\/])node_modules([\\\\\\\\/]|$)/i.test(process.cwd()))process.exit(0);try{const gate=require('../../scripts/postinstall/shouldRunPostinstall.cjs');if(!gate.shouldRunPostinstall({workspace:'cli-common',scope:process.env.HAPPIER_INSTALL_SCOPE||''}))process.exit(0);}catch{}if(!fs.existsSync('tsconfig.json'))process.exit(0);const run=(cmd,args)=>cp.spawnSync(cmd,args,{stdio:'inherit'});const npmExec=process.env.npm_execpath;let r;if(npmExec){r=run(process.execPath,[npmExec,'run','-s','postinstall:real']);}else{r=run(process.platform==='win32'?'yarn.cmd':'yarn',['-s','postinstall:real']);if(r.error&&process.platform==='win32'){r=run('yarn',['-s','postinstall:real']);}}if(r.error){console.error(r.error.message);process.exit(1);}process.exit(r.status??1);\"",
@@ -82,5 +127,9 @@
     "@happier-dev/agents": "0.0.0",
     "@happier-dev/protocol": "0.0.0",
     "@happier-dev/release-runtime": "0.0.0"
+  },
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@7.0.2",
+    "typescript": "5.9.3"
   }
 }

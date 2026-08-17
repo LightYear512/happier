@@ -40,6 +40,7 @@ describe('session work-state RPC contracts', () => {
         expect(SESSION_RPC_METHODS.SESSION_CONNECTED_SERVICE_AUTH_READ_RUNTIME_IDENTITY).toBe(
             'session.connectedServiceAuth.readRuntimeIdentity',
         );
+        expect(SESSION_RPC_METHODS).not.toHaveProperty('SESSION_PROVIDER_INPUT_ADMISSION');
         expect(RPC_METHODS.DAEMON_SESSION_GOAL_GET).toBe('daemon.sessionGoal.get');
         expect(RPC_METHODS.DAEMON_SESSION_GOAL_SET).toBe('daemon.sessionGoal.set');
         expect(RPC_METHODS.DAEMON_SESSION_GOAL_CLEAR).toBe('daemon.sessionGoal.clear');
@@ -91,6 +92,21 @@ describe('session work-state RPC contracts', () => {
                 idempotencyKey: 'reset-req-1',
                 providerCreditId: 'credit-1',
                 status: 'consumed',
+            },
+        });
+        expect(ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema.parse({
+            ok: true,
+            snapshot: null,
+            receipt: {
+                idempotencyKey: 'reset-req-neutral',
+                status: 'nothing_to_reset',
+            },
+        })).toEqual({
+            ok: true,
+            snapshot: null,
+            receipt: {
+                idempotencyKey: 'reset-req-neutral',
+                status: 'nothing_to_reset',
             },
         });
         expect(() => ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema.parse({
@@ -225,6 +241,52 @@ describe('session work-state RPC contracts', () => {
                 profileId: 'profile-2',
             },
         });
+        expect(SessionConnectedServiceAuthApplyGenerationRequestV1Schema.parse({
+            serviceId: 'openai-codex',
+            reason: 'diagnostic',
+            applicationSettled: true,
+            authGeneration: {
+                kind: 'current_auth_group_available',
+                groupId: 'group-1',
+                generation: 7,
+                credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+            },
+        })).toEqual({
+            serviceId: 'openai-codex',
+            reason: 'diagnostic',
+            applicationSettled: true,
+            authGeneration: {
+                kind: 'current_auth_group_available',
+                groupId: 'group-1',
+                generation: 7,
+                credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+            },
+        });
+        expect(SessionConnectedServiceAuthApplyGenerationRequestV1Schema.parse({
+            serviceId: 'openai-codex',
+            reason: 'diagnostic',
+            authGeneration: {
+                kind: 'current_auth_group_unavailable',
+                groupId: 'group-1',
+                unavailableReason: 'group_missing',
+            },
+        })).toEqual({
+            serviceId: 'openai-codex',
+            reason: 'diagnostic',
+            authGeneration: {
+                kind: 'current_auth_group_unavailable',
+                groupId: 'group-1',
+                unavailableReason: 'group_missing',
+            },
+        });
+        expect(() => SessionConnectedServiceAuthApplyGenerationRequestV1Schema.parse({
+            serviceId: 'openai-codex',
+            reason: 'diagnostic',
+            authGeneration: {
+                kind: 'current_auth_group_unknown',
+                groupId: 'group-1',
+            },
+        })).toThrow();
         expect(() => SessionConnectedServiceAuthApplyGenerationRequestV1Schema.parse({
             serviceId: 'openai-codex',
             reason: 'not-a-reason',
@@ -390,10 +452,14 @@ describe('session work-state RPC contracts', () => {
         });
         expect(SessionUsageLimitWaitResumeCancelRequestV1Schema.parse({
             sessionId: 's1',
-            issueFingerprint: null,
+            issueFingerprint: 'usage-limit:s1:123',
+            armedAtMs: 123,
+            runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
         })).toEqual({
             sessionId: 's1',
-            issueFingerprint: null,
+            issueFingerprint: 'usage-limit:s1:123',
+            armedAtMs: 123,
+            runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
         });
         expect(SessionUsageLimitCheckNowRequestV1Schema.parse({
             sessionId: 's1',

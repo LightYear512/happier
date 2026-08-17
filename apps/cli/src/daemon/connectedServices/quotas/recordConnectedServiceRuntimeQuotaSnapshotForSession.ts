@@ -1,46 +1,82 @@
 import type {
   ConnectedServiceId,
   ConnectedServiceQuotaSnapshotV1,
+  ConnectedServiceUsageSourceV1,
+  ProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
 
 import type { TrackedSession } from '@/daemon/types';
 
 import type { ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore } from '../accountGroups/quotas/ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore';
-import type { ConnectedServiceAuthGroupQuotaSnapshot } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
+import { buildProviderAccountUsageSnapshotFromConnectedServiceQuotaObservation } from '../accountUsage/fromConnectedServiceQuotaObservation';
+import {
+  canRecordProviderAccountUsageSourceLinks,
+  recordProviderAccountUsageSnapshotForSession,
+  type ProviderAccountUsageRecordIdPublisher,
+} from '../accountUsage/record';
+import type { ProviderAccountUsagePersistenceScheduler } from '../accountUsage/persistence';
+import {
+  isProviderAccountUsageStoreMutationAccepted,
+  type ProviderAccountUsageObservation,
+  type ProviderAccountUsageStore,
+} from '../accountUsage/store';
 import { readConnectedServiceChildSelectionsFromEnv } from '../connectedServiceChildEnvironment';
-import { parseConnectedServiceBindingSelections } from '../parseConnectedServicesBindings';
+import {
+  parseConnectedServiceBindingSelections,
+  type ConnectedServiceBindingSelection,
+} from '../parseConnectedServicesBindings';
 import { resolveTrackedConnectedServiceBindingsRaw } from '../trackedSessionConnectedServiceBindings';
-import type { ConnectedServiceQuotasCoordinator } from './ConnectedServiceQuotasCoordinator';
-import type { RuntimeAccountIdentityRecordInput } from './identity/runtimeAccountIdentityTypes';
-import type { QuotaProbeFreshProofResult } from './proof/quotaProbeFreshProof';
-import type { ProviderOutcomeProofKind } from '../recovery/providerOutcomeProof';
+import { normalizeConnectedServiceAccessTokenFingerprint } from '../refresh/credentialFreshness/tokenFingerprint';
+import type {
+  QuotaProbeAppliedIdentity,
+  QuotaProbeFreshProofResult,
+} from './proof/quotaProbeFreshProof';
 
-type QuotaCoordinatorLike = Pick<ConnectedServiceQuotasCoordinator, 'recordInBandQuotaSnapshot'> & Readonly<{
-  computeQuotaSnapshotMaterialFingerprint?: (snapshot: ConnectedServiceQuotaSnapshotV1) => string;
-  recordRuntimeAccountIdentityFromSnapshot?: (input: RuntimeAccountIdentityRecordInput) => unknown;
-  recordAccountExhaustionAndFanout?: (input: Readonly<{
-    sourceSessionId: string;
-    serviceId: ConnectedServiceId;
-    groupId: string;
-    exhaustedProfileId: string;
-    providerAccountId: string;
-    resetAtMs: number | null;
-    reason: 'usage_limit';
-  }>) => Promise<unknown>;
-  resolveQuotaProbeFreshProof?: (input: Readonly<{
-    serviceId: ConnectedServiceId;
-    profileId: string;
-    groupId: string | null;
-    expectedGroupGeneration: number | null;
-    currentGroupGeneration: number | null;
-    expectedMaterialFingerprint: string | null;
-    snapshotMaterialFingerprint: string | null;
-    snapshot: ConnectedServiceQuotaSnapshotV1;
-  }>) => QuotaProbeFreshProofResult;
+type AccountUsageRecorderLike = Readonly<{
+  store: Pick<ProviderAccountUsageStore, 'recordSnapshot' | 'resolveRecordId' | 'resolveBySource'>;
+  persistence: Pick<ProviderAccountUsagePersistenceScheduler, 'recordInBandSnapshot'> | null;
+  publishRecordId?: ProviderAccountUsageRecordIdPublisher;
 }>;
+
+type AccountUsageChangedNotifier = (input: Readonly<{
+  sessionId: string;
+  serviceId: ConnectedServiceId;
+  profileId: string;
+  groupId: string;
+  groupGeneration: number;
+  recordId: string;
+  snapshot: ProviderAccountUsageSnapshotV1;
+  source: 'in_band' | 'evidence_only';
+}>) => Promise<void> | void;
+
+type QuotaProbeFreshProofResolver = (input: Readonly<{
+  serviceId: ConnectedServiceId;
+  profileId: string;
+  expectedAppliedIdentity: QuotaProbeAppliedIdentity | null;
+  snapshotAppliedIdentity: QuotaProbeAppliedIdentity | null;
+  snapshot: ConnectedServiceQuotaSnapshotV1;
+}>) => QuotaProbeFreshProofResult;
+
+type QuotaProbeFreshProofRecorder = (input: Readonly<{
+  sessionId: string;
+  serviceId: ConnectedServiceId;
+  profileId: string;
+  groupId: string | null;
+  proofKind: 'quota_probe_fresh';
+  observedAtMs: number;
+}>) => Promise<void> | void;
 
 function normalizeSessionId(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeNonNegativeInt(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
+  return value;
 }
 
 function findTrackedSession(
@@ -52,172 +88,317 @@ function findTrackedSession(
   return children.find((child) => normalizeSessionId(child.happySessionId) === normalized) ?? null;
 }
 
-function quotaSnapshotProvesExhaustion(snapshot: ConnectedServiceAuthGroupQuotaSnapshot | null | undefined): boolean {
-  if (!snapshot) return false;
-  if (snapshot.exhausted === true) return true;
-  const remaining = snapshot.effectiveRemainingPercent;
-  return typeof remaining === 'number' && Number.isFinite(remaining) && remaining <= 0;
+function buildAccountUsageSnapshotForRuntimeQuota(input: Readonly<{
+  snapshot: ConnectedServiceQuotaSnapshotV1;
+  groupGeneration?: number | null;
+  sourceProviderAccountId?: string | null;
+}>): ProviderAccountUsageSnapshotV1 {
+  return buildProviderAccountUsageSnapshotFromConnectedServiceQuotaObservation({
+    snapshot: input.snapshot,
+    sourceProviderAccountId: input.sourceProviderAccountId,
+  });
 }
 
-function normalizeResetAtMs(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+function buildRuntimeQuotaObservation(input: Readonly<{
+  serviceId: ConnectedServiceId;
+  profileId: string;
+  selection: ConnectedServiceBindingSelection | null;
+  groupGeneration?: number | null;
+}>): ProviderAccountUsageObservation {
+  let source: ConnectedServiceUsageSourceV1 | undefined;
+  if (input.selection?.kind === 'group') {
+    source = {
+      serviceId: input.serviceId,
+      profileId: input.profileId,
+      bindingKind: 'group_member',
+      groupId: input.selection.groupId,
+      ...(input.groupGeneration !== null && input.groupGeneration !== undefined
+        ? { groupGeneration: input.groupGeneration }
+        : {}),
+    };
+  } else if (input.selection?.kind === 'profile') {
+    source = {
+      serviceId: input.serviceId,
+      profileId: input.profileId,
+      bindingKind: 'profile',
+    };
+  }
+  return {
+    ...(source ? { sources: [source] } : {}),
+  };
 }
 
 export async function recordConnectedServiceRuntimeQuotaSnapshotForSession(input: Readonly<{
+  accountUsageRecorder?: AccountUsageRecorderLike | null;
   getChildren: () => ReadonlyArray<TrackedSession>;
-  quotaCoordinator: QuotaCoordinatorLike | null;
-  publishQuotaRef?: (ref: Readonly<{ sessionId: string; serviceId: ConnectedServiceId; profileId: string }>) => Promise<void>;
-  recordProviderOutcomeProof?: (proof: Readonly<{
-    sessionId: string;
-    serviceId: ConnectedServiceId;
-    profileId: string;
-    groupId: string | null;
-    proofKind: Extract<ProviderOutcomeProofKind, 'quota_probe_fresh'>;
-  }>) => Promise<void> | void;
+  notifyAccountUsageChanged?: AccountUsageChangedNotifier;
   runtimeQuotaSnapshots: ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore;
   sessionId: string;
   serviceId: ConnectedServiceId;
+  groupId?: string | null;
+  groupGeneration?: number | null;
+  sourceProviderAccountId?: string | null;
+  credentialFingerprint?: string | null;
+  policyDisposition?: 'evidence_only';
+  verifyCredentialFingerprint?: (input: Readonly<{
+    serviceId: ConnectedServiceId;
+    profileId: string;
+    providerAccountId: string;
+    credentialFingerprint: string;
+  }>) => Promise<boolean>;
+  resolveCurrentGroupGenerationForProfile?: (input: Readonly<{
+    serviceId: ConnectedServiceId;
+    groupId: string;
+    profileId: string;
+  }>) => Promise<number | null>;
+  resolveExpectedQuotaProbeAppliedIdentity?: (input: Readonly<{
+    serviceId: ConnectedServiceId;
+    profileId: string;
+    groupId: string | null;
+    groupGeneration: number | null;
+  }>) => Promise<QuotaProbeAppliedIdentity | null>;
+  resolveQuotaProbeFreshProof?: QuotaProbeFreshProofResolver;
+  recordQuotaProbeFreshProof?: QuotaProbeFreshProofRecorder;
   snapshot: ConnectedServiceQuotaSnapshotV1;
 }>): Promise<
   | Readonly<{ status: 'recorded'; groupRuntimeStateRecorded: boolean; quotaStateRecorded: boolean }>
   | Readonly<{ status: 'session_not_found' }>
   | Readonly<{ status: 'service_id_mismatch' }>
+  | Readonly<{
+      status: 'credential_fingerprint_mismatch';
+      recordId: string;
+      persisted: false;
+    }>
 > {
   if (input.snapshot.serviceId !== input.serviceId) return { status: 'service_id_mismatch' };
 
   const tracked = findTrackedSession(input.getChildren(), input.sessionId);
   if (!tracked) return { status: 'session_not_found' };
-  const selection = parseConnectedServiceBindingSelections(resolveTrackedConnectedServiceBindingsRaw(tracked))
+  const bindingsRaw = resolveTrackedConnectedServiceBindingsRaw(tracked);
+  const selection = parseConnectedServiceBindingSelections(bindingsRaw)
     .find((candidate) => candidate.serviceId === input.serviceId) ?? null;
+  const accountUsageSnapshot = buildAccountUsageSnapshotForRuntimeQuota({
+    snapshot: input.snapshot,
+    sourceProviderAccountId: input.sourceProviderAccountId,
+  });
+  const sourceProviderAccountId = normalizeNullableString(input.sourceProviderAccountId);
+  const sourceAccountMatchesSnapshot =
+    accountUsageSnapshot.accountSubject.kind === 'providerSubject'
+    && sourceProviderAccountId === accountUsageSnapshot.accountSubject.id;
+  const credentialFingerprint = normalizeConnectedServiceAccessTokenFingerprint(input.credentialFingerprint);
+  const verifyCredentialFingerprint = input.verifyCredentialFingerprint;
+  const credentialVerificationCandidate =
+    selection && sourceProviderAccountId && credentialFingerprint && verifyCredentialFingerprint
+      ? {
+          serviceId: input.serviceId,
+          profileId: input.snapshot.profileId,
+          providerAccountId: sourceProviderAccountId,
+          credentialFingerprint,
+        }
+      : null;
+  const credentialFingerprintMatchesCurrentSource =
+    credentialVerificationCandidate && verifyCredentialFingerprint
+      ? await verifyCredentialFingerprint(credentialVerificationCandidate)
+      : null;
+  const credentialFingerprintVerified =
+    sourceAccountMatchesSnapshot && credentialFingerprintMatchesCurrentSource === true;
   const activeGroupSelection = readConnectedServiceChildSelectionsFromEnv(tracked.spawnOptions?.environmentVariables ?? {})
     .find((candidate) => (
       candidate.kind === 'group'
       && candidate.serviceId === input.serviceId
-      && candidate.groupId === (selection?.kind === 'group' ? selection.groupId : '')
+    && candidate.groupId === (selection?.kind === 'group' ? selection.groupId : '')
     )) ?? null;
-
-  const groupRuntimeStateRecorded = selection?.kind === 'group';
-  if (groupRuntimeStateRecorded) {
-    input.runtimeQuotaSnapshots.recordSnapshot({
-      serviceId: input.serviceId,
-      groupId: selection.groupId,
-      profileId: input.snapshot.profileId,
-      snapshot: input.snapshot,
-    });
-  }
-
-  let quotaStateRecorded = false;
-  if (input.quotaCoordinator) {
-    try {
-      const persistence = await input.quotaCoordinator.recordInBandQuotaSnapshot({
-        serviceId: input.serviceId,
-        profileId: input.snapshot.profileId,
-        snapshot: input.snapshot,
-      });
-      quotaStateRecorded = persistence.status !== 'deferred_unknown_mode';
-    } catch {
-      quotaStateRecorded = false;
-    }
-  }
-
-  if (quotaStateRecorded) {
-    try {
-      await input.publishQuotaRef?.({
-        sessionId: input.sessionId,
-        serviceId: input.serviceId,
-        profileId: input.snapshot.profileId,
-      });
-    } catch {
-      // Session metadata refs are a best-effort display projection over the durable quota row.
-    }
-  }
 
   const activeGroupSelectionMatchesSnapshotProfile =
     activeGroupSelection?.kind === 'group'
     && activeGroupSelection.activeProfileId === input.snapshot.profileId;
-  const directProfileSelectionMatchesSnapshotProfile =
-    selection?.kind === 'profile'
-    && selection.profileId === input.snapshot.profileId;
-  const canUseSnapshotForSameAccountIdentity = selection === null
-    || directProfileSelectionMatchesSnapshotProfile
-    || activeGroupSelectionMatchesSnapshotProfile;
+  const reportedGroupId = normalizeNullableString(input.groupId);
+  const reportedGroupGeneration = normalizeNonNegativeInt(input.groupGeneration);
+  const activeGroupGeneration = activeGroupSelectionMatchesSnapshotProfile
+    && selection?.kind === 'group'
+    && reportedGroupId === selection.groupId
+    && reportedGroupGeneration === activeGroupSelection.generation
+    ? reportedGroupGeneration
+    : null;
 
-  if (
-    selection
-    && canUseSnapshotForSameAccountIdentity
-    && input.quotaCoordinator?.resolveQuotaProbeFreshProof
-    && input.recordProviderOutcomeProof
-  ) {
-    const snapshotMaterialFingerprint =
-      input.quotaCoordinator.computeQuotaSnapshotMaterialFingerprint?.(input.snapshot) ?? null;
-    const groupGeneration = activeGroupSelection?.kind === 'group' ? activeGroupSelection.generation : null;
-    try {
-      const proof = input.quotaCoordinator.resolveQuotaProbeFreshProof({
+  const exactCurrentCredentialAccountBinding =
+    selection?.kind === 'group'
+    && credentialFingerprintVerified
+    && canRecordProviderAccountUsageSourceLinks({
+      snapshot: accountUsageSnapshot,
+      sourceProviderAccountId: input.sourceProviderAccountId,
+    });
+  const resolvedCurrentGroupGeneration = exactCurrentCredentialAccountBinding
+    && input.resolveCurrentGroupGenerationForProfile
+    ? await input.resolveCurrentGroupGenerationForProfile({
         serviceId: input.serviceId,
+        groupId: selection.groupId,
         profileId: input.snapshot.profileId,
-        groupId: selection.kind === 'group' ? selection.groupId : null,
-        expectedGroupGeneration: groupGeneration,
-        currentGroupGeneration: groupGeneration,
-        expectedMaterialFingerprint: null,
-        snapshotMaterialFingerprint,
-        snapshot: input.snapshot,
-      });
-      if (proof.status === 'proof') {
-        await input.recordProviderOutcomeProof({
-          sessionId: input.sessionId,
-          serviceId: input.serviceId,
-          profileId: input.snapshot.profileId,
-          groupId: selection.kind === 'group' ? selection.groupId : null,
-          proofKind: proof.proofKind,
-        });
-      }
-    } catch {
-      // Fresh quota proof is best-effort; the durable recovery intent remains armed on proof failures.
+      }).then(normalizeNonNegativeInt).catch(() => null)
+    : null;
+  const exactCurrentReportedGroupGeneration =
+    selection?.kind === 'group'
+    && exactCurrentCredentialAccountBinding
+    && reportedGroupId === selection.groupId
+    && reportedGroupGeneration !== null
+    && reportedGroupGeneration === resolvedCurrentGroupGeneration
+    ? reportedGroupGeneration
+    : null;
+  // A surviving runner's launch environment is immutable. After exact hot apply, current
+  // credential + provider-account + reported/current generation are the live authority.
+  const runtimeGroupGeneration = activeGroupGeneration ?? exactCurrentReportedGroupGeneration;
+  const effectiveGroupRuntimeStateRecorded =
+    selection?.kind === 'group' && runtimeGroupGeneration !== null;
+  // Provider-account usage is a different fact: once the current credential and provider account
+  // are proven, bind it to authoritative current group truth even when a sibling advanced the
+  // generation without changing the logical account.
+  const accountUsageGroupGeneration = exactCurrentCredentialAccountBinding
+    ? resolvedCurrentGroupGeneration ?? activeGroupGeneration
+    : activeGroupGeneration;
+
+  const proofGroupId = selection?.kind === 'group' && runtimeGroupGeneration !== null
+    ? selection.groupId
+    : null;
+  const proofGroupGeneration = proofGroupId ? runtimeGroupGeneration : null;
+  const selectionMatchesSnapshot = selection?.kind === 'group'
+    ? proofGroupId !== null
+    : selection?.kind === 'profile' && selection.profileId === input.snapshot.profileId;
+
+  let quotaStateRecorded = false;
+  let recordedAccountUsageSnapshot: ProviderAccountUsageSnapshotV1 | null = null;
+  let recordedAccountUsageRecordId: string | null = null;
+  let recordedAccountUsageSourceLinked = false;
+  let recordedAccountUsageEffectiveMutation = false;
+  const accountUsageObservation = buildRuntimeQuotaObservation({
+    serviceId: input.serviceId,
+    profileId: input.snapshot.profileId,
+    selection: credentialVerificationCandidate ? selection : null,
+    groupGeneration: accountUsageGroupGeneration,
+  });
+  if (input.accountUsageRecorder) {
+    const recorded = await recordProviderAccountUsageSnapshotForSession({
+      getChildren: input.getChildren,
+      store: input.accountUsageRecorder.store,
+      persistence: input.accountUsageRecorder.persistence,
+      publishRecordId: input.accountUsageRecorder.publishRecordId,
+      sourceProviderAccountId,
+      credentialFingerprint,
+      verifyCredentialFingerprint: credentialVerificationCandidate
+        ? async (candidate) => (
+            candidate.serviceId === credentialVerificationCandidate.serviceId
+            && candidate.profileId === credentialVerificationCandidate.profileId
+            && candidate.providerAccountId === credentialVerificationCandidate.providerAccountId
+            && candidate.credentialFingerprint === credentialVerificationCandidate.credentialFingerprint
+            && credentialFingerprintMatchesCurrentSource === true
+          )
+        : undefined,
+      observation: accountUsageObservation,
+      sessionId: input.sessionId,
+      snapshot: accountUsageSnapshot,
+    });
+    if (recorded.status === 'credential_fingerprint_mismatch') {
+      return recorded;
+    }
+    if (recorded.status !== 'session_not_found') {
+      quotaStateRecorded = true;
+      recordedAccountUsageRecordId = recorded.recordId;
+      recordedAccountUsageSnapshot =
+        input.accountUsageRecorder.store.resolveRecordId(recorded.recordId) ?? accountUsageSnapshot;
+      recordedAccountUsageSourceLinked = accountUsageObservation.sources?.some((source) =>
+        input.accountUsageRecorder?.store.resolveBySource?.(source)?.recordId === recorded.recordId,
+      ) === true;
+      recordedAccountUsageEffectiveMutation = isProviderAccountUsageStoreMutationAccepted(recorded);
     }
   }
 
-  if (
-    canUseSnapshotForSameAccountIdentity
-    && input.quotaCoordinator?.recordRuntimeAccountIdentityFromSnapshot
-    && input.snapshot.activeAccountId
-  ) {
-    input.quotaCoordinator.recordRuntimeAccountIdentityFromSnapshot({
-      sessionId: input.sessionId,
+  if (effectiveGroupRuntimeStateRecorded && selection?.kind === 'group') {
+    input.runtimeQuotaSnapshots.recordSnapshot({
       serviceId: input.serviceId,
-      groupId: selection?.kind === 'group' ? selection.groupId : null,
+      groupId: selection.groupId,
       profileId: input.snapshot.profileId,
-      providerAccountId: input.snapshot.activeAccountId,
-      accountLabel: input.snapshot.accountLabel ?? null,
-      observedAtMs: input.snapshot.fetchedAt,
-      source: 'runtime_quota_snapshot',
-      proofStrength: 'exact',
-      groupGeneration: activeGroupSelection?.kind === 'group' ? activeGroupSelection.generation : null,
+      groupGeneration: runtimeGroupGeneration,
+      snapshot: input.snapshot,
     });
   }
 
-  if (
-    selection?.kind === 'group'
-    && activeGroupSelectionMatchesSnapshotProfile
-    && input.snapshot.activeAccountId
-    && input.quotaCoordinator?.recordAccountExhaustionAndFanout
-  ) {
-    const state = input.runtimeQuotaSnapshots.buildMemberStates({
-      serviceId: input.serviceId,
-      groupId: selection.groupId,
-      capturedAtMs: input.snapshot.fetchedAt,
-    }).get(input.snapshot.profileId) ?? null;
-    if (quotaSnapshotProvesExhaustion(state?.quotaSnapshot ?? null)) {
-      await input.quotaCoordinator.recordAccountExhaustionAndFanout({
-        sourceSessionId: input.sessionId,
-        serviceId: input.serviceId,
-        groupId: selection.groupId,
-        exhaustedProfileId: input.snapshot.profileId,
-        providerAccountId: input.snapshot.activeAccountId,
-        resetAtMs: normalizeResetAtMs(state?.providerResetsAtMs),
-        reason: 'usage_limit',
-      });
+  // Canonical runtime/account-usage intake is complete above. Policy fan-out and recovery proof are
+  // downstream consumers: run them after intake without extending the runner's delivery deadline.
+  void Promise.resolve().then(async () => {
+    if (
+      recordedAccountUsageSnapshot
+      && recordedAccountUsageRecordId
+      && recordedAccountUsageSourceLinked
+      && recordedAccountUsageEffectiveMutation
+      && selection?.kind === 'group'
+      && accountUsageGroupGeneration !== null
+    ) {
+      try {
+        await input.notifyAccountUsageChanged?.({
+          sessionId: input.sessionId,
+          serviceId: input.serviceId,
+          groupId: selection.groupId,
+          profileId: input.snapshot.profileId,
+          groupGeneration: accountUsageGroupGeneration,
+          recordId: recordedAccountUsageRecordId,
+          snapshot: recordedAccountUsageSnapshot,
+          source: input.policyDisposition === 'evidence_only' ? 'evidence_only' : 'in_band',
+        });
+      } catch {
+        // Connected-service policy notification is best effort; account usage remains canonical.
+      }
     }
-  }
 
-  return { status: 'recorded', groupRuntimeStateRecorded, quotaStateRecorded };
+    if (
+      selectionMatchesSnapshot
+      && credentialFingerprintVerified
+      && exactCurrentCredentialAccountBinding
+      && input.resolveExpectedQuotaProbeAppliedIdentity
+      && input.resolveQuotaProbeFreshProof
+      && input.recordQuotaProbeFreshProof
+    ) {
+      const expectedAppliedIdentity = await input.resolveExpectedQuotaProbeAppliedIdentity({
+        serviceId: input.serviceId,
+        profileId: input.snapshot.profileId,
+        groupId: proofGroupId,
+        groupGeneration: proofGroupGeneration,
+      }).catch(() => null);
+      const snapshotAppliedIdentity: QuotaProbeAppliedIdentity = {
+        serviceId: input.serviceId,
+        profileId: input.snapshot.profileId,
+        groupId: proofGroupId,
+        groupGeneration: proofGroupGeneration,
+        providerAccountId: normalizeNullableString(input.sourceProviderAccountId),
+        materialFingerprint: normalizeConnectedServiceAccessTokenFingerprint(input.credentialFingerprint),
+      };
+      const proof = input.resolveQuotaProbeFreshProof({
+        serviceId: input.serviceId,
+        profileId: input.snapshot.profileId,
+        expectedAppliedIdentity,
+        snapshotAppliedIdentity,
+        snapshot: input.snapshot,
+      });
+      if (proof.status === 'proof') {
+        try {
+          await input.recordQuotaProbeFreshProof({
+            sessionId: input.sessionId,
+            serviceId: input.serviceId,
+            profileId: input.snapshot.profileId,
+            groupId: proofGroupId,
+            proofKind: proof.proofKind,
+            observedAtMs: input.snapshot.fetchedAt,
+          });
+        } catch {
+          // Recovery proof is optional settlement. Canonical quota/account usage remains valid.
+        }
+      }
+    }
+  }).catch(() => {
+    // Every optional consumer is contained above; retain a final guard against future additions.
+  });
+
+  return {
+    status: 'recorded',
+    groupRuntimeStateRecorded: effectiveGroupRuntimeStateRecorded,
+    quotaStateRecorded,
+  };
 }

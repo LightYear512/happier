@@ -2,7 +2,11 @@ import { TERMINAL_INPUT_QUIET_PERIOD_MS } from '@/agent/runtime/terminal/injecti
 import type { TerminalHostAdapter, TerminalHostHandle } from '@/integrations/terminalHost/_types';
 import { delayUnrefAbortable } from '@/utils/time';
 
-import type { ClaudeUnifiedInputArbiter, ClaudeUnifiedStartableDisposable } from './_types';
+import type {
+  ClaudeUnifiedInputArbiter,
+  ClaudeUnifiedStartableDisposable,
+  ClaudeUnifiedTerminalScreenObservation,
+} from './_types';
 import {
   isClaudeScreenReadyForInput,
   parseClaudeScreenState,
@@ -112,10 +116,12 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
   canReportStartupReady?: (() => boolean) | undefined;
   /**
    * Known startup dialogs are blocking, but some can be resolved before the normal composer appears.
-   * The resolver may auto-handle the dialog or publish a user action; while it is waiting on the
-   * user, startup timeout pauses without marking the screen ready for prompt injection.
+   * The resolver may auto-handle the dialog or publish a user action. While the exact dialog and
+   * runtime stay live, the user wait pauses the readiness deadline; normal timeout accounting resumes
+   * as soon as that dialog disappears, changes, or the host stops being live.
    */
   resolveStartupDialog?: ClaudeUnifiedStartupDialogResolver | undefined;
+  onScreenObserved?: ((observation: ClaudeUnifiedTerminalScreenObservation) => void) | undefined;
 }>): ClaudeUnifiedStartableDisposable {
   const pollIntervalMs = Math.max(1, Math.trunc(opts.pollIntervalMs ?? DEFAULT_STARTUP_READINESS_POLL_MS));
   const quietPeriodMs = Math.max(0, Math.trunc(opts.quietPeriodMs ?? TERMINAL_INPUT_QUIET_PERIOD_MS));
@@ -156,7 +162,22 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
     let lastLivenessPaneAlive: boolean | null = null;
     let lastScreenText: string | null = null;
     let lastProgressAtMs = startedAtMs;
-    let startupReadinessTimeoutPaused = false;
+    let readinessPausedAtMs: number | null = null;
+    let readinessPausedDurationMs = 0;
+
+    const effectiveNowMs = (): number => {
+      const current = nowMs();
+      const activePauseDuration = readinessPausedAtMs === null ? 0 : Math.max(0, current - readinessPausedAtMs);
+      return current - readinessPausedDurationMs - activePauseDuration;
+    };
+    const beginHumanDialogWait = (): void => {
+      readinessPausedAtMs ??= nowMs();
+    };
+    const endHumanDialogWait = (): void => {
+      if (readinessPausedAtMs === null) return;
+      readinessPausedDurationMs += Math.max(0, nowMs() - readinessPausedAtMs);
+      readinessPausedAtMs = null;
+    };
 
     const hasTrustedProviderProgress = (): boolean => opts.hasTrustedProviderProgress?.() === true;
     const hasHostAliveEvidence = (): boolean => opts.hasHostAliveEvidence?.() === true;
@@ -166,7 +187,7 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
     const recordScreenProgress = (screenText: string): void => {
       if (screenText !== lastScreenText) {
         lastScreenText = screenText;
-        lastProgressAtMs = nowMs();
+        lastProgressAtMs = effectiveNowMs();
       }
     };
 
@@ -178,13 +199,14 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
     // pid-15592). A pane-alive-only host static past the grace, a host past the hard ceiling, or any
     // non-live host, times out.
     const isTimedOut = (): boolean => {
-      const elapsed = nowMs() - startedAtMs;
-      if (startupReadinessTimeoutPaused && isHostAlive()) return false;
+      if (readinessPausedAtMs !== null) return false;
+      const effectiveNow = effectiveNowMs();
+      const elapsed = effectiveNow - startedAtMs;
       if (elapsed < timeoutMs) return false;
       if (elapsed >= extendedTimeoutMs) return true;
       if (!isHostAlive()) return true;
       if (hasHostAliveEvidence()) return false;
-      return nowMs() - lastProgressAtMs >= progressGraceMs;
+      return effectiveNow - lastProgressAtMs >= progressGraceMs;
     };
 
     const buildTimeoutError = (): ClaudeUnifiedTerminalReadinessTimeoutError =>
@@ -192,13 +214,44 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
         timeoutMs,
         handle: opts.handle,
         diagnostics: {
-          elapsedMs: Math.max(0, nowMs() - startedAtMs),
+          elapsedMs: Math.max(0, effectiveNowMs() - startedAtMs),
           hostAlive: isHostAlive(),
           sessionStartObserved: hasHostAliveEvidence(),
           lastLivenessPaneAlive,
           lastScreenTail: sanitizeScreenTail(lastScreenText),
         },
       });
+
+    const stopped = Symbol('claudeUnifiedTerminalReadinessAwaitStopped');
+    const awaitReadinessOperation = async <T>(operation: Promise<T> | T): Promise<T | typeof stopped> => {
+      let operationSettled = false;
+      const operationPromise = Promise.resolve(operation);
+      const watchdogAbortController = new AbortController();
+      const abortWatchdog = (): void => {
+        if (!watchdogAbortController.signal.aborted) watchdogAbortController.abort();
+      };
+      abortSignal.addEventListener('abort', abortWatchdog, { once: true });
+      void operationPromise
+        .finally(() => {
+          operationSettled = true;
+          abortWatchdog();
+          abortSignal.removeEventListener('abort', abortWatchdog);
+        })
+        .catch(() => undefined);
+      const watchdogPromise = (async (): Promise<typeof stopped> => {
+        try {
+          while (!operationSettled) {
+            if (disposed || abortSignal.aborted || hasTrustedProviderProgress()) return stopped;
+            if (isTimedOut()) throw buildTimeoutError();
+            await delayUnrefAbortable(pollIntervalMs, watchdogAbortController.signal);
+          }
+          return stopped;
+        } finally {
+          abortSignal.removeEventListener('abort', abortWatchdog);
+        }
+      })();
+      return Promise.race([operationPromise, watchdogPromise]);
+    };
 
     const waitForNextPoll = async (): Promise<'continue' | 'stopped' | 'timeout'> => {
       if (disposed || abortSignal.aborted) return 'stopped';
@@ -222,14 +275,18 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
       const observedAtMs = nowMs();
       let liveness;
       try {
-        liveness = await opts.hostAdapter.evaluateLiveness(opts.handle);
-      } catch {
+        liveness = await awaitReadinessOperation(opts.hostAdapter.evaluateLiveness(opts.handle));
+      } catch (error: unknown) {
+        endHumanDialogWait();
+        if (isClaudeUnifiedTerminalReadinessTimeoutError(error)) throw error;
         if (!(await continueAfterDelay())) return;
         continue;
       }
+      if (liveness === stopped) return;
       if (disposed || abortSignal.aborted) return;
       lastLivenessPaneAlive = liveness.paneAlive;
       if (!liveness.paneAlive) {
+        endHumanDialogWait();
         if (!(await continueAfterDelay())) return;
         continue;
       }
@@ -237,35 +294,47 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
       if (opts.hostAdapter.captureInputState) {
         let inputState;
         try {
-          inputState = await opts.hostAdapter.captureInputState(opts.handle);
-        } catch {
+          inputState = await awaitReadinessOperation(opts.hostAdapter.captureInputState(opts.handle));
+        } catch (error: unknown) {
+          endHumanDialogWait();
+          if (isClaudeUnifiedTerminalReadinessTimeoutError(error)) throw error;
           if (!(await continueAfterDelay())) return;
           continue;
         }
+        if (inputState === stopped) return;
         if (disposed || abortSignal.aborted) return;
         opts.arbiter.observeUserTypingState({
           userTyping: !inputState.stable,
           observedAtMs: inputState.observedAt,
         });
         const screenState = parseClaudeScreenState(inputState.currentInput, { cursor: inputState.cursor });
+        opts.onScreenObserved?.({ screenState });
         recordScreenProgress(screenState.text);
         if (opts.resolveStartupDialog) {
-          const resolution = await opts.resolveStartupDialog({
+          const resolution = await awaitReadinessOperation(opts.resolveStartupDialog({
             screenState,
             observedAtMs: inputState.observedAt,
             abortSignal,
-          });
+          }));
+          if (resolution === stopped) return;
           if (disposed || abortSignal.aborted) return;
-          startupReadinessTimeoutPaused = resolution.status === 'waiting_for_user';
-          if (resolution.status === 'handled' || resolution.status === 'waiting_for_user') {
+          if (resolution.status === 'waiting_for_user') {
+            beginHumanDialogWait();
             if (!(await continueAfterDelay())) return;
             continue;
           }
+          endHumanDialogWait();
+          if (resolution.status === 'handled') {
+            if (!(await continueAfterDelay())) return;
+            continue;
+          }
+        } else {
+          endHumanDialogWait();
         }
-        startupReadinessTimeoutPaused = false;
         if (isInputStateReady(inputState, screenState)) {
           if (canReportStartupReady()) {
-            await observeReady(inputState.observedAt);
+            const readyResult = await awaitReadinessOperation(observeReady(inputState.observedAt));
+            if (readyResult === stopped) return;
             return;
           }
           if (!(await continueAfterDelay())) return;
@@ -273,7 +342,8 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
         }
       } else {
         if (canReportStartupReady()) {
-          await observeReady(observedAtMs);
+          const readyResult = await awaitReadinessOperation(observeReady(observedAtMs));
+          if (readyResult === stopped) return;
           return;
         }
         if (!(await continueAfterDelay())) return;

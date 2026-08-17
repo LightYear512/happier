@@ -16,13 +16,31 @@ import type { Metadata } from '@/api/types';
 import type { SessionClientPort } from '@/api/session/sessionClientPort';
 import type { PushNotificationClient } from '@/api/pushNotifications';
 import { createHappierMcpBridge } from '@/agent/runtime/createHappierMcpBridge';
+import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
 import type { McpServerConfig } from '@/agent';
-import type { AccountSettings } from '@happier-dev/protocol';
+import {
+    type AccountSettings,
+    SessionConnectedServiceAuthCurrentGroupTruthV1Schema,
+    type SessionConnectedServiceAuthApplyGenerationRequestV1,
+    type SessionConnectedServiceAuthApplyGenerationResponseV1,
+} from '@happier-dev/protocol';
 import { resolveConfiguredClaudeConfigDir } from './utils/resolveConfiguredClaudeConfigDir';
 import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
 import { resolveSessionCriticalMetadataDrainTimeoutMs } from '@/session/transport/shared/sessionTimeouts';
 import { getProjectPath } from './utils/path';
 import { readExplicitClaudeResumeSessionIdFromArgs } from './utils/claudeResumeArgs';
+import {
+    createClaudeProviderActivityLedger,
+} from './providerActivity/createClaudeProviderActivityLedger';
+import type { SessionRuntimeActivityContributionHandle } from '@/session/runtimeActivity/types';
+import { createClaudeProviderRuntimeActivityAdapter } from './providerActivity/createClaudeProviderRuntimeActivityAdapter';
+import {
+    isSidechainSessionHook,
+    isSidechainSessionHookRuntimeActivityEvent,
+    readSessionHookEventName,
+} from './utils/sessionHookAttribution';
+import { ClaudeConnectedServiceAuthGroupRequestFence } from './connectedServices/claudeConnectedServiceAuthGroupRequestFence';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 
 export type SessionFoundInfo = {
     sessionId: string;
@@ -297,9 +315,13 @@ function buildClaudeReportedSessionMetadata(params: Readonly<{
 }
 
 export class Session {
+    readonly connectedServiceAuthGroupRequestFence = new ClaudeConnectedServiceAuthGroupRequestFence();
+    private unregisterConnectedServiceAuthGroupRuntimeControl: () => void = () => {};
     readonly path: string;
     readonly logPath: string;
     readonly client: SessionClientPort;
+    private readonly providerTaskRuntimeActivityAdapter: ReturnType<typeof createClaudeProviderRuntimeActivityAdapter> | null;
+    private readonly providerTaskActivityLedger: ReturnType<typeof createClaudeProviderActivityLedger> | null;
     pushSender: PushNotificationClient | null;
     accountSettings: AccountSettings | null;
     accountSettingsSecretsReadKeys: readonly Uint8Array[];
@@ -377,6 +399,9 @@ export class Session {
      */
     private claudeStatuslineRuntimeReconciler: ((input: ClaudeStatuslineRuntimeReconcileInput) => void) | null = null;
     private readonly criticalMetadataWrites = new Set<Promise<void>>();
+    private readonly providerInputConsumers = new Set<SessionProviderInputConsumer<EnhancedMode, string>>();
+    private providerInputAdmissionClosed = false;
+    private connectedServiceExactApplicationHandler: (() => Promise<void>) | null = null;
     private readonly reportSessionMetadataToDaemon: SessionMetadataDaemonReporter | null;
     
     /** Keep alive interval reference for cleanup */
@@ -408,9 +433,27 @@ export class Session {
         defaultSystemPromptText?: string,
         precomputedMcpBridge?: { mcpServers: Record<string, McpServerConfig>; stop: () => void } | null,
         reportSessionMetadataToDaemon?: SessionMetadataDaemonReporter | null,
+        runtimeActivityContributions?: Readonly<{
+            providerTasks?: SessionRuntimeActivityContributionHandle | null;
+            isCurrentRuntime?: () => boolean;
+        }>,
     }) {
         this.path = opts.path;
         this.client = opts.client;
+        this.unregisterConnectedServiceAuthGroupRuntimeControl = this.client.registerSessionRuntimeControls?.({
+            applyConnectedServiceAuthGeneration: this.applyConnectedServiceAuthGeneration,
+        }) ?? (() => {});
+        const providerTaskContributionHandle = opts.runtimeActivityContributions?.providerTasks ?? null;
+        this.providerTaskActivityLedger = providerTaskContributionHandle
+            ? createClaudeProviderActivityLedger()
+            : null;
+        this.providerTaskRuntimeActivityAdapter = providerTaskContributionHandle && this.providerTaskActivityLedger
+            ? createClaudeProviderRuntimeActivityAdapter({
+                contributionHandle: providerTaskContributionHandle,
+                providerActivityLedger: this.providerTaskActivityLedger,
+                isCurrentRuntime: opts.runtimeActivityContributions?.isCurrentRuntime,
+            })
+            : null;
         this.pushSender = opts.pushSender ?? null;
         this.accountSettings = opts.accountSettings ?? null;
         this.accountSettingsSecretsReadKeys = opts.accountSettingsSecretsReadKeys ?? [];
@@ -481,6 +524,34 @@ export class Session {
         this.accountSettings = settings;
     }
 
+    registerProviderInputConsumer(consumer: SessionProviderInputConsumer<EnhancedMode, string>): void {
+        this.providerInputConsumers.add(consumer);
+        if (this.providerInputAdmissionClosed) {
+            void consumer.closeProviderInputAdmissionAndWaitForDispatches();
+        }
+    }
+
+    unregisterProviderInputConsumer(consumer: SessionProviderInputConsumer<EnhancedMode, string>): void {
+        this.providerInputConsumers.delete(consumer);
+    }
+
+    registerConnectedServiceExactApplicationHandler(handler: () => Promise<void>): () => void {
+        this.connectedServiceExactApplicationHandler = handler;
+        return () => {
+            if (this.connectedServiceExactApplicationHandler === handler) {
+                this.connectedServiceExactApplicationHandler = null;
+            }
+        };
+    }
+
+    async closeProviderInputAdmissionAndWaitForDispatches(): Promise<void> {
+        this.providerInputAdmissionClosed = true;
+        await Promise.all(
+            [...this.providerInputConsumers].map((consumer) =>
+                consumer.closeProviderInputAdmissionAndWaitForDispatches()),
+        );
+    }
+
     private scheduleNextKeepAlive(): void {
         if (this.keepAliveTimer) {
             clearTimeout(this.keepAliveTimer);
@@ -499,6 +570,9 @@ export class Session {
      * Cleanup resources (call when session is no longer needed)
      */
     cleanup = (): void => {
+        this.unregisterConnectedServiceAuthGroupRuntimeControl();
+        this.unregisterConnectedServiceAuthGroupRuntimeControl = () => {};
+        this.connectedServiceExactApplicationHandler = null;
         if (this.keepAliveTimer) {
             clearTimeout(this.keepAliveTimer);
             this.keepAliveTimer = null;
@@ -516,6 +590,26 @@ export class Session {
         this.permissionRpcRouter = null;
         logger.debug('[Session] Cleaned up resources');
     }
+
+    applyConnectedServiceAuthGeneration = async (
+        request: SessionConnectedServiceAuthApplyGenerationRequestV1,
+    ): Promise<SessionConnectedServiceAuthApplyGenerationResponseV1> => {
+        const truth = SessionConnectedServiceAuthCurrentGroupTruthV1Schema.safeParse(request.authGeneration);
+        if (!truth.success) {
+            return { ok: false, errorCode: 'invalid_request', error: 'invalid_request' };
+        }
+        this.connectedServiceAuthGroupRequestFence.applyCurrentTruth(truth.data);
+        if (
+            request.applicationSettled === true
+            && truth.data.kind === 'current_auth_group_available'
+            && this.connectedServiceExactApplicationHandler
+        ) {
+            await this.connectedServiceExactApplicationHandler().catch((error) => {
+                logger.debug('[Session] Failed to release Claude provider UI after exact connected-service application (non-fatal)', error);
+            });
+        }
+        return { ok: true, appliedVia: 'current_truth_fence' };
+    };
 
     private trackCriticalMetadataWrite(write: () => Promise<void> | void, reason: string): void {
         let result: Promise<void> | void;
@@ -555,6 +649,32 @@ export class Session {
         }
     }
 
+    publishUnifiedTerminalHostMetadata = async (
+        terminal: NonNullable<Metadata['terminal']>,
+    ): Promise<void> => {
+        let updatedMetadata: Metadata | null = null;
+        try {
+            await this.client.updateMetadata((metadata) => {
+                updatedMetadata = {
+                    ...metadata,
+                    terminal,
+                };
+                return updatedMetadata;
+            });
+            if (updatedMetadata) {
+                await this.reportSessionMetadataToDaemon?.({
+                    sessionId: this.client.sessionId,
+                    metadata: updatedMetadata,
+                });
+            }
+        } catch (error) {
+            logger.debug(
+                '[Session] Failed to publish Claude Unified terminal host metadata (non-fatal)',
+                error,
+            );
+        }
+    };
+
     async getOrCreateHappierMcpBridge(): Promise<{ mcpServers: Record<string, McpServerConfig>; mcpConfigJson: string }> {
         if (this.happierMcpBridge) {
             return { mcpServers: this.happierMcpBridge.mcpServers, mcpConfigJson: this.happierMcpBridge.mcpConfigJson };
@@ -562,7 +682,25 @@ export class Session {
 
         if (!this.happierMcpBridgePromise) {
             this.happierMcpBridgePromise = (async () => {
-                const bridge = await createHappierMcpBridge(this.client, {
+                const mcpSession = applyRunnerMcpSessionContext(this.client, {
+                    getPermissionMode: () => this.lastPermissionMode,
+                    getBackendTarget: () => ({ kind: 'builtInAgent', agentId: 'claude' }),
+                    getCurrentSessionLocation: () => {
+                        const metadata = this.client.getMetadataSnapshot?.() as Record<string, unknown> | null | undefined;
+                        const host = typeof metadata?.host === 'string' && metadata.host.trim()
+                            ? metadata.host.trim()
+                            : null;
+                        const machineId = typeof metadata?.machineId === 'string' && metadata.machineId.trim()
+                            ? metadata.machineId.trim()
+                            : null;
+                        return {
+                            path: this.path,
+                            host,
+                            machineId,
+                        };
+                    },
+                });
+                const bridge = await createHappierMcpBridge(mcpSession, {
                     accountSettings: this.accountSettings,
                 });
                 const mcpConfigJson = JSON.stringify({ mcpServers: bridge.mcpServers });
@@ -638,13 +776,18 @@ export class Session {
     }
 
     onThinkingChange = (thinking: boolean) => {
-        const didChange = this.applyThinkingState(thinking);
+        this.applyThinkingState(thinking);
 
-        if (!didChange) {
-            return;
-        }
-
+        // The task lifecycle is keyed on `currentTaskId` — NOT on the `thinking` display flag's
+        // transition. An optimistic `setThinkingWithoutTaskLifecycle(true)` latch (fired on remote
+        // prompt injection) sets `thinking` before the canonical hook-driven onThinkingChange(true),
+        // so gating on a thinking-flag change let the latch swallow the task open and the completed
+        // turn never emitted `task_complete` (no completed status → no ready/push → no attention).
+        // Keying on the task itself collapses that two-writer split-brain to one writer.
         if (thinking) {
+            if (this.currentTaskId) {
+                return;
+            }
             const id = randomUUID();
             this.currentTaskId = id;
             this.client.sendAgentMessage('claude', { type: 'task_started', id });
@@ -686,6 +829,14 @@ export class Session {
      * all registered callbacks (e.g., SessionScanner) about the change.
      */
     onSessionFound = (sessionId: string, hookData?: SessionHookData) => {
+        // PLAN 4.9.1 step 2: arm the provider-task identity gate HERE, at the one place this runtime
+        // learns its Claude session identity, so the unified terminal, the local launcher and the
+        // remote launcher inherit it instead of each remembering to arm the ledger they were handed.
+        // A lineage, not a swap - every id this session has passed through stays owned, so a task
+        // started before a compact boundary is not foreign to its own ledger afterwards. Placed
+        // before the change/early-return checks below so a re-reported id is still declared.
+        this.providerTaskActivityLedger?.noteOwnedSessionId(sessionId);
+
         const nextTranscriptPathRaw = hookData?.transcript_path ?? hookData?.transcriptPath;
         const nextTranscriptPath = typeof nextTranscriptPathRaw === 'string' ? nextTranscriptPathRaw : null;
         const hookTranscriptPathIsNativeCandidate = isClaudeNativeTranscriptPathCandidate({
@@ -710,14 +861,8 @@ export class Session {
                 sessionId,
                 workingDirectory: this.path,
             });
-        const metadataTranscriptPath = resumableTranscriptPath
-            ?? (
-                nativeTranscriptPathCandidate
-                && !isReachableClaudeTranscriptPath(nativeTranscriptPathCandidate)
-                    ? nativeTranscriptPathCandidate
-                    : null
-            );
-        const observedTranscriptPath = resumableTranscriptPath ?? nextTranscriptPath ?? metadataTranscriptPath;
+        const metadataTranscriptPath = resumableTranscriptPath;
+        const observedTranscriptPath = resumableTranscriptPath ?? nextTranscriptPath ?? nativeTranscriptPathCandidate;
 
         const prevSessionId = this.sessionId;
         const prevTranscriptPath = this.transcriptPath;
@@ -813,7 +958,15 @@ export class Session {
             callback(data);
         }
     }
-    
+
+    getProviderTaskRuntimeActivityAdapter(): ReturnType<typeof createClaudeProviderRuntimeActivityAdapter> | null {
+        return this.providerTaskRuntimeActivityAdapter;
+    }
+
+    getProviderTaskActivityLedger(): ReturnType<typeof createClaudeProviderActivityLedger> | null {
+        return this.providerTaskActivityLedger;
+    }
+
     /**
      * Register a callback to be notified when session ID is found/changed
      */

@@ -1,4 +1,5 @@
 import type { FeatureDecision } from '@happier-dev/protocol';
+import type { SessionStopRecovery } from '@/sync/ops/sessionStopContract';
 
 export const SESSION_BULK_ACTION_IDS = {
     stop: 'ui.session.stop',
@@ -52,6 +53,7 @@ export type SessionBulkMutationResult = Readonly<{
     success: boolean;
     message?: string;
     code?: string;
+    recovery?: SessionStopRecovery;
 }>;
 
 export type SessionBulkOperation<T = SessionBulkMutationResult> = (
@@ -67,6 +69,20 @@ export type SessionBulkFolderAssignmentOperation = (
     params: Readonly<{
         target: SessionBulkActionTarget;
         folderId: string | null;
+    }>,
+) => Promise<void>;
+
+export type SessionBulkPinOperation = (
+    params: Readonly<{
+        target: SessionBulkActionTarget;
+        pinned: boolean;
+    }>,
+) => Promise<void>;
+
+export type SessionBulkTagAssignmentOperation = (
+    params: Readonly<{
+        target: SessionBulkActionTarget;
+        tags: readonly string[];
     }>,
 ) => Promise<void>;
 
@@ -107,11 +123,8 @@ export type SessionBulkActionExecutionContext = Readonly<{
     cancelSignal?: SessionBulkActionCancelSignal;
     onProgress?: SessionBulkActionProgressListener;
 
-    pinnedSessionKeysV1?: readonly string[] | null;
-    setPinnedSessionKeysV1?: (next: string[]) => void | Promise<void>;
-
-    sessionTagsV1?: Readonly<Record<string, readonly string[]>> | null;
-    setSessionTagsV1?: (next: Record<string, string[]>) => void | Promise<void>;
+    setSessionPin?: SessionBulkPinOperation;
+    setSessionTagAssignments?: SessionBulkTagAssignmentOperation;
 
     hideInactiveSessions?: boolean;
     stopSession?: SessionBulkOperation;

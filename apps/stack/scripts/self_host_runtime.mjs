@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
   cp,
@@ -40,11 +40,13 @@ import {
   resolveServiceBackend,
 } from '@happier-dev/cli-common/service';
 import {
-  parseEnvText as parseEnvTextShared,
   resolveConfiguredRelayRuntimeBinaryOverride,
   resolveConfiguredRelayRuntimePaths,
+} from '@happier-dev/cli-common/firstPartyRuntime/relayRuntime';
+import {
+  parseEnvText as parseEnvTextShared,
   renderSelfHostServerEnvText as renderSelfHostServerEnvTextShared,
-} from '@happier-dev/cli-common/firstPartyRuntime';
+} from '@happier-dev/cli-common/firstPartyRuntime/selfHostServerEnv';
 import { DEFAULT_MINISIGN_PUBLIC_KEY } from '@happier-dev/release-runtime/minisign';
 import {
   PUBLIC_RELEASE_RING_IDS,
@@ -53,7 +55,7 @@ import {
 } from '@happier-dev/release-runtime/releaseRings';
 import { resolveReleaseAssetBundle } from '@happier-dev/release-runtime/assets';
 import { downloadVerifiedReleaseAssetBundle } from '@happier-dev/release-runtime/verifiedDownload';
-import { planArchiveExtraction } from '@happier-dev/release-runtime/extractPlan';
+import { extractFirstPartyReleaseArchiveToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
 import { fetchFirstGitHubReleaseByTags, fetchGitHubReleaseByTag } from '@happier-dev/release-runtime/github';
 import { findExtractedExecutableByName } from './self_host/findExtractedExecutableByName.mjs';
 import { maybeInstallCompanionCli } from './self_host/install_companion_cli.mjs';
@@ -298,11 +300,6 @@ export function resolveSelfHostReleaseTargets(channel) {
     channel: normalizedChannel,
     serverTag: serverTags[0],
     serverTags,
-    uiWebTags: normalizedChannel === 'stable'
-      ? ['ui-web-stable']
-      : normalizedChannel === 'preview'
-        ? ['ui-web-preview', 'ui-web-stable']
-        : ['ui-web-dev', 'ui-web-preview', 'ui-web-stable'],
   };
 }
 
@@ -343,138 +340,16 @@ export function pickReleaseAsset({ assets, product, os, arch }) {
   };
 }
 
-function resolveSqliteDatabaseFilePath(databaseUrl) {
-  const raw = String(databaseUrl ?? '').trim();
-  if (!raw) return '';
-  if (!raw.startsWith('file:')) return '';
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'file:') return '';
-    const pathname = url.pathname || '';
-    // On Windows, URL.pathname can start with /C:/...
-    return pathname.startsWith('/') && /^[A-Za-z]:\//.test(pathname.slice(1))
-      ? pathname.slice(1)
-      : pathname;
-  } catch {
-    const value = raw.slice('file:'.length);
-    return value.startsWith('//') ? value.replace(/^\/+/, '/') : value;
-  }
-}
-
-async function applySelfHostSqliteMigrationsAtInstallTime({ env }) {
-  if (typeof globalThis.Bun === 'undefined') {
-    return { applied: [], skipped: true, reason: 'bun-unavailable' };
-  }
-  const databaseUrl = String(env?.DATABASE_URL ?? '').trim();
-  const migrationsDir = String(env?.HAPPIER_SQLITE_MIGRATIONS_DIR ?? env?.HAPPY_SQLITE_MIGRATIONS_DIR ?? '').trim();
-  if (!databaseUrl || !migrationsDir) {
-    return { applied: [], skipped: true, reason: 'missing-config' };
-  }
-  const dbPath = resolveSqliteDatabaseFilePath(databaseUrl);
-  if (!dbPath) {
-    return { applied: [], skipped: true, reason: 'unsupported-database-url' };
-  }
-  const migrationsInfo = await stat(migrationsDir).catch(() => null);
-  if (!migrationsInfo?.isDirectory()) {
-    return { applied: [], skipped: true, reason: 'migrations-dir-missing' };
-  }
-
-  const mod = await import('bun:sqlite');
-  const Database = mod?.Database;
-  if (!Database) {
-    return { applied: [], skipped: true, reason: 'bun-sqlite-unavailable' };
-  }
-  const db = new Database(dbPath);
-  db.exec(
-    [
-      'CREATE TABLE IF NOT EXISTS _prisma_migrations (',
-      '  id TEXT PRIMARY KEY,',
-      '  checksum TEXT NOT NULL,',
-      '  finished_at DATETIME,',
-      '  migration_name TEXT NOT NULL,',
-      '  logs TEXT,',
-      '  rolled_back_at DATETIME,',
-      '  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,',
-      '  applied_steps_count INTEGER NOT NULL DEFAULT 0',
-      ');',
-    ].join('\n'),
-  );
-
-  const tableNamesQuery = db.query(`SELECT name FROM sqlite_master WHERE type='table'`);
-  const appliedQuery = db.query(
-    `SELECT migration_name FROM _prisma_migrations WHERE rolled_back_at IS NULL AND finished_at IS NOT NULL`,
-  );
-  const insertQuery = db.query(
-    `INSERT INTO _prisma_migrations (id, checksum, finished_at, migration_name, applied_steps_count) VALUES (?, ?, CURRENT_TIMESTAMP, ?, 1)`,
-  );
-
-  const applied = new Set(
-    appliedQuery.all().map((row) => String(row?.migration_name ?? '').trim()).filter(Boolean),
-  );
-
-  const existingTables = new Set(
-    tableNamesQuery.all().map((row) => String(row?.name ?? '').trim()).filter(Boolean),
-  );
-  const hasCoreTables =
-    existingTables.has('Account')
-    || existingTables.has('account')
-    || existingTables.has('accounts');
-  const legacyMode = applied.size === 0 && hasCoreTables;
-
-  const isLikelyAlreadyAppliedError = (err) => {
-    const msg = String(err?.message ?? err ?? '').toLowerCase();
-    return msg.includes('already exists') || msg.includes('duplicate column') || msg.includes('duplicate');
-  };
-
-  const entries = await readdir(migrationsDir, { withFileTypes: true }).catch(() => []);
-  const dirs = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort((a, b) => a.localeCompare(b));
-
-  const sha256Hex = (input) => createHash('sha256').update(String(input)).digest('hex');
-  const appliedNow = [];
-  for (const name of dirs) {
-    if (applied.has(name)) continue;
-    const sqlPath = join(migrationsDir, name, 'migration.sql');
-    const sql = await readFile(sqlPath, 'utf8').catch(() => '');
-    if (!sql.trim()) continue;
-    const checksum = sha256Hex(sql);
-    db.exec('BEGIN');
-    try {
-      db.exec(sql);
-      insertQuery.run(randomUUID(), checksum, name);
-      db.exec('COMMIT');
-      appliedNow.push(name);
-      applied.add(name);
-    } catch (e) {
-      try {
-        db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      if (legacyMode && isLikelyAlreadyAppliedError(e)) {
-        db.exec('BEGIN');
-        try {
-          insertQuery.run(randomUUID(), checksum, name);
-          db.exec('COMMIT');
-        } catch (inner) {
-          try {
-            db.exec('ROLLBACK');
-          } catch {
-            // ignore
-          }
-          throw inner;
-        }
-        appliedNow.push(name);
-        applied.add(name);
-        continue;
-      }
-      throw e;
-    }
-  }
-
-  return { applied: appliedNow, skipped: false, reason: 'ok' };
+export async function applySelfHostSqliteMigrationsAtInstallTime({
+  config,
+  env,
+  runCommandImpl = runCommand,
+}) {
+  return runCommandImpl(config.serverBinaryPath, ['--migrate-only'], {
+    cwd: config.installRoot,
+    env,
+    stdio: 'pipe',
+  });
 }
 
 export function resolveConfig({ channel, mode = 'user', platform = process.platform } = {}) {
@@ -832,7 +707,6 @@ export function buildSelfHostDoctorChecks(config, { state, commandExists: comman
     { name: 'platform', ok: ['linux', 'darwin', 'windows'].includes(os) },
     { name: 'mode', ok: mode === 'user' || (mode === 'system' && platform !== 'win32') },
     // We verify minisign signatures using the bundled public key + node:crypto, so no external `minisign` dependency.
-    { name: 'tar', ok: commandExistsFn('tar') },
     { name: 'powershell', ok: os === 'windows' ? commandExistsFn('powershell') : true },
     { name: 'systemctl', ok: os === 'linux' ? commandExistsFn('systemctl') : true },
     { name: 'launchctl', ok: os === 'darwin' ? commandExistsFn('launchctl') : true },
@@ -1410,7 +1284,16 @@ async function stageSelfHostRuntimePayload({ artifactRootDir, stageRootDir }) {
   });
   assertSelfHostNodeModulesSync(nodeModules);
 
+  const embeddedUiSourceDir = join(artifactRootDir, 'ui-web', 'current');
+  const embeddedUiDir = join(stageRoot, 'ui-web', 'current');
+  const embeddedUiIndex = await stat(join(embeddedUiSourceDir, 'index.html')).catch(() => null);
+  if (embeddedUiIndex?.isFile()) {
+    await mkdir(dirname(embeddedUiDir), { recursive: true });
+    await cp(embeddedUiSourceDir, embeddedUiDir, { recursive: true });
+  }
+
   return {
+    embeddedUiDir: embeddedUiIndex?.isFile() ? embeddedUiDir : '',
     generatedDir,
     nodeModulesDir,
     sqliteMigrationsDir: existsSync(sqliteMigrationsDir) ? sqliteMigrationsDir : '',
@@ -1573,7 +1456,7 @@ async function promoteStagedSelfHostRuntimePayload({
       await onPromoted();
     }
     if (typeof afterPromoted === 'function') {
-      await afterPromoted();
+      await afterPromoted(stagedRuntime);
     }
     await finalizeFailClosedBinaryPromotionWindow(binaryPromotionWindow);
 
@@ -1631,16 +1514,11 @@ export async function installSelfHostBinaryFromBundle({
 
     const extractDir = join(tempDir, 'extract');
     await mkdir(extractDir, { recursive: true });
-    const plan = planArchiveExtraction({
+    await extractFirstPartyReleaseArchiveToDirectory({
       archiveName: downloaded.archiveName,
       archivePath: downloaded.archivePath,
-      destDir: extractDir,
-      os,
+      extractDir,
     });
-    if (!commandExists(plan.requiredCommand)) {
-      throw new Error(`[self-host] ${plan.requiredCommand} is required to extract release artifacts`);
-    }
-    runCommand(plan.command.cmd, plan.command.args, { stdio: 'ignore' });
     const extractedBinary = await findExtractedExecutableByName(extractDir, name);
     if (!extractedBinary) {
       throw new Error('[self-host] failed to locate extracted server binary');
@@ -1663,7 +1541,9 @@ export async function installSelfHostBinaryFromBundle({
         previousBinaryPath: config.serverPreviousBinaryPath,
         versionedTargetPath: join(config.versionsDir, `${name}-${version}`),
       }),
-      afterPromoted: afterPromote,
+      afterPromoted: typeof afterPromote === 'function'
+        ? async (runtime) => afterPromote({ ...runtime, version })
+        : undefined,
     });
     await pruneVersionedDirectories({
       versionsDir: config.versionsDir,
@@ -1719,7 +1599,9 @@ export async function installSelfHostBinaryFromLocalPath({
         previousBinaryPath: config.serverPreviousBinaryPath,
         versionedTargetPath: join(config.versionsDir, `${name}-${version}`),
       }),
-      afterPromoted: afterPromote,
+      afterPromoted: typeof afterPromote === 'function'
+        ? async (runtime) => afterPromote({ ...runtime, version })
+        : undefined,
     });
     await pruneVersionedDirectories({
       versionsDir: config.versionsDir,
@@ -1827,124 +1709,37 @@ async function assertUiWebBundleIsValid(rootDir) {
   }
 }
 
-export async function resolveExtractedUiWebBundleRootDir({ extractDir } = {}) {
-  const root = String(extractDir ?? '').trim();
-  if (!root) {
-    throw new Error('[self-host] missing ui web bundle extractDir');
+export async function installUiWebFromEmbeddedRuntime({ config, embeddedUiDir, version }) {
+  const sourceDir = String(embeddedUiDir ?? '').trim();
+  const runtimeVersion = String(version ?? '').trim();
+  if (!sourceDir || !existsSync(sourceDir)) {
+    throw new Error('[self-host] managed UI was requested, but the server payload is missing its embedded UI');
   }
+  await assertUiWebBundleIsValid(sourceDir);
 
-  // Some archives extract index.html directly into extractDir.
-  try {
-    await assertUiWebBundleIsValid(root);
-    return root;
-  } catch {
-    // continue
-  }
-
-  const roots = await readdir(root).catch(() => []);
-  for (const entry of roots) {
-    const candidate = join(root, entry);
-    const info = await stat(candidate).catch(() => null);
-    if (!info?.isDirectory()) continue;
-    try {
-      await assertUiWebBundleIsValid(candidate);
-      return candidate;
-    } catch {
-      // continue
-    }
-  }
-
-  // Preserve the existing missing-index.html error shape, but anchor it to the extraction root
-  // instead of whatever random entry came first (e.g. AppleDouble `._*` files).
-  throw new Error(`[self-host] UI web bundle is missing index.html: ${join(root, 'index.html')}`);
-}
-
-async function installUiWebFromRelease({ config }) {
-  const { uiWebTags: tags } = resolveSelfHostReleaseTargets(config.channel);
-
-  const resolvedRelease = await fetchFirstGitHubReleaseByTags({
-    githubRepo: config.githubRepo,
-    tags,
-    userAgent: 'happier-self-host-installer',
-    githubToken: String(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''),
-  }).catch((e) => {
-    const status = Number(e?.status);
-    if (status === 404) return null;
-    throw e;
-  });
-
-  if (!resolvedRelease) {
-    return {
-      installed: false,
-      version: null,
-      source: null,
-      reason: `ui web release tag not found (${tags.join(', ')})`,
-    };
-  }
-  const { release, tag: channelTag } = resolvedRelease;
   const existingVersionIds = await listVersionedDirectoryIdsNewestFirst({
     versionsDir: config.uiWebVersionsDir,
     entryPrefix: `${config.uiWebProduct}-`,
   });
+  const uiVersion = runtimeVersion || `${Date.now()}`;
+  const versionedTargetDir = join(config.uiWebVersionsDir, `${config.uiWebProduct}-${uiVersion}`);
+  const previousVersionId = existingVersionIds.find((candidate) => candidate !== uiVersion) ?? null;
 
-  const resolved = resolveReleaseAssetBundle({
-    assets: release?.assets,
-    product: config.uiWebProduct,
-    os: config.uiWebOs,
-    arch: config.uiWebArch,
+  await rm(versionedTargetDir, { recursive: true, force: true });
+  await mkdir(dirname(versionedTargetDir), { recursive: true });
+  await cp(sourceDir, versionedTargetDir, { recursive: true });
+  await rm(config.uiWebCurrentDir, { recursive: true, force: true }).catch(() => {});
+  await symlink(versionedTargetDir, config.uiWebCurrentDir, config.platform === 'win32' ? 'junction' : 'dir').catch(async () => {
+    await cp(versionedTargetDir, config.uiWebCurrentDir, { recursive: true });
+  });
+  await pruneVersionedDirectories({
+    versionsDir: config.uiWebVersionsDir,
+    entryPrefix: `${config.uiWebProduct}-`,
+    currentVersionId: uiVersion,
+    previousVersionId,
   });
 
-  const tempDir = await mkdtemp(join(tmpdir(), 'happier-self-host-ui-web-'));
-  try {
-    const pubkeyFile = resolveMinisignPublicKeyText(process.env);
-    const downloaded = await downloadVerifiedReleaseAssetBundle({
-      bundle: resolved,
-      destDir: tempDir,
-      pubkeyFile,
-      userAgent: 'happier-self-host-installer',
-    });
-
-    const extractDir = join(tempDir, 'extract');
-    await mkdir(extractDir, { recursive: true });
-    const plan = planArchiveExtraction({
-      archiveName: downloaded.archiveName,
-      archivePath: downloaded.archivePath,
-      destDir: extractDir,
-      os: normalizeOs(config.platform),
-    });
-    if (!commandExists(plan.requiredCommand)) {
-      throw new Error(`[self-host] ${plan.requiredCommand} is required to extract ui web bundle artifacts`);
-    }
-    runCommand(plan.command.cmd, plan.command.args, { stdio: 'ignore' });
-
-	    const roots = await readdir(extractDir).catch(() => []);
-	    if (roots.length === 0) {
-	      throw new Error('[self-host] extracted ui web bundle is empty');
-	    }
-	    const artifactRootDir = await resolveExtractedUiWebBundleRootDir({ extractDir });
-
-	    const version = resolved.version || String(release?.tag_name ?? '').replace(/^ui-web-v/, '') || `${Date.now()}`;
-	    const versionedTargetDir = join(config.uiWebVersionsDir, `${config.uiWebProduct}-${version}`);
-    const previousVersionId = existingVersionIds.find((candidate) => candidate !== version) ?? null;
-    await rm(versionedTargetDir, { recursive: true, force: true });
-    await mkdir(dirname(versionedTargetDir), { recursive: true });
-    await cp(artifactRootDir, versionedTargetDir, { recursive: true });
-
-    await rm(config.uiWebCurrentDir, { recursive: true, force: true }).catch(() => {});
-    await symlink(versionedTargetDir, config.uiWebCurrentDir, config.platform === 'win32' ? 'junction' : 'dir').catch(async () => {
-      await cp(versionedTargetDir, config.uiWebCurrentDir, { recursive: true });
-    });
-    await pruneVersionedDirectories({
-      versionsDir: config.uiWebVersionsDir,
-      entryPrefix: `${config.uiWebProduct}-`,
-      currentVersionId: version,
-      previousVersionId,
-    });
-
-    return { installed: true, version, source: downloaded.source.archiveUrl, tag: channelTag };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  return { installed: true, version: uiVersion, source: 'embedded-server-archive' };
 }
 
 async function writeSelfHostState(config, statePatch) {
@@ -2085,6 +1880,8 @@ export async function runSelfHostUiWebMutationWithRollback({
 
 async function performSelfHostPostPromoteSteps({
   config,
+  embeddedUiDir,
+  runtimeVersion,
   withUi,
   envOverrides,
   autoUpdateMode,
@@ -2096,7 +1893,11 @@ async function performSelfHostPostPromoteSteps({
   const uiResult = withUi
     ? await runSelfHostUiWebMutationWithRollback({
       config,
-      mutateUi: async () => installUiWebFromRelease({ config }),
+      mutateUi: async () => installUiWebFromEmbeddedRuntime({
+        config,
+        embeddedUiDir,
+        version: runtimeVersion,
+      }),
     })
     : { installed: false, version: null, source: null, reason: 'disabled' };
   const uiInstalled = Boolean(uiResult?.installed);
@@ -2117,7 +1918,7 @@ async function performSelfHostPostPromoteSteps({
   const installEnv = parseEnvText(envTextWithOverrides);
   const healthPort = resolveSelfHostEffectiveServerPort({ config, env: installEnv });
   if (!parseBoolean(installEnv.HAPPIER_SQLITE_AUTO_MIGRATE ?? installEnv.HAPPY_SQLITE_AUTO_MIGRATE, true)) {
-    await applySelfHostSqliteMigrationsAtInstallTime({ env: installEnv }).catch((e) => {
+    await applySelfHostSqliteMigrationsAtInstallTime({ config, env: installEnv }).catch((e) => {
       throw new Error(`[self-host] failed to apply sqlite migrations at install time: ${String(e?.message ?? e)}`);
     });
   }
@@ -2187,14 +1988,8 @@ async function cmdInstall({ channel, mode, argv, json }) {
       || parseBoolean(process.env.HAPPIER_SELF_HOST_WITH_UI, true) === false);
   const nonInteractive = argvSansEnv.includes('--non-interactive') || parseBoolean(process.env.HAPPIER_NONINTERACTIVE, false);
 
-  if (normalizeOs(config.platform) !== 'windows' && !commandExists('tar')) {
-    throw new Error('[self-host] tar is required to extract release artifacts');
-  }
   if (normalizeOs(config.platform) === 'windows' && !commandExists('powershell')) {
     throw new Error('[self-host] powershell is required on Windows');
-  }
-  if (withUi && !commandExists('tar')) {
-    throw new Error('[self-host] tar is required to extract ui web bundle artifacts');
   }
   if (normalizeOs(config.platform) === 'linux' && !commandExists('systemctl')) {
     throw new Error('[self-host] systemctl is required on Linux');
@@ -2227,9 +2022,11 @@ async function cmdInstall({ channel, mode, argv, json }) {
         config,
         env: process.env,
         beforeRuntimePromote,
-        afterPromote: async () => {
-          postPromoteResult = await performSelfHostPostPromoteSteps({
-            config,
+      afterPromote: async ({ embeddedUiDir, version }) => {
+        postPromoteResult = await performSelfHostPostPromoteSteps({
+          config,
+          embeddedUiDir,
+          runtimeVersion: version,
             withUi,
             envOverrides,
             autoUpdateMode: 'install',
@@ -2453,9 +2250,11 @@ async function cmdUpdate({ channel, mode, json }) {
         config,
         env: process.env,
         beforeRuntimePromote,
-        afterPromote: async () => {
-          postPromoteResult = await performSelfHostPostPromoteSteps({
-            config,
+      afterPromote: async ({ embeddedUiDir, version }) => {
+        postPromoteResult = await performSelfHostPostPromoteSteps({
+          config,
+          embeddedUiDir,
+          runtimeVersion: version,
             withUi,
             envOverrides: [],
             autoUpdateMode: 'reconcile',
@@ -2663,7 +2462,7 @@ function redactEnvForDisplay(env) {
   return out;
 }
 
-async function cmdConfig({ channel, mode, argv, json }) {
+async function cmdConfig({ channel, mode, argv, json, output }) {
   const args = Array.isArray(argv) ? argv.map(String) : [];
   const sub = pickFirstPositional(args) || 'view';
   const subIndex = args.indexOf(sub);
@@ -2684,6 +2483,7 @@ async function cmdConfig({ channel, mode, argv, json }) {
   if (sub === 'view') {
     printResult({
       json,
+      output,
       data: {
         ok: true,
         channel,
@@ -2792,6 +2592,7 @@ async function cmdConfig({ channel, mode, argv, json }) {
 
     printResult({
       json,
+      output,
       data: {
         ok: true,
         channel,
@@ -2835,6 +2636,15 @@ export function usageText() {
 }
 
 let cachedRelayHostForwardSupport = null;
+const RELAY_HOST_FORWARDABLE_SUBCOMMANDS = new Set(['install', 'status', 'update', 'uninstall']);
+
+export function resolveRelayHostForwardedArgv(argv) {
+  const args = Array.isArray(argv) ? [...argv] : [];
+  if (String(args[0] ?? '').trim() === 'update') {
+    args[0] = 'install';
+  }
+  return args;
+}
 
 function shouldAttemptRelayHostForward(env = process.env) {
   const raw = String(env?.HAPPIER_STACK_SELF_HOST_FORWARD ?? '1').trim().toLowerCase();
@@ -2862,9 +2672,14 @@ function resolveRelayHostForwardSupport(env = process.env) {
   return cachedRelayHostForwardSupport;
 }
 
-export async function runSelfHostCli(argv = process.argv.slice(2)) {
-  if (shouldAttemptRelayHostForward(process.env) && resolveRelayHostForwardSupport(process.env)) {
-    const forwarded = spawnSync('happier', ['relay', 'host', ...argv], {
+export async function runSelfHostCli(argv = process.argv.slice(2), { configOutput = process.stdout } = {}) {
+  const parsed = parseSelfHostInvocation(argv);
+  if (
+    RELAY_HOST_FORWARDABLE_SUBCOMMANDS.has(parsed.subcommand)
+    && shouldAttemptRelayHostForward(process.env)
+    && resolveRelayHostForwardSupport(process.env)
+  ) {
+    const forwarded = spawnSync('happier', ['relay', 'host', ...resolveRelayHostForwardedArgv(argv)], {
       env: process.env,
       stdio: 'inherit',
       encoding: 'utf-8',
@@ -2878,7 +2693,6 @@ export async function runSelfHostCli(argv = process.argv.slice(2)) {
     return;
   }
 
-  const parsed = parseSelfHostInvocation(argv);
   const { flags, kv } = parseArgs(argv);
   const json = wantsJson(argv, { flags });
   const channel = normalizeChannel(String(kv.get('--channel') ?? process.env.HAPPIER_CHANNEL ?? 'stable'));
@@ -2926,7 +2740,7 @@ export async function runSelfHostCli(argv = process.argv.slice(2)) {
     return;
   }
   if (parsed.subcommand === 'config') {
-    await cmdConfig({ channel, mode, argv: parsed.rest, json });
+    await cmdConfig({ channel, mode, argv: parsed.rest, json, output: configOutput });
     return;
   }
 

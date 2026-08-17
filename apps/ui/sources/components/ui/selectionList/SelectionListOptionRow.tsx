@@ -3,8 +3,8 @@
  *
  * Owns:
  *  - testID / role / ARIA / id generation for option rows (with FR3-A
- *    `measureMode` suppression so the hidden measure mirror inside
- *    `SelectionListAnimatedHeight` never duplicates identity props).
+ *    `measureMode` suppression so the hidden mirror inside the orchestrator's
+ *    offscreen measure host never duplicates identity props).
  *  - Activation via `activateSelectionListRow` + right-accessory propagation.
  *  - `PlanSuccessRows` mapping helper.
  *  - The two `SlideTransitionSwitch` wrappers (`PlanAnimatedSuccessRows` and
@@ -50,8 +50,8 @@ export function PlanOptionRow(props: Readonly<{
     onPushStep: (step: SelectionListStep) => void;
     /**
      * FR3-1 / FR3-8 — when true, suppress every identity / accessibility prop
-     * on this row so the hidden measure mirror inside SelectionListAnimatedHeight
-     * does not duplicate testIDs / aria-* props in the live DOM. Layout is
+     * on this row so the hidden mirror inside the orchestrator's offscreen
+     * measure host does not duplicate testIDs / aria-* props in the live DOM. Layout is
      * preserved so the measure host still reports the correct natural height.
      */
     measureMode?: boolean;
@@ -99,6 +99,7 @@ export function PlanOptionRow(props: Readonly<{
                     rightElement={renderSelectionListAccessory(props.option.rightAccessory)}
                     selected={props.isSelected || props.isFocused}
                     disabled={props.option.disabled === true}
+                    loading={props.option.loading === true}
                     showChevron={Boolean(props.option.openStep)}
                     keepChevronWithRightElement={props.option.keepChevronWithAccessory === true}
                     webRole="presentation"
@@ -135,6 +136,7 @@ export function PlanOptionRow(props: Readonly<{
             onPress={handlePress}
             selected={selectedOrFocused}
             disabled={props.option.disabled === true}
+            loading={props.option.loading === true}
             showChevron={Boolean(props.option.openStep)}
             keepChevronWithRightElement={props.option.keepChevronWithAccessory === true}
             // On web the wrapper claims `role="option"`. The inner Item's

@@ -2,7 +2,7 @@ import type { McpServerConfig } from '@/agent';
 import type { AgentBackend } from '@/agent/core';
 import type { AcpPermissionHandler } from '@/agent/acp/AcpBackend';
 import { createAcpRuntime } from '@/agent/acp/runtime/createAcpRuntime';
-import { createSessionProviderPendingDrainAdapter } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { logger } from '@/ui/logger';
@@ -33,12 +33,12 @@ export function createCodexAcpRuntime(params: {
   getPermissionMode?: () => PermissionMode | null | undefined;
   onThinkingChange: (thinking: boolean) => void;
   pendingQueueDrainMaxPopPerWake?: number;
+  providerInputConsumer: SessionProviderInputConsumer<unknown, unknown>;
 }) {
-  const lastCodexAcpThreadIdPublished: { value: string | null } = { value: null };
+  const lastCodexAcpThreadIdPublished: { value: string | null; fingerprint?: string | null } = { value: null };
+  let lastCodexIdentityGeneration: number | null = null;
   const drainPendingDuringTurn =
     (process.env.HAPPIER_E2E_ACP_TRACE_MARKERS ?? '').toString().trim() === '1';
-  const materializeNextPendingMessageSafely = params.session.materializeNextPendingMessageSafely.bind(params.session);
-
   const runtime = createAcpRuntime({
     provider: 'codex',
     directory: params.directory,
@@ -47,6 +47,27 @@ export function createCodexAcpRuntime(params: {
     messageBuffer: params.messageBuffer,
     mcpServers: params.mcpServers,
     permissionHandler: params.permissionHandler,
+    sessionIdentity: {
+      kind: 'persist-bound',
+      persistBound: async (event) => {
+        if (lastCodexIdentityGeneration !== event.generation) {
+          lastCodexAcpThreadIdPublished.value = null;
+          lastCodexAcpThreadIdPublished.fingerprint = null;
+          lastCodexIdentityGeneration = event.generation;
+        }
+        await publishCodexSessionIdMetadata({
+          session: params.session,
+          operation: event.operation,
+          getCodexThreadId: () => event.vendorSessionId,
+          backendMode: 'acp',
+          transcriptStorage: process.env.HAPPIER_TRANSCRIPT_STORAGE === 'direct' ? 'direct' : 'persisted',
+          codexHome: process.env.CODEX_HOME ?? null,
+          activeServerDir: configuration.activeServerDir,
+          processEnv: process.env,
+          lastPublished: lastCodexAcpThreadIdPublished,
+        });
+      },
+    },
     onThinkingChange: params.onThinkingChange,
     changeTitleInstruction: { enabled: false },
     hooks: {
@@ -70,16 +91,8 @@ export function createCodexAcpRuntime(params: {
       // Drain server-pending messages mid-turn only in the provider harness / e2e context.
       // In normal interactive use, "queue for review" semantics should not be defeated.
       drainDuringTurn: drainPendingDuringTurn,
-      waitForMetadataUpdate: (signal) => params.session.waitForMetadataUpdate(signal),
       maxPopPerWake: params.pendingQueueDrainMaxPopPerWake,
-      inputConsumer: createSessionProviderPendingDrainAdapter({
-        waitForMetadataUpdate: (signal) => params.session.waitForMetadataUpdate(signal),
-        popPendingMessage: async () =>
-          (await materializeNextPendingMessageSafely({ reconcileWhenEmpty: 'force' })).type === 'materialized',
-        materializeNextPendingMessageSafely,
-        shouldAttemptPendingMaterialization: () => params.session.shouldAttemptPendingMaterialization?.() ?? true,
-        reconcilePendingQueueState: (opts) => params.session.reconcilePendingQueueState?.(opts),
-      }, { maxPopPerWake: params.pendingQueueDrainMaxPopPerWake }),
+      inputConsumer: params.providerInputConsumer,
     },
     ...(process.env.HAPPIER_TRANSCRIPT_STORAGE === 'direct'
       ? {}
@@ -105,18 +118,6 @@ export function createCodexAcpRuntime(params: {
       });
       logger.debug(`[CodexACP] Backend created (command=${created.spawn.command})`);
       return created.backend as unknown as AgentBackend;
-    },
-    onSessionIdChange: (nextSessionId) => {
-      publishCodexSessionIdMetadata({
-        session: params.session,
-        getCodexThreadId: () => nextSessionId,
-        backendMode: 'acp',
-        transcriptStorage: process.env.HAPPIER_TRANSCRIPT_STORAGE === 'direct' ? 'direct' : 'persisted',
-        codexHome: process.env.CODEX_HOME ?? null,
-        activeServerDir: configuration.activeServerDir,
-        processEnv: process.env,
-        lastPublished: lastCodexAcpThreadIdPublished,
-      });
     },
   });
 

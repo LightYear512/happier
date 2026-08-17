@@ -610,14 +610,14 @@ describe('detectCliSnapshotOnDaemonPath', () => {
     async () => {
       const binDir = join(workDir, 'bin');
       mkdirSync(binDir, { recursive: true });
-	      const claudePath = makeExecutableShim({
-	        dir: binDir,
-	        name: 'claude',
-	        stdout: [
-	          '/bin/sleep 1',
-	          'echo "2.0.70 (Claude Code)"',
-	        ].join('\n'),
-	      });
+      const claudePath = makeExecutableShim({
+        dir: binDir,
+        name: 'claude',
+        stdout: [
+          '/bin/sleep 1',
+          'echo "2.0.70 (Claude Code)"',
+        ].join('\n'),
+      });
       const credentialsDir = join(homeDir, '.claude');
       mkdirSync(credentialsDir, { recursive: true });
       writeFileSync(
@@ -627,9 +627,11 @@ describe('detectCliSnapshotOnDaemonPath', () => {
             accessToken: 'claude-access-token',
             refreshToken: 'claude-refresh-token',
             expiresAt: Date.parse('2099-01-01T00:00:00.000Z'),
-            scopes: [],
+            scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
           },
-          email: 'tester@example.com',
+          oauthAccount: {
+            emailAddress: 'tester@example.com',
+          },
         }),
         'utf8',
       );

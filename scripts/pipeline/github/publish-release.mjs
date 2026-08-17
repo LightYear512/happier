@@ -2,13 +2,17 @@
 
 import { parseArgs } from 'node:util';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { buildRollingReleaseEditArgs } from './lib/gh-release-commands.mjs';
 
 const DEFAULT_RELEASE_UPLOAD_RETRIES = 3;
 const DEFAULT_RELEASE_UPLOAD_RETRY_DELAY_MS = 2_000;
+const DEFAULT_RELEASE_TRANSFER_TIMEOUT_MS = 10 * 60_000;
 
 function fail(message) {
   console.error(message);
@@ -108,13 +112,21 @@ function formatExecError(err) {
  */
 function isTransientReleaseUploadError(err) {
   const raw = formatExecError(err);
-  return /release not found/i.test(raw) || /404/i.test(raw);
+  return (
+    /release not found/i.test(raw)
+    || /404/i.test(raw)
+    || /ETIMEDOUT/i.test(raw)
+    || /ECONNRESET/i.test(raw)
+    || /socket hang up/i.test(raw)
+    || /Service Unavailable/i.test(raw)
+    || /\b50[234]\b/.test(raw)
+  );
 }
 
 /**
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ env?: Record<string, string>; dryRun?: boolean; allowFailure?: boolean }} [opts]
+ * @param {{ env?: Record<string, string>; dryRun?: boolean; allowFailure?: boolean; timeoutMs?: number }} [opts]
  */
 function run(cmd, args, opts) {
   const dryRun = opts?.dryRun === true;
@@ -129,7 +141,7 @@ function run(cmd, args, opts) {
       env: { ...process.env, ...(opts?.env ?? {}) },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 120_000,
+      timeout: opts?.timeoutMs ?? 120_000,
     });
   } catch (err) {
     if (opts?.allowFailure) return '';
@@ -160,6 +172,38 @@ function listFilesRecursively(filePath) {
     }
   }
   return out;
+}
+
+async function fileSha256(filePath) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+async function assertRemoteAssetMatches({ tag, repo, name, expectedPath, env, timeoutMs }) {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-immutable-release-audit-'));
+  try {
+    run('gh', [
+      'release', 'download', tag,
+      '--repo', repo,
+      '--pattern', name,
+      '--dir', scratch,
+      '--clobber',
+    ], { env, timeoutMs });
+    const downloadedPath = path.join(scratch, name);
+    if (!fs.existsSync(downloadedPath)) {
+      fail(`Immutable release audit did not download expected asset: ${name}`);
+    }
+    const [expectedSha, downloadedSha] = await Promise.all([
+      fileSha256(expectedPath),
+      fileSha256(downloadedPath),
+    ]);
+    if (expectedSha !== downloadedSha) {
+      fail(`Immutable release asset differs from the authorized bytes: ${name}`);
+    }
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -284,7 +328,7 @@ function ensureImmutableTagViaGithubApi(params) {
   return true;
 }
 
-function main() {
+async function main() {
   const { values } = parseArgs({
     options: {
       tag: { type: 'string' },
@@ -296,7 +340,7 @@ function main() {
       notes: { type: 'string', default: '' },
       assets: { type: 'string', default: '' },
       'assets-dir': { type: 'string', default: '' },
-      clobber: { type: 'string', default: 'true' },
+      clobber: { type: 'string', default: 'false' },
       'prune-assets': { type: 'string', default: 'false' },
       'release-message': { type: 'string', default: '' },
       'dry-run': { type: 'boolean', default: false },
@@ -340,6 +384,10 @@ function main() {
   const uploadRetryDelayMs = readPositiveIntegerEnv(
     'HAPPIER_PIPELINE_GH_RELEASE_UPLOAD_RETRY_DELAY_MS',
     DEFAULT_RELEASE_UPLOAD_RETRY_DELAY_MS,
+  );
+  const transferTimeoutMs = readPositiveIntegerEnv(
+    'HAPPIER_PIPELINE_GH_RELEASE_TRANSFER_TIMEOUT_MS',
+    DEFAULT_RELEASE_TRANSFER_TIMEOUT_MS,
   );
   /** @type {Record<string, string>} */
   const ghEnv = {};
@@ -401,6 +449,7 @@ function main() {
   }
 
   const prereleaseFlag = prerelease ? ['--prerelease'] : [];
+  const approvedReleaseBody = releaseMessage.trim();
 
   // Ensure release exists.
   let releaseExists = true;
@@ -414,16 +463,14 @@ function main() {
     if (!tagEnsured && !dryRun) {
       fail(`Cannot create release ${tag}: tag ref could not be ensured.`);
     }
-    if (generateNotes) {
+    if (generateNotes && !approvedReleaseBody) {
       run(
         'gh',
         ['release', 'create', tag, ...prereleaseFlag, '--title', title, '--generate-notes'],
         { env: ghEnv, dryRun },
       );
     } else {
-      const prefix = releaseMessage.trim();
-      const suffix = notes.trim();
-      const body = prefix && suffix ? `${prefix}\n\n${suffix}` : prefix || suffix;
+      const body = approvedReleaseBody || notes.trim();
       if (!body) fail('notes or release_message is required when generate_notes=false');
       run(
         'gh',
@@ -435,31 +482,31 @@ function main() {
 
   // Update rolling release notes with commit summary.
   if (rollingTag) {
-    const { compareUrl, commitCount, commits } = collectRollingCompareSummary({
-      oldSha,
-      sha,
-      repo,
-      dryRun,
-      maxCommits,
-      tag,
-    });
+    if (approvedReleaseBody) {
+      run('gh', buildRollingReleaseEditArgs({ tag, title, notes: approvedReleaseBody }), { env: ghEnv, dryRun });
+    } else {
+      const { compareUrl, commitCount, commits } = collectRollingCompareSummary({
+        oldSha,
+        sha,
+        repo,
+        dryRun,
+        maxCommits,
+        tag,
+      });
 
-    const notesPrefix = notes.trim() || 'Rolling release.';
-    let body = '';
-    if (releaseMessage.trim()) {
-      body += `${releaseMessage.trim()}\n\n`;
-    }
-    body += `${notesPrefix}\n`;
+      const notesPrefix = notes.trim() || 'Rolling release.';
+      let body = `${notesPrefix}\n`;
 
-    if (commitCount) {
-      body += `\n### Commits (${commitCount})\n\n${commits}\n\nFull diff: ${compareUrl}\n`;
-      const parsedCount = Number(commitCount);
-      if (Number.isFinite(parsedCount) && parsedCount > maxCommits) {
-        body += `\n(Showing first ${maxCommits} commits; see Full diff for the complete list.)\n`;
+      if (commitCount) {
+        body += `\n### Commits (${commitCount})\n\n${commits}\n\nFull diff: ${compareUrl}\n`;
+        const parsedCount = Number(commitCount);
+        if (Number.isFinite(parsedCount) && parsedCount > maxCommits) {
+          body += `\n(Showing first ${maxCommits} commits; see Full diff for the complete list.)\n`;
+        }
       }
-    }
 
-    run('gh', buildRollingReleaseEditArgs({ tag, title, notes: body }), { env: ghEnv, dryRun });
+      run('gh', buildRollingReleaseEditArgs({ tag, title, notes: body }), { env: ghEnv, dryRun });
+    }
   }
 
   // Prune assets (rolling tags typically).
@@ -506,11 +553,90 @@ function main() {
     }
   }
 
+  if (!rollingTag) {
+    if (clobber || pruneAssets) {
+      fail('Immutable version releases forbid --clobber true and --prune-assets true.');
+    }
+    const localByName = new Map();
+    for (const spec of uploadSpecs) {
+      const name = path.basename(spec);
+      if (localByName.has(name)) {
+        fail(`Duplicate immutable release asset name: ${name}`);
+      }
+      localByName.set(name, spec);
+    }
+    const existingAssetNames = run('gh', [
+      'release', 'view', tag,
+      '--repo', repo,
+      '--json', 'assets',
+      '--jq', '.assets[].name',
+    ], { env: ghEnv, dryRun }).trim()
+      .split(/\r?\n/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const unexpected = existingAssetNames.filter((name) => !localByName.has(name));
+    if (unexpected.length > 0) {
+      fail(`Immutable release contains unexpected pre-existing asset(s): ${unexpected.join(', ')}`);
+    }
+    if (!dryRun) {
+      for (const name of existingAssetNames) {
+        await assertRemoteAssetMatches({
+          tag,
+          repo,
+          name,
+          expectedPath: /** @type {string} */ (localByName.get(name)),
+          env: ghEnv,
+          timeoutMs: transferTimeoutMs,
+        });
+      }
+    }
+    const existing = new Set(existingAssetNames);
+    for (const [name, spec] of localByName) {
+      if (existing.has(name)) continue;
+      let uploaded = false;
+      for (let attempt = 1; attempt <= uploadRetries; attempt += 1) {
+        try {
+          run('gh', ['release', 'upload', tag, spec], {
+            env: ghEnv,
+            dryRun,
+            timeoutMs: transferTimeoutMs,
+          });
+          uploaded = true;
+          break;
+        } catch (err) {
+          if (!dryRun && isTransientReleaseUploadError(err) && attempt < uploadRetries) {
+            sleepSync(uploadRetryDelayMs);
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!uploaded) fail(`Failed to upload immutable release asset: ${name}`);
+    }
+    if (!dryRun) {
+      for (const [name, expectedPath] of localByName) {
+        await assertRemoteAssetMatches({
+          tag,
+          repo,
+          name,
+          expectedPath,
+          env: ghEnv,
+          timeoutMs: transferTimeoutMs,
+        });
+      }
+    }
+    return;
+  }
+
   for (const spec of uploadSpecs) {
     let uploaded = false;
     for (let attempt = 1; attempt <= uploadRetries; attempt += 1) {
       try {
-        run('gh', ['release', 'upload', tag, spec, ...clobberFlag], { env: ghEnv, dryRun });
+        run('gh', ['release', 'upload', tag, spec, ...clobberFlag], {
+          env: ghEnv,
+          dryRun,
+          timeoutMs: transferTimeoutMs,
+        });
         uploaded = true;
         break;
       } catch (err) {
@@ -527,4 +653,7 @@ function main() {
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

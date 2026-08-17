@@ -42,6 +42,17 @@ describe('startForwardedHeaderProxy', () => {
       identityHeaders: { 'x-happier-client-cert-email': 'alice@example.com' },
     });
 
+    const preflight = await fetch(`${proxy.baseUrl}/v1/features`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://127.0.0.1:4011',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization,content-type',
+      },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-headers')).toBe('authorization,content-type');
+
     const proxyUrl = new URL(proxy.baseUrl);
     const socket = connect(Number(proxyUrl.port), proxyUrl.hostname);
     let stopPromise: Promise<void> | null = null;

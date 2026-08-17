@@ -332,7 +332,7 @@ export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost
         const animation = Animated.timing(progress, {
             toValue: 1,
             duration: motionTokens.durationMs.base,
-            easing: motionTokens.easing.emphasized,
+            easing: motionTokens.easing.standard,
             useNativeDriver: Platform.OS !== 'web',
         });
         activeAnimationRef.current = animation;
@@ -389,7 +389,7 @@ export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost
             pointerEvents="box-none"
             style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
         >
-            <View>
+            <View pointerEvents="box-none">
                 {renderedChrome.current.node}
             </View>
             {renderedChrome.previous ? (

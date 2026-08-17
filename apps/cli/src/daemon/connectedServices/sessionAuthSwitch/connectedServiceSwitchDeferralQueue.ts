@@ -54,18 +54,26 @@ type PendingSwitch = {
   timer: ReturnType<typeof setTimeout> | null;
   requests: DeferredRequest[];
   settled: boolean;
+  // Claimed synchronously when execution begins (before the runSwitch await) so a second terminal
+  // turn event arriving during that await cannot re-invoke runSwitch on the same pending.
+  executing: boolean;
 };
 
 type SessionTurnState = {
   inFlight: boolean;
   lastEvent: ConnectedServiceTurnLifecycleEvent | null;
   hasProviderActivityThisTurn: boolean;
+  // True when a deferred switch's forced-boundary timeout closed a LIVE turn (the switch genuinely
+  // interrupted in-flight work). Consumed by the continuation replay plan, which resolves AFTER the
+  // forced close (inFlight already false there). Cleared when the next turn starts.
+  forcedSwitchInterruptedLiveTurn: boolean;
 };
 
 export class ConnectedServiceSwitchDeferralConflictError extends Error {
   public readonly code:
     | 'group_generation_conflict'
     | 'switch_cancelled'
+    | 'switch_execution_timeout'
     | 'session_terminated'
     | 'daemon_shutdown';
 
@@ -141,6 +149,7 @@ export type ConnectedServiceSwitchDeferralQueue = Readonly<{
     inFlight: boolean;
     lastEvent: ConnectedServiceTurnLifecycleEvent | null;
     hasProviderActivityThisTurn: boolean;
+    forcedSwitchInterruptedLiveTurn: boolean;
   }>;
   cancelSession: (sessionId: string, reason: 'session_terminated' | 'session_restarting') => void;
   cancelAll: (reason: 'daemon_shutdown') => void;
@@ -165,6 +174,7 @@ export function createConnectedServiceSwitchDeferralQueue(
       inFlight: false,
       lastEvent: null,
       hasProviderActivityThisTurn: false,
+      forcedSwitchInterruptedLiveTurn: false,
     };
     turnStateBySessionId.set(sessionId, created);
     return created;
@@ -196,10 +206,32 @@ export function createConnectedServiceSwitchDeferralQueue(
     pending: PendingSwitch,
     reason: ConnectedServiceSwitchDeferralCompletionReason,
   ): Promise<void> => {
-    if (pending.settled) return;
+    if (pending.settled || pending.executing) return;
+    // Claim execution synchronously, before the first await, so concurrent terminal events (or a
+    // timeout racing a terminal event) cannot both pass the guard and double-invoke runSwitch.
+    pending.executing = true;
     clearPendingTimer(pending);
+    // CL-1: the deferral-window timer cleared above only bounds the WAIT for a boundary. Bound the
+    // runSwitch execution itself too, so a hung switch (stuck materialization, wedged restart signal)
+    // rejects the deferred callers instead of stranding them until session teardown. A late runSwitch
+    // outcome after the deadline is ignored via the settled guard; the switch machinery downstream is
+    // generation-guarded against a stale completion racing a newer request. The completion event
+    // reuses the existing wire reason 'aborted_after_timeout' — no new wire enum member.
+    const executionDeadline = setTimeout(() => {
+      if (pending.settled) return;
+      emit(pending.sessionId, {
+        type: 'connected_service_account_switch_deferral_completed',
+        policy: pending.policy,
+        reason: 'aborted_after_timeout',
+      });
+      settlePending(pending, 'reject', new ConnectedServiceSwitchDeferralConflictError({
+        code: 'switch_execution_timeout',
+        message: `Connected-service deferred switch execution exceeded ${timeoutMs}ms`,
+      }));
+    }, timeoutMs);
     try {
       await pending.runSwitch();
+      if (pending.settled) return;
       emit(pending.sessionId, {
         type: 'connected_service_account_switch_deferral_completed',
         policy: pending.policy,
@@ -207,7 +239,10 @@ export function createConnectedServiceSwitchDeferralQueue(
       });
       settlePending(pending, 'resolve');
     } catch (error) {
+      if (pending.settled) return;
       settlePending(pending, 'reject', error);
+    } finally {
+      clearTimeout(executionDeadline);
     }
   };
 
@@ -245,6 +280,21 @@ export function createConnectedServiceSwitchDeferralQueue(
   const schedulePendingTimeout = (pending: PendingSwitch): void => {
     clearPendingTimer(pending);
     pending.timer = setTimeout(() => {
+      // Lane F deferral-timeout escape hatch: the turn boundary never arrived within the timeout, so
+      // the deferred switch is forced. Close the turn cleanly at a forced boundary FIRST so the
+      // forced switch is a clean terminal transition rather than a silent mid-stream kill: downstream
+      // continuation/recovery and the managed-server release in-flight-turn guard then observe a
+      // quiesced turn instead of an indefinitely stuck in-flight flag (which would otherwise wedge
+      // the forced switch or leak the prior-fingerprint server).
+      const state = turnStateBySessionId.get(pending.sessionId);
+      if (state?.inFlight === true) {
+        state.inFlight = false;
+        state.lastEvent = 'turn_cancelled';
+        // The forced boundary interrupted a LIVE turn: record the fact for the continuation replay
+        // plan, which runs after this close and can no longer observe inFlight (idle-session manual
+        // switches must NOT send continuation prompts; genuinely interrupted ones must).
+        state.forcedSwitchInterruptedLiveTurn = true;
+      }
       void executePendingSwitch(pending, 'aborted_after_timeout');
     }, timeoutMs);
   };
@@ -280,6 +330,7 @@ export function createConnectedServiceSwitchDeferralQueue(
         timer: null,
         requests: [deferred.request],
         settled: false,
+        executing: false,
       };
       pendingBySessionId.set(sessionId, created);
       schedulePendingTimeout(created);
@@ -326,6 +377,7 @@ export function createConnectedServiceSwitchDeferralQueue(
       timer: null,
       requests: [deferred.request],
       settled: false,
+      executing: false,
     };
     pendingBySessionId.set(sessionId, replacement);
     schedulePendingTimeout(replacement);
@@ -342,6 +394,8 @@ export function createConnectedServiceSwitchDeferralQueue(
     state.lastEvent = input.event;
     if (input.event === 'prompt_or_steer' || input.event === 'task_started') {
       state.inFlight = true;
+      // A new turn supersedes any recorded forced-boundary interruption of a previous turn.
+      state.forcedSwitchInterruptedLiveTurn = false;
       if (input.event === 'prompt_or_steer') {
         state.hasProviderActivityThisTurn = false;
       }
@@ -373,6 +427,7 @@ export function createConnectedServiceSwitchDeferralQueue(
     inFlight: boolean;
     lastEvent: ConnectedServiceTurnLifecycleEvent | null;
     hasProviderActivityThisTurn: boolean;
+    forcedSwitchInterruptedLiveTurn: boolean;
   }> => {
     const normalizedSessionId = String(sessionId ?? '').trim();
     if (!normalizedSessionId) {
@@ -380,6 +435,7 @@ export function createConnectedServiceSwitchDeferralQueue(
         inFlight: false,
         lastEvent: null,
         hasProviderActivityThisTurn: false,
+        forcedSwitchInterruptedLiveTurn: false,
       };
     }
     const state = readTurnState(normalizedSessionId);
@@ -387,6 +443,7 @@ export function createConnectedServiceSwitchDeferralQueue(
       inFlight: state.inFlight,
       lastEvent: state.lastEvent,
       hasProviderActivityThisTurn: state.hasProviderActivityThisTurn,
+      forcedSwitchInterruptedLiveTurn: state.forcedSwitchInterruptedLiveTurn,
     };
   };
 

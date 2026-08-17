@@ -3,7 +3,11 @@ import {
     isConnectedServiceAccountGroupConfigurationSupported,
     isConnectedServiceRuntimeFallbackSupported,
 } from "@happier-dev/agents";
-import { ConnectedServiceIdSchema } from "@happier-dev/protocol";
+import {
+    ConnectedServiceIdSchema,
+    readConnectedServiceManualActiveProfileRuntimeBlocker,
+    type ConnectedServiceManualActiveProfileRuntimeBlocker,
+} from "@happier-dev/protocol";
 
 import type { Fastify } from "../../../types";
 import { db } from "@/storage/db";
@@ -11,6 +15,7 @@ import { inTx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { recordConnectedServiceAccountProfileChange } from "../connectedServicesAccountProfileChange";
+import { deleteConnectedServiceUsageSourcesForGroup } from "../providerAccountUsage";
 import {
     DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1,
     ConnectedServiceAuthGroupPolicyPatchSchema,
@@ -52,7 +57,7 @@ const NotFoundResponseSchema = z.object({ error: z.literal("not_found") });
 type AuthGroupEnvelopeResponse = z.infer<typeof AuthGroupEnvelopeResponseSchema>;
 type ConnectedServiceAuthGroupState = z.infer<typeof ConnectedServiceAuthGroupStateSchema>;
 type ConnectedServiceAuthGroupMemberState = z.infer<typeof ConnectedServiceAuthGroupMemberStateSchema>;
-type ManualActiveProfileRuntimeBlocker = Readonly<{ resetAtMs?: number }>;
+type ManualActiveProfileRuntimeBlocker = ConnectedServiceManualActiveProfileRuntimeBlocker;
 
 function isUniqueConflict(error: unknown): boolean {
     return isPrismaErrorCode(error, "P2002");
@@ -134,20 +139,7 @@ function readManualActiveProfileRuntimeBlockerFromState(
     state: ConnectedServiceAuthGroupMemberState,
     nowMs: number,
 ): ManualActiveProfileRuntimeBlocker | null {
-    if (state.credentialHealthStatus === "needs_reauth") return {};
-    const resetAtValues = [
-        state.cooldownUntilMs,
-        state.exhaustedUntilMs,
-        state.quotaExhaustedUntilMs,
-        state.rateLimitedUntilMs,
-        state.capacityLimitedUntilMs,
-        state.authInvalidUntilMs,
-        state.planUnavailableUntilMs,
-        state.validationBlockedUntilMs,
-        // providerResetsAtMs is reset evidence for another limiter. By itself it is not
-        // a manual active-profile blocker.
-    ].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > nowMs);
-    return resetAtValues.length > 0 ? { resetAtMs: Math.max(...resetAtValues) } : null;
+    return readConnectedServiceManualActiveProfileRuntimeBlocker(state, nowMs);
 }
 
 function readManualActiveProfileRuntimeBlocker(stateJson: string | null, nowMs: number): ManualActiveProfileRuntimeBlocker | null {
@@ -265,7 +257,16 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             return reply.code(400).send({ error: "connect_group_member_profile_not_found" });
         }
 
-        const policy = mergeConnectedServiceAuthGroupPolicyPatch(DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, policyPatch);
+        // Default a newly created pool to automatic fallback ONLY when the account has the
+        // runtime-fallback feature enabled and the service supports it. Fail closed otherwise so a
+        // pool is never created with autoSwitch=true for an account that lacks the feature (which
+        // the guards above would 400 on). An explicit autoSwitch in the request always wins.
+        const autoSwitchCreateDefault = fallbackEnabled() && runtimeFallbackSupportedForService(serviceId);
+        const effectivePolicyPatch: ConnectedServiceAuthGroupPolicyPatch = {
+            ...policyPatch,
+            autoSwitch: policyPatch?.autoSwitch ?? autoSwitchCreateDefault,
+        };
+        const policy = mergeConnectedServiceAuthGroupPolicyPatch(DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, effectivePolicyPatch);
         try {
             await inTx(async (tx) => {
                 await tx.connectedServiceAuthGroup.create({
@@ -439,6 +440,11 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         const existing = await findAuthGroupForAccount({ accountId: request.userId, serviceId, groupId });
         if (!existing) return reply.code(404).send({ error: "connect_group_not_found" });
         await inTx(async (tx) => {
+            await deleteConnectedServiceUsageSourcesForGroup({
+                accountId: request.userId,
+                serviceId,
+                groupId,
+            }, tx);
             await tx.connectedServiceAuthGroup.delete({
                 where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
             });
@@ -459,7 +465,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         const result = await inTx(async (tx) => {
             const group = await tx.connectedServiceAuthGroup.findUnique({
                 where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
-                select: { id: true, generation: true, stateJson: true },
+                select: { id: true, generation: true, runtimeStateRevision: true, stateJson: true },
             });
             if (!group) return { type: "not-found" as const };
             if (
@@ -468,11 +474,11 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             ) {
                 return { type: "generation-conflict" as const, generation: group.generation };
             }
-
             const memberStates = request.body.memberStates;
-            if (memberStates.length > 0) {
-                const requestedProfileIds = memberStates.map((member) => member.profileId);
-                const members = await tx.connectedServiceAuthGroupMember.findMany({
+            const requestedProfileIds = memberStates.map((member) => member.profileId);
+            const members = memberStates.length === 0
+                ? []
+                : await tx.connectedServiceAuthGroupMember.findMany({
                     where: {
                         accountId: request.userId,
                         vendor: serviceId,
@@ -481,47 +487,63 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                     },
                     select: { profileId: true, stateJson: true },
                 });
-                if (members.length !== new Set(requestedProfileIds).size) {
-                    return { type: "member-not-found" as const };
-                }
-                const memberStateJsonByProfileId = new Map(members.map((member) => [member.profileId, member.stateJson]));
-                const changedMemberStates = memberStates.filter((member) => (
-                    hasMemberRuntimeStateChanged(memberStateJsonByProfileId.get(member.profileId) ?? null, member.state)
-                ));
-                const groupStateChanged = request.body.state !== undefined
-                    && hasGroupRuntimeStateChanged(group.stateJson, request.body.state);
-                const runtimeStateChanged = groupStateChanged || changedMemberStates.length > 0;
-                if (runtimeStateChanged && request.body.expectedGeneration === undefined) {
-                    return { type: "generation-required" as const };
-                }
+            if (members.length !== new Set(requestedProfileIds).size) {
+                return { type: "member-not-found" as const };
+            }
+            const memberStateJsonByProfileId = new Map(members.map((member) => [member.profileId, member.stateJson]));
+            const changedMemberStates = memberStates.filter((member) => (
+                hasMemberRuntimeStateChanged(memberStateJsonByProfileId.get(member.profileId) ?? null, member.state)
+            ));
+            const groupStateChanged = request.body.state !== undefined
+                && hasGroupRuntimeStateChanged(group.stateJson, request.body.state);
+            const runtimeStateChanged = groupStateChanged || changedMemberStates.length > 0;
+            if (runtimeStateChanged && request.body.expectedGeneration === undefined) {
+                return { type: "generation-required" as const };
+            }
+            if (runtimeStateChanged && request.body.expectedRuntimeStateRevision === undefined) {
+                return { type: "runtime-state-revision-required" as const };
+            }
+            if (
+                runtimeStateChanged
+                && request.body.expectedRuntimeStateRevision !== group.runtimeStateRevision
+            ) {
+                return {
+                    type: "runtime-state-revision-conflict" as const,
+                    runtimeStateRevision: group.runtimeStateRevision,
+                };
+            }
 
-                if (request.body.expectedGeneration !== undefined && runtimeStateChanged) {
-                    const update = await tx.connectedServiceAuthGroup.updateMany({
-                        where: { id: group.id, generation: request.body.expectedGeneration },
-                        data: {
-                            updatedAt: new Date(),
-                            ...(groupStateChanged && request.body.state !== undefined
-                                ? { stateJson: stringifyAuthGroupState(request.body.state) }
-                                : {}),
-                        },
+            if (runtimeStateChanged) {
+                const update = await tx.connectedServiceAuthGroup.updateMany({
+                    where: {
+                        id: group.id,
+                        generation: request.body.expectedGeneration,
+                        runtimeStateRevision: request.body.expectedRuntimeStateRevision,
+                    },
+                    data: {
+                        updatedAt: new Date(),
+                        runtimeStateRevision: { increment: 1 },
+                        ...(groupStateChanged && request.body.state !== undefined
+                            ? { stateJson: stringifyAuthGroupState(request.body.state) }
+                            : {}),
+                    },
+                });
+                if (update.count !== 1) {
+                    const current = await tx.connectedServiceAuthGroup.findUnique({
+                        where: { id: group.id },
+                        select: { generation: true, runtimeStateRevision: true },
                     });
-                    if (update.count !== 1) {
-                        const current = await tx.connectedServiceAuthGroup.findUnique({
-                            where: { id: group.id },
-                            select: { generation: true },
-                        });
+                    if ((current?.generation ?? group.generation) !== request.body.expectedGeneration) {
                         return {
                             type: "generation-conflict" as const,
                             generation: current?.generation ?? group.generation,
                         };
                     }
-                } else if (groupStateChanged && request.body.state !== undefined) {
-                    await tx.connectedServiceAuthGroup.update({
-                        where: { id: group.id },
-                        data: { stateJson: stringifyAuthGroupState(request.body.state) },
-                    });
+                    return {
+                        type: "runtime-state-revision-conflict" as const,
+                        runtimeStateRevision: current?.runtimeStateRevision ?? group.runtimeStateRevision,
+                    };
                 }
-
                 for (const member of changedMemberStates) {
                     await tx.connectedServiceAuthGroupMember.update({
                         where: {
@@ -535,46 +557,6 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                         data: { stateJson: stringifyAuthGroupMemberState(member.state) },
                     });
                 }
-
-                if (runtimeStateChanged) {
-                    await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
-                }
-
-                return { type: "success" as const };
-            }
-
-            const groupStateChanged = request.body.state !== undefined
-                && hasGroupRuntimeStateChanged(group.stateJson, request.body.state);
-            if (groupStateChanged && request.body.expectedGeneration === undefined) {
-                return { type: "generation-required" as const };
-            }
-
-            if (request.body.expectedGeneration !== undefined && groupStateChanged) {
-                const update = await tx.connectedServiceAuthGroup.updateMany({
-                    where: { id: group.id, generation: request.body.expectedGeneration },
-                    data: {
-                        updatedAt: new Date(),
-                        stateJson: stringifyAuthGroupState(request.body.state),
-                    },
-                });
-                if (update.count !== 1) {
-                    const current = await tx.connectedServiceAuthGroup.findUnique({
-                        where: { id: group.id },
-                        select: { generation: true },
-                    });
-                    return {
-                        type: "generation-conflict" as const,
-                        generation: current?.generation ?? group.generation,
-                    };
-                }
-            } else if (groupStateChanged && request.body.state !== undefined) {
-                await tx.connectedServiceAuthGroup.update({
-                    where: { id: group.id },
-                    data: { stateJson: stringifyAuthGroupState(request.body.state) },
-                });
-            }
-
-            if (groupStateChanged) {
                 await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
             }
 
@@ -584,10 +566,19 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         if (result.type === "not-found") return reply.code(404).send({ error: "connect_group_not_found" });
         if (result.type === "member-not-found") return reply.code(400).send({ error: "connect_group_member_not_found" });
         if (result.type === "generation-required") return reply.code(400).send({ error: "connect_group_generation_required" });
+        if (result.type === "runtime-state-revision-required") {
+            return reply.code(400).send({ error: "connect_group_runtime_state_revision_required" });
+        }
         if (result.type === "generation-conflict") {
             return reply.code(409).send({
                 error: "connect_group_generation_conflict",
                 generation: result.generation,
+            });
+        }
+        if (result.type === "runtime-state-revision-conflict") {
+            return reply.code(409).send({
+                error: "connect_group_runtime_state_revision_conflict",
+                runtimeStateRevision: result.runtimeStateRevision,
             });
         }
 

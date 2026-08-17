@@ -4,6 +4,11 @@ import type { Credentials } from '@/persistence';
 import type { initializeRuntimeOverridesSynchronizer as initializeRuntimeOverridesSynchronizerFn } from '@/agent/runtime/runtimeOverridesSynchronizer';
 import { reportSessionToDaemonIfRunning } from '@/agent/runtime/startupSideEffects';
 
+const agentStateUpdateSnapshots = vi.hoisted(() => [] as Array<{
+    reason: string;
+    state: any;
+}>);
+
 type Deferred<T> = {
     promise: Promise<T>;
     resolve: (value: T) => void;
@@ -48,8 +53,12 @@ const getOrCreateSessionMock = vi.fn<() => Promise<StartupSessionResponse>>(asyn
     metadataVersion: currentMetadataVersion,
 }));
 let lastSessionClient: {
+    onUserMessage: ReturnType<typeof vi.fn>;
     sendSessionEvent: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
 } | null = null;
+const runtimeActivityPublisherCloseMock = vi.fn(async () => {});
+const sessionCloseMock = vi.fn(async () => {});
 
 function createRuntimeOverridesSynchronizer(
     overrides: Partial<RuntimeOverridesSynchronizer> = {},
@@ -81,6 +90,11 @@ const runStartupCoordinatorMock = vi.fn(() => {
     throw new Error('fast-start coordinator should not run');
 });
 const claudeLocalMock = vi.fn(async () => undefined);
+let lastResolveRunnerMcpServersParams: any = null;
+const probeClaudeInstalledRuntimeCapabilitiesMock = vi.fn(async () => ({
+    supportsEffort: true,
+    supportsUltracode: true,
+}));
 
 vi.mock('@/ui/logger', () => ({
     logger: {
@@ -107,20 +121,31 @@ vi.mock('@/agent/runtime/initializeBackendApiContext', () => ({
             getOrCreateSession: getOrCreateSessionMock,
             sessionSyncClient: vi.fn(() => {
                 lastSessionClient = {
+                    onUserMessage: vi.fn(),
                     sendSessionEvent: vi.fn(),
+                    close: sessionCloseMock,
                 };
                 return {
                 sessionId: 'session-start',
                 rpcHandlerManager: { registerHandler: vi.fn(), invokeLocal: vi.fn() },
                 ensureMetadataSnapshot: vi.fn(async () => ({ path: '/srv/project' })),
                 getMetadataSnapshot: vi.fn(() => ({ path: '/srv/project' })),
-                onUserMessage: vi.fn(),
+                onUserMessage: lastSessionClient.onUserMessage,
                 sendSessionEvent: lastSessionClient.sendSessionEvent,
                 updateMetadata: vi.fn(),
                 updateAgentState: vi.fn(),
+                getRuntimeActivitySnapshotPublisher: vi.fn(() => ({
+                    publish: vi.fn(async () => {}),
+                    flush: vi.fn(async () => {}),
+                    close: runtimeActivityPublisherCloseMock,
+                })),
                 sendSessionDeath: vi.fn(),
                 flush: vi.fn(async () => {}),
-                close: vi.fn(async () => {}),
+                closeProviderInputAdmissionAndWaitForDispatches: vi.fn(async () => {}),
+                drainCriticalMetadataWrites: vi.fn(async () => {}),
+                cleanup: vi.fn(),
+                wasUserAbortRequestedRecently: vi.fn(() => false),
+                close: lastSessionClient.close,
             };
             }),
             push: vi.fn(() => ({ sendToAllDevices: vi.fn() })),
@@ -179,7 +204,9 @@ vi.mock('@/rpc/handlers/killSession', () => ({
 }));
 
 vi.mock('@/api/session/sessionWritesBestEffort', () => ({
-    updateAgentStateBestEffort: vi.fn(),
+    updateAgentStateBestEffort: vi.fn((_session, updater, _logPrefix, reason) => {
+        agentStateUpdateSnapshots.push({ reason, state: updater({}) });
+    }),
     updateMetadataBestEffort: vi.fn(),
 }));
 
@@ -208,6 +235,14 @@ vi.mock('@/backends/claude/sdk/metadataExtractor', () => ({
     extractSDKMetadataAsync: vi.fn(),
 }));
 
+vi.mock('@/backends/claude/sessionControls/probeClaudeInstalledRuntimeCapabilities', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/backends/claude/sessionControls/probeClaudeInstalledRuntimeCapabilities')>();
+    return {
+        ...actual,
+        probeClaudeInstalledRuntimeCapabilities: probeClaudeInstalledRuntimeCapabilitiesMock,
+    };
+});
+
 vi.mock('@/agent/runtime/runnerTerminationOutcome', () => ({
     computeRunnerTerminationOutcome: vi.fn(() => ({ exitCode: 0, archive: false, archiveReason: null })),
 }));
@@ -225,10 +260,13 @@ vi.mock('./claudeUnhandledRejectionPolicy', () => ({
 }));
 
 vi.mock('@/mcp/runtime/resolveRunnerMcpServers', () => ({
-    resolveRunnerMcpServers: vi.fn(async () => ({
+    resolveRunnerMcpServers: vi.fn(async (params: any) => {
+        lastResolveRunnerMcpServersParams = params;
+        return {
         mcpServers: {},
         happierMcpServer: { stop: vi.fn() },
-    })),
+        };
+    }),
 }));
 
 vi.mock('@/backends/claude/loop', () => ({
@@ -257,6 +295,16 @@ describe('runClaude startup metadata ordering', () => {
         claudeLocalMock.mockResolvedValue(undefined);
         lastSessionClient = null;
         lastRuntimeOverridesSynchronizerParams = null;
+        lastResolveRunnerMcpServersParams = null;
+        probeClaudeInstalledRuntimeCapabilitiesMock.mockReset();
+        probeClaudeInstalledRuntimeCapabilitiesMock.mockResolvedValue({
+            supportsEffort: true,
+            supportsUltracode: true,
+        });
+        agentStateUpdateSnapshots.length = 0;
+        runtimeActivityPublisherCloseMock.mockClear();
+        sessionCloseMock.mockReset();
+        sessionCloseMock.mockResolvedValue(undefined);
     });
 
     afterEach(() => {
@@ -307,6 +355,7 @@ describe('runClaude startup metadata ordering', () => {
         metadataUpdateDeferred.resolve();
 
         await expect(runPromise).resolves.toBe(stopAfterSeed);
+        expect(runtimeActivityPublisherCloseMock).toHaveBeenCalledTimes(1);
         expect(logger.debug).toHaveBeenCalledWith(
             '[START] Claude startup phase failed',
             expect.objectContaining({
@@ -358,6 +407,17 @@ describe('runClaude startup metadata ordering', () => {
 
     it('reports the canonical session id first for daemon-started attach sessions', async () => {
         currentMetadataVersion = -1;
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: vi.fn(async () => {}),
+            });
+        });
+        const { loop } = await import('@/backends/claude/loop');
+        vi.mocked(loop).mockImplementationOnce(async (params: any) => {
+            await params.onSessionReady(params.session);
+            return 0;
+        });
         const { runClaude } = await import('./runClaude');
 
         const runPromise = runClaude(testCredentials, {
@@ -372,13 +432,15 @@ describe('runClaude startup metadata ordering', () => {
         await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
 
         const reportMock = vi.mocked(reportSessionToDaemonIfRunning);
+        reportMock.mockRejectedValueOnce(stopAfterStartupCoordinator);
+        expect(reportMock).not.toHaveBeenCalled();
+
+        metadataUpdateDeferred.resolve();
+        await expect(runPromise).resolves.toBe(stopAfterStartupCoordinator);
+
         expect(reportMock.mock.calls.length).toBeGreaterThan(0);
         expect(reportMock.mock.calls[0]?.[0]?.sessionId).toBe('session-attach');
         expect(reportMock.mock.calls.some(([call]) => call?.sessionId === 'PID-12345')).toBe(false);
-
-        metadataUpdateDeferred.resolve();
-
-        await expect(runPromise).resolves.toBe(stopAfterSeed);
     });
 
     it('uses the requested directory seed instead of a canonicalized cwd during remote startup', async () => {
@@ -442,6 +504,246 @@ describe('runClaude startup metadata ordering', () => {
         metadataUpdateDeferred.resolve();
 
         await expect(runPromise).resolves.toBe(stopAfterSeed);
+    });
+
+    it('does not publish standard startup user-message readiness until after the listener is subscribed', async () => {
+        currentMetadataVersion = 1;
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: vi.fn(async () => {}),
+                syncFromMetadata: vi.fn(),
+            });
+        });
+        const { updateAgentStateBestEffort } = await import('@/api/session/sessionWritesBestEffort');
+        const { runClaude } = await import('./runClaude');
+
+        const runPromise = runClaude(testCredentials, {
+            startedBy: 'daemon',
+            startingMode: 'remote',
+        }).then(
+            () => 'resolved',
+            (error) => error,
+        );
+
+        await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
+        metadataUpdateDeferred.resolve();
+
+        await expect(runPromise).resolves.toBe('resolved');
+
+        const updateMock = vi.mocked(updateAgentStateBestEffort);
+        const initialCall = updateMock.mock.calls.find((call) => call[3] === 'initial_agent_state');
+        const readyCall = updateMock.mock.calls.find((call) => call[3] === 'user_message_handler_ready');
+        expect(initialCall).toBeTruthy();
+        expect(readyCall).toBeTruthy();
+        expect(lastSessionClient?.onUserMessage).toHaveBeenCalledTimes(1);
+
+        const initialState = agentStateUpdateSnapshots.find((snapshot) => snapshot.reason === 'initial_agent_state')?.state;
+        const readyState = agentStateUpdateSnapshots.find((snapshot) => snapshot.reason === 'user_message_handler_ready')?.state;
+        expect(initialState?.capabilities).toMatchObject({ userMessageHandlerReady: false });
+        expect(readyState?.capabilities).toMatchObject({ userMessageHandlerReady: true });
+        expect(updateMock.mock.invocationCallOrder[updateMock.mock.calls.indexOf(initialCall!)]).toBeLessThan(
+            lastSessionClient!.onUserMessage.mock.invocationCallOrder[0]!,
+        );
+        expect(lastSessionClient!.onUserMessage.mock.invocationCallOrder[0]!).toBeLessThan(
+            updateMock.mock.invocationCallOrder[updateMock.mock.calls.indexOf(readyCall!)]!,
+        );
+        expect(runtimeActivityPublisherCloseMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps Agent SDK capabilities and stop semantics after a later message selects Unified terminal', async () => {
+        currentMetadataVersion = 1;
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: vi.fn(async () => {}),
+                syncFromMetadata: vi.fn(),
+            });
+        });
+        const { registerKillSessionHandler } = await import('@/rpc/handlers/killSession');
+        const { runClaude } = await import('./runClaude');
+
+        const runPromise = runClaude(testCredentials, {
+            startedBy: 'daemon',
+            startingMode: 'remote',
+            claudeRemoteMetaDefaults: {
+                claudeRemoteAgentSdkEnabled: true,
+                claudeUnifiedTerminalEnabled: false,
+                claudeLocalPermissionBridgeEnabled: false,
+            },
+        });
+
+        await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
+        metadataUpdateDeferred.resolve();
+        await runPromise;
+
+        const userMessageHandler = lastSessionClient?.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { type: 'text'; text: string };
+            localId: string;
+            meta: Record<string, unknown>;
+        }) => void) | undefined;
+        expect(userMessageHandler).toBeTypeOf('function');
+        userMessageHandler?.({
+            content: { type: 'text', text: 'keep using the active runtime' },
+            localId: 'runtime-selection-change',
+            meta: {
+                claudeRemoteAgentSdkEnabled: true,
+                claudeUnifiedTerminalEnabled: true,
+                claudeLocalPermissionBridgeEnabled: true,
+            },
+        });
+
+        const stateAfterPreferenceChange = agentStateUpdateSnapshots.find(
+            (snapshot) => snapshot.reason === 'local_permission_bridge_mode_change',
+        )?.state;
+        expect(stateAfterPreferenceChange).toMatchObject({
+            controlledByUser: false,
+            localControl: null,
+        });
+        expect(stateAfterPreferenceChange?.capabilities?.inFlightSteerSupported).toBeUndefined();
+
+        const killHandler = vi.mocked(registerKillSessionHandler).mock.calls[0]?.[1];
+        expect(killHandler).toBeTypeOf('function');
+        await expect(killHandler?.()).resolves.toBeUndefined();
+    });
+
+    it('removes unsupported installed effort and ultracode from ordinary message launch modes after one probe', async () => {
+        currentMetadataVersion = 1;
+        probeClaudeInstalledRuntimeCapabilitiesMock.mockResolvedValue({
+            supportsEffort: false,
+            supportsUltracode: false,
+        });
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: vi.fn(async () => {}),
+                syncFromMetadata: vi.fn(),
+            });
+        });
+        const { loop } = await import('@/backends/claude/loop');
+        const launchModes: unknown[] = [];
+        vi.mocked(loop).mockImplementationOnce(async (params: any) => {
+            params.messageQueue.push = vi.fn((_text: string, mode: unknown) => launchModes.push(mode));
+            const handler = lastSessionClient?.onUserMessage.mock.calls[0]?.[0];
+            await handler?.({
+                content: { type: 'text', text: 'ship it' },
+                localId: 'effort-gated',
+                createdAt: 101,
+                meta: { model: 'claude-fable-5', reasoningEffort: 'xhigh', ultracode: true },
+            });
+            return 0;
+        });
+        const { runClaude } = await import('./runClaude');
+
+        const runPromise = runClaude(testCredentials, {
+            startedBy: 'daemon',
+            startingMode: 'remote',
+            model: 'claude-fable-5',
+        });
+        await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
+        metadataUpdateDeferred.resolve();
+        await runPromise;
+
+        expect(launchModes).toEqual([
+            expect.not.objectContaining({ reasoningEffort: expect.anything(), ultracode: expect.anything() }),
+        ]);
+        expect(probeClaudeInstalledRuntimeCapabilitiesMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('retains discovered model effort evidence for the initial ordinary launch after readiness', async () => {
+        vi.doMock('@/backends/claude/models/resolveClaudeModelCatalog', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/backends/claude/models/resolveClaudeModelCatalog')>();
+            return {
+                ...actual,
+                resolveClaudeModelCatalog: vi.fn(async () => [{
+                    id: 'claude-opus-9',
+                    name: 'Opus 9',
+                    modelOptions: [{
+                        id: 'reasoning_effort',
+                        name: 'Thinking',
+                        type: 'select',
+                        currentValue: 'high',
+                        options: [
+                            { value: 'low', name: 'Low' },
+                            { value: 'high', name: 'High' },
+                            { value: 'xhigh', name: 'XHigh' },
+                        ],
+                    }],
+                }]),
+            };
+        });
+        vi.doMock('@/backends/claude/sessionControls/publishClaudeSessionModelsMetadataBestEffort', () => ({
+            publishClaudeSessionModelsMetadataBestEffort: vi.fn(async () => {}),
+        }));
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: vi.fn(async () => {}),
+                syncFromMetadata: vi.fn(),
+            });
+        });
+        const { loop } = await import('@/backends/claude/loop');
+        type LoopParams = Parameters<typeof loop>[0];
+        const reportMock = vi.mocked(reportSessionToDaemonIfRunning);
+        reportMock.mockRejectedValueOnce(stopAfterStartupCoordinator);
+        let initialMode: LoopParams['initialClaudeUnifiedTerminalMode'];
+	        vi.mocked(loop).mockImplementationOnce(async (params: LoopParams) => {
+	            initialMode = params.initialClaudeUnifiedTerminalMode;
+	            await params.onSessionReady?.(params.session as unknown as Parameters<NonNullable<LoopParams['onSessionReady']>>[0]);
+	            return 0;
+	        });
+        const { runClaude } = await import('./runClaude');
+
+        try {
+            const runPromise = runClaude(testCredentials, {
+                startedBy: 'daemon',
+                startingMode: 'remote',
+                model: 'claude-opus-9',
+            }).then(
+                () => 'resolved',
+                (error) => error,
+            );
+            await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
+            metadataUpdateDeferred.resolve();
+            await expect(runPromise).resolves.toBe(stopAfterStartupCoordinator);
+
+            expect(initialMode).toMatchObject({
+                model: 'claude-opus-9',
+                modelEffortLevels: ['low', 'high', 'xhigh'],
+                modelEffortLevelsModelId: 'claude-opus-9',
+            });
+        } finally {
+            vi.doUnmock('@/backends/claude/models/resolveClaudeModelCatalog');
+            vi.doUnmock('@/backends/claude/sessionControls/publishClaudeSessionModelsMetadataBestEffort');
+        }
+    });
+
+    it('disposes runtime Activity when standard session transport close fails', async () => {
+        currentMetadataVersion = 1;
+        const closeError = new Error('session-close-failed');
+        sessionCloseMock.mockRejectedValueOnce(closeError);
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: vi.fn(async () => {}),
+                syncFromMetadata: vi.fn(),
+            });
+        });
+        const { runClaude } = await import('./runClaude');
+
+        const runPromise = runClaude(testCredentials, {
+            startedBy: 'daemon',
+            startingMode: 'remote',
+        }).then(
+            () => 'resolved',
+            (error) => error,
+        );
+
+        await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
+        metadataUpdateDeferred.resolve();
+
+        await expect(runPromise).resolves.toBe(closeError);
+        expect(runtimeActivityPublisherCloseMock).toHaveBeenCalledTimes(1);
     });
 
     it('applies startup permission overrides before unified terminal startup continues', async () => {
@@ -545,6 +847,37 @@ describe('runClaude startup metadata ordering', () => {
             '[START] Failed to resolve runner MCP servers',
             expect.objectContaining({ message: 'missing MCP secret' }),
         );
+    });
+
+    it('exposes the current permission mode to the regular Happier MCP bridge setup path', async () => {
+        currentMetadataVersion = 1;
+        initializeRuntimeOverridesSynchronizerMock.mockImplementationOnce(async (params: RuntimeOverridesSynchronizerParams) => {
+            lastRuntimeOverridesSynchronizerParams = params;
+            return createRuntimeOverridesSynchronizer({
+                seedFromSession: async () => {
+                    params.permissionMode.current = 'yolo';
+                    params.permissionMode.updatedAt = 123;
+                    params.onPermissionModeApplied?.();
+                },
+            });
+        });
+        const { runClaude } = await import('./runClaude');
+
+        const runPromise = runClaude(testCredentials, {
+            startedBy: 'daemon',
+            startingMode: 'remote',
+        }).then(
+            () => 'resolved',
+            (error) => error,
+        );
+
+        await waitFor(() => applyStartupMetadataUpdateToSessionMock.mock.calls.length === 1);
+        metadataUpdateDeferred.resolve();
+        await waitFor(() => Boolean(lastResolveRunnerMcpServersParams?.session), 10_000);
+
+        expect(lastResolveRunnerMcpServersParams.session.getPermissionMode?.()).toBe('yolo');
+
+        await expect(runPromise).resolves.toBe('resolved');
     });
 
 });

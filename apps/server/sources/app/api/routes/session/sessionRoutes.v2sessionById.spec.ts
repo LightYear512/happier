@@ -38,6 +38,10 @@ describe("sessionRoutes v2 session by id", () => {
             latestTurnStatus: "in_progress",
             latestTurnStatusObservedAt: 1_234,
             lastRuntimeIssue: null,
+            runtimeActivityState: "active",
+            runtimeActivityRevision: BigInt(5),
+            runtimeActivityActiveCount: 2,
+            runtimeActivityObservedAt: BigInt(2_000),
             dataEncryptionKey: Buffer.from([1, 2, 3]),
             active: true,
             lastActiveAt: now,
@@ -58,6 +62,10 @@ describe("sessionRoutes v2 session by id", () => {
                 latestTurnId: "turn-1",
                 latestTurnStatus: "in_progress",
                 latestTurnStatusObservedAt: 1_234,
+                runtimeActivityState: "active",
+                runtimeActivityRevision: 5,
+                runtimeActivityActiveCount: 2,
+                runtimeActivityObservedAt: 2_000,
                 share: null,
                 archivedAt: null,
             }),
@@ -87,6 +95,10 @@ describe("sessionRoutes v2 session by id", () => {
             latestTurnStatus: null,
             latestTurnStatusObservedAt: null,
             lastRuntimeIssue: null,
+            runtimeActivityState: "unknown",
+            runtimeActivityRevision: BigInt(0),
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
             dataEncryptionKey: null,
             active: true,
             lastActiveAt: now,
@@ -138,6 +150,10 @@ describe("sessionRoutes v2 session by id", () => {
             latestTurnStatus: null,
             latestTurnStatusObservedAt: null,
             lastRuntimeIssue: null,
+            runtimeActivityState: "unknown",
+            runtimeActivityRevision: BigInt(0),
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
             dataEncryptionKey: null,
             pendingCount: 0,
             pendingVersion: 4,
@@ -171,4 +187,5 @@ describe("sessionRoutes v2 session by id", () => {
         expect(reply.code).toHaveBeenCalledWith(404);
         expect(res).toEqual({ error: "Session not found" });
     });
+
 });

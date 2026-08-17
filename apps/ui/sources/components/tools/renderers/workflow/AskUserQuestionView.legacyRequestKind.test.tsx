@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ReactTestRenderer } from 'react-test-renderer';
 
 import type { ToolCall } from '@/sync/domains/messages/messageTypes';
-import { makeToolCall, makeToolViewProps, findPressableByText } from '@/dev/testkit';
+import { createSessionFixture, makeToolCall, makeToolViewProps, findPressableByText } from '@/dev/testkit';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import { installWorkflowRendererCommonModuleMocks } from './workflowRendererTestHelpers';
 
@@ -26,31 +26,52 @@ installWorkflowRendererCommonModuleMocks({
         );
     },
     storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        const { createStorageModuleStub, createStorageStoreStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
-            storage: {
-                getState: () => ({
-                    sessions: {
-                        s1: {
-                            agentState: {
-                                requests: {
-                                    toolu_1: {
-                                        tool: 'AskUserQuestion',
-                                        arguments: {},
-                                        createdAt: 1,
-                                    },
+            useSession: () => createSessionFixture({
+                id: 's1',
+                agentState: {
+                    capabilities: { structuredQuestionAnswersV1Supported: true },
+                    requests: {
+                        toolu_1: {
+                            tool: 'AskUserQuestion',
+                            arguments: {},
+                            createdAt: 1,
+                        },
+                    },
+                },
+            }),
+            storage: createStorageStoreStub(() => ({
+                sessions: {
+                    s1: createSessionFixture({
+                        id: 's1',
+                        agentState: {
+                            capabilities: { structuredQuestionAnswersV1Supported: true },
+                            requests: {
+                                toolu_1: {
+                                    tool: 'AskUserQuestion',
+                                    arguments: {},
+                                    createdAt: 1,
                                 },
                             },
                         },
-                    },
-                }),
-            },
+                    }),
+                },
+            })),
         });
     },
 });
 
 vi.mock('@/sync/ops', () => ({
     sessionAllowWithAnswers: (...args: any[]) => sessionAllowWithAnswers(...args),
+}));
+
+vi.mock('@/components/sessions/terminal/openAttachedSessionTerminal', () => ({
+    useOpenAttachedSessionTerminal: () => ({
+        available: false,
+        unavailableReason: 'missing_machine',
+        open: vi.fn(),
+    }),
 }));
 
 describe('AskUserQuestionView legacy request-kind fallback', () => {
@@ -87,6 +108,9 @@ describe('AskUserQuestionView legacy request-kind fallback', () => {
         await pressTestInstanceAsync(submit, 'tools.askUserQuestion.submit');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': 'A' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'structured-question-v1',
+            structuredAnswersV1: { 'Pick one': ['A'] },
+        });
     });
 });

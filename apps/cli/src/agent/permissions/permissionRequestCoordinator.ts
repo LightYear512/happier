@@ -1,5 +1,6 @@
 import { deepEqual } from '@/utils/deterministicJson';
 import type { AgentStateOutstandingRequest } from './agentStateRequestStore';
+import { normalizeAskUserQuestionInputForPublication } from '@/agent/questions/normalizeAskUserQuestionInput';
 
 export type PermissionRequestCoordinatorRequest = Readonly<{
     requestId: string;
@@ -48,6 +49,7 @@ export type PermissionRequestCoordinatorStore = Readonly<{
         kind?: string;
         source?: string;
         permissionSuggestions?: unknown[] | null;
+        replaceCompletedRequest?: boolean;
     }>): void;
     completeRequest(params: Readonly<{
         requestId: string;
@@ -62,6 +64,7 @@ export type PermissionRequestCoordinatorStore = Readonly<{
     }>): void;
     cancelAllRequests?(params: Readonly<{ reason: string; decision?: string }>): void;
     hasOutstandingRequest(requestId: string): boolean;
+    isOutstandingRequestClaimed(requestId: string): boolean;
     readOutstandingRequest(requestId: string): AgentStateOutstandingRequest | null;
 }>;
 
@@ -101,25 +104,35 @@ export class PermissionRequestCoordinator<TResult> {
     private readonly store: PermissionRequestCoordinatorStore;
     private readonly pendingRequests = new Map<string, PendingPermissionRequest<TResult>>();
     private readonly cachedDecisions = new Map<string, CachedPermissionDecision<TResult>>();
+    private readonly invalidatedDecisionRequestIds = new Set<string>();
     private waiterSequence = 0;
 
     constructor(params: Readonly<{ store: PermissionRequestCoordinatorStore }>) {
         this.store = params.store;
     }
 
+    isRequestClaimed(requestId: string): boolean {
+        return this.store.isOutstandingRequestClaimed(requestId);
+    }
+
     requestDecision(
         request: PermissionRequestCoordinatorRequest,
         options?: PermissionRequestCoordinatorOptions,
     ): Promise<TResult> {
+        const normalizedToolInput = normalizeAskUserQuestionInputForPublication(request.toolName, request.toolInput);
         this.pruneDetachedRecords();
 
         if (options?.signal?.aborted) {
             return Promise.reject(createPermissionRequestAbortError());
         }
 
+        if (this.isRequestClaimed(request.requestId)) {
+            return Promise.reject(createPermissionRequestClaimedError(request.requestId));
+        }
+
         let entry = this.pendingRequests.get(request.requestId);
         if (entry) {
-            if (!isCompatiblePendingRequest(entry, request)) {
+            if (!isCompatiblePendingRequest(entry, { ...request, toolInput: normalizedToolInput })) {
                 return Promise.reject(
                     new Error(`Permission request ${request.requestId} is already pending with different tool input`),
                 );
@@ -129,14 +142,22 @@ export class PermissionRequestCoordinator<TResult> {
         }
 
         const cached = this.cachedDecisions.get(request.requestId);
-        if (cached && isCompatibleCachedDecision(cached, request)) {
+        const invalidatedDecision = this.invalidatedDecisionRequestIds.delete(request.requestId);
+        const cachedCompatible = cached
+            ? isCompatibleCachedDecision(cached, { ...request, toolInput: normalizedToolInput })
+            : false;
+        if (cached && cachedCompatible && !invalidatedDecision) {
             return Promise.resolve(cached.result);
+        }
+        const replaceCompletedRequest = invalidatedDecision || !!cached;
+        if (cached && !cachedCompatible) {
+            this.cachedDecisions.delete(request.requestId);
         }
 
         entry = {
             requestId: request.requestId,
             toolName: request.toolName,
-            toolInput: request.toolInput,
+            toolInput: normalizedToolInput,
             createdAt: request.createdAt ?? Date.now(),
             ...(typeof request.kind === 'string' ? { kind: request.kind } : {}),
             ...(typeof request.source === 'string' ? { source: request.source } : {}),
@@ -146,22 +167,31 @@ export class PermissionRequestCoordinator<TResult> {
         };
 
         this.pendingRequests.set(request.requestId, entry);
-        this.store.publishRequest({
-            requestId: entry.requestId,
-            toolName: entry.toolName,
-            toolInput: entry.toolInput,
-            createdAt: entry.createdAt,
-            ...(typeof entry.kind === 'string' ? { kind: entry.kind } : {}),
-            ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
-            ...(Array.isArray(request.permissionSuggestions)
-                ? { permissionSuggestions: [...request.permissionSuggestions] }
-                : {}),
-        });
+        try {
+            this.store.publishRequest({
+                requestId: entry.requestId,
+                toolName: entry.toolName,
+                toolInput: entry.toolInput,
+                createdAt: entry.createdAt,
+                ...(typeof entry.kind === 'string' ? { kind: entry.kind } : {}),
+                ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+                ...(Array.isArray(request.permissionSuggestions)
+                    ? { permissionSuggestions: [...request.permissionSuggestions] }
+                    : {}),
+                ...(replaceCompletedRequest ? { replaceCompletedRequest: true } : {}),
+            });
+        } catch (error) {
+            if (this.pendingRequests.get(request.requestId) === entry) {
+                this.pendingRequests.delete(request.requestId);
+            }
+            throw error;
+        }
 
         return this.attachWaiter(entry, options?.signal);
     }
 
     getResponseContext(requestId: string): PermissionRequestCoordinatorContext | null {
+        if (this.isRequestClaimed(requestId)) return null;
         this.pruneDetachedRecords();
 
         const entry = this.pendingRequests.get(requestId);
@@ -195,10 +225,35 @@ export class PermissionRequestCoordinator<TResult> {
         };
     }
 
+    /**
+     * Returns response context only when this runtime still owns an active provider waiter.
+     * Persisted agent state and detached records are deliberately insufficient for structured answers.
+     */
+    getLocallyOwnedLiveResponseContext(requestId: string): PermissionRequestCoordinatorContext | null {
+        if (this.isRequestClaimed(requestId)) return null;
+        this.pruneDetachedRecords();
+        const entry = this.pendingRequests.get(requestId);
+        if (!entry || entry.status !== 'live') return null;
+        const hasLiveWaiter = [...entry.waiters.values()].some((waiter) => !waiter.aborted);
+        if (!hasLiveWaiter) return null;
+        return {
+            requestId,
+            toolName: entry.toolName,
+            toolInput: entry.toolInput,
+            createdAt: entry.createdAt,
+            ...(typeof entry.kind === 'string' ? { kind: entry.kind } : {}),
+            ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+            sourceLocalId: entry.sourceLocalId,
+            correlation: 'record',
+            status: 'live',
+        };
+    }
+
     handleResponse(params: Readonly<{
         requestId: string;
         buildCompletion: (context: PermissionRequestCoordinatorContext) => PermissionRequestCoordinatorCompletion<TResult>;
     }>): boolean {
+        if (this.isRequestClaimed(params.requestId)) return false;
         const context = this.getResponseContext(params.requestId);
         if (!context) return false;
 
@@ -213,6 +268,7 @@ export class PermissionRequestCoordinator<TResult> {
         completion: PermissionRequestCoordinatorCompletion<TResult>;
     }>): boolean {
         const { context, completion } = params;
+        if (this.isRequestClaimed(context.requestId)) return false;
         const entry = this.pendingRequests.get(context.requestId);
         if (entry) {
             this.store.completeRequest({
@@ -256,9 +312,20 @@ export class PermissionRequestCoordinator<TResult> {
     }
 
     cancelRequest(requestId: string, reason: string): void {
-        this.cachedDecisions.delete(requestId);
+        if (this.cachedDecisions.delete(requestId)) {
+            this.invalidatedDecisionRequestIds.add(requestId);
+        }
         const entry = this.pendingRequests.get(requestId);
         if (!entry) return;
+
+        if (this.isRequestClaimed(requestId)) {
+            entry.status = 'detached';
+            for (const waiter of entry.waiters.values()) {
+                rejectWaiter(waiter, createPermissionRequestAbortError(reason));
+            }
+            entry.waiters.clear();
+            return;
+        }
 
         this.pendingRequests.delete(requestId);
         for (const waiter of entry.waiters.values()) {
@@ -268,6 +335,9 @@ export class PermissionRequestCoordinator<TResult> {
     }
 
     cancelAll(reason: string): void {
+        for (const requestId of this.cachedDecisions.keys()) {
+            this.invalidatedDecisionRequestIds.add(requestId);
+        }
         for (const requestId of [...this.pendingRequests.keys()]) {
             this.cancelRequest(requestId, reason);
         }
@@ -370,4 +440,8 @@ function rejectWaiter<TResult>(waiter: PendingPermissionWaiter<TResult>, error: 
 
 function createPermissionRequestAbortError(reason = 'Permission request aborted'): Error {
     return new Error(reason);
+}
+
+function createPermissionRequestClaimedError(requestId: string): Error {
+    return new Error(`Permission request ${requestId} is reserved by a newer runtime`);
 }

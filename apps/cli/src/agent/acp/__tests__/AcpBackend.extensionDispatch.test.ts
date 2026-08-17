@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { writeAcpTestAgentScript, readFileEventually } from '../testkit/subprocessHarness';
-import { AcpBackend, buildInitializeRequest, type AcpExtensionHandlerContext } from '../AcpBackend';
+import { AcpBackend, buildInitializeRequest } from '../AcpBackend';
+import {
+  defineAcpExtensionNotification,
+  defineAcpExtensionRequest,
+  type AcpExtensionHandlerContext,
+} from '../connection/types';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { normalizeAcpPlan, type NormalizedAcpPlanSnapshot } from '@/agent/acp/plans';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -24,10 +30,31 @@ function readNestedRecord(record: Record<string, unknown>, key: string): Record<
   return value;
 }
 
+async function readPromiseState(evidence: Promise<unknown>): Promise<'resolved' | 'pending'> {
+  let resolved = false;
+  void evidence.then(
+    () => {
+      resolved = true;
+    },
+    () => {
+      resolved = true;
+    },
+  );
+  await Promise.resolve();
+  return resolved ? 'resolved' : 'pending';
+}
+
+const extensionParams = {
+  parse(value: unknown): Record<string, unknown> {
+    if (!isRecord(value)) throw new Error('Expected extension object params');
+    return value;
+  },
+};
+
 function writeExtensionProbeAgentScript(params: {
   dir: string;
   resultFile: string;
-  scenario: 'request' | 'notification' | 'error' | 'abort';
+  scenario: 'request' | 'notification' | 'error' | 'abort' | 'abort-with-update' | 'outgoing';
 }): string {
   const src = `
     const fs = require('node:fs');
@@ -93,6 +120,12 @@ function writeExtensionProbeAgentScript(params: {
           continue;
         }
 
+        if (method === 'example/client_request') {
+          writeResult(req.params || {});
+          ok(id, { ok: true, echoed: req.params || {} });
+          continue;
+        }
+
         if (method === 'session/prompt') {
           pendingPromptId = id;
           const scenario = ${JSON.stringify(params.scenario)};
@@ -104,6 +137,20 @@ function writeExtensionProbeAgentScript(params: {
             });
             setTimeout(finishPrompt, 25);
             continue;
+          }
+
+          if (scenario === 'abort-with-update') {
+            send({
+              jsonrpc: '2.0',
+              method: 'session/update',
+              params: {
+                sessionId: 'test-session',
+                update: {
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text: 'provider activity' },
+                },
+              },
+            });
           }
 
           send({
@@ -159,9 +206,11 @@ describe('AcpBackend ACP extension dispatch', () => {
         args: [scriptPath],
       };
       Object.assign(backendOptions, {
-        extensionHandlers: {
-          requests: {
-            'example/object_request': async (
+        extensionHandlers: [
+          defineAcpExtensionRequest({
+            method: 'example/object_request',
+            params: extensionParams,
+            handler: async (
               params: Record<string, unknown>,
               context: AcpExtensionHandlerContext,
             ): Promise<Record<string, unknown>> => ({
@@ -170,8 +219,8 @@ describe('AcpBackend ACP extension dispatch', () => {
               sessionId: context.sessionId,
               signalAborted: context.signal.aborted,
             }),
-          },
-        },
+          }),
+        ],
       });
 
       const backend = new AcpBackend(backendOptions);
@@ -194,6 +243,88 @@ describe('AcpBackend ACP extension dispatch', () => {
     });
   }, 10_000);
 
+  it('shares one turn-scoped plan projector with extensions and rejects late prior-turn delivery', async () => {
+    await withTempDir('happier-acp-extension-plan-owner-', async (dir) => {
+      const resultFile = `${dir}/extension-plan-owner.json`;
+      const scriptPath = writeExtensionProbeAgentScript({ dir, resultFile, scenario: 'request' });
+      const projectedEvents: unknown[] = [];
+      const contexts: AcpExtensionHandlerContext[] = [];
+      const snapshots: NormalizedAcpPlanSnapshot[] = [];
+      const backend = new AcpBackend({
+        agentName: 'test',
+        cwd: dir,
+        command: process.execPath,
+        args: [scriptPath],
+        extensionHandlers: [
+          defineAcpExtensionRequest({
+            method: 'example/object_request',
+            params: extensionParams,
+            handler: async (_params, context): Promise<Record<string, unknown>> => {
+              if (!context.turnId || !context.plans) throw new Error('missing plan projection context');
+              const snapshot = normalizeAcpPlan({
+                providerId: context.agentName,
+                turnId: context.turnId,
+                correlationId: 'plan-call',
+                source: 'proprietary',
+                merge: false,
+                items: [{ id: 'todo-1', content: 'Implement', status: 'pending' }],
+              });
+              if (!snapshot) throw new Error('invalid fixture plan');
+              contexts.push(context);
+              snapshots.push(snapshot);
+              expect((await context.plans.project(snapshot)).kind).toBe('published');
+              expect((await context.plans.project(snapshot)).kind).toBe('duplicate');
+              return {};
+            },
+          }),
+        ],
+      });
+      backend.setPlanStatePublisher(async (snapshot) => {
+        projectedEvents.push(snapshot);
+      });
+
+      try {
+        const started = await backend.startSession();
+        await backend.sendPrompt(started.sessionId, 'first plan turn');
+        expect(projectedEvents).toHaveLength(1);
+        expect((await contexts[0]?.plans?.project(snapshots[0]!))?.kind).toBe('late');
+
+        await backend.sendPrompt(started.sessionId, 'second identical plan turn');
+        expect(projectedEvents).toHaveLength(2);
+        expect(contexts[1]?.turnId).not.toBe(contexts[0]?.turnId);
+      } finally {
+        await backend.dispose().catch(() => {});
+      }
+    });
+  }, 10_000);
+
+  it('exposes provider-neutral outgoing extension requests through the active peer', async () => {
+    await withTempDir('happier-acp-extension-outgoing-', async (dir) => {
+      const resultFile = `${dir}/extension-outgoing.json`;
+      const scriptPath = writeExtensionProbeAgentScript({ dir, resultFile, scenario: 'outgoing' });
+      const backend = new AcpBackend({
+        agentName: 'test',
+        cwd: dir,
+        command: process.execPath,
+        args: [scriptPath],
+      });
+
+      try {
+        await backend.startSession();
+        const response = await backend.requestExtension<{
+          ok: boolean;
+          echoed: Record<string, unknown>;
+        }>('example/client_request', { value: 'request' }, { timeoutMs: 500 });
+
+        expect(response).toEqual({ ok: true, echoed: { value: 'request' } });
+        expect(parseJsonRecord(await readFileEventually(resultFile, { timeoutMs: 1_000 })))
+          .toEqual({ value: 'request' });
+      } finally {
+        await backend.dispose().catch(() => {});
+      }
+    });
+  }, 10_000);
+
   it('dispatches extension notifications without requiring a response', async () => {
     await withTempDir('happier-acp-extension-notification-', async (dir) => {
       const resultFile = `${dir}/initialize.json`;
@@ -206,16 +337,18 @@ describe('AcpBackend ACP extension dispatch', () => {
         args: [scriptPath],
       };
       Object.assign(backendOptions, {
-        extensionHandlers: {
-          notifications: {
-            'example/notification': async (
+        extensionHandlers: [
+          defineAcpExtensionNotification({
+            method: 'example/notification',
+            params: extensionParams,
+            handler: async (
               params: Record<string, unknown>,
               context: AcpExtensionHandlerContext,
             ): Promise<void> => {
               notifications.push({ ...params, sessionIdFromContext: context.sessionId });
             },
-          },
-        },
+          }),
+        ],
       });
 
       const backend = new AcpBackend(backendOptions);
@@ -248,13 +381,15 @@ describe('AcpBackend ACP extension dispatch', () => {
         args: [scriptPath],
       };
       Object.assign(backendOptions, {
-        extensionHandlers: {
-          requests: {
-            'example/object_request': async (): Promise<Record<string, unknown>> => {
+        extensionHandlers: [
+          defineAcpExtensionRequest({
+            method: 'example/object_request',
+            params: extensionParams,
+            handler: async (): Promise<Record<string, unknown>> => {
               throw new Error('extension exploded');
             },
-          },
-        },
+          }),
+        ],
       });
 
       const backend = new AcpBackend(backendOptions);
@@ -283,11 +418,13 @@ describe('AcpBackend ACP extension dispatch', () => {
         args: [scriptPath],
       };
       Object.assign(backendOptions, {
-        extensionHandlers: {
-          requests: {
-            'example/other_request': async (): Promise<Record<string, unknown>> => ({ unused: true }),
-          },
-        },
+        extensionHandlers: [
+          defineAcpExtensionRequest({
+            method: 'example/other_request',
+            params: extensionParams,
+            handler: async (): Promise<Record<string, unknown>> => ({ unused: true }),
+          }),
+        ],
       });
 
       const backend = new AcpBackend(backendOptions);
@@ -311,7 +448,7 @@ describe('AcpBackend ACP extension dispatch', () => {
   it('aborts in-flight extension handlers when the turn is cancelled', async () => {
     await withTempDir('happier-acp-extension-cancel-', async (dir) => {
       const resultFile = `${dir}/extension-cancel.json`;
-      const scriptPath = writeExtensionProbeAgentScript({ dir, resultFile, scenario: 'abort' });
+      const scriptPath = writeExtensionProbeAgentScript({ dir, resultFile, scenario: 'abort-with-update' });
       let resolveStarted: (() => void) | null = null;
       const startedHandler = new Promise<void>((resolve) => {
         resolveStarted = resolve;
@@ -320,6 +457,10 @@ describe('AcpBackend ACP extension dispatch', () => {
       const abortedHandler = new Promise<void>((resolve) => {
         resolveAborted = resolve;
       });
+      const capturedPlan: {
+        context: AcpExtensionHandlerContext | null;
+        snapshot: NormalizedAcpPlanSnapshot | null;
+      } = { context: null, snapshot: null };
       const backendOptions = {
         agentName: 'test',
         cwd: dir,
@@ -327,12 +468,26 @@ describe('AcpBackend ACP extension dispatch', () => {
         args: [scriptPath],
       };
       Object.assign(backendOptions, {
-        extensionHandlers: {
-          requests: {
-            'example/object_request': async (
+        extensionHandlers: [
+          defineAcpExtensionRequest({
+            method: 'example/object_request',
+            params: extensionParams,
+            handler: async (
               _params: Record<string, unknown>,
               context: AcpExtensionHandlerContext,
             ): Promise<Record<string, unknown>> => {
+              if (!context.turnId || !context.plans) throw new Error('missing plan projection context');
+              capturedPlan.context = context;
+              capturedPlan.snapshot = normalizeAcpPlan({
+                providerId: context.agentName,
+                turnId: context.turnId,
+                correlationId: 'cancelled-plan',
+                source: 'proprietary',
+                merge: false,
+                items: [{ id: 'todo-cancel', content: 'Cancel', status: 'pending' }],
+              });
+              if (!capturedPlan.snapshot) throw new Error('invalid fixture plan');
+              await context.plans.project(capturedPlan.snapshot);
               resolveStarted?.();
               if (context.signal.aborted) {
                 resolveAborted?.();
@@ -350,29 +505,39 @@ describe('AcpBackend ACP extension dispatch', () => {
               });
               return { shouldNotReach: true };
             },
-          },
-        },
+          }),
+        ],
       });
 
       const backend = new AcpBackend(backendOptions);
+      backend.setPlanStatePublisher(async () => undefined);
 
       try {
         const started = await backend.startSession();
-        const prompt = backend.sendPrompt(started.sessionId, 'trigger extension abort');
+        const evidence = await backend.sendPromptWithEvidence(started.sessionId, 'trigger extension abort');
+        expect(evidence.kind).toBe('effect_may_have_occurred');
+        if (evidence.kind !== 'effect_may_have_occurred') {
+          throw new Error('Expected first-update liveness evidence');
+        }
         const startOutcome = await Promise.race([
           startedHandler.then(() => 'started' as const),
           new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
         ]);
         expect(startOutcome).toBe('started');
+        expect(await readPromiseState(evidence.finalResponseEvidence)).toBe('pending');
 
         await backend.cancel(started.sessionId);
+        if (!capturedPlan.context?.plans || !capturedPlan.snapshot) {
+          throw new Error('plan projection context was not captured');
+        }
+        expect((await capturedPlan.context.plans.project(capturedPlan.snapshot)).kind).toBe('late');
 
         const abortOutcome = await Promise.race([
           abortedHandler.then(() => 'aborted' as const),
           new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
         ]);
         expect(abortOutcome).toBe('aborted');
-        await prompt.catch(() => {});
+        await evidence.finalResponseEvidence.catch(() => {});
 
         const response = parseJsonRecord(await readFileEventually(resultFile, { timeoutMs: 1_000 }));
         const error = readNestedRecord(response, 'error');
@@ -402,9 +567,11 @@ describe('AcpBackend ACP extension dispatch', () => {
         args: [scriptPath],
       };
       Object.assign(backendOptions, {
-        extensionHandlers: {
-          requests: {
-            'example/object_request': async (
+        extensionHandlers: [
+          defineAcpExtensionRequest({
+            method: 'example/object_request',
+            params: extensionParams,
+            handler: async (
               _params: Record<string, unknown>,
               context: AcpExtensionHandlerContext,
             ): Promise<Record<string, unknown>> => {
@@ -425,8 +592,8 @@ describe('AcpBackend ACP extension dispatch', () => {
               });
               return { shouldNotReach: true };
             },
-          },
-        },
+          }),
+        ],
       });
 
       const backend = new AcpBackend(backendOptions);

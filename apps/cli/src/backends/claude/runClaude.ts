@@ -16,7 +16,14 @@ import { parseSpecialCommand } from '@/cli/parsers/specialCommands';
 import { resolveClaudeStructuredUserMessageRouting } from '@/backends/claude/utils/structuredMessages/resolveClaudeStructuredUserMessageRouting';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { configuration } from '@/configuration';
-import { initialMachineMetadata } from '@/daemon/startDaemon';
+import { initialMachineMetadata } from '@/daemon/machine/metadata';
+import {
+    buildClaudeEndpointState,
+    hasClaudeEndpointRecoveryRequest,
+    parsePortFromUrl,
+    persistClaudeEndpointStateBestEffort,
+    resolveClaudeAdoptEndpointRecovery,
+} from '@/backends/claude/endpointRecovery/claudeEndpointRecovery';
 import { startHookServer, type PermissionHookData, type SessionHookData } from '@/backends/claude/utils/startHookServer';
 import { createClaudeStatuslineApplier } from '@/backends/claude/statusline/applyClaudeStatuslineUpdate';
 import { cleanupHookPluginDir, cleanupHookSettingsFile } from '@/backends/claude/utils/generateHookSettings';
@@ -39,8 +46,13 @@ import { createBaseSessionForAttach } from '@/agent/runtime/createBaseSessionFor
 import { createSessionMetadata } from '@/agent/runtime/createSessionMetadata';
 import { readSessionAttachMetadataIdentityPolicyFromEnv } from '@/agent/runtime/readSessionAttachMetadataIdentityPolicyFromEnv';
 import { hashClaudeEnhancedModeForQueue } from '@/backends/claude/remote/modeHash';
+import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
 import { applyClaudeRemoteMetaState } from '@/backends/claude/remote/claudeRemoteMetaState';
 import { resolveInitialClaudeRemoteMetaState } from '@/backends/claude/remote/resolveInitialClaudeRemoteMetaState';
+import {
+    normalizeClaudeRemoteMode,
+    pinClaudeRemoteModeToActiveRuntime,
+} from '@/backends/claude/remote/normalizeClaudeRemoteMode';
 import { inferPermissionIntentFromClaudeArgs } from './utils/inferPermissionIntentFromArgs';
 import { adoptModelOverrideFromMetadata } from './utils/adoptModelOverrideFromMetadata';
 import { adoptReasoningEffortOverrideFromMessageMeta } from './utils/adoptReasoningEffortOverrideFromMessageMeta';
@@ -53,6 +65,7 @@ import { formatErrorForUi } from '@/ui/formatErrorForUi';
 import { computeRunnerTerminationOutcome, type RunnerTerminationEvent } from '@/agent/runtime/runnerTerminationOutcome';
 import { registerRunnerTerminationHandlers } from '@/agent/runtime/runnerTerminationHandlers';
 import { createClaudeShouldTerminateOnUnhandledRejection } from './claudeUnhandledRejectionPolicy';
+import { requestClaudeExplicitRunnerStop } from './claudeExplicitRunnerStop';
 import { updateAgentStateBestEffort, updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import { resolvePermissionModeSeedForAgentStart } from '@/settings/permissions/permissionModeSeed';
 import { resolveClaudeConfigDirOverride } from '@/backends/claude/utils/resolveClaudeConfigDirOverride';
@@ -60,15 +73,21 @@ import { runStartupCoordinator } from '@/agent/runtime/startup/startupCoordinato
 import { createStartupTiming } from '@/agent/runtime/startup/startupTiming';
 import { writeStartupOverridesCacheForBackend } from '@/agent/runtime/startup/startupOverridesCache';
 import { createClaudeStartupSpec, type ClaudeStartupArtifacts } from '@/backends/claude/startup/createClaudeStartupSpec';
+import type { DeferredApiSessionTarget } from '@/agent/runtime/startup/DeferredApiSessionClient';
 import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
-import { initializeBackendRunSession } from '@/agent/runtime/initializeBackendRunSession';
+import {
+    createBackendRunRuntimeActivityLifecycle,
+    initializeBackendRunSession,
+    type BackendRunRuntimeActivityLifecycle,
+} from '@/agent/runtime/initializeBackendRunSession';
 import { createStartupMetadataOverrides } from '@/agent/runtime/createStartupMetadataOverrides';
 import type { PushNotificationClient } from '@/api/pushNotifications';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { resolveEffectiveCodingPromptText } from '@/agent/prompting/coding/resolveEffectiveCodingPrompt';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL_FEATURE_ID } from './unifiedTerminal/tuiControls';
+import { createClaudeUnifiedUserMessageHandler } from './startup/createClaudeUnifiedUserMessageHandler';
 import { resolveInitialClaudeSystemPromptText } from './utils/resolveInitialClaudeSystemPromptText';
 import { shouldStartClaudeSessionCaffeinate } from './sessionCaffeinatePolicy';
 import { ensureManagedJavaScriptRuntimeCommand } from '@/runtime/js/managedJavaScriptRuntime';
@@ -77,11 +96,35 @@ import { archiveAndCloseRuntimeSession } from '@/session/services/archiveAndClos
 import { createSessionMetadataShutdownDeadline } from '@/session/services/sessionMetadataShutdownDeadline';
 import { resolveRequestedSessionDirectory } from '@/agent/runtime/resolveRequestedSessionDirectory';
 import { publishClaudeSessionModelsMetadataBestEffort } from '@/backends/claude/sessionControls/publishClaudeSessionModelsMetadataBestEffort';
+import {
+    probeClaudeInstalledRuntimeCapabilities,
+    resolveClaudeInstalledRuntimeSessionMode,
+} from '@/backends/claude/sessionControls/probeClaudeInstalledRuntimeCapabilities';
+import {
+    createClaudeModelEffortLevelsTracker,
+    type ClaudeModelEffortLevelsTracker,
+} from '@/backends/claude/models/claudeModelEffortLevelsTracker';
 import { resolveTerminationArchiveDecision } from '@/agent/runtime/terminationArchivePolicy';
 import { buildClaudeAgentState } from '@/backends/claude/localControl/buildClaudeAgentState';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
+import type { SessionRuntimeActivityContributionHandle } from '@/session/runtimeActivity/types';
+import type { RuntimeActivityApplicability } from '@/session/runtimeActivity/types';
+import { createClaudeProviderRuntimeActivityBindingOwner } from './providerActivity/createClaudeProviderRuntimeActivityAdapter';
 
 type ClaudePermissionLifecycleHookEventName = 'PermissionRequest' | 'PermissionRequestCompleted';
+
+async function refreshClaudeInitialModeModelEffortEvidence(params: Readonly<{
+    initialMode: EnhancedMode;
+    modelEffortTracker: ClaudeModelEffortLevelsTracker;
+    modelId: unknown;
+}>): Promise<string> {
+    const currentModelId = typeof params.modelId === 'string' ? params.modelId.trim() : '';
+    await params.modelEffortTracker.refresh(currentModelId);
+    params.initialMode.model = currentModelId || undefined;
+    params.initialMode.modelEffortLevels = params.modelEffortTracker.getLevels();
+    params.initialMode.modelEffortLevelsModelId = params.modelEffortTracker.getModelId();
+    return currentModelId;
+}
 
 function buildPermissionLifecycleSessionHook(
     data: PermissionHookData,
@@ -92,6 +135,21 @@ function buildPermissionLifecycleSessionHook(
         hook_event_name: hookEventName,
         hookEventName,
     };
+}
+
+function routeClaudeSessionHookAtCallerBoundary(params: Readonly<{
+    session: Pick<import('./session').Session, 'onSessionFound' | 'onClaudeSessionHook'>;
+    sessionId: string;
+    data: SessionHookData;
+    unifiedTerminalEnabled: boolean;
+}>): void {
+    // Unified installs a replayable hook subscription before launching Claude. Its transcript/runtime
+    // owner validates explicit resume identity before persisting it; global ingress only publishes the
+    // hook. Legacy launchers retain their historical direct discovery behavior.
+    if (!params.unifiedTerminalEnabled) {
+        params.session.onSessionFound(params.sessionId, params.data);
+    }
+    params.session.onClaudeSessionHook(params.data);
 }
 
 /** JavaScript runtime to use for spawning Claude Code */
@@ -163,6 +221,50 @@ async function runClaudeStartupPhase<T>(
         });
         throw error;
     }
+}
+
+type ClaudeBackendRunRuntimeActivityLifecycle = Readonly<{
+    lifecycle: BackendRunRuntimeActivityLifecycle;
+    activateProviderRuntime: (() => Promise<Readonly<{
+        providerTasks: SessionRuntimeActivityContributionHandle;
+        isCurrentRuntime: () => boolean;
+    }>>) | null;
+}>;
+
+async function createClaudeBackendRunRuntimeActivityLifecycle(
+    runtimeActivityApplicability: RuntimeActivityApplicability,
+): Promise<ClaudeBackendRunRuntimeActivityLifecycle> {
+    let providerTasks: SessionRuntimeActivityContributionHandle | null = null;
+    const baseLifecycle = await createBackendRunRuntimeActivityLifecycle({
+        runtimeActivityApplicability,
+        ...(runtimeActivityApplicability === 'supported'
+            ? {
+                configureAgentRuntime: (contributionHandle: SessionRuntimeActivityContributionHandle) => {
+                    providerTasks = contributionHandle;
+                },
+            }
+            : {}),
+        resolvePublisher: (sessionClient) => sessionClient.getRuntimeActivitySnapshotPublisher?.() ?? null,
+    });
+    if (runtimeActivityApplicability === 'supported' && !providerTasks) {
+        await baseLifecycle.dispose();
+        throw new Error('Claude runtime Activity contributors were not configured before sealing');
+    }
+    const bindingOwner = providerTasks
+        ? createClaudeProviderRuntimeActivityBindingOwner(providerTasks)
+        : null;
+    const lifecycle: BackendRunRuntimeActivityLifecycle = Object.freeze({
+        clientConfig: baseLifecycle.clientConfig,
+        attachSession: baseLifecycle.attachSession,
+        dispose: async () => {
+            bindingOwner?.invalidate();
+            await baseLifecycle.dispose();
+        },
+    });
+    return {
+        lifecycle,
+        activateProviderRuntime: bindingOwner ? bindingOwner.activate : null,
+    };
 }
 
 export async function runClaude(credentials: Credentials, options: StartOptions = {}): Promise<void> {
@@ -286,7 +388,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // upstream session creation is delayed. A later report with the real session id
     // will reconcile the tracked session record.
     if (options.startedBy === 'terminal') {
-        await reportSessionToDaemonIfRunning({ sessionId: `PID-${process.pid}`, metadata });
+        void reportSessionToDaemonIfRunning({ sessionId: `PID-${process.pid}`, metadata }).catch((error) => {
+            logger.debug('[claude] Initial terminal PID daemon report failed (non-fatal)', error);
+        });
     }
 
     // Handle existing session (for inactive session resume) vs new session.
@@ -303,12 +407,13 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
         // Handle server unreachable case - run Claude locally with hot reconnection
         // Note: connectionState.notifyOffline() was already called by api.ts with error details
-        if (!response) {
+            if (!response) {
             if (initialClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true) {
                 await runClaudeLocalFastStart(credentials, options);
                 return;
-            }
+                }
 
+            const runtimeActivity = await createClaudeBackendRunRuntimeActivityLifecycle('unavailable');
             let offlineSessionId: string | null = null;
 
             const reconnection = startOfflineReconnection({
@@ -316,7 +421,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 onReconnected: async () => {
                     const resp = await api.getOrCreateSession({ tag: randomUUID(), metadata, state });
                     if (!resp) throw new Error('Server unavailable');
-                    const session = api.sessionSyncClient(resp);
+                    const session = api.sessionSyncClient(resp, runtimeActivity.lifecycle.clientConfig());
+                    await runtimeActivity.lifecycle.attachSession(session);
                     const turnDiffBridge = createClaudeRawMessageTurnDiffBridge({
                         getSessionId: () => session.sessionId ?? 'unknown',
                         sendMessage: (message) => {
@@ -372,6 +478,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 process.removeListener('SIGINT', abortOnSignal);
                 process.removeListener('SIGTERM', abortOnSignal);
                 reconnection.cancel();
+                await runtimeActivity.lifecycle.dispose();
                 stopCaffeinate();
             }
             process.exit(0);
@@ -382,7 +489,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
 
     // Create realtime session
-    const session = api.sessionSyncClient(baseSession);
+    const runtimeActivity = await createClaudeBackendRunRuntimeActivityLifecycle('supported');
+    try {
+    const activateProviderTaskRuntimeActivity = runtimeActivity.activateProviderRuntime;
+    if (!activateProviderTaskRuntimeActivity) {
+        throw new Error('Claude runtime Activity producer binding was not configured');
+    }
+    const session = api.sessionSyncClient(baseSession, runtimeActivity.lifecycle.clientConfig());
+    await runtimeActivity.lifecycle.attachSession(session);
     const defaultSystemPromptText = await resolveEffectiveCodingPromptText({
         credentials,
         settings: options.accountSettings ?? null,
@@ -393,9 +507,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }).state === 'enabled',
         providerId: 'claude',
     });
-    // Report to daemon immediately so daemon session tracking does not depend on
-    // later startup work (metadata snapshot refresh, permission/model seeding, etc.).
-    await reportSessionToDaemonIfRunning({ sessionId: baseSession.id, metadata });
+    // A terminal-started runner needs early daemon discovery because the daemon did
+    // not launch or track it. A daemon-started runner is already tracked by PID and
+    // reports exactly once through the strict readiness boundary after its runtime
+    // controls exist; an earlier best-effort report would create a competing retry
+    // loop with incomplete application capability.
+    if (options.startedBy !== 'daemon') {
+        void reportSessionToDaemonIfRunning({ sessionId: baseSession.id, metadata }).catch((error) => {
+            logger.debug('[claude] Initial daemon session report failed (non-fatal)', error);
+        });
+    }
 
     // Mark the session as active and refresh metadata on startup.
     // For attach flows, wait for the persisted metadata snapshot before writing startup updates
@@ -517,6 +638,27 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
         }
 
+    let currentClaudeRemoteMetaState = resolveInitialClaudeRemoteMetaState({ metaDefaults: options.claudeRemoteMetaDefaults });
+    const sessionRuntimeModeKind = normalizeClaudeRemoteMode(currentClaudeRemoteMetaState).kind;
+    const unifiedTerminalRuntimeActive = sessionRuntimeModeKind === 'unifiedTerminal';
+    const adoptEndpointRecovery = unifiedTerminalRuntimeActive
+        ? await resolveClaudeAdoptEndpointRecovery({
+            ...(currentClaudeRemoteMetaState.claudeLocalPermissionBridgeWaitIndefinitely === true
+                ? {}
+                : { permissionHookTimeoutSeconds: currentClaudeRemoteMetaState.claudeLocalPermissionBridgeTimeoutSeconds }),
+        })
+        : null;
+    if (
+        unifiedTerminalRuntimeActive
+        && hasClaudeEndpointRecoveryRequest()
+        && !adoptEndpointRecovery
+    ) {
+        throw Object.assign(
+            new Error('Claude exact terminal attachment recovery proof is invalid; retained hook artifacts were not replaced'),
+            { code: 'claude_endpoint_recovery_invalid' as const },
+        );
+    }
+
     await runClaudeStartupPhase('terminal_side_effects', startupPhaseContext, async () => {
         await persistTerminalAttachmentInfoIfNeeded({ sessionId: baseSession.id, terminal });
         sendTerminalFallbackMessageIfNeeded({ session, terminal });
@@ -549,13 +691,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         if (Number.isFinite(parsed) && parsed > 0) return parsed;
         return process.env.CI ? 3_000 : 1_500;
     };
-    let currentClaudeRemoteMetaState = resolveInitialClaudeRemoteMetaState({ metaDefaults: options.claudeRemoteMetaDefaults });
+    const installedRuntimeCapabilities = await probeClaudeInstalledRuntimeCapabilities({
+        cwd: workingDirectory,
+        timeoutMs: resolveClaudeHelpProbeTimeoutMs(),
+    });
     let localPermissionBridgeEnabled = currentClaudeRemoteMetaState.claudeLocalPermissionBridgeEnabled === true;
     let localPermissionBridgeWaitIndefinitely = currentClaudeRemoteMetaState.claudeLocalPermissionBridgeWaitIndefinitely === true;
     let localPermissionBridgeTimeoutMs = localPermissionBridgeWaitIndefinitely
         ? null
         : currentClaudeRemoteMetaState.claudeLocalPermissionBridgeTimeoutSeconds * 1000;
-    const permissionHookSecret = randomUUID();
+    const permissionHookSecret = adoptEndpointRecovery?.permissionHookSecret ?? randomUUID();
     let localPermissionBridge: ClaudeLocalPermissionBridge | null = null;
     const disposeLocalPermissionBridge = () => {
         const bridge: ClaudeLocalPermissionBridge | null = localPermissionBridge;
@@ -597,8 +742,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 if (previousSessionId !== sessionId) {
                     logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);
                 }
-                currentSession.onSessionFound(sessionId, data);
-                currentSession.onClaudeSessionHook(data);
+                routeClaudeSessionHookAtCallerBoundary({
+                    session: currentSession,
+                    sessionId,
+                    data,
+                    unifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+                });
                 localPermissionBridge?.handleSessionHook(data);
             }
         },
@@ -624,6 +773,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         },
         permissionHookSecret,
         permissionRequestTimeoutMs: localPermissionBridgeWaitIndefinitely ? null : localPermissionBridgeTimeoutMs,
+        ...(adoptEndpointRecovery ? { requestedPort: adoptEndpointRecovery.state.hookServerPort } : {}),
     };
     const hookServer = await runClaudeStartupPhase('hook_server_start', startupPhaseContext, () =>
         startHookServer(hookServerOptions),
@@ -635,30 +785,34 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     //  - plugin dir carries SessionStart + PermissionRequest hooks via --plugin-dir
     // Split because Claude Code's --settings is non-composable for hooks (first --settings wins
     // when multiple wrappers inject their own), whereas --plugin-dir is additive.
-    const hookSettingsPath = await runClaudeStartupPhase('hook_settings_generate', startupPhaseContext, () =>
-        generateHookSettingsFileWithEnsuredRuntime(hookServer.port, {
-            enableLocalPermissionBridge: true,
-            permissionHookSecret,
-        }),
-    );
+    const hookSettingsPath = adoptEndpointRecovery?.state.hookSettingsPath
+        ?? await runClaudeStartupPhase('hook_settings_generate', startupPhaseContext, () =>
+            generateHookSettingsFileWithEnsuredRuntime(hookServer.port, {
+                enableLocalPermissionBridge: true,
+                permissionHookSecret,
+            }),
+        );
     logger.debug(`[START] Generated hook settings file: ${hookSettingsPath}`);
-    const hookPluginDir = await runClaudeStartupPhase('hook_plugin_generate', startupPhaseContext, () =>
-        generateHookPluginDirWithEnsuredRuntime(hookServer.port, {
-            enableLocalPermissionBridge: true,
-            permissionHookSecret,
-            // Keep the provider-side permission hook ceiling aligned with the local permission bridge's
-            // own response timeout source so non-default configured timeouts do not silently fall back to
-            // Claude's undocumented default. Wait-indefinitely mode keeps the generateHookSettings default.
-            ...(localPermissionBridgeWaitIndefinitely
-                ? {}
-                : { permissionHookTimeoutSeconds: currentClaudeRemoteMetaState.claudeLocalPermissionBridgeTimeoutSeconds }),
-        }),
-    );
+    const hookPluginDir = adoptEndpointRecovery?.state.hookPluginDir
+        ?? await runClaudeStartupPhase('hook_plugin_generate', startupPhaseContext, () =>
+            generateHookPluginDirWithEnsuredRuntime(hookServer.port, {
+                enableLocalPermissionBridge: true,
+                permissionHookSecret,
+                sessionHookPluginId: baseSession.id,
+                // Keep the provider-side permission hook ceiling aligned with the local permission bridge's
+                // own response timeout source so non-default configured timeouts do not silently fall back to
+                // Claude's undocumented default. Wait-indefinitely mode keeps the generateHookSettings default.
+                ...(localPermissionBridgeWaitIndefinitely
+                    ? {}
+                    : { permissionHookTimeoutSeconds: currentClaudeRemoteMetaState.claudeLocalPermissionBridgeTimeoutSeconds }),
+            }),
+        );
     if (hookPluginDir) {
         logger.debug(`[START] Generated hook plugin dir: ${hookPluginDir}`);
     } else {
         logger.debug('[START] Hook plugin dir generation skipped (HAPPIER_CLAUDE_HOOKS_DISABLED)');
     }
+    let userMessageHandlerReady = false;
 
     // Print log file path
     const logPath = logger.logFilePath;
@@ -671,9 +825,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         (currentState) => buildClaudeAgentState({
             currentState,
             mode: startingMode === 'remote' ? 'remote' : 'local',
-            claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
+            claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
             tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
             localPermissionBridgeEnabled,
+            userMessageHandlerReady,
         }),
         '[claude]',
         'initial_agent_state',
@@ -695,6 +850,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentAgentModeUpdatedAt = typeof options.agentModeUpdatedAt === 'number' ? options.agentModeUpdatedAt : 0;
         let currentReasoningEffort: string | undefined = undefined;
         let currentReasoningEffortUpdatedAt = 0;
+        // Effort tiers the selected model reports. Resolved from the shared Claude model catalog
+        // (cached, best-effort) and carried on the mode so spawn-time resolution and launch-option
+        // hashing both see the same value instead of reading a cache at hash time.
+        const modelEffortTracker = createClaudeModelEffortLevelsTracker({
+            resolveTimeoutMs: () => resolveClaudeHelpProbeTimeoutMs(),
+        });
         let currentUltracode: boolean | undefined = undefined;
         let currentUltracodeUpdatedAt = 0;
         let currentFallbackModel: string | undefined = undefined; // Track current fallback model
@@ -703,7 +864,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             existingSessionId,
             defaultSystemPromptText,
         }); // Track current append system prompt
-        session.onUserMessage((message, deliveryInfo) => {
+        session.onUserMessage(async (message, deliveryInfo) => {
         const adoptedModel = adoptModelOverrideFromMetadata({
             currentModelId: currentModel,
             currentUpdatedAt: currentModelUpdatedAt,
@@ -854,9 +1015,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 (currentState) => buildClaudeAgentState({
                     currentState,
                     mode: currentState.controlledByUser === true ? 'local' : 'remote',
-                    claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
+                    claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
                     tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
                     localPermissionBridgeEnabled,
+                    userMessageHandlerReady,
                 }),
                 '[claude]',
                 'local_permission_bridge_mode_change',
@@ -868,8 +1030,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             meta: message.meta,
         });
 
+        // Resolve the selected model's effort tiers before the mode is built. Leaving this to a
+        // fire-and-forget refresh dropped `--effort` and ultracode for the first turn after any
+        // model change. Bounded, because SessionClient awaits this callback as part of the pending
+        // queue handoff: a cold catalog must not hold the queue behind a network fetch.
+        await modelEffortTracker.refreshWithin(currentModel);
+
         // Push with resolved permission mode, model, system prompts, and tools
-        const enhancedMode: EnhancedMode = {
+        const enhancedMode: EnhancedMode = resolveClaudeInstalledRuntimeSessionMode({
             permissionMode: messagePermissionMode || 'default',
             agentModeId: currentAgentModeId,
             replaySeedAllowed: structuredRouting ? true : parseSpecialCommand(message.content.text).type === null,
@@ -878,15 +1046,19 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             fallbackModel: messageFallbackModel,
             customSystemPrompt: messageCustomSystemPrompt,
             appendSystemPrompt: messageAppendSystemPrompt,
+            modelEffortLevels: modelEffortTracker.getLevels(),
+            modelEffortLevelsModelId: modelEffortTracker.getModelId(),
             reasoningEffort: currentReasoningEffort,
             ultracode: currentUltracode,
             ...currentClaudeRemoteMetaState,
-        };
+        }, installedRuntimeCapabilities);
 
         const baseQueuedText = structuredRouting?.queuedText ?? message.content.text;
         const deliveryAttribution = {
             userMessageSeq: deliveryInfo?.seq ?? null,
             userMessageLocalId: message.localId ?? null,
+            providerAcceptancePending: deliveryInfo?.providerAcceptancePending === true,
+            ...(deliveryInfo?.pendingProviderAction ? { pendingProviderAction: deliveryInfo.pendingProviderAction } : {}),
         };
 
         // Structured Happier user messages must be treated as plain text (no special command parsing).
@@ -908,13 +1080,33 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
         }
 
-        messageQueue.push(baseQueuedText, enhancedMode, deliveryAttribution);
+        if (deliveryInfo?.pendingProviderAction) {
+            messageQueue.unshift(baseQueuedText, enhancedMode, deliveryAttribution);
+        } else {
+            messageQueue.push(baseQueuedText, enhancedMode, deliveryAttribution);
+        }
         logger.debugLargeJson('User message pushed to queue:', message)
     });
+    userMessageHandlerReady = true;
+    updateAgentStateBestEffort(
+        session,
+        (currentState) => buildClaudeAgentState({
+            currentState,
+            mode: currentState.controlledByUser === true ? 'local' : 'remote',
+            claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+            tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
+            localPermissionBridgeEnabled,
+            userMessageHandlerReady,
+        }),
+        '[claude]',
+        'user_message_handler_ready',
+    );
 
     let activeLoopAbortController: AbortController | null = null;
     let activeLoopPromise: Promise<number> | null = null;
     let activeLoopShouldWaitOnTermination = false;
+    let endpointArtifactsOwnedByAttachment = adoptEndpointRecovery !== null;
+    let destroyOwnedHostForExplicitStop: (() => Promise<void>) | null = null;
 
     // Setup signal handlers for graceful shutdown and crash reporting.
     const cleanup = async (event: RunnerTerminationEvent, outcome: ReturnType<typeof computeRunnerTerminationOutcome>) => {
@@ -947,26 +1139,31 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
 
             if (session) {
-                // Dispose the local permission bridge while the session transport is still alive so it can
-                // cancel and persist any outstanding local-mode permission requests.
-                disposeLocalPermissionBridge();
-                // Share one metadata budget across drain -> archive so shutdown cannot stack waits.
-                const metadataDeadline = createSessionMetadataShutdownDeadline();
-                await currentSession?.drainCriticalMetadataWrites({ timeoutMs: metadataDeadline.remainingMs() });
-                if (archiveDecision.archive) {
-                    await archiveAndCloseRuntimeSession(session, credentials, archiveDecision.archiveReason, {
-                        metadataTimeoutMs: metadataDeadline.remainingMs(),
-                    });
-                }
+                try {
+                    await currentSession?.closeProviderInputAdmissionAndWaitForDispatches();
+                    // Dispose the local permission bridge while the session transport is still alive so it can
+                    // cancel and persist any outstanding local-mode permission requests.
+                    disposeLocalPermissionBridge();
+                    // Share one metadata budget across drain -> archive so shutdown cannot stack waits.
+                    const metadataDeadline = createSessionMetadataShutdownDeadline();
+                    await currentSession?.drainCriticalMetadataWrites({ timeoutMs: metadataDeadline.remainingMs() });
+                    if (archiveDecision.archive) {
+                        await archiveAndCloseRuntimeSession(session, credentials, archiveDecision.archiveReason, {
+                            metadataTimeoutMs: metadataDeadline.remainingMs(),
+                        });
+                    }
 
-                // Cleanup session resources (intervals, callbacks)
-                currentSession?.cleanup();
+                    // Cleanup session resources (intervals, callbacks)
+                    currentSession?.cleanup();
 
-                if (!archiveDecision.archive) {
-                    // Send session death message
-                    session.sendSessionDeath();
-                    await session.flush();
-                    await session.close();
+                    if (!archiveDecision.archive) {
+                        // Send session death message
+                        session.sendSessionDeath();
+                        await session.flush();
+                        await session.close();
+                    }
+                } finally {
+                    await runtimeActivity.lifecycle.dispose();
                 }
             }
 
@@ -975,8 +1172,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
             // Stop Hook server and cleanup settings file + plugin dir
             hookServer.stop();
-            cleanupHookSettingsFile(hookSettingsPath);
-            cleanupHookPluginDir(hookPluginDir);
+            if (!endpointArtifactsOwnedByAttachment) {
+                cleanupHookSettingsFile(hookSettingsPath);
+                cleanupHookPluginDir(hookPluginDir);
+            }
 
             logger.debug('[START] Cleanup complete');
         } catch (error) {
@@ -987,6 +1186,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         const terminationHandlers = registerRunnerTerminationHandlers({
             process,
             exit: (code) => process.exit(code),
+            sessionExitReport: { sessionId: session.sessionId },
+            onTerminationRequested: () => {
+                session.beginRuntimeTermination?.();
+                void currentSession?.closeProviderInputAdmissionAndWaitForDispatches();
+            },
             onTerminate: cleanup,
             shouldTerminateOnUnhandledRejection: createClaudeShouldTerminateOnUnhandledRejection({
                 abortWasRequestedRecently: (withinMs) => currentSession?.wasUserAbortRequestedRecently(withinMs) ?? false,
@@ -995,20 +1199,34 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         });
 
     registerKillSessionHandler(session.rpcHandlerManager, async () => {
-        terminationHandlers.requestTermination({ kind: 'killSession' });
-        await terminationHandlers.whenTerminated;
+        await requestClaudeExplicitRunnerStop({
+            unifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+            destroyOwnedHostForExplicitStop,
+            requestTermination: terminationHandlers.requestTermination,
+            whenTerminated: terminationHandlers.whenTerminated,
+        });
     });
 
     // Create claude loop
     const resolvedMcp = await (async () => {
         try {
+            const mcpSession = applyRunnerMcpSessionContext(session, {
+                getPermissionMode: () => currentPermissionMode,
+                getBackendTarget: () => ({ kind: 'builtInAgent', agentId: 'claude' }),
+                getCurrentSessionLocation: () => ({
+                    path: workingDirectory,
+                    host: initialMachineMetadata.host,
+                    machineId,
+                }),
+            });
             return await resolveRunnerMcpServers({
-                session,
+                session: mcpSession,
                 credentials,
                 accountSettings,
                 machineId,
                 directory: workingDirectory,
-                sessionMetadata: session.getMetadataSnapshot(),
+                sessionMetadata: mcpSession.getMetadataSnapshot?.() ?? null,
+                ...(adoptEndpointRecovery ? { requestedBuiltInMcpPort: adoptEndpointRecovery.state.mcpPort } : {}),
             });
         } catch (error) {
             logger.debug('[START] Failed to resolve runner MCP servers', serializeAxiosErrorForLog(error));
@@ -1019,35 +1237,59 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             throw error;
         }
     })();
+    const resolvedMcpPort = parsePortFromUrl(resolvedMcp.happierMcpServer.url);
+    const initialClaudeUnifiedTerminalMode = pinClaudeRemoteModeToActiveRuntime(resolveClaudeInstalledRuntimeSessionMode({
+        permissionMode: options.permissionMode ?? 'default',
+        agentModeId: currentAgentModeId,
+        model: currentModel,
+        fallbackModel: currentFallbackModel,
+        customSystemPrompt: currentCustomSystemPrompt,
+        appendSystemPrompt: currentAppendSystemPrompt,
+        modelEffortLevels: modelEffortTracker.getLevels(),
+        modelEffortLevelsModelId: modelEffortTracker.getModelId(),
+        reasoningEffort: currentReasoningEffort,
+        ultracode: currentUltracode,
+        ...currentClaudeRemoteMetaState,
+    }, installedRuntimeCapabilities), sessionRuntimeModeKind);
     let exitCode = 0;
     let loopError: unknown = null;
     try {
         activeLoopAbortController = new AbortController();
-        activeLoopShouldWaitOnTermination = currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true;
+        // Only the unified-terminal runtime is abortable, so only it may be awaited on termination.
+        //
+        // `loop()` forwards `signal` to `claudeUnifiedTerminalLauncher` alone; the local and remote
+        // launchers take no signal, so aborting the controller cannot make them return and the
+        // await in `cleanup()` would simply not settle. That await runs FIRST, so a runtime that
+        // cannot honour it would starve everything behind it — the metadata drain, the session
+        // archive, session death/flush/close, the runtime-activity dispose, and the hook settings
+        // + plugin-dir removal — until `registerRunnerTerminationHandlers` hard-exits at
+        // HAPPIER_RUNNER_TERMINATION_TIMEOUT_MS. Moving the await after that teardown is no better:
+        // the launcher's shutdown finalize would then write through a transport already closed.
+        //
+        // KNOWN RESIDUAL: on SIGINT/SIGTERM/uncaught under the local and remote runtimes, those
+        // launchers' `finally` blocks (RULING-14 workflow-activity finalize + flush) may not run,
+        // so live rows stay "Working" until the next session start reconciles them from the
+        // persisted headline. Closing it belongs to the launchers — give them an `opts.signal` the
+        // way the unified-terminal launcher has one, and this flag becomes unconditional with no
+        // new mechanism here.
+        activeLoopShouldWaitOnTermination = unifiedTerminalRuntimeActive;
         activeLoopPromise = loop({
             path: workingDirectory,
             model: options.model,
             permissionMode: options.permissionMode,
             permissionModeUpdatedAt: options.permissionModeUpdatedAt,
             startingMode: options.startingMode,
-            claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
-            initialClaudeUnifiedTerminalMode: {
-                permissionMode: options.permissionMode ?? 'default',
-                agentModeId: currentAgentModeId,
-                model: currentModel,
-                fallbackModel: currentFallbackModel,
-                customSystemPrompt: currentCustomSystemPrompt,
-                appendSystemPrompt: currentAppendSystemPrompt,
-                reasoningEffort: currentReasoningEffort,
-                ultracode: currentUltracode,
-                ...currentClaudeRemoteMetaState,
-            },
+            claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+            initialClaudeUnifiedTerminalMode,
             claudeCodeExperimentalAgentTeamsEnabled: currentClaudeRemoteMetaState.claudeCodeExperimentalAgentTeamsEnabled,
             startedBy: options.startedBy,
             messageQueue,
             session,
             pushSender: api.push(),
             accountSettings,
+            runtimeActivityContributions: {
+                activateProviderTasks: activateProviderTaskRuntimeActivity,
+            },
             precomputedMcpBridge: { mcpServers: resolvedMcp.mcpServers, stop: resolvedMcp.happierMcpServer.stop },
             reportSessionMetadataToDaemon: async ({ sessionId, metadata }) => {
                 await reportSessionToDaemonIfRunning({ sessionId, metadata });
@@ -1059,9 +1301,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     (currentState) => buildClaudeAgentState({
                         currentState,
                         mode: newMode,
-                        claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
+                        claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
                         tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
                         localPermissionBridgeEnabled,
+                        userMessageHandlerReady,
                     }),
                     '[claude]',
                     'mode_change',
@@ -1070,20 +1313,34 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     localPermissionBridge?.activate();
                 }
             },
-            onSessionReady: (sessionInstance) => {
+            onSessionReady: async (sessionInstance) => {
                 // Store reference for hook server callback
                 currentSession = sessionInstance;
+                const currentModelId = await refreshClaudeInitialModeModelEffortEvidence({
+                    initialMode: initialClaudeUnifiedTerminalMode,
+                    modelEffortTracker,
+                    modelId: typeof options.modelId === 'string' ? options.modelId : options.model,
+                });
                 if (!didPublishSessionModelsMetadata) {
                     didPublishSessionModelsMetadata = true;
-                    const currentModelId =
-                        typeof options.modelId === 'string'
-                            ? options.modelId.trim()
-                            : (typeof options.model === 'string' ? options.model.trim() : '');
                     void publishClaudeSessionModelsMetadataBestEffort({
                         cwd: workingDirectory,
                         timeoutMs: resolveClaudeHelpProbeTimeoutMs(),
                         currentModelId,
                         session,
+                        probeInstalledRuntimeCapabilities: async () => installedRuntimeCapabilities,
+                    });
+                }
+                const readinessReport = reportSessionToDaemonIfRunning({
+                    sessionId: baseSession.id,
+                    metadata,
+                    requireDaemonAck: options.startedBy === 'daemon',
+                });
+                if (options.startedBy === 'daemon') {
+                    await readinessReport;
+                } else {
+                    void readinessReport.catch((error) => {
+                        logger.debug('[claude] Daemon session readiness report failed (non-fatal)', error);
                     });
                 }
                 if (!localPermissionBridge) {
@@ -1096,10 +1353,34 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             claudeArgs: options.claudeArgs,
             hookSettingsPath,
             hookPluginDir,
-            statuslineForwarder: { port: hookServer.port, secret: permissionHookSecret },
+            statuslineForwarder: {
+                port: hookServer.port,
+                secret: adoptEndpointRecovery?.statuslineSecret ?? permissionHookSecret,
+            },
             jsRuntime: options.jsRuntime,
             defaultSystemPromptText,
             signal: activeLoopShouldWaitOnTermination ? activeLoopAbortController.signal : undefined,
+            expectedExistingTerminalHostAttachmentId: adoptEndpointRecovery?.state.attachmentId,
+            onTerminalHostReady: async ({
+                handle,
+                destroyOwnedHostForExplicitStop: destroyOwnedHost,
+            }) => {
+                destroyOwnedHostForExplicitStop = destroyOwnedHost;
+                const attachmentId = handle.attachmentId;
+                if (!attachmentId || resolvedMcpPort === null) return;
+                endpointArtifactsOwnedByAttachment = await persistClaudeEndpointStateBestEffort({
+                    happyHomeDir: configuration.happyHomeDir,
+                    sessionId: baseSession.id,
+                    state: buildClaudeEndpointState({
+                        attachmentId,
+                        hookServerPort: hookServer.port,
+                        hookPluginDir,
+                        hookSettingsPath,
+                        mcpUrl: resolvedMcp.happierMcpServer.url,
+                        mcpPort: resolvedMcpPort,
+                    }),
+                });
+            },
         });
         exitCode = await activeLoopPromise;
     } catch (error) {
@@ -1131,6 +1412,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Close session
     logger.debug('Closing session...');
     await session.close();
+    await runtimeActivity.lifecycle.dispose();
 
     // Stop caffeinate before exiting
     stopCaffeinate();
@@ -1138,8 +1420,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // Stop Hook server and cleanup settings file + plugin dir
     hookServer.stop();
-    cleanupHookSettingsFile(hookSettingsPath);
-    cleanupHookPluginDir(hookPluginDir);
+    if (!endpointArtifactsOwnedByAttachment) {
+        cleanupHookSettingsFile(hookSettingsPath);
+        cleanupHookPluginDir(hookPluginDir);
+    }
     logger.debug('Stopped Hook server and cleaned up settings file + plugin dir');
 
     if (loopError) {
@@ -1148,6 +1432,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // Exit with the code from Claude
     process.exit(exitCode);
+    } finally {
+        await runtimeActivity.lifecycle.dispose().catch((error) => {
+            logger.debug('[START] Error disposing Claude runtime Activity lifecycle:', error);
+        });
+    }
 }
 
 function cleanupClaudeSessionBestEffort(session: unknown): void {
@@ -1215,7 +1504,19 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
     const messageQueue = new MessageQueue2<EnhancedMode>(hashClaudeEnhancedModeForQueue);
 
     let currentSession: import('./session').Session | null = null;
+    const runtimeActivity = await createClaudeBackendRunRuntimeActivityLifecycle('supported');
+    const activateProviderTaskRuntimeActivity = runtimeActivity.activateProviderRuntime;
+    if (!activateProviderTaskRuntimeActivity) {
+        throw new Error('Claude runtime Activity producer binding was not configured');
+    }
+    const runtimeActivityDisposal: { current: (() => Promise<void>) | null } = {
+        current: runtimeActivity.lifecycle.dispose,
+    };
+    try {
+    let endpointArtifactsOwnedByAttachment = false;
+    let destroyOwnedHostForExplicitStop: (() => Promise<void>) | null = null;
     let didPublishSessionModelsMetadata = false;
+    let userMessageHandlerReady = false;
     let currentPermissionMode: PermissionMode = options.permissionMode ?? 'default';
     let currentAgentModeId: string | null =
         typeof options.agentModeId === 'string' && options.agentModeId.trim().length > 0 ? options.agentModeId.trim() : null;
@@ -1224,6 +1525,10 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
     let currentModelUpdatedAt = typeof options.modelUpdatedAt === 'number' ? options.modelUpdatedAt : 0;
     let currentReasoningEffort: string | undefined = undefined;
     let currentReasoningEffortUpdatedAt = 0;
+    // See the sibling runtime path above: tiers travel on the mode so hashing stays pure.
+    const modelEffortTracker = createClaudeModelEffortLevelsTracker({
+        resolveTimeoutMs: () => resolveClaudeHelpProbeTimeoutMs(),
+    });
     let currentUltracode: boolean | undefined = undefined;
     let currentUltracodeUpdatedAt = 0;
     let currentFallbackModel: string | undefined = undefined;
@@ -1244,8 +1549,14 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
         if (Number.isFinite(parsed) && parsed > 0) return parsed;
         return process.env.CI ? 3_000 : 1_500;
     };
+    const installedRuntimeCapabilities = await probeClaudeInstalledRuntimeCapabilities({
+        cwd: workingDirectory,
+        timeoutMs: resolveClaudeHelpProbeTimeoutMs(),
+    });
     let pushSender: PushNotificationClient | null = null;
     let currentClaudeRemoteMetaState = resolveInitialClaudeRemoteMetaState({ metaDefaults: options.claudeRemoteMetaDefaults });
+    const sessionRuntimeModeKind = normalizeClaudeRemoteMode(currentClaudeRemoteMetaState).kind;
+    const unifiedTerminalRuntimeActive = sessionRuntimeModeKind === 'unifiedTerminal';
     let localPermissionBridgeEnabled = currentClaudeRemoteMetaState.claudeLocalPermissionBridgeEnabled === true;
     let localPermissionBridgeWaitIndefinitely = currentClaudeRemoteMetaState.claudeLocalPermissionBridgeWaitIndefinitely === true;
     let localPermissionBridgeTimeoutMs = localPermissionBridgeWaitIndefinitely
@@ -1284,8 +1595,12 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
         },
         onSessionHook: (sessionId, data) => {
             if (currentSession) {
-                currentSession.onSessionFound(sessionId, data);
-                currentSession.onClaudeSessionHook(data);
+                routeClaudeSessionHookAtCallerBoundary({
+                    session: currentSession,
+                    sessionId,
+                    data,
+                    unifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+                });
                 localPermissionBridge?.handleSessionHook(data);
             }
         },
@@ -1307,10 +1622,27 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
     const startupSpec = createClaudeStartupSpec({
         deps: {
             registerRpcHandlers: ({ artifacts }) => {
-                registerSessionHandlers(artifacts.deferredSession.rpcHandlerManager, workingDirectory, {
-                    materializeNextPendingMessageSafely:
-                        artifacts.deferredSession.materializeNextPendingMessageSafely.bind(artifacts.deferredSession),
+                registerSessionHandlers(artifacts.deferredSession.startupRpcHandlerManager, workingDirectory, {
+                    sessionRuntimeControls: {
+                        // K5:passive_apply session RPC applies current auth in place; it never restarts or spawns
+                        applyConnectedServiceAuthGeneration: async (request) => {
+                            if (!currentSession) {
+                                return {
+                                    ok: false,
+                                    errorCode: 'claude_runtime_not_ready',
+                                    error: 'claude_runtime_not_ready',
+                                };
+                            }
+                            return await currentSession.applyConnectedServiceAuthGeneration(request);
+                        },
+                        handleUserMessage: createClaudeUnifiedUserMessageHandler({
+                            enqueueSessionUserMessage: (request) =>
+                                artifacts.deferredSession.enqueueSessionUserMessage(request),
+                        }),
+                        wakePendingMaterialization: () => artifacts.deferredSession.wakePendingMaterialization(),
+                    },
                 });
+                userMessageHandlerReady = true;
             },
                 startHookServer: async () => {
                     return await startHookServer(hookServerOptions);
@@ -1325,6 +1657,7 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                     return await generateHookPluginDirWithEnsuredRuntime(port, {
                         enableLocalPermissionBridge: true,
                         permissionHookSecret,
+                        ...(existingSessionId ? { sessionHookPluginId: existingSessionId } : {}),
                     });
                 },
             cleanupHookSettingsFile,
@@ -1373,7 +1706,7 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                     if (wiredServerSession) return;
                     wiredServerSession = true;
 
-                    await artifacts.deferredSession.attach(session as any);
+                    await artifacts.deferredSession.attach(session as unknown as DeferredApiSessionTarget);
 
                     if (currentSession && pushSender) {
                         currentSession.setPushSender(pushSender);
@@ -1407,6 +1740,8 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                                     options.modelId = modelOverrideRef.current ?? undefined;
                                     options.model = modelOverrideRef.current ?? undefined;
                                     options.modelUpdatedAt = modelOverrideRef.updatedAt;
+                                    currentModel = modelOverrideRef.current ?? undefined;
+                                    currentModelUpdatedAt = modelOverrideRef.updatedAt;
                                 },
                             });
 
@@ -1449,9 +1784,10 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                     (currentState) => buildClaudeAgentState({
                         currentState,
                         mode: startingMode === 'remote' ? 'remote' : 'local',
-                        claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
+                        claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
                         tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
                         localPermissionBridgeEnabled,
+                        userMessageHandlerReady,
                     }),
                     '[claude]',
                     'initial_agent_state',
@@ -1470,7 +1806,7 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
 	                seedInitialAppendSystemPrompt(defaultSystemPromptText);
 
 	                // Forward messages from server to the local queue.
-	                session.onUserMessage((message, deliveryInfo) => {
+	                session.onUserMessage(async (message, deliveryInfo) => {
                     const adoptedModel = adoptModelOverrideFromMetadata({
                         currentModelId: currentModel,
                         currentUpdatedAt: currentModelUpdatedAt,
@@ -1596,9 +1932,10 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                             (currentState) => buildClaudeAgentState({
                                 currentState,
                                 mode: currentState.controlledByUser === true ? 'local' : 'remote',
-                                claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
+                                claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
                                 tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
                                 localPermissionBridgeEnabled,
+                                userMessageHandlerReady,
                             }),
                             '[claude]',
                             'local_permission_bridge_mode_change',
@@ -1609,7 +1946,9 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                         text: message.content.text,
                         meta: message.meta,
                     });
-                    const enhancedMode: EnhancedMode = {
+                    // See the sibling path: bounded resolve before the mode is built, not after.
+                    await modelEffortTracker.refreshWithin(currentModel);
+                    const enhancedMode: EnhancedMode = resolveClaudeInstalledRuntimeSessionMode({
                         permissionMode: messagePermissionMode || 'default',
                         agentModeId: currentAgentModeId,
                         replaySeedAllowed: structuredRouting ? true : parseSpecialCommand(message.content.text).type === null,
@@ -1618,14 +1957,18 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                         fallbackModel: messageFallbackModel,
                         customSystemPrompt: messageCustomSystemPrompt,
                         appendSystemPrompt: messageAppendSystemPrompt,
+                        modelEffortLevels: modelEffortTracker.getLevels(),
+                        modelEffortLevelsModelId: modelEffortTracker.getModelId(),
                         reasoningEffort: currentReasoningEffort,
                         ultracode: currentUltracode,
                         ...currentClaudeRemoteMetaState,
-                    };
+                    }, installedRuntimeCapabilities);
                     const baseQueuedText = structuredRouting?.queuedText ?? message.content.text;
                     const deliveryAttribution = {
                         userMessageSeq: deliveryInfo?.seq ?? null,
                         userMessageLocalId: message.localId ?? null,
+                        providerAcceptancePending: deliveryInfo?.providerAcceptancePending === true,
+                        ...(deliveryInfo?.pendingProviderAction ? { pendingProviderAction: deliveryInfo.pendingProviderAction } : {}),
                     };
 
                     if (!structuredRouting) {
@@ -1636,7 +1979,11 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                         }
                     }
 
-                    messageQueue.push(baseQueuedText, enhancedMode, deliveryAttribution);
+                    if (deliveryInfo?.pendingProviderAction) {
+                        messageQueue.unshift(baseQueuedText, enhancedMode, deliveryAttribution);
+                    } else {
+                        messageQueue.push(baseQueuedText, enhancedMode, deliveryAttribution);
+                    }
                 });
 
                 if (timing.enabled) {
@@ -1673,11 +2020,13 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                     }),
                     allowOfflineStub: true,
                     startupSideEffectsOrder: 'persist-first',
+                    runtimeActivityLifecycle: runtimeActivity.lifecycle,
                     onSessionSwap: (newSession) => {
                         void wireServerSession(newSession);
                     },
                 });
                 stopCreateSpan();
+                runtimeActivityDisposal.current = initialized.disposeRuntimeActivity ?? null;
 
                 if (signal.aborted) {
                     initialized.reconnectionHandle?.cancel();
@@ -1707,14 +2056,24 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                 const hookPluginDir = artifacts.hookPluginDir;
 
                     const localSettings = await readSettings();
+                    const mcpSession = applyRunnerMcpSessionContext(artifacts.deferredSession as object, {
+                        getPermissionMode: () => currentPermissionMode,
+                        getBackendTarget: () => ({ kind: 'builtInAgent', agentId: 'claude' }),
+                        getCurrentSessionLocation: () => ({
+                            path: workingDirectory,
+                            host: initialMachineMetadata.host,
+                            machineId: typeof localSettings.machineId === 'string' && localSettings.machineId.trim() ? localSettings.machineId.trim() : 'unknown',
+                        }),
+                    });
                     const resolvedMcp = await resolveRunnerMcpServers({
-                        session: artifacts.deferredSession as any,
+                        session: mcpSession as any,
                         credentials,
                         accountSettings: options.accountSettings ?? null,
                         machineId: typeof localSettings.machineId === 'string' && localSettings.machineId.trim() ? localSettings.machineId.trim() : 'unknown',
                         directory: workingDirectory,
-                        sessionMetadata: artifacts.deferredSession.getMetadataSnapshot?.() ?? null,
+                        sessionMetadata: mcpSession.getMetadataSnapshot?.() ?? null,
                     });
+                    const resolvedMcpPort = parsePortFromUrl(resolvedMcp.happierMcpServer.url);
                     const defaultSystemPromptText = await resolveEffectiveCodingPromptText({
                         credentials,
                         settings: options.accountSettings ?? null,
@@ -1727,24 +2086,28 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                     });
                     seedInitialAppendSystemPrompt(defaultSystemPromptText);
 
+                    const initialClaudeUnifiedTerminalMode = pinClaudeRemoteModeToActiveRuntime(resolveClaudeInstalledRuntimeSessionMode({
+                        permissionMode: options.permissionMode ?? 'default',
+                        agentModeId: currentAgentModeId,
+                        model: currentModel,
+                        fallbackModel: currentFallbackModel,
+                        customSystemPrompt: currentCustomSystemPrompt,
+                        appendSystemPrompt: currentAppendSystemPrompt,
+                        modelEffortLevels: modelEffortTracker.getLevels(),
+                        modelEffortLevelsModelId: modelEffortTracker.getModelId(),
+                        reasoningEffort: currentReasoningEffort,
+                        ultracode: currentUltracode,
+                        ...currentClaudeRemoteMetaState,
+                    }, installedRuntimeCapabilities), sessionRuntimeModeKind);
+
                     const exitCode = await loop({
                         path: workingDirectory,
                         model: options.model,
                         permissionMode: options.permissionMode,
                         permissionModeUpdatedAt: options.permissionModeUpdatedAt,
                         startingMode: options.startingMode,
-                        claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
-                        initialClaudeUnifiedTerminalMode: {
-                            permissionMode: options.permissionMode ?? 'default',
-                            agentModeId: currentAgentModeId,
-                            model: currentModel,
-                            fallbackModel: currentFallbackModel,
-                            customSystemPrompt: currentCustomSystemPrompt,
-                            appendSystemPrompt: currentAppendSystemPrompt,
-                            reasoningEffort: currentReasoningEffort,
-                            ultracode: currentUltracode,
-                            ...currentClaudeRemoteMetaState,
-                        },
+                        claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+                        initialClaudeUnifiedTerminalMode,
                         claudeCodeExperimentalAgentTeamsEnabled: currentClaudeRemoteMetaState.claudeCodeExperimentalAgentTeamsEnabled,
                         startedBy: options.startedBy,
                         terminalRuntime: options.terminalRuntime ?? null,
@@ -1756,9 +2119,10 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                                 (currentState) => buildClaudeAgentState({
                                     currentState,
                                     mode: newMode,
-                                    claudeUnifiedTerminalEnabled: currentClaudeRemoteMetaState.claudeUnifiedTerminalEnabled === true,
+                                    claudeUnifiedTerminalEnabled: unifiedTerminalRuntimeActive,
                                     tuiRuntimeControlEnabled: claudeTuiRuntimeControlEnabled,
                                     localPermissionBridgeEnabled,
+                                    userMessageHandlerReady,
                                 }),
                                 '[claude]',
                                 'mode_change',
@@ -1767,14 +2131,15 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                                 localPermissionBridge?.activate();
                             }
                         },
-                        onSessionReady: (sessionInstance) => {
+                        onSessionReady: async (sessionInstance) => {
                             currentSession = sessionInstance;
+                            const currentModelId = await refreshClaudeInitialModeModelEffortEvidence({
+                                initialMode: initialClaudeUnifiedTerminalMode,
+                                modelEffortTracker,
+                                modelId: currentModel,
+                            });
                             if (!didPublishSessionModelsMetadata) {
                                 didPublishSessionModelsMetadata = true;
-                                const currentModelId =
-                                    typeof options.modelId === 'string'
-                                        ? options.modelId.trim()
-                                        : (typeof options.model === 'string' ? options.model.trim() : '');
                                 void publishClaudeSessionModelsMetadataBestEffort({
                                     cwd: workingDirectory,
                                     timeoutMs: resolveClaudeHelpProbeTimeoutMs(),
@@ -1783,6 +2148,15 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                                         ensureMetadataSnapshot: (opts: Readonly<{ timeoutMs: number }>) => Promise<unknown>;
                                         updateMetadata: (updater: (prev: Metadata) => Metadata) => Promise<void>;
                                     },
+                                    probeInstalledRuntimeCapabilities: async () => installedRuntimeCapabilities,
+                                });
+                            }
+                            const readySessionId = artifacts.deferredSession.sessionId;
+                            const readyMetadata = artifacts.deferredSession.getMetadataSnapshot?.() as Metadata | null | undefined;
+                            if (readySessionId && readyMetadata) {
+                                await reportSessionToDaemonIfRunning({
+                                    sessionId: readySessionId,
+                                    metadata: readyMetadata,
                                 });
                             }
                             if (!localPermissionBridge) {
@@ -1813,6 +2187,31 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                         reportSessionMetadataToDaemon: async ({ sessionId, metadata }) => {
                             await reportSessionToDaemonIfRunning({ sessionId, metadata });
                         },
+                        runtimeActivityContributions: {
+                            activateProviderTasks: activateProviderTaskRuntimeActivity,
+                        },
+                        onTerminalHostReady: async ({
+                            handle,
+                            destroyOwnedHostForExplicitStop: destroyOwnedHost,
+                        }) => {
+                            destroyOwnedHostForExplicitStop = destroyOwnedHost;
+                            const attachmentId = handle.attachmentId;
+                            if (!attachmentId || resolvedMcpPort === null || !artifacts.hookServer) return;
+                            const sessionId = artifacts.deferredSession.sessionId;
+                            if (!sessionId) return;
+                            endpointArtifactsOwnedByAttachment = await persistClaudeEndpointStateBestEffort({
+                                happyHomeDir: configuration.happyHomeDir,
+                                sessionId,
+                                state: buildClaudeEndpointState({
+                                    attachmentId,
+                                    hookServerPort: artifacts.hookServer.port,
+                                    hookPluginDir,
+                                    hookSettingsPath,
+                                    mcpUrl: resolvedMcp.happierMcpServer.url,
+                                    mcpPort: resolvedMcpPort,
+                                }),
+                            });
+                        },
                     });
 
                 return exitCode;
@@ -1837,19 +2236,29 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
         const terminationHandlers = registerRunnerTerminationHandlers({
             process,
             exit: (code) => process.exit(code),
+            sessionExitReport: { sessionId: coordinator.artifacts.deferredSession.sessionId },
+            onTerminationRequested: () => {
+                coordinator.artifacts.deferredSession.beginRuntimeTermination?.();
+                void currentSession?.closeProviderInputAdmissionAndWaitForDispatches();
+            },
             onTerminate: async (event, outcome) => {
             restoreStdinBestEffort({ stdin: process.stdin as any });
             try {
-                coordinator.cancel();
-                coordinator.artifacts.deferredSession.cancel();
-                await currentSession?.drainCriticalMetadataWrites();
-                cleanupClaudeSessionBestEffort(currentSession);
-                // Dispose the local permission bridge while the session transport is still alive so it can
-                // cancel and persist any outstanding local-mode permission requests.
-                disposeLocalPermissionBridge();
-                coordinator.artifacts.deferredSession.sendSessionDeath();
-                await coordinator.artifacts.deferredSession.flush();
-                await coordinator.artifacts.deferredSession.close();
+                try {
+                    coordinator.cancel();
+                    coordinator.artifacts.deferredSession.cancel();
+                    await currentSession?.closeProviderInputAdmissionAndWaitForDispatches();
+                    await currentSession?.drainCriticalMetadataWrites();
+                    cleanupClaudeSessionBestEffort(currentSession);
+                    // Dispose the local permission bridge while the session transport is still alive so it can
+                    // cancel and persist any outstanding local-mode permission requests.
+                    disposeLocalPermissionBridge();
+                    coordinator.artifacts.deferredSession.sendSessionDeath();
+                    await coordinator.artifacts.deferredSession.flush();
+                    await coordinator.artifacts.deferredSession.close();
+                } finally {
+                    await runtimeActivityDisposal.current?.();
+                }
             } catch {
                 // ignore
             }
@@ -1857,10 +2266,12 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
             try {
                 stopCaffeinate();
                 coordinator.artifacts.hookServer?.stop();
-                if (coordinator.artifacts.hookSettingsPath) {
+                if (!endpointArtifactsOwnedByAttachment && coordinator.artifacts.hookSettingsPath) {
                     cleanupHookSettingsFile(coordinator.artifacts.hookSettingsPath);
                 }
-                cleanupHookPluginDir(coordinator.artifacts.hookPluginDir);
+                if (!endpointArtifactsOwnedByAttachment) {
+                    cleanupHookPluginDir(coordinator.artifacts.hookPluginDir);
+                }
             } catch {
                 // ignore
             }
@@ -1876,8 +2287,12 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
         });
 
     registerKillSessionHandler(coordinator.artifacts.deferredSession.rpcHandlerManager, async () => {
-        terminationHandlers.requestTermination({ kind: 'killSession' });
-        await terminationHandlers.whenTerminated;
+        await requestClaudeExplicitRunnerStop({
+            unifiedTerminalEnabled: unifiedTerminalRuntimeActive,
+            destroyOwnedHostForExplicitStop,
+            requestTermination: terminationHandlers.requestTermination,
+            whenTerminated: terminationHandlers.whenTerminated,
+        });
     });
 
     // Start caffeinate to prevent sleep on macOS
@@ -1906,24 +2321,31 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
 
     // Best-effort cleanup for normal exits (signals handled via terminationHandlers).
     try {
-        await (currentSession as import('./session').Session | null)?.drainCriticalMetadataWrites();
-        cleanupClaudeSessionBestEffort(currentSession);
-        // Dispose the local permission bridge while the session transport is still alive so it can
-        // cancel and persist any outstanding local-mode permission requests.
-        disposeLocalPermissionBridge();
-        coordinator.artifacts.deferredSession.sendSessionDeath();
-        await coordinator.artifacts.deferredSession.flush();
-        await coordinator.artifacts.deferredSession.close();
+        try {
+            await (currentSession as import('./session').Session | null)?.closeProviderInputAdmissionAndWaitForDispatches();
+            await (currentSession as import('./session').Session | null)?.drainCriticalMetadataWrites();
+            cleanupClaudeSessionBestEffort(currentSession);
+            // Dispose the local permission bridge while the session transport is still alive so it can
+            // cancel and persist any outstanding local-mode permission requests.
+            disposeLocalPermissionBridge();
+            coordinator.artifacts.deferredSession.sendSessionDeath();
+            await coordinator.artifacts.deferredSession.flush();
+            await coordinator.artifacts.deferredSession.close();
+        } finally {
+            await runtimeActivityDisposal.current?.();
+        }
     } catch {
         // ignore
     }
     try {
         stopCaffeinate();
         coordinator.artifacts.hookServer?.stop();
-        if (coordinator.artifacts.hookSettingsPath) {
+        if (!endpointArtifactsOwnedByAttachment && coordinator.artifacts.hookSettingsPath) {
             cleanupHookSettingsFile(coordinator.artifacts.hookSettingsPath);
         }
-        cleanupHookPluginDir(coordinator.artifacts.hookPluginDir);
+        if (!endpointArtifactsOwnedByAttachment) {
+            cleanupHookPluginDir(coordinator.artifacts.hookPluginDir);
+        }
     } catch {
         // ignore
     }
@@ -1933,4 +2355,11 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
     }
 
     process.exit(exitCode);
+    } finally {
+        try {
+            await runtimeActivityDisposal.current?.();
+        } catch {
+            // Best effort: preserve the original startup or transport failure.
+        }
+    }
 }

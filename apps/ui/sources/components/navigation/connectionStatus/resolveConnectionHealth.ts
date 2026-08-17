@@ -1,4 +1,5 @@
 import { computeMachinesSummary } from '@/components/sessions/guidance/gettingStartedModel';
+import type { EndpointConnectivityStatus } from '@/sync/store/domains/realtime';
 
 import type {
     ConnectionHealth,
@@ -6,18 +7,13 @@ import type {
     ConnectionSocketStatus,
 } from './connectionHealthTypes';
 
-type ConnectionEndpointStatus =
-    | 'idle'
-    | 'offline'
-    | 'connecting'
-    | 'online'
-    | 'auth_failed'
-    | 'shutting_down';
 type ConnectionSyncErrorKind = 'auth' | 'config' | 'network' | 'server' | 'unknown';
+type ConnectionEndpointReason = 'server_restarting' | string | null;
 
 export function resolveConnectionHealth(params: Readonly<{
     socketStatus: ConnectionSocketStatus;
-    endpointStatus?: ConnectionEndpointStatus;
+    endpointStatus?: EndpointConnectivityStatus;
+    endpointReason?: ConnectionEndpointReason;
     hasSyncError?: boolean;
     syncErrorKind?: ConnectionSyncErrorKind;
     hasAccountSettingsSyncIssue?: boolean;
@@ -45,6 +41,19 @@ export function resolveConnectionHealth(params: Readonly<{
 
     const hasUnknownMachines = machines.hasUnknownServers || hasUnknownReadyCount;
 
+    if (
+        params.endpointReason === 'server_restarting'
+        && (params.endpointStatus === 'offline' || params.endpointStatus === 'connecting')
+    ) {
+        return {
+            kind: 'server_restarting',
+            machineCount: machines.machineCount,
+            onlineCount: machines.onlineCount,
+            hasUnknownMachines,
+            socketStatus: params.socketStatus,
+        };
+    }
+
     if (params.endpointStatus === 'connecting' && params.socketStatus !== 'connected') {
         return {
             kind: 'connecting',
@@ -65,7 +74,7 @@ export function resolveConnectionHealth(params: Readonly<{
         };
     }
 
-    if (params.endpointStatus === 'offline' || params.endpointStatus === 'shutting_down') {
+    if (params.endpointStatus === 'offline') {
         return {
             kind: 'server_unreachable',
             machineCount: machines.machineCount,

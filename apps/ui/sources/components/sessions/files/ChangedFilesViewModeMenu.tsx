@@ -1,6 +1,5 @@
 import * as React from 'react';
-import { Pressable, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
-import { Octicons } from '@expo/vector-icons';
+import { Pressable, StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Text } from '@/components/ui/text/Text';
@@ -10,6 +9,7 @@ import {
     type ChangedFilesViewMode,
 } from '@/scm/scmAttribution';
 import { t } from '@/text';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 type ChangedFilesViewModeMenuProps = Readonly<{
     theme: any;
@@ -27,11 +27,11 @@ type ChangedFilesViewModeMenuProps = Readonly<{
     popoverAnchorAlign?: 'start' | 'center' | 'end';
 }>;
 
-function getModeIcon(mode: ChangedFilesViewMode): React.ComponentProps<typeof Octicons>['name'] {
-    if (mode === 'selected') return 'diff-added';
+function getModeIcon(mode: ChangedFilesViewMode): IconName {
+    if (mode === 'selected') return 'file-plus';
     if (mode === 'turn') return 'clock';
-    if (mode === 'session') return 'history';
-    return 'list-unordered';
+    if (mode === 'session') return 'clock-counter-clockwise';
+    return 'list-bullets';
 }
 
 function getModeLabel(mode: ChangedFilesViewMode): string {
@@ -56,7 +56,7 @@ export const ChangedFilesViewModeMenu = React.memo((props: ChangedFilesViewModeM
     const items = React.useMemo<DropdownMenuItem[]>(() => selectableModes.map((mode) => ({
         id: mode,
         title: getModeLabel(mode),
-        icon: <Octicons name={getModeIcon(mode)} size={14} color={props.theme.colors.text.secondary} />,
+        icon: <Icon name={getModeIcon(mode)} size={14} color={props.theme.colors.text.secondary} />,
     })), [props.theme.colors.text.secondary, selectableModes]);
 
     const onSelect = React.useCallback((itemId: string) => {
@@ -88,15 +88,17 @@ export const ChangedFilesViewModeMenu = React.memo((props: ChangedFilesViewModeM
                     accessibilityLabel={props.accessibilityLabel ?? t('files.toolbar.view')}
                     onPress={toggle}
                     style={({ pressed }) => [
+                        // Matches `ToolbarButton`, which this trigger cannot simply be: it is the
+                        // anchor the popover measures against, so it stays a Pressable here.
                         {
                             flexDirection: 'row',
                             alignItems: 'center',
                             justifyContent: 'center',
                             paddingHorizontal: 10,
                             height: 30,
-                            borderRadius: 10,
-                            borderWidth: 1,
-                            borderColor: props.theme.colors.border.default,
+                            borderRadius: 8,
+                            borderWidth: StyleSheet.hairlineWidth,
+                            borderColor: props.theme.colors.border.subtle,
                             backgroundColor: props.theme.colors.surface.base,
                             gap: 6,
                         },
@@ -104,7 +106,7 @@ export const ChangedFilesViewModeMenu = React.memo((props: ChangedFilesViewModeM
                         { opacity: pressed ? 0.78 : 1 },
                     ]}
                 >
-                    <Octicons name={getModeIcon(selectedMode)} size={14} color={props.theme.colors.text.secondary} />
+                    <Icon name={getModeIcon(selectedMode)} size={14} color={props.theme.colors.text.secondary} />
                     <Text
                         numberOfLines={1}
                         style={[
@@ -121,7 +123,7 @@ export const ChangedFilesViewModeMenu = React.memo((props: ChangedFilesViewModeM
                         {triggerLabel}
                     </Text>
                     <View style={{ marginLeft: -2 }}>
-                        <Octicons name={triggerOpen ? 'chevron-up' : 'chevron-down'} size={13} color={props.theme.colors.text.secondary} />
+                        <Icon name={triggerOpen ? 'caret-up' : 'caret-down'} size={14} color={props.theme.colors.text.secondary} />
                     </View>
                 </Pressable>
             )}

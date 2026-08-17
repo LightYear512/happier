@@ -3,8 +3,10 @@ import {
     resolveSessionMutationMaxAttempts,
 } from './sessionMutationBackoff';
 import { createSessionMutationDeadLetterEntry } from './sessionMutationPersistence';
+import type { SessionRuntimeActivityProjection } from '@happier-dev/protocol';
 import type { QueuedSessionMutation } from './sessionMutationTypes';
 import type { SessionMutationDeadLetterEntry } from './sessionMutationPersistence';
+import { isAuthoritativeSessionMutation } from './sessionMutationDurabilityPolicy';
 
 export type SessionMutationDeliveredPath =
     | 'socket'
@@ -13,7 +15,14 @@ export type SessionMutationDeliveredPath =
     | 'legacy_socket_proof';
 
 export type SessionMutationDeliveryOutcome =
-    | Readonly<{ status: 'delivered'; path: SessionMutationDeliveredPath }>
+    | Readonly<{
+        status: 'delivered';
+        path: SessionMutationDeliveredPath;
+        runtimeActivityEvidence?: Readonly<{
+            disposition: 'applied' | 'unchanged';
+            projection: SessionRuntimeActivityProjection;
+        }>;
+    }>
     | Readonly<{
         status: 'ignored_lossy';
         reason: string;
@@ -40,6 +49,7 @@ export function shouldDeadLetterFailedMutation(
     now: number,
     outcome?: Exclude<SessionMutationDeliveryOutcome, { status: 'delivered' }>,
 ): boolean {
+    if (isAuthoritativeSessionMutation(mutation)) return false;
     if (outcome?.status === 'unsupported_capability' && mutation.kind === 'session_turn') return false;
     const maxAgeMs = resolveSessionMutationMaxAgeMs();
     return (

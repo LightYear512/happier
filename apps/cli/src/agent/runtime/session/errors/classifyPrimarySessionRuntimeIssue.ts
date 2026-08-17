@@ -4,7 +4,11 @@ import type {
   SessionRuntimeIssueSourceV1,
   SessionRuntimeIssueV1,
 } from '@happier-dev/protocol';
-import { ConnectedServiceIdSchema, readConnectedServiceLimitCategoryV1 } from '@happier-dev/protocol';
+import {
+  ConnectedServiceIdSchema,
+  readConnectedServiceLimitCategoryV1,
+  redactBugReportSensitiveText,
+} from '@happier-dev/protocol';
 
 import { classifyProviderLimitEvidence } from '@/daemon/connectedServices/quotas/normalization';
 
@@ -50,6 +54,17 @@ const sanitizedPreviewBySource = {
   dependency_failure: 'Provider dependency failed',
   unknown: 'Session runtime failed',
 } as const satisfies Record<SessionRuntimeIssueSourceV1, string>;
+
+const PI_PROVIDER_TOKEN_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b/gu;
+export const PI_PROVIDER_SESSION_FAILURE_AFTER_PROMPT_ACCEPTANCE_DIAGNOSTIC =
+  'Pi provider reported provider session failure after prompt acceptance';
+const PI_TERMINAL_DIAGNOSTIC_PREFIXES = [
+  'Pi provider reported turn_failed without details after prompt acceptance',
+  'Pi provider reported assistant_message_end failed without details after prompt acceptance',
+  PI_PROVIDER_SESSION_FAILURE_AFTER_PROMPT_ACCEPTANCE_DIAGNOSTIC,
+  'Pi provider reported turn_failed after prompt acceptance:',
+  'Pi provider reported assistant_message_end failed after prompt acceptance:',
+] as const;
 
 function extractErrorTextParts(error: unknown): string[] {
   if (typeof error === 'string') return [error];
@@ -155,6 +170,48 @@ function buildSafeModelNotFoundPreview(error: unknown): string | null {
   const modelRef = `${provider}/${model}`;
   if (modelRef.length > 180) return null;
   return `Model not found: ${modelRef}`;
+}
+
+function buildSafePiTerminalDiagnosticPreview(params: Readonly<{
+  provider: string | null;
+  error: unknown;
+}>): string | null {
+  if (params.provider !== 'pi') return null;
+  for (const part of extractErrorTextParts(params.error)) {
+    const preview = redactBugReportSensitiveText(part)
+      .replace(PI_PROVIDER_TOKEN_PATTERN, '[redacted-provider-token]')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    if (!preview) continue;
+    if (!PI_TERMINAL_DIAGNOSTIC_PREFIXES.some((prefix) => preview.startsWith(prefix))) continue;
+    return preview.slice(0, 2_000);
+  }
+  return null;
+}
+
+function readPiProviderFailure(error: unknown): { code: string; sanitizedPreview: string } | null {
+  const failure = readRecord(readRecord(error)?.piProviderFailure);
+  const code = normalizeNullableString(failure?.code, 128);
+  const sanitizedPreview = normalizeNullableString(failure?.sanitizedPreview, 2_000);
+  if (!code || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(code) || !sanitizedPreview) return null;
+  const safePreview = redactBugReportSensitiveText(sanitizedPreview)
+    .replace(PI_PROVIDER_TOKEN_PATTERN, '[redacted-provider-token]')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!safePreview.startsWith('Pi provider reported ')) return null;
+  return { code, sanitizedPreview: safePreview };
+}
+
+function readPiBrokerReadinessFailure(error: unknown): { code: string; sanitizedPreview: string } | null {
+  const failure = readRecord(readRecord(error)?.piBrokerReadinessFailure);
+  if (failure?.classification !== 'pi_broker_readiness_failure') return null;
+  const reason = normalizeNullableString(failure.reason, 128);
+  const code = normalizeNullableString(failure.code, 128);
+  const sanitizedPreview = normalizeNullableString(failure.sanitizedPreview, 2_000);
+  if (!reason || !/^broker_[a-z0-9_]+$/u.test(reason)) return null;
+  if (code !== 'pi_broker_readiness_failure') return null;
+  if (sanitizedPreview !== 'Pi connected-service broker was not ready before provider send') return null;
+  return { code, sanitizedPreview };
 }
 
 function normalizeUrl(value: unknown): string | null {
@@ -346,11 +403,15 @@ function refineRuntimeAuthClassificationSource(
 export function classifyPrimarySessionRuntimeIssue(
   input: ClassifyPrimarySessionRuntimeIssueInput,
 ): SessionRuntimeIssueV1 {
+  const provider = normalizeNonEmptyString(input.provider);
+  const piBrokerReadinessFailure = provider === 'pi' ? readPiBrokerReadinessFailure(input.error) : null;
   const runtimeAuthClassification = readRuntimeAuthClassification(input.error);
   const runtimeAuthUsageLimit = buildUsageLimitDetailsFromRuntimeAuthClassification(runtimeAuthClassification);
   const runtimeAuthSource = refineRuntimeAuthClassificationSource(runtimeAuthClassification);
   const providerProcessExitAfterSwitch = readProviderProcessExitAfterSwitchDetails(input.error);
-  const source = runtimeAuthSource
+  const source = piBrokerReadinessFailure
+    ? 'dependency_failure'
+    : runtimeAuthSource
     ? runtimeAuthSource
     : input.cause === 'process_exit' && providerProcessExitAfterSwitch
     ? 'provider_process_exit_after_switch'
@@ -364,7 +425,7 @@ export function classifyPrimarySessionRuntimeIssue(
   const temporaryThrottle = source === 'provider_status_error'
     ? buildTemporaryThrottleDetails(input.error, occurredAt)
     : null;
-  const provider = normalizeNonEmptyString(input.provider);
+  const piProviderFailure = provider === 'pi' ? readPiProviderFailure(input.error) : null;
   const providerTurnId = normalizeNonEmptyString(input.providerTurnId);
   const sessionSeq = normalizeNonNegativeInteger(input.sessionSeq);
 
@@ -372,14 +433,20 @@ export function classifyPrimarySessionRuntimeIssue(
     v: 1,
     scope: 'primary_session',
     status: 'failed',
-    code: temporaryThrottle === null ? source : 'provider_temporary_throttle',
+    code: temporaryThrottle === null
+      ? piBrokerReadinessFailure?.code ?? piProviderFailure?.code ?? source
+      : 'provider_temporary_throttle',
     source,
     occurredAt,
     ...(sessionSeq === null ? {} : { sessionSeq }),
     ...(provider === null ? {} : { provider }),
     ...(providerTurnId === null ? {} : { providerTurnId }),
     sanitizedPreview: temporaryThrottle === null
-      ? buildSafeModelNotFoundPreview(input.error) ?? sanitizedPreviewBySource[source]
+      ? piBrokerReadinessFailure?.sanitizedPreview
+        ?? piProviderFailure?.sanitizedPreview
+        ?? buildSafeModelNotFoundPreview(input.error)
+        ?? buildSafePiTerminalDiagnosticPreview({ provider, error: input.error })
+        ?? sanitizedPreviewBySource[source]
       : 'Provider is temporarily limiting requests',
     ...(usageLimit === null ? {} : { usageLimit }),
     ...(temporaryThrottle === null ? {} : { temporaryThrottle }),

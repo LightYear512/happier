@@ -23,7 +23,7 @@ import type {
     MarkRolledBackInput,
     ObserveAcpLifecycleMarkerResult,
     SessionTurnHandle,
-    SessionTurnLifecycleController,
+    SessionTurnLifecycleControllerWithActiveTurnWitness,
     SessionTurnTerminalStatus,
     SessionTurnTranscriptAnchorsInput,
     TouchActiveTurnInput,
@@ -50,6 +50,7 @@ type CreateSessionTurnLifecycleParams = Readonly<{
         // REV-1: failTurn / turn_failed markers emit `assistant_message_end` too; the
         // terminal status lets daemon consumers distinguish completion from failure.
         terminalStatus?: 'completed' | 'failed',
+        turnId?: string,
     ) => void;
 }>;
 
@@ -125,7 +126,9 @@ function withLifecycleMarkerId<T extends Extract<ACPMessageData, { id: string }>
     return { ...body, id } as T;
 }
 
-export function createSessionTurnLifecycle(params: CreateSessionTurnLifecycleParams): SessionTurnLifecycleController {
+export function createSessionTurnLifecycle(
+    params: CreateSessionTurnLifecycleParams,
+): SessionTurnLifecycleControllerWithActiveTurnWitness {
     const createId = params.createId ?? randomUUID;
     const now = params.now ?? Date.now;
     const activeTurnTouchIntervalMs = Math.max(
@@ -140,22 +143,39 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
     function emitTurnLifecycleEvent(
         event: 'prompt_or_steer' | 'task_started' | 'assistant_message_end' | 'turn_cancelled',
         terminalStatus?: 'completed' | 'failed',
+        turnId?: string,
     ): void {
         try {
-            params.onTurnLifecycleEvent?.(event, terminalStatus);
+            params.onTurnLifecycleEvent?.(event, terminalStatus, turnId);
         } catch {
             // Turn lifecycle observer callbacks are best-effort only.
         }
     }
 
-    function emitTerminalTurnLifecycleEvent(status: SessionTurnTerminalStatus): void {
+    function emitTerminalTurnLifecycleEvent(status: SessionTurnTerminalStatus, turnId?: string): void {
         if (status === 'cancelled') {
-            emitTurnLifecycleEvent('turn_cancelled');
+            emitTurnLifecycleEvent('turn_cancelled', undefined, turnId);
             return;
         }
         emitTurnLifecycleEvent(
             'assistant_message_end',
             status === 'failed' ? 'failed' : 'completed',
+            turnId,
+        );
+    }
+
+    function emitBeginTurnAfterWrite(
+        result: Readonly<{ turn: MutableTurn; pendingWrite: Promise<void> }>,
+        event: 'prompt_or_steer' | 'task_started',
+    ): Promise<void> {
+        return result.pendingWrite.then(
+            () => {
+                emitTurnLifecycleEvent(event, undefined, result.turn.turnId);
+            },
+            (error) => {
+                emitTurnLifecycleEvent(event);
+                throw error;
+            },
         );
     }
 
@@ -178,12 +198,17 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
             return;
         }
 
+        let terminalWriteAccepted = false;
         try {
             await result.pendingWrite;
+            terminalWriteAccepted = true;
         } catch (error) {
             firstError ??= error;
         } finally {
-            emitTerminalTurnLifecycleEvent(status);
+            emitTerminalTurnLifecycleEvent(
+                status,
+                terminalWriteAccepted ? result.turn.turnId : undefined,
+            );
         }
 
         if (firstError !== null) {
@@ -347,8 +372,7 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
 
     async function beginTurn(input: BeginTurnInput): Promise<SessionTurnHandle> {
         const result = beginTurnSync(input);
-        emitTurnLifecycleEvent('prompt_or_steer');
-        await result.pendingWrite;
+        await emitBeginTurnAfterWrite(result, 'prompt_or_steer');
         return toHandle(result.turn);
     }
 
@@ -471,6 +495,10 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
         return activeTurn !== null;
     }
 
+    function getActiveTurnId(): string | null {
+        return activeTurn?.turnId ?? null;
+    }
+
     function observeAcpLifecycleMarker(input: Readonly<{
         provider: ACPProvider;
         body: ACPMessageData;
@@ -485,10 +513,9 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
                 provider: input.provider,
                 providerTurnId,
             });
-            emitTurnLifecycleEvent('task_started');
             return {
                 body: withLifecycleMarkerId(input.body, result.turn.turnId),
-                pendingWrite: result.pendingWrite,
+                pendingWrite: emitBeginTurnAfterWrite(result, 'task_started'),
             };
         }
 
@@ -508,11 +535,22 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
             };
         }
         const pendingWrite = terminalResult.pendingWrite
-            ? terminalResult.pendingWrite.finally(() => {
-                if (terminalResult.turn) {
-                    emitTerminalTurnLifecycleEvent(terminalResult.turn.terminalStatus ?? 'completed');
-                }
-            })
+            ? terminalResult.pendingWrite.then(
+                () => {
+                    if (terminalResult.turn) {
+                        emitTerminalTurnLifecycleEvent(
+                            terminalResult.turn.terminalStatus ?? 'completed',
+                            terminalResult.turn.turnId,
+                        );
+                    }
+                },
+                (error) => {
+                    if (terminalResult.turn) {
+                        emitTerminalTurnLifecycleEvent(terminalResult.turn.terminalStatus ?? 'completed');
+                    }
+                    throw error;
+                },
+            )
             : null;
         return {
             body: withLifecycleMarkerId(input.body, terminalResult.turn.turnId),
@@ -532,6 +570,7 @@ export function createSessionTurnLifecycle(params: CreateSessionTurnLifecyclePar
         markRollbackEligible,
         markRolledBack,
         hasActiveTurn,
+        getActiveTurnId,
         observeAcpLifecycleMarker,
     };
 }

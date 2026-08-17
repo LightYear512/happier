@@ -132,7 +132,6 @@ vi.mock('./realtimeVoiceTranscriptBridge', () => ({
   appendRealtimeVoiceTranscriptEvent: (params: any) => appendRealtimeVoiceTranscriptEvent(params),
 }));
 
-const sendMessage = vi.fn(async (..._args: any[]) => {});
 const sendSessionMessageWithServerScope = vi.fn(async (_args: any) => ({ ok: true }));
 
 vi.mock('@/sync/sync', () => ({
@@ -143,7 +142,6 @@ vi.mock('@/sync/sync', () => ({
       return typeof maybeValue === 'string' ? maybeValue : null;
     },
     presentPaywall: vi.fn(async () => ({ success: true, purchased: false })),
-    sendMessage: (...args: any[]) => sendMessage(...args),
     encryption: {
       getSessionEncryption: vi.fn(() => ({})),
     },
@@ -174,9 +172,8 @@ describe('RealtimeVoiceSession (native) sessionId tracking', () => {
     getBindingByControlSessionId.mockReset();
     getBindingByControlSessionId.mockReturnValue(null);
     ensureVoiceBinding.mockReset();
-    sendMessage.mockReset();
     sendSessionMessageWithServerScope.mockReset();
-    sendSessionMessageWithServerScope.mockImplementation(async () => ({ ok: true }));
+    sendSessionMessageWithServerScope.mockResolvedValue({ ok: true });
     (globalThis as any).fetch = vi.fn(async () => ({
       ok: true,
       status: 200,
@@ -226,8 +223,8 @@ describe('RealtimeVoiceSession (native) sessionId tracking', () => {
     await realtimeClientTools.sendSessionMessage({ message: 'hello' });
     expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(1);
     expect(sendSessionMessageWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 's1',
       message: 'hello',
+      sessionId: 's1',
     }));
 
     await act(async () => {
@@ -252,8 +249,8 @@ describe('RealtimeVoiceSession (native) sessionId tracking', () => {
     await realtimeClientTools.sendSessionMessage({ message: 'hello' });
     expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(1);
     expect(sendSessionMessageWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 's2',
       message: 'hello',
+      sessionId: 's2',
     }));
 
     await act(async () => {

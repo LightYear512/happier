@@ -32,6 +32,8 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     }),
 }));
 
+const MERGED_INITIAL_PAGE_PATH = '/v2/sessions?includeActive=true&includeAttention=true&limit=50';
+
 type SessionRow = V2SessionRecord;
 type FetchAndApplySessionsParams = Parameters<typeof fetchAndApplySessions>[0];
 type TestNativeCryptoWorker = NonNullable<Parameters<Encryption['configureNativeCryptoWorker']>[0]['worker']>;
@@ -305,7 +307,141 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         }));
     });
 
-    it('requests initial pinned and attention rows through the bounded page and de-duplicates rows', async () => {
+    it('does not write routine success logs for warm-cache session-list pages', async () => {
+        const requestSpy = vi.fn(async () => jsonResponse({
+            sessions: [
+                buildSessionRow({
+                    id: 'session_001',
+                    encryptionMode: 'plain',
+                    metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+                    agentState: JSON.stringify({}),
+                }),
+            ],
+            nextCursor: null,
+            hasNext: false,
+        }));
+        const { encryption } = createEncryptionHarness();
+        const log = { log: vi.fn() };
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions: vi.fn(),
+            repairInvalidReadStateV1: async () => {},
+            log,
+        });
+
+        expect(log.log).not.toHaveBeenCalled();
+    });
+
+    it('hydrates runtime activity projection fields into first-usable session-list renderables', async () => {
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({
+                        id: 'runtime-active',
+                        encryptionMode: 'plain',
+                        metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+                        agentState: JSON.stringify({}),
+                        runtimeActivityState: 'active',
+                        runtimeActivityActiveCount: 1,
+                        runtimeActivityObservedAt: 1_000,
+                        runtimeActivityRevision: 1,
+                    }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const { encryption } = createEncryptionHarness();
+        const applySessionListRenderables = vi.fn();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions: vi.fn(),
+            applySessionListRenderables,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        expect(applySessionListRenderables).toHaveBeenCalledWith([
+            expect.objectContaining({
+                id: 'runtime-active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityState: 'active',
+                runtimeActivityObservedAt: 1_000,
+                runtimeActivityRevision: 1,
+            }),
+        ], { replace: true });
+    });
+
+    it('hydrates a required changed session when only its runtime activity tuple advanced', async () => {
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({
+                        id: 'runtime-transition',
+                        encryptionMode: 'plain',
+                        metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+                        metadataVersion: 1,
+                        agentState: JSON.stringify({}),
+                        agentStateVersion: 0,
+                        runtimeActivityState: 'idle',
+                        runtimeActivityActiveCount: 0,
+                        runtimeActivityObservedAt: 2_000,
+                        runtimeActivityRevision: 35,
+                    }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const { encryption } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        const existingSession = buildExistingSession({
+            id: 'runtime-transition',
+            metadata: { path: '/repo', host: 'host' },
+            metadataVersion: 1,
+            agentState: {},
+            agentStateVersion: 0,
+            runtimeActivityState: 'active',
+            runtimeActivityActiveCount: 1,
+            runtimeActivityObservedAt: 1_000,
+            runtimeActivityRevision: 34,
+        });
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            applySessionListRenderables: vi.fn(),
+            getExistingSession: () => existingSession,
+            getCurrentSessionListRenderable: () => buildSessionListRenderableFromSession(existingSession),
+            requiredHydrationSessionIds: ['runtime-transition'],
+            awaitSessionListHydration: true,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        expect(applySessions).toHaveBeenCalledWith([
+            expect.objectContaining({
+                id: 'runtime-transition',
+                runtimeActivityState: 'idle',
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: 2_000,
+                runtimeActivityRevision: 35,
+            }),
+        ]);
+    });
+
+    it('does not send canonical pinned ids to /v2/sessions and still de-duplicates rows', async () => {
         const priorityRow = buildSessionRow({
             id: 's_pinned_outside_first_page',
             encryptionMode: 'plain',
@@ -319,7 +455,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             agentState: JSON.stringify({}),
         });
         const requestSpy = vi.fn(async (path: string) => {
-            if (path === '/v2/sessions?pinnedSessionIds=s_pinned_outside_first_page&includeAttention=true&limit=50') {
+            if (path === '/v2/sessions?includeAttention=true&limit=50') {
                 return jsonResponse({ sessions: [priorityRow, pageRow, priorityRow], nextCursor: null, hasNext: false });
             }
             throw new Error(`Unexpected path ${path}`);
@@ -327,22 +463,20 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
 
         const { encryption } = createEncryptionHarness();
         const applySessions = vi.fn();
-        const params = {
+        const applySessionListRenderables = vi.fn();
+        const result = await fetchAndApplySessions({
             credentials: { token: 't', secret: 's' } as AuthCredentials,
             encryption,
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
-            sessionListPinnedSessionIds: ['s_pinned_outside_first_page'],
             includeSessionListAttentionRows: true,
             applySessions,
             repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
-        } satisfies FetchAndApplySessionsParams & { sessionListPinnedSessionIds: readonly string[] };
-
-        const result = await fetchAndApplySessions(params);
+        });
 
         expect(requestSpy.mock.calls.map((call) => call[0])).toEqual([
-            '/v2/sessions?pinnedSessionIds=s_pinned_outside_first_page&includeAttention=true&limit=50',
+            '/v2/sessions?includeAttention=true&limit=50',
         ]);
         expect(applySessions.mock.calls[0]?.[0].map((session: { id: string }) => session.id)).toEqual([
             's_pinned_outside_first_page',
@@ -352,6 +486,237 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             's_pinned_outside_first_page',
             's_regular_first_page',
         ]);
+    });
+
+    it('issues one page request when the server merges the active rows', async () => {
+        const requestSpy = vi.fn(async (path: string) => {
+            if (path === MERGED_INITIAL_PAGE_PATH) {
+                return jsonResponse({
+                    includedActive: true,
+                    sessions: [
+                        buildSessionRow({ id: 's_active', encryptionMode: 'plain' }),
+                        buildSessionRow({ id: 's_page', encryptionMode: 'plain' }),
+                    ],
+                    nextCursor: null,
+                    hasNext: false,
+                });
+            }
+            throw new Error(`Unexpected path ${path}`);
+        });
+        const { encryption } = createEncryptionHarness();
+
+        const result = await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            includeActiveSessionRows: true,
+            includeSessionListAttentionRows: true,
+            applySessions: vi.fn(),
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        expect(requestSpy.mock.calls.map((call) => call[0])).toEqual([MERGED_INITIAL_PAGE_PATH]);
+        expect(result.sessionIds).toEqual(['s_active', 's_page']);
+    });
+
+    it('falls back to the standalone active endpoint when the server does not merge the active rows', async () => {
+        const activeRow = buildSessionRow({ id: 's_active', encryptionMode: 'plain' });
+        const pageRow = buildSessionRow({ id: 's_page', encryptionMode: 'plain' });
+        const requestSpy = vi.fn(async (path: string) => {
+            if (path === MERGED_INITIAL_PAGE_PATH) {
+                // No `includedActive` marker: an older server silently ignores the query flag.
+                return jsonResponse({ sessions: [pageRow, activeRow], nextCursor: null, hasNext: false });
+            }
+            if (path === '/v2/sessions/active?limit=500') {
+                return jsonResponse({ sessions: [activeRow], nextCursor: null, hasNext: false });
+            }
+            throw new Error(`Unexpected path ${path}`);
+        });
+        const { encryption } = createEncryptionHarness();
+
+        const result = await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            includeActiveSessionRows: true,
+            includeSessionListAttentionRows: true,
+            applySessions: vi.fn(),
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        expect(requestSpy.mock.calls.map((call) => call[0])).toEqual([
+            MERGED_INITIAL_PAGE_PATH,
+            '/v2/sessions/active?limit=500',
+        ]);
+        // Pre-merge ordering contract: active rows lead the snapshot and win the de-dupe.
+        expect(result.sessionIds).toEqual(['s_active', 's_page']);
+    });
+
+    it('attributes active-row and list-page request timings separately on the fallback path', async () => {
+        const requestSpy = vi.fn(async (path: string) => {
+            if (path === '/v2/sessions/active?limit=500') {
+                return jsonResponse({
+                    sessions: [buildSessionRow({ id: 's_active', encryptionMode: 'plain' })],
+                    nextCursor: null,
+                    hasNext: false,
+                });
+            }
+            if (path === MERGED_INITIAL_PAGE_PATH) {
+                return jsonResponse({
+                    sessions: [buildSessionRow({ id: 's_page', encryptionMode: 'plain' })],
+                    nextCursor: null,
+                    hasNext: false,
+                });
+            }
+            throw new Error(`Unexpected path ${path}`);
+        });
+        const { encryption } = createEncryptionHarness();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            includeActiveSessionRows: true,
+            includeSessionListAttentionRows: true,
+            applySessions: vi.fn(),
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        expect(requestSpy.mock.calls.map((call) => call[0])).toEqual([
+            MERGED_INITIAL_PAGE_PATH,
+            '/v2/sessions/active?limit=500',
+        ]);
+        const requestEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.fetchPage.request',
+        );
+        expect(requestEvent).toEqual(expect.objectContaining({
+            count: 2,
+            fields: expect.objectContaining({
+                activePage: 1,
+                listPage: 1,
+                limit: 550,
+            }),
+        }));
+    });
+
+    it('requests server timing only while sync performance telemetry is enabled', async () => {
+        const requestSpy = vi.fn<(path: string, init: RequestInit) => Promise<Response>>(async () =>
+            jsonResponse({
+                sessions: [buildSessionRow({ id: 's_page', encryptionMode: 'plain' })],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const { encryption } = createEncryptionHarness();
+        const commonParams = {
+            credentials: { token: 't', secret: 's' } as AuthCredentials,
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions: vi.fn(),
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        } satisfies FetchAndApplySessionsParams;
+
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+        await fetchAndApplySessions(commonParams);
+        expect(requestSpy.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({
+            'X-Happier-Session-List-Timing': '1',
+        }));
+
+        requestSpy.mockClear();
+        syncPerformanceTelemetry.configure({
+            enabled: false,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        await fetchAndApplySessions(commonParams);
+        expect(requestSpy.mock.calls[0]?.[1]?.headers).not.toEqual(expect.objectContaining({
+            'X-Happier-Session-List-Timing': '1',
+        }));
+    });
+
+    it('ignores legacy client-supplied pinned ids for hydration priority', async () => {
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({
+                        id: 's_legacy_pinned',
+                        active: false,
+                        dataEncryptionKey: 'k-legacy',
+                        metadata: 'meta-legacy',
+                        metadataVersion: 2,
+                    }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const { encryption, decryptMetadata } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+        const legacyPinnedIdsProperty = 'sessionList' + 'PinnedSessionIds';
+        const legacyParams = {
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+            [legacyPinnedIdsProperty]: ['s_legacy_pinned'],
+            sessionListEagerHydrationCount: 0,
+            sessionListBackgroundHydrationMaxRows: 0,
+            cachedSessionListEntries: {
+                s_legacy_pinned: {
+                    sessionId: 's_legacy_pinned',
+                    metadataVersion: 1,
+                    agentStateVersion: 0,
+                    updatedAt: 1,
+                    createdAt: 1,
+                    active: false,
+                    activeAt: 1,
+                    archivedAt: null,
+                    path: '/legacy',
+                },
+            } satisfies NonNullable<FetchAndApplySessionsParams['cachedSessionListEntries']>,
+            applySessionListRenderables: vi.fn(),
+        };
+
+        await fetchAndApplySessions(legacyParams);
+
+        await Promise.resolve();
+        expect(decryptMetadata).not.toHaveBeenCalled();
+        expect(applySessions).not.toHaveBeenCalled();
+        const priorityEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.hydrationPriority',
+        );
+        expect(priorityEvent?.fields).toEqual(expect.objectContaining({
+            priority: 0,
+            skippedBackground: 1,
+        }));
     });
 
     it('starts encrypted metadata and agent-state row decrypts before awaiting either result', async () => {
@@ -858,6 +1223,197 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         );
     });
 
+    it('builds plaintext row renderables synchronously equivalent to plain hydration without enqueueing hydration', async () => {
+        const plainRow = buildSessionRow({
+            id: 's_plain_renderable',
+            seq: 7,
+            createdAt: 100,
+            updatedAt: 500,
+            active: true,
+            activeAt: 450,
+            encryptionMode: 'plain',
+            metadata: JSON.stringify({
+                name: 'Plain row title',
+                summary: { text: 'Plain summary', updatedAt: 490 },
+                path: '/work/plain',
+                homeDir: '/work',
+                host: 'dev-host',
+                machineId: 'machine-1',
+                flavor: 'codex',
+                directSessionV1: { v: 1, providerId: 'codex' },
+                readStateV1: { v: 1, sessionSeq: 3, pendingActivityAt: 0, updatedAt: 480 },
+            }),
+            metadataVersion: 3,
+            agentState: JSON.stringify({
+                requests: {
+                    req_user_action: {
+                        tool: 'AskUserQuestion',
+                        arguments: { question: 'Choose one' },
+                        createdAt: 470,
+                    },
+                },
+                completedRequests: {},
+            }),
+            agentStateVersion: 4,
+            latestReadyEventSeq: 6,
+            latestReadyEventAt: 490,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: 495,
+        });
+
+        const renderableRequest = vi.fn(async () =>
+            jsonResponse({ sessions: [plainRow], nextCursor: null, hasNext: false }),
+        );
+        const hydratedRequest = vi.fn(async () =>
+            jsonResponse({ sessions: [plainRow], nextCursor: null, hasNext: false }),
+        );
+        const { encryption } = createEncryptionHarness();
+        const currentRenderables: Record<string, SessionListRenderableSession> = {};
+        const renderableApplySessions = vi.fn();
+        const applySessionListRenderables = vi.fn((renderables: SessionListRenderableSession[]) => {
+            for (const renderable of renderables) {
+                currentRenderables[renderable.id] = renderable;
+            }
+        });
+
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: renderableRequest,
+            applySessions: renderableApplySessions,
+            applySessionListRenderables,
+            getCurrentSessionListRenderable: (sessionId) => currentRenderables[sessionId] ?? null,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+            sessionListBackgroundHydrationMaxRows: 0,
+        });
+
+        const hydratedSessions: Session[] = [];
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: hydratedRequest,
+            applySessions: (sessions) => {
+                hydratedSessions.push(...(sessions as Session[]));
+            },
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        const syncRenderable = currentRenderables.s_plain_renderable;
+        const hydratedRenderable = buildSessionListRenderableFromSession(hydratedSessions[0]!);
+        expect(syncRenderable).toEqual(hydratedRenderable);
+        expect(syncRenderable).toEqual(expect.objectContaining({
+            metadata: expect.objectContaining({
+                name: 'Plain row title',
+                summaryText: 'Plain summary',
+                path: '/work/plain',
+                host: 'dev-host',
+            }),
+            hasPendingUserActionRequests: true,
+        }));
+        expect(renderableApplySessions).not.toHaveBeenCalled();
+        const hydrationCandidatesEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.hydrationCandidates',
+        );
+        expect(hydrationCandidatesEvent?.fields).toEqual(expect.objectContaining({
+            candidateRows: 0,
+            alreadyWarmRows: 1,
+        }));
+    });
+
+    it('reuses current plaintext renderable metadata when the row version is unchanged and parsing would fail', async () => {
+        const plainRow = buildSessionRow({
+            id: 's_plain_current_cache',
+            seq: 7,
+            createdAt: 100,
+            updatedAt: 500,
+            active: true,
+            activeAt: 450,
+            encryptionMode: 'plain',
+            metadata: '{broken-json',
+            metadataVersion: 3,
+            agentState: JSON.stringify({}),
+            agentStateVersion: 4,
+        });
+        const currentRenderable: SessionListRenderableSession = {
+            id: 's_plain_current_cache',
+            seq: 7,
+            createdAt: 100,
+            updatedAt: 500,
+            active: true,
+            activeAt: 450,
+            metadataVersion: 3,
+            agentStateVersion: 4,
+            metadata: {
+                name: 'Cached current title',
+                path: '/work/current',
+                host: 'current-host',
+            },
+            thinking: false,
+            thinkingAt: 0,
+            presence: 'online',
+            hasPendingPermissionRequests: false,
+            hasPendingUserActionRequests: false,
+        };
+        const currentRenderables: Record<string, SessionListRenderableSession> = {
+            s_plain_current_cache: currentRenderable,
+        };
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({ sessions: [plainRow], nextCursor: null, hasNext: false }),
+        );
+        const { encryption } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        const applySessionListRenderables = vi.fn((renderables: SessionListRenderableSession[]) => {
+            for (const renderable of renderables) {
+                currentRenderables[renderable.id] = renderable;
+            }
+        });
+
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            applySessionListRenderables,
+            getCurrentSessionListRenderable: (sessionId) => currentRenderables[sessionId] ?? null,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+            sessionListBackgroundHydrationMaxRows: 0,
+        });
+
+        expect(currentRenderables.s_plain_current_cache?.metadata).toEqual(expect.objectContaining({
+            name: 'Cached current title',
+            path: '/work/current',
+            host: 'current-host',
+        }));
+        expect(applySessions).not.toHaveBeenCalled();
+        const hydrationCandidatesEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.hydrationCandidates',
+        );
+        expect(hydrationCandidatesEvent?.fields).toEqual(expect.objectContaining({
+            candidateRows: 0,
+            alreadyWarmRows: 1,
+        }));
+    });
+
     it('projects canonical readable activity into first-usable session list renderables', async () => {
         const requestSpy = vi.fn(async () =>
             jsonResponse({
@@ -1000,6 +1556,10 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                         latestReadyEventAt: 2_200,
                         latestTurnStatus: 'in_progress',
                         latestTurnStatusObservedAt: 1_900,
+                        runtimeActivityState: 'unknown',
+                        runtimeActivityActiveCount: 0,
+                        runtimeActivityObservedAt: null,
+                        runtimeActivityRevision: 0,
                         encryptionMode: 'plain',
                         metadata: JSON.stringify({ path: '/repo/projected', host: 'dev' }),
                         agentState: JSON.stringify({}),
@@ -1270,7 +1830,8 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         ], { replace: true });
         await expect.poll(() => decryptMetadata.mock.calls.length).toBe(1);
         expect(decryptAgentState).toHaveBeenCalledTimes(1);
-        expect(applySessions).toHaveBeenCalledWith([
+        await expect.poll(() => applySessions.mock.calls.length).toBe(1);
+        expect(applySessions.mock.calls[0]?.[0]).toEqual([
             expect.objectContaining({
                 id: 's_cached',
                 metadataVersion: 7,
@@ -1861,11 +2422,75 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             'meta-oldest',
             'meta-next',
         ]);
-        expect(applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id))).toEqual([
+        await expect.poll(() => applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id))).toEqual([
             's_priority',
             's_oldest',
             's_next',
         ]);
+    });
+
+    it('hydrates pinned priority rows even when eager and background hydration are disabled', async () => {
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({ id: 's_pinned', active: false, dataEncryptionKey: 'k-pinned', metadata: 'meta-pinned', metadataVersion: 2 }),
+                    buildSessionRow({ id: 's_background', active: false, dataEncryptionKey: 'k-background', metadata: 'meta-background', metadataVersion: 2 }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const staleCacheEntry = (sessionId: string, path: string) => ({
+            sessionId,
+            metadataVersion: 1,
+            agentStateVersion: 0,
+            updatedAt: 1,
+            createdAt: 1,
+            active: false,
+            activeAt: 1,
+            archivedAt: null,
+            path,
+        });
+        const { encryption, decryptMetadata } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+            priorityHydrationSessionIds: ['s_pinned'],
+            sessionListEagerHydrationCount: 0,
+            sessionListBackgroundHydrationMaxRows: 0,
+            cachedSessionListEntries: {
+                s_pinned: staleCacheEntry('s_pinned', '/pinned'),
+                s_background: staleCacheEntry('s_background', '/background'),
+            } satisfies NonNullable<FetchAndApplySessionsParams['cachedSessionListEntries']>,
+            applySessionListRenderables: vi.fn(),
+        });
+
+        await expect.poll(() => decryptMetadata.mock.calls.map((call) => call[1])).toEqual(['meta-pinned']);
+        await expect.poll(() =>
+            applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id)),
+        ).toEqual(['s_pinned']);
+        const priorityEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.hydrationPriority',
+        );
+        expect(priorityEvent?.fields).toEqual(expect.objectContaining({
+            priority: 1,
+            eager: 0,
+            background: 0,
+            skippedBackground: 1,
+        }));
     });
 
     it('hydrates required current active and eager rows before background rows', async () => {
@@ -1933,7 +2558,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             'meta-eager',
             'meta-background',
         ]);
-        expect(applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id))).toEqual([
+        await expect.poll(() => applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id))).toEqual([
             's_required',
             's_current',
             's_active',
@@ -1951,6 +2576,214 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             eager: 1,
             background: 1,
         }));
+    });
+
+    it('does not treat non-awaited required ids as unbounded hydration work', async () => {
+        const rows = Array.from({ length: 6 }, (_, index) =>
+            buildSessionRow({
+                id: `s_nonblocking_required_${index + 1}`,
+                active: false,
+                dataEncryptionKey: `k-required-${index + 1}`,
+                metadata: `meta-required-${index + 1}`,
+                metadataVersion: 2,
+            }));
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: rows,
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const staleCacheEntries = Object.fromEntries(rows.map((row) => [
+            row.id,
+            {
+                sessionId: row.id,
+                metadataVersion: 1,
+                agentStateVersion: 0,
+                updatedAt: 1,
+                createdAt: 1,
+                active: false,
+                activeAt: 1,
+                archivedAt: null,
+                path: `/cached/${row.id}`,
+            },
+        ]));
+        const { encryption, decryptMetadata } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+            requiredHydrationSessionIds: rows.map((row) => row.id),
+            awaitSessionListHydration: false,
+            sessionListEagerHydrationCount: 0,
+            sessionListBackgroundHydrationMaxRows: 0,
+            cachedSessionListEntries: staleCacheEntries satisfies NonNullable<FetchAndApplySessionsParams['cachedSessionListEntries']>,
+            applySessionListRenderables: vi.fn(),
+        });
+
+        await Promise.resolve();
+        expect(decryptMetadata).not.toHaveBeenCalled();
+        expect(applySessions).not.toHaveBeenCalled();
+        const priorityEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.hydrationPriority',
+        );
+        expect(priorityEvent?.fields).toEqual(expect.objectContaining({
+            required: 0,
+            eager: 0,
+            background: 0,
+            skippedBackground: rows.length,
+        }));
+    });
+
+    it('records hydration candidate attribution after required and warm-row filtering', async () => {
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({
+                        id: 's_required_candidate',
+                        encryptionMode: 'plain',
+                        metadata: JSON.stringify({ path: '/required' }),
+                        agentState: JSON.stringify({}),
+                    }),
+                    buildSessionRow({
+                        id: 's_warm_current',
+                        encryptionMode: 'plain',
+                        metadata: JSON.stringify({ path: '/warm' }),
+                        agentState: JSON.stringify({}),
+                    }),
+                    buildSessionRow({
+                        id: 's_background_candidate',
+                        encryptionMode: 'plain',
+                        metadata: JSON.stringify({ path: '/background' }),
+                        agentState: JSON.stringify({}),
+                    }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const { encryption } = createEncryptionHarness();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions: vi.fn(),
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+            requiredHydrationSessionIds: ['s_required_candidate', 's_missing_required', 's_required_candidate'],
+            awaitSessionListHydration: true,
+            sessionListEagerHydrationCount: 0,
+            sessionListBackgroundHydrationMaxRows: 0,
+            getExistingSession: (sessionId) => sessionId === 's_warm_current'
+                ? buildExistingSession({
+                    id: sessionId,
+                    metadataVersion: 1,
+                    metadata: { path: '/warm', host: 'host' },
+                    agentStateVersion: 0,
+                    agentState: null,
+                })
+                : null,
+            applySessionListRenderables: vi.fn(),
+        });
+
+        const candidateEvent = syncPerformanceTelemetry.snapshot().events.find(
+            (event) => event.name === 'sync.sessions.snapshot.hydrationCandidates',
+        );
+        expect(candidateEvent?.fields).toEqual(expect.objectContaining({
+            totalRows: 3,
+            requiredIds: 2,
+            requiredRows: 1,
+            missingRequiredRows: 1,
+            candidateRows: 2,
+            requiredCandidateRows: 1,
+            backgroundCandidateRows: 1,
+            alreadyWarmRows: 1,
+            requiredAlreadyWarmRows: 0,
+            missingDataKeyRows: 0,
+        }));
+        expect(JSON.stringify(candidateEvent)).not.toContain('s_required_candidate');
+    });
+
+    it('coalesces awaited required hydration rows into one store apply flush', async () => {
+        const rows = [
+            buildSessionRow({ id: 'required_a', active: false, activeAt: 3, metadata: 'meta-required-a' }),
+            buildSessionRow({ id: 'required_b', active: false, activeAt: 2, metadata: 'meta-required-b' }),
+            buildSessionRow({ id: 'required_c', active: false, activeAt: 1, metadata: 'meta-required-c' }),
+        ];
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: rows,
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+        const { encryption } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            slowThresholdMs: 1_000_000,
+            flushIntervalMs: 60_000,
+        });
+        syncPerformanceTelemetry.reset();
+
+        try {
+            await fetchAndApplySessions({
+                credentials: { token: 't', secret: 's' },
+                encryption,
+                sessionDataKeys: new Map<string, Uint8Array>(),
+                request: requestSpy,
+                applySessions,
+                repairInvalidReadStateV1: async () => {},
+                log: { log: () => {} },
+                requiredHydrationSessionIds: rows.map((row) => row.id),
+                awaitSessionListHydration: true,
+                sessionListEagerHydrationCount: 0,
+                sessionListBackgroundHydrationConcurrencyLimit: 1,
+                sessionListBackgroundHydrationApplyBatchSize: 10,
+                sessionListBackgroundHydrationApplyFlushDelayMs: 60_000,
+                applySessionListRenderables: vi.fn(),
+            });
+
+            expect(applySessions).toHaveBeenCalledTimes(1);
+            expect(applySessions.mock.calls[0]?.[0].map((session: { id: string }) => session.id)).toEqual([
+                'required_a',
+                'required_b',
+                'required_c',
+            ]);
+
+            const flushEvent = syncPerformanceTelemetry.snapshot().events.find(
+                (event) => event.name === 'sync.sessions.snapshot.hydrationApply.flush',
+            );
+            expect(flushEvent?.count).toBe(1);
+            expect(flushEvent?.fields).toEqual(expect.objectContaining({
+                sessions: 3,
+                requiredRows: 3,
+                byRequired: 1,
+            }));
+        } finally {
+            syncPerformanceTelemetry.configure({ enabled: false });
+            syncPerformanceTelemetry.reset();
+        }
     });
 
     it('waits for the background hydration gate before eager rows while allowing required route active and priority rows', async () => {
@@ -2102,6 +2935,49 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         await fetchPromise;
     });
 
+    it('coalesces fast background hydration into one store apply instead of size-flushing every full batch', async () => {
+        const rows = Array.from({ length: 12 }, (_, index) => buildSessionRow({
+            id: `s_fast_background_${index + 1}`,
+            dataEncryptionKey: `k-fast-${index + 1}`,
+            metadata: `meta-fast-${index + 1}`,
+            metadataVersion: 2,
+        }));
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: rows,
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+
+        const { encryption, decryptMetadata } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        const applySessionListRenderables = vi.fn();
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            applySessionListRenderables,
+            cachedSessionListEntries: {},
+            sessionListBackgroundHydrationConcurrencyLimit: 4,
+            sessionListBackgroundHydrationYield: async () => {},
+            sessionListBackgroundHydrationYieldEveryRows: 4,
+            sessionListBackgroundHydrationApplyBatchSize: 4,
+            sessionListBackgroundHydrationApplyFlushDelayMs: 64,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        await expect.poll(() => decryptMetadata.mock.calls.length).toBe(rows.length);
+        await expect.poll(() => applySessions.mock.calls.length).toBe(1);
+        expect(new Set((applySessions.mock.calls[0]?.[0] as Session[]).map((session) => session.id))).toEqual(
+            new Set(rows.map((row) => row.id)),
+        );
+    });
+
     it('defers background hydration and yields between session rows', async () => {
         const requestSpy = vi.fn(async () =>
             jsonResponse({
@@ -2174,7 +3050,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
 
         yieldResolvers.shift()?.();
         await expect.poll(() => decryptMetadata.mock.calls.map((call) => call[1])).toEqual(['meta-first', 'meta-second']);
-        await expect.poll(() => applySessions.mock.calls.length).toBe(1);
+        await expect.poll(() => applySessions.mock.calls.length, { timeout: 2_000 }).toBe(1);
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({ id: 's_first' }),
             expect.objectContaining({ id: 's_second' }),
@@ -2252,6 +3128,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expect(queueWaitEvent?.count).toBe(1);
         expect(queueWaitEvent?.fields.sessions).toBe(2);
         expect(queueWaitEvent?.fields.bySize).toBe(1);
+        expect(queueWaitEvent?.fields.byFinal).toBe(0);
         expect(queueWaitEvent?.fields.requiredRows).toBe(0);
         expect(queueWaitEvent?.fields.backgroundRows).toBe(2);
         const flushEvent = telemetryEvents.find((event) => event.name === 'sync.sessions.snapshot.hydrationApply.flush');
@@ -2406,7 +3283,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         delete currentRenderables.s_deleted_before_flush;
 
         yieldResolvers.shift()?.();
-        await expect.poll(() => applySessions.mock.calls.length).toBe(1);
+        await expect.poll(() => applySessions.mock.calls.length, { timeout: 2_000 }).toBe(1);
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({ id: 's_survivor_after_delete' }),
         ]);
@@ -2477,7 +3354,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         };
 
         yieldResolvers.shift()?.();
-        await expect.poll(() => applySessions.mock.calls.length).toBe(1);
+        await expect.poll(() => applySessions.mock.calls.length, { timeout: 2_000 }).toBe(1);
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({ id: 's_survivor_after_archive' }),
         ]);
@@ -2827,7 +3704,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             .not.toContain('s_superseded_required');
     });
 
-    it('applies one hydrated background session at a time by default', async () => {
+    it('batches hydrated background sessions by default', async () => {
         const requestSpy = vi.fn(async () =>
             jsonResponse({
                 sessions: [
@@ -2858,7 +3735,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessionListRenderables,
             cachedSessionListEntries: {},
             sessionListBackgroundHydrationConcurrencyLimit: 1,
-            sessionListBackgroundHydrationApplyFlushDelayMs: 2_000,
+            sessionListBackgroundHydrationApplyFlushDelayMs: 64,
             sessionListBackgroundHydrationYield,
             repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
@@ -2866,9 +3743,78 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
 
         yieldResolvers.shift()?.();
         await expect.poll(() => decryptMetadata.mock.calls.map((call) => call[1])).toEqual(['meta-first']);
-        await expect.poll(() => applySessions.mock.calls.length, { timeout: 100 }).toBe(1);
-        expect(applySessions).toHaveBeenLastCalledWith([
+        expect(applySessions).not.toHaveBeenCalled();
+        yieldResolvers.shift()?.();
+        await expect.poll(() => decryptMetadata.mock.calls.map((call) => call[1])).toEqual(['meta-first', 'meta-second']);
+        await expect.poll(() => applySessions.mock.calls.length, { timeout: 1_000 }).toBe(1);
+        expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({ id: 's_first' }),
+            expect.objectContaining({ id: 's_second' }),
+        ]);
+    });
+
+    it('defers final non-awaited background hydration applies by the configured apply delay', async () => {
+        vi.useFakeTimers();
+        syncPerformanceTelemetry.configure({
+            enabled: true,
+            now: () => Date.now(),
+        });
+        syncPerformanceTelemetry.reset();
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({ id: 's_delayed_final_first', metadata: 'meta-delayed-first' }),
+                    buildSessionRow({ id: 's_delayed_final_second', metadata: 'meta-delayed-second' }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+
+        const { encryption } = createEncryptionHarness();
+        const applySessions = vi.fn();
+        const applySessionListRenderables = vi.fn();
+
+        let resolved = false;
+        const resultPromise = fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            applySessionListRenderables,
+            cachedSessionListEntries: {},
+            sessionListEagerHydrationCount: 2,
+            sessionListBackgroundHydrationConcurrencyLimit: 1,
+            sessionListBackgroundHydrationYieldEveryRows: 100,
+            sessionListBackgroundHydrationYield: async () => {},
+            sessionListBackgroundHydrationApplyBatchSize: 10,
+            sessionListBackgroundHydrationApplyFlushDelayMs: 60_000,
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        }).then((result) => {
+            resolved = true;
+            return result;
+        });
+
+        await Promise.resolve();
+        expect(resolved).toBe(false);
+        expect(applySessions).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(syncPerformanceTelemetry.snapshot().events.filter((event) =>
+            event.name === 'sync.sessions.snapshot.hydrationApply.flush'
+        )).toEqual([]);
+        expect(applySessions).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(50_000);
+        const result = await resultPromise;
+        expect(result.sessionIds).toEqual(['s_delayed_final_first', 's_delayed_final_second']);
+        expect(resolved).toBe(true);
+        expect(applySessions).toHaveBeenCalledTimes(1);
+        expect(applySessions).toHaveBeenCalledWith([
+            expect.objectContaining({ id: 's_delayed_final_first' }),
+            expect.objectContaining({ id: 's_delayed_final_second' }),
         ]);
     });
 
@@ -3206,7 +4152,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                         flavor: null,
                         directSessionV1: null,
                         hiddenSystemSession: false,
-                        keepVisibleWhenInactive: false,
                         hasPendingPermissionRequests: false,
                         hasPendingUserActionRequests: false,
                         hasUnreadMessages: true,
@@ -4038,5 +4983,67 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expect(requestSpy).toHaveBeenCalledTimes(1);
         expect(fetchSpy).not.toHaveBeenCalled();
         expect(appliedSessions.map((session) => session.id)).toEqual(['s1']);
+    });
+
+    it('completes a required-row wait when a newer update supersedes the required row mid-hydration', async () => {
+        // The required-row gate exists so a caller that names `requiredHydrationSessionIds` never
+        // observes a half-applied list. A row that is superseded by strictly newer state while it
+        // decrypted has a terminal, already-applied disposition (the stale patch below), so the
+        // refresh completed. Reporting it as a failed refresh made the resume tail repeat the whole
+        // session-list refresh — the second foreground catch-up wave measured on device.
+        const requestSpy = vi.fn(async () =>
+            jsonResponse({
+                sessions: [
+                    buildSessionRow({
+                        id: 's_superseded',
+                        dataEncryptionKey: 'k-superseded',
+                        metadata: 'meta-superseded',
+                        metadataVersion: 2,
+                        seq: 2,
+                        updatedAt: 2,
+                    }),
+                ],
+                nextCursor: null,
+                hasNext: false,
+            }),
+        );
+
+        const { encryption, decryptMetadata } = createEncryptionHarness();
+        let currentRenderables: Record<string, SessionListRenderableSession> = {};
+        const applySessionListRenderables = vi.fn((sessions: SessionListRenderableSession[]) => {
+            currentRenderables = Object.fromEntries(sessions.map((session) => [session.id, session]));
+        });
+        const applySessionListRenderablePatches = vi.fn();
+        // A socket update for the same session lands while the required row is still decrypting.
+        decryptMetadata.mockImplementation(async (_version: number, encrypted: string) => {
+            currentRenderables.s_superseded = {
+                ...currentRenderables.s_superseded,
+                seq: 9,
+                updatedAt: 9,
+                metadataVersion: 9,
+            } as SessionListRenderableSession;
+            return { decrypted: encrypted };
+        });
+        const applySessions = vi.fn();
+
+        const result = await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: requestSpy,
+            applySessions,
+            applySessionListRenderables,
+            applySessionListRenderablePatches,
+            getCurrentSessionListRenderable: (sessionId) => currentRenderables[sessionId],
+            cachedSessionListEntries: {},
+            awaitSessionListHydration: true,
+            requiredHydrationSessionIds: ['s_superseded'],
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        expect(result.sessionIds).toEqual(['s_superseded']);
+        // The superseded row is not re-applied over the newer state that overtook it.
+        expect(applySessions).not.toHaveBeenCalled();
     });
 });

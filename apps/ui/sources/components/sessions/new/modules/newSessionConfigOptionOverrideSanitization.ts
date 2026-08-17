@@ -1,14 +1,19 @@
 import {
-    computeAcpConfigOptionControlsForProvider,
-    type AcpConfigOption,
-    type AcpConfigOptionControl,
-} from '@/sync/acp/configOptionsControl';
+    computeSessionConfigOptionControlsForProvider,
+    type SessionConfigOption,
+    type SessionConfigOptionControl,
+} from '@/sync/domains/sessionControl/configOptionsControl';
 
 import { collectNewSessionModelScopedOptionIds } from './collectNewSessionModelScopedOptionIds';
+import { findModelOptionForEffectiveModelId } from '@/sync/domains/models/modelOptions';
+import {
+    readNonBlankSessionControlIdentifier,
+    readSessionControlValueId,
+} from '@/sync/domains/sessionControl/opaqueIdentifiers';
 
 type NewSessionModelOptionWithConfigOptions = Readonly<{
     value: string;
-    modelOptions?: ReadonlyArray<AcpConfigOption>;
+    modelOptions?: ReadonlyArray<SessionConfigOption>;
 }>;
 
 function normalizeOverrideValues(
@@ -16,8 +21,8 @@ function normalizeOverrideValues(
 ): Readonly<Record<string, string>> {
     const normalized: Record<string, string> = {};
     for (const [configId, value] of Object.entries(overrides ?? {})) {
-        const normalizedConfigId = configId.trim();
-        const normalizedValue = typeof value === 'string' ? value.trim() : '';
+        const normalizedConfigId = readNonBlankSessionControlIdentifier(configId) ?? '';
+        const normalizedValue = readSessionControlValueId(value) ?? '';
         if (!normalizedConfigId || !normalizedValue) continue;
         normalized[normalizedConfigId] = normalizedValue;
     }
@@ -31,9 +36,9 @@ function toOverrideRecords(overrides: Readonly<Record<string, string>>): Readonl
 }
 
 function controlsByOptionId(
-    controls: ReadonlyArray<AcpConfigOptionControl> | null,
-): ReadonlyMap<string, AcpConfigOptionControl> {
-    const byId = new Map<string, AcpConfigOptionControl>();
+    controls: ReadonlyArray<SessionConfigOptionControl> | null,
+): ReadonlyMap<string, SessionConfigOptionControl> {
+    const byId = new Map<string, SessionConfigOptionControl>();
     for (const control of controls ?? []) {
         byId.set(control.option.id, control);
     }
@@ -42,22 +47,22 @@ function controlsByOptionId(
 
 export function sanitizeNewSessionConfigOverridesForModelSelection(params: Readonly<{
     providerId: string;
-    configOptions: ReadonlyArray<AcpConfigOption> | null | undefined;
+    configOptions: ReadonlyArray<SessionConfigOption> | null | undefined;
     modelOptions: ReadonlyArray<NewSessionModelOptionWithConfigOptions>;
     selectedModelId: string;
     selectedConfigOverrides: Readonly<Record<string, string>> | null | undefined;
 }>): Readonly<Record<string, string>> {
     const normalizedOverrides = normalizeOverrideValues(params.selectedConfigOverrides);
     const overrideRecords = toOverrideRecords(normalizedOverrides);
-    const globalControls = controlsByOptionId(computeAcpConfigOptionControlsForProvider({
+    const globalControls = controlsByOptionId(computeSessionConfigOptionControlsForProvider({
         providerId: params.providerId,
         configOptions: params.configOptions,
         overrides: overrideRecords,
         hideModeOption: true,
         hideModelOption: params.modelOptions.length > 0,
     }) ?? null);
-    const selectedModel = params.modelOptions.find((option) => option.value === params.selectedModelId) ?? null;
-    const selectedModelControls = controlsByOptionId(computeAcpConfigOptionControlsForProvider({
+    const selectedModel = findModelOptionForEffectiveModelId(params.modelOptions, params.selectedModelId);
+    const selectedModelControls = controlsByOptionId(computeSessionConfigOptionControlsForProvider({
         providerId: params.providerId,
         configOptions: selectedModel?.modelOptions ?? null,
         overrides: overrideRecords,

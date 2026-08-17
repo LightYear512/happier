@@ -60,9 +60,18 @@ import {
 } from './scenarios.acp';
 import {
   makeCursorAcpStubExtensionPlanTodosScenario,
+  makeCursorAcpStubCapturedLifecycleReplayScenario,
   makeCursorAcpStubModeConfigOptionScenario,
   makeCursorAcpStubModelConfigAliasScenario,
 } from './scenarios.cursor';
+import {
+  makeGrokAcpStubAuthCreateResumeScenario,
+  makeGrokAcpStubCancelAndCapabilitiesScenario,
+  makeGrokAcpStubFreeformQuestionScenario,
+  makeGrokAcpStubMixedFreeformQuestionScenario,
+  makeGrokAcpStubModelsAndEffortScenario,
+  makeGrokAcpStubStructuredQuestionScenario,
+} from './scenarios.grok';
 import { cleanupOutsideWorkspacePath, makeOutsideWorkspacePath } from '../harness/outsideWorkspacePath';
 
 type ScenarioFactory = (provider: ProviderUnderTest) => ProviderScenario;
@@ -777,6 +786,20 @@ await server.connect(new StdioServerTransport());
 
   cursor_acp_stub_extension_plan_todos: makeCursorAcpStubExtensionPlanTodosScenario,
 
+  cursor_acp_stub_captured_lifecycle_replay: makeCursorAcpStubCapturedLifecycleReplayScenario,
+
+  grok_acp_stub_auth_create_resume: makeGrokAcpStubAuthCreateResumeScenario,
+
+  grok_acp_stub_structured_question: makeGrokAcpStubStructuredQuestionScenario,
+
+  grok_acp_stub_freeform_question: makeGrokAcpStubFreeformQuestionScenario,
+
+  grok_acp_stub_mixed_freeform_question: makeGrokAcpStubMixedFreeformQuestionScenario,
+
+  grok_acp_stub_models_and_effort: makeGrokAcpStubModelsAndEffortScenario,
+
+  grok_acp_stub_cancel_and_capabilities: makeGrokAcpStubCancelAndCapabilitiesScenario,
+
   acp_probe_models: (provider) => {
     if (provider.protocol !== 'acp') {
       throw new Error(`acp_probe_models only supports ACP providers (got ${provider.protocol})`);
@@ -984,7 +1007,7 @@ await server.connect(new StdioServerTransport());
     if (provider.protocol !== 'acp') {
       throw new Error(`acp_set_model_dynamic only supports ACP providers (got ${provider.protocol})`);
     }
-    if (!['opencode', 'kilo', 'auggie', 'codex', 'cursor'].includes(provider.id)) {
+    if (!['opencode', 'kilo', 'auggie', 'codex', 'cursor', 'grok_acp_stub'].includes(provider.id)) {
       throw new Error(`acp_set_model_dynamic requires dynamic model providers (got ${provider.id})`);
     }
 

@@ -33,6 +33,7 @@ describe('canonicalizeToolNameV2 mappings', () => {
     { toolName: 'ls_files', expected: 'LS' },
     { toolName: 'search_code', expected: 'CodeSearch' },
     { toolName: 'code_search', expected: 'CodeSearch' },
+    { toolName: 'switch_mode', expected: 'SwitchMode' },
   ])('normalizes `$toolName` to `$expected`', ({ toolName, expected }) => {
     expect(canonicalize(toolName)).toBe(expected);
   });
@@ -56,6 +57,18 @@ describe('canonicalizeToolNameV2 mappings', () => {
 
   it.each(['TaskCreate', 'TaskList', 'TaskUpdate', 'task', 'Agent', 'SubAgent'])('normalizes `%s` to SubAgent', (toolName) => {
     expect(canonicalize(toolName)).toBe('SubAgent');
+  });
+
+  // `TaskOutput` and `TaskStop` are real Claude Agent SDK tools (`TaskOutputInput` / `TaskStopInput`
+  // in `@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts`) that act on a background task, not on a
+  // subagent roster entry. The `task*` prefix rule above must not swallow them.
+  it.each([
+    { toolName: 'TaskOutput', expected: 'TaskOutput' },
+    { toolName: 'task_output', expected: 'TaskOutput' },
+    { toolName: 'TaskStop', expected: 'TaskStop' },
+    { toolName: 'task_stop', expected: 'TaskStop' },
+  ])('keeps `$toolName` as its own tool `$expected` instead of collapsing it to SubAgent', ({ toolName, expected }) => {
+    expect(canonicalize(toolName)).toBe(expected);
   });
 
   it.each([

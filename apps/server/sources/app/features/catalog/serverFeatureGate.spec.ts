@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createRouteTestBuilder } from "@/app/api/testkit/routeTestBuilder";
-import { createServerFeatureGatedRouteApp } from "./serverFeatureGate";
+import { createServerFeatureGatedRouteApp, isServerFeatureEnabledForRequest } from "./serverFeatureGate";
 
 describe("serverFeatureGate", () => {
     it("supports registering routes with the (path, handler) overload while still injecting a gate preHandler", async () => {

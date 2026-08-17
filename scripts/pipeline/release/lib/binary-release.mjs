@@ -1,6 +1,5 @@
 // @ts-check
 
-import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -10,8 +9,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 import { loadCliCommonDistModule } from '../../../../scripts/ensureCliCommonDistModule.mjs';
-import { listPublicReleaseRingCatalogEntries, normalizePublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import { prepareMinisignSecretKeyFile } from './minisign-secret-key.mjs';
+import { fileSha256 } from './release-files.mjs';
+import { maybeSignFile } from './minisign-signing.mjs';
+import { listPublicReleaseChannels } from './public-release-rings.mjs';
+import { normalizeChannel, parseArgs } from './release-arguments.mjs';
 
 const {
   CLI_BINARY_TARGETS,
@@ -38,8 +39,11 @@ export {
   resolveYarnCommand,
 };
 export { prepareMinisignSecretKeyFile } from './minisign-secret-key.mjs';
+export { fileSha256, writeChecksumsFile } from './release-files.mjs';
+export { maybeSignFile } from './minisign-signing.mjs';
+export { normalizeChannel, parseArgs } from './release-arguments.mjs';
 
-export const RELEASE_CHANNELS = new Set(listPublicReleaseRingCatalogEntries().map((entry) => entry.id));
+export const RELEASE_CHANNELS = new Set(listPublicReleaseChannels().map((entry) => entry.id));
 
 export const CLI_STACK_TARGETS = CLI_BINARY_TARGETS;
 export const SERVER_TARGETS = SERVER_BINARY_TARGETS;
@@ -96,55 +100,9 @@ function shouldCollectArchiveStats({
   return platform !== 'win32';
 }
 
-export function parseArgs(argv) {
-  const kv = new Map();
-  const flags = new Set();
-  const positionals = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg.startsWith('--')) {
-      positionals.push(arg);
-      continue;
-    }
-    if (arg.includes('=')) {
-      const idx = arg.indexOf('=');
-      kv.set(arg.slice(0, idx), arg.slice(idx + 1));
-      continue;
-    }
-    const next = argv[i + 1];
-    if (next && !next.startsWith('--')) {
-      kv.set(arg, next);
-      i += 1;
-      continue;
-    }
-    flags.add(arg);
-  }
-  return { kv, flags, positionals };
-}
-
 export async function ensureCleanDir(path) {
   await rm(path, { recursive: true, force: true });
   await mkdir(path, { recursive: true });
-}
-
-export async function fileSha256(path) {
-  const targetPath = String(path ?? '').trim();
-  // Release packaging often runs on developer machines where file providers (or aggressive AV) can
-  // briefly delay visibility of newly created archives. Treat ENOENT as a short, retryable condition.
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      const bytes = await readFile(targetPath);
-      return createHash('sha256').update(bytes).digest('hex');
-    } catch (error) {
-      const code = error && typeof error === 'object' && 'code' in error ? String(error.code ?? '') : '';
-      if (code === 'ENOENT' && attempt < 9) {
-        await delay(50);
-        continue;
-      }
-      throw error;
-    }
-  }
-  // unreachable: loop always returns or throws
 }
 
 function resolveTarArchiveInvocation({ artifactPath, sourcePath, sourceName }) {
@@ -687,48 +645,6 @@ async function execTarWithRetry(args, options = {}) {
   }
 }
 
-export async function writeChecksumsFile({ product, version, artifacts, outDir }) {
-  const checksumsPath = join(outDir, `checksums-${product}-v${version}.txt`);
-  const lines = [];
-  for (const artifact of artifacts) {
-    const hash = await fileSha256(artifact.path);
-    lines.push(`${hash}  ${artifact.name}`);
-  }
-  await writeFile(checksumsPath, `${lines.join('\n')}\n`, 'utf-8');
-  return checksumsPath;
-}
-
-export async function maybeSignFile({ path, trustedComment = '' }) {
-  const keyRaw = String(process.env.MINISIGN_SECRET_KEY ?? '').trim();
-  if (!keyRaw) return null;
-  if (!commandExists('minisign')) {
-    throw new Error('[release] MINISIGN_SECRET_KEY is set but minisign is not installed');
-  }
-  const preparedKey = await prepareMinisignSecretKeyFile(keyRaw);
-  const sigPath = `${path}.minisig`;
-  const hasPassphrase = Object.prototype.hasOwnProperty.call(process.env, 'MINISIGN_PASSPHRASE');
-  const passphrase = String(process.env.MINISIGN_PASSPHRASE ?? '');
-  const keyPath = preparedKey.path;
-  const args = ['-S', '-s', keyPath, '-m', path, '-x', sigPath];
-  if (trustedComment) {
-    args.push('-t', trustedComment);
-  }
-  try {
-    execOrThrow('minisign', args, {
-      stdio: ['pipe', 'inherit', 'inherit'],
-      // Support empty passphrases (operators sometimes intentionally leave the key unencrypted).
-      // If the env var is present, always feed a newline to avoid minisign prompting/hanging.
-      input: hasPassphrase ? `${passphrase}\n` : undefined,
-    });
-  } finally {
-    if (preparedKey.temp) {
-      await rm(preparedKey.cleanupPath ?? keyPath, { recursive: true, force: true });
-    }
-  }
-  return sigPath;
-}
-
-
 export function readVersionFromPackageJson(path) {
   const raw = JSON.parse(readFileSync(path, 'utf-8'));
   const version = String(raw?.version ?? '').trim();
@@ -815,16 +731,6 @@ export function resolveTargets({ availableTargets, requested }) {
     throw new Error(`[release] unknown target(s): ${unknown.join(', ')}. Expected one of: ${[...known].join(', ')}`);
   }
   return selected;
-}
-
-export function normalizeChannel(raw) {
-  const value = String(raw ?? '').trim();
-  if (!value) return 'stable';
-  const normalized = normalizePublicReleaseRingId(value);
-  if (!normalized || !RELEASE_CHANNELS.has(normalized)) {
-    throw new Error(`[release] invalid channel: ${value} (expected stable|preview|dev)`);
-  }
-  return normalized;
 }
 
 export function resolveRepoRoot() {

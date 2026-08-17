@@ -9,6 +9,7 @@ import { profileDefaults } from '@/sync/domains/profiles/profile';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
 import { renderScreen } from '@/dev/testkit';
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -184,7 +185,11 @@ async function setupHarness(options?: Readonly<{
   });
   vi.doMock('@/agents/runtime/resumeCapabilities', () => ({ canAgentResume: vi.fn(() => false) }));
   vi.doMock('@/components/sessions/new/modules/formatResumeSupportDetailCode', () => ({ formatResumeSupportDetailCode: vi.fn(() => '') }));
-  vi.doMock('@/sync/ops', () => ({ machineSpawnNewSession: machineSpawnNewSessionSpy }));
+  vi.doMock('@/sync/ops', () => ({
+    machineSpawnNewSession: machineSpawnNewSessionSpy,
+    completeMachineSpawnAttemptCustody: vi.fn(async () => true),
+    resetMachineSpawnAttemptCustody: vi.fn(async () => true),
+  }));
   vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/followUpSpawnedSession', () => ({
     followUpSpawnedSessionWithServerScope: followUpSpawnedSessionWithServerScopeSpy,
   }));
@@ -227,6 +232,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -242,7 +248,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
         acpSessionModeId: 'plan',
-        sessionPrompt: 'hello',
+        promptStore: createNewSessionPromptStore('hello'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -290,6 +296,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -305,7 +312,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
         acpSessionModeId: 'plan',
-        sessionPrompt: 'hello',
+        promptStore: createNewSessionPromptStore('hello'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -350,6 +357,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -365,7 +373,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
         acpSessionModeId: 'plan',
-        sessionPrompt: 'hello',
+        promptStore: createNewSessionPromptStore('hello'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -410,6 +418,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -432,7 +441,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
             speed: { updatedAt: 123, value: 'fast' },
           },
         },
-        sessionPrompt: 'hello',
+        promptStore: createNewSessionPromptStore('hello'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -488,6 +497,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -503,7 +513,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
         acpSessionModeId: null,
-        sessionPrompt: 'hello',
+        promptStore: createNewSessionPromptStore('hello'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -577,6 +587,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -592,7 +603,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
         acpSessionModeId: null,
-        sessionPrompt: '/qa-check this is a UI QA check',
+        promptStore: createNewSessionPromptStore('/qa-check this is a UI QA check'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -675,6 +686,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
 
     function Test() {
       const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -690,7 +702,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
         acpSessionModeId: null,
-        sessionPrompt: '/qa-check this is a UI QA check',
+        promptStore: createNewSessionPromptStore('/qa-check this is a UI QA check'),
         setSessionPrompt,
         resumeSessionId: '',
         agentNewSessionOptions: null,

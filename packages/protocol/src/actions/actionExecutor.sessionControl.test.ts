@@ -60,6 +60,7 @@ describe('createActionExecutor (session control)', () => {
         message: 'Hello',
         permissionModeOverride: 'read_only',
         modelOverride: 'gpt-4o',
+        requestedAction: { v: 1, kind: 'send_now' },
         wait: true,
         timeoutSeconds: 42,
       },
@@ -72,8 +73,42 @@ describe('createActionExecutor (session control)', () => {
       message: 'Hello',
       permissionModeOverride: 'read_only',
       modelOverride: 'gpt-4o',
+      requestedAction: { v: 1, kind: 'send_now' },
       wait: true,
       timeoutSeconds: 42,
+    }));
+  });
+
+  it('defaults generic session.message.send callers to conditional steering instead of interruption', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 's1', message: 'Hello' },
+      { surface: 'mcp', defaultSessionId: null },
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+
+    expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's1',
+      message: 'Hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+    }));
+  });
+
+  it('preserves exact nonblank opaque model override bytes when sending a message', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    const res = await executor.execute(
+      'session.message.send' as any,
+      { sessionId: 's1', message: 'Hello', modelOverride: ' model-a\t' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      modelOverride: ' model-a\t',
     }));
   });
 
@@ -456,7 +491,7 @@ describe('createActionExecutor (session control)', () => {
   });
 
   it('executes session.stop via deps.sessionStop', async () => {
-    const sessionStop = vi.fn(async () => ({ ok: true, stopped: true }));
+    const sessionStop = vi.fn(async () => ({ success: true }));
     const executor = createExecutor({
       sessionStop,
       resolveServerIdForSessionId: (sessionId) => sessionId === 's1' ? 'server-a' : null,
@@ -468,8 +503,113 @@ describe('createActionExecutor (session control)', () => {
       { surface: 'cli', defaultSessionId: null },
     );
 
-    expect(res).toEqual({ ok: true, result: { ok: true, stopped: true } });
+    expect(res).toEqual({ ok: true, result: { success: true } });
     expect(sessionStop).toHaveBeenCalledWith({ sessionId: 's1', serverId: 'server-a' });
+  });
+
+  it.each([
+    {
+      label: 'control unavailable',
+      dependencyResult: {
+        success: false as const,
+        message: 'Session controls are unavailable',
+        code: 'session_stop_control_unavailable',
+        recovery: 'retry_when_runtime_available' as const,
+      },
+      errorCode: 'session_stop_control_unavailable',
+    },
+    {
+      label: 'rejected',
+      dependencyResult: {
+        success: false as const,
+        message: 'runner refused stop',
+        code: 'session_stop_failed',
+      },
+      errorCode: 'session_stop_failed',
+    },
+  ])('reports $label session.stop dependency results as top-level action failures', async ({ dependencyResult, errorCode }) => {
+    const executor = createExecutor({
+      sessionStop: vi.fn(async () => dependencyResult),
+    });
+
+    const result = await executor.execute(
+      'session.stop' as any,
+      { sessionId: 's1' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode,
+      error: dependencyResult.message,
+      details: dependencyResult,
+    });
+  });
+
+  it('reports legacy ok:false session.stop dependency results as top-level action failures', async () => {
+    const dependencyResult = {
+      ok: false as const,
+      code: 'unsupported',
+      message: 'session stop is unsupported',
+    };
+    const executor = createExecutor({
+      sessionStop: vi.fn(async () => dependencyResult),
+    });
+
+    const result = await executor.execute(
+      'session.stop' as any,
+      { sessionId: 's1' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'unsupported',
+      error: 'session stop is unsupported',
+      details: dependencyResult,
+    });
+  });
+
+  it('preserves legacy ok:true session.stop dependency results as top-level action success', async () => {
+    const dependencyResult = {
+      ok: true as const,
+      sessionId: 's1',
+      stopped: true,
+    };
+    const executor = createExecutor({
+      sessionStop: vi.fn(async () => dependencyResult),
+    });
+
+    const result = await executor.execute(
+      'session.stop' as any,
+      { sessionId: 's1' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(result).toEqual({ ok: true, result: dependencyResult });
+  });
+
+  it('preserves structured session.stop outcomes as top-level action success', async () => {
+    const dependencyResult = {
+      ok: true as const,
+      sessionId: 's1',
+      stopped: false as const,
+      stopOutcome: {
+        status: 'stopped_cleanup_incomplete' as const,
+        reason: 'terminal_attachment_descriptor_retirement_failed' as const,
+      },
+    };
+    const executor = createExecutor({
+      sessionStop: vi.fn(async () => dependencyResult),
+    });
+
+    const result = await executor.execute(
+      'session.stop' as any,
+      { sessionId: 's1' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(result).toEqual({ ok: true, result: dependencyResult });
   });
 
   it('executes session.permission_mode.set via deps.sessionPermissionModeSet', async () => {
@@ -508,6 +648,23 @@ describe('createActionExecutor (session control)', () => {
 
     expect(res).toEqual({ ok: true, result: { ok: true } });
     expect(sessionModelSet).toHaveBeenCalledWith({ sessionId: 's1', modelId: 'default', serverId: 'server-a' });
+  });
+
+  it('preserves exact nonblank opaque model identifiers for session.model.set', async () => {
+    const sessionModelSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({
+      sessionModelSet,
+      resolveServerIdForSessionId: () => 'server-a',
+    });
+
+    const res = await executor.execute(
+      'session.model.set' as any,
+      { sessionId: 's1', modelId: ' model-a ' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(sessionModelSet).toHaveBeenCalledWith({ sessionId: 's1', modelId: ' model-a ', serverId: 'server-a' });
   });
 
   it('executes session.archive via deps.sessionArchiveSet', async () => {
@@ -854,7 +1011,12 @@ describe('createActionExecutor (session control)', () => {
     );
     await executor.execute(
       'session.usageLimit.waitResume.cancel' as any,
-      { sessionId: 's1', issueFingerprint: null },
+      {
+        sessionId: 's1',
+        issueFingerprint: 'usage-limit:s1:reset',
+        armedAtMs: 123,
+        runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
+      },
       { surface: 'cli' },
     );
     await executor.execute('session.usageLimit.checkNow' as any, { sessionId: 's1', provider: ' codex ' }, { surface: 'cli' });
@@ -878,7 +1040,9 @@ describe('createActionExecutor (session control)', () => {
     });
     expect(sessionUsageLimitWaitResumeCancel).toHaveBeenCalledWith({
       sessionId: 's1',
-      issueFingerprint: null,
+      issueFingerprint: 'usage-limit:s1:reset',
+      armedAtMs: 123,
+      runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
       serverId: 'server-a',
     });
     expect(sessionUsageLimitCheckNow).toHaveBeenCalledWith({
@@ -980,6 +1144,174 @@ describe('createActionExecutor (session control)', () => {
       tag: 'tag-1',
       initialMessage: 'Hello',
     }));
+  });
+
+  it('preserves structured session.spawn_new policy failure details returned by deps.sessionSpawnNew', async () => {
+    const sessionSpawnNew = vi.fn(async () => ({
+      type: 'error',
+      errorCode: 'spawn_policy_denied',
+      errorMessage: 'spawn_policy_denied',
+      details: {
+        field: 'environmentVariables',
+        surface: 'session_agent',
+      },
+    }));
+    const executor = createExecutor({ sessionSpawnNew });
+
+    const res = await executor.execute(
+      'session.spawn_new' as any,
+      {
+        path: '/repo',
+        environmentVariables: { SECRET_TOKEN: 'do-not-leak' },
+      },
+      { surface: 'session_agent', defaultSessionId: null },
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      result: {
+        type: 'error',
+        errorCode: 'spawn_policy_denied',
+        errorMessage: 'spawn_policy_denied',
+        details: {
+          field: 'environmentVariables',
+          surface: 'session_agent',
+        },
+      },
+    });
+    expect(JSON.stringify(res)).not.toContain('do-not-leak');
+  });
+
+  it('preserves a thrown session.spawn_new attempt nonce so CLI callers can resume without resubmitting', async () => {
+    const error = Object.assign(new Error('session_spawn_resolve_unsupported'), {
+      code: 'session_spawn_resolve_unsupported',
+      details: { spawnResponse: { status: 'pending' }, spawnNonce: 'stable-attempt-1' },
+    });
+    const executor = createExecutor({ sessionSpawnNew: vi.fn(async () => { throw error; }) });
+
+    const res = await executor.execute(
+      'session.spawn_new' as any,
+      { path: '/repo' },
+      { surface: 'cli', defaultSessionId: null, actionRequestId: 'attempt-1' },
+    );
+
+    expect(res).toMatchObject({
+      ok: false,
+      error: 'session_spawn_resolve_unsupported',
+      details: { spawnNonce: 'stable-attempt-1', accepted: true },
+    });
+  });
+
+  it('does not expose arbitrary thrown action details while preserving spawn retry details', async () => {
+    const error = Object.assign(new Error('action failed'), {
+      details: { token: 'do-not-leak' },
+    });
+    const executor = createExecutor({ sessionSpawnNew: vi.fn(async () => { throw error; }) });
+    const res = await executor.execute(
+      'session.spawn_new' as any,
+      { path: '/repo' },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(res).not.toHaveProperty('details');
+    expect(JSON.stringify(res)).not.toContain('do-not-leak');
+  });
+
+  it('rejects session-agent spawn permission escalation before deps.sessionSpawnNew runs', async () => {
+    const sessionSpawnNew = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSpawnNew });
+
+    const res = await executor.execute(
+      'session.spawn_new' as any,
+      {
+        path: '/repo',
+        permissionMode: 'bypassPermissions',
+      },
+      { surface: 'session_agent', defaultSessionId: null, callerPermissionMode: 'default' } as any,
+    );
+
+    expect(res).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      details: {
+        surface: 'session_agent',
+        requestedMode: 'bypassPermissions',
+        callerMode: 'default',
+      },
+    });
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
+  it('rejects session-agent message permission overrides above the caller before deps.sessionSendMessage runs', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    const res = await executor.execute(
+      'session.message.send' as any,
+      {
+        sessionId: 's2',
+        message: 'Continue',
+        permissionModeOverride: 'bypassPermissions',
+      },
+      { surface: 'session_agent', defaultSessionId: 's1', callerPermissionMode: 'default' } as any,
+    );
+
+    expect(res).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      details: {
+        surface: 'session_agent',
+        requestedMode: 'bypassPermissions',
+        callerMode: 'default',
+      },
+    });
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('clamps a session-agent message without an explicit override to the caller permission', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    const res = await executor.execute(
+      'session.message.send' as any,
+      {
+        sessionId: 'higher-privilege-session',
+        message: 'Continue',
+      },
+      { surface: 'session_agent', defaultSessionId: 'caller', callerPermissionMode: 'read-only' } as any,
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      permissionModeOverride: 'read-only',
+      callerSurface: 'session_agent',
+      callerPermissionMode: 'read-only',
+    }));
+  });
+
+  it('rejects session-agent permission mode changes above the caller before deps.sessionPermissionModeSet runs', async () => {
+    const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionPermissionModeSet });
+
+    const res = await executor.execute(
+      'session.permission_mode.set' as any,
+      {
+        sessionId: 's2',
+        permissionMode: 'bypassPermissions',
+      },
+      { surface: 'session_agent', defaultSessionId: 's1', callerPermissionMode: 'default' } as any,
+    );
+
+    expect(res).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      details: {
+        surface: 'session_agent',
+        requestedMode: 'bypassPermissions',
+        callerMode: 'default',
+      },
+    });
+    expect(sessionPermissionModeSet).not.toHaveBeenCalled();
   });
 
   it('executes session.list via deps.sessionList (including cli filter flags)', async () => {

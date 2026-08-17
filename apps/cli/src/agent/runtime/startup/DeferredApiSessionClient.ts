@@ -1,20 +1,32 @@
 import type {
   DeferredSessionBufferEntry,
+  DeferredSessionBufferDropReason,
   DeferredSessionBufferLimits,
   DeferredSessionBufferStats,
 } from './deferredSessionBuffer';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
 import type { RpcHandler, RpcHandlerManagerLike } from '@/api/rpc/types';
 import type { AgentState, Metadata } from '@/api/types';
-import type { MaterializeNextPendingResult } from '@/api/session/sessionClientPort';
+import type {
+  MaterializeNextPendingResult,
+} from '@/api/session/sessionClientPort';
 import type { PendingQueueReadOptions, PendingQueueReconcileWhenEmpty } from '@/api/session/pendingQueueReadPolicy';
 import type { ProviderOwnedUserMessageEchoClassifier } from '@/api/session/providerOwnedUserMessageEcho';
+import type { SessionRuntimeActivitySnapshotPublisher } from '@/session/runtimeActivity/types';
+import type { SessionUserMessageEnqueueResult } from '@/rpc/handlers/sessionUserMessageSend';
+import type { SessionRuntimeControls } from '@/rpc/handlers/sessionControls';
+import { cloneCallableSessionRuntimeControls } from '@/api/session/sessionRuntimeControls';
 
 export type DeferredApiSessionTarget = Readonly<{
   sessionId: string;
   rpcHandlerManager: RpcHandlerManagerLike;
+  setSessionRuntimeControls?: (controls: SessionRuntimeControls | null) => void;
+  registerSessionRuntimeControls?: (controls: Partial<SessionRuntimeControls> | null) => () => void;
+  beginRuntimeTermination?: () => void;
+  hasRuntimeTerminationStarted?: () => boolean;
   sendSessionEvent: (event: unknown, id?: string) => void;
   sendClaudeSessionMessage: (message: unknown, meta?: unknown) => void;
+  sendClaudeSessionMessageCommittedExact?: (message: unknown, meta?: Record<string, unknown>) => Promise<void>;
   recordClaudeJsonlMessageConsumed?: (message: unknown, meta?: unknown) => void;
   setProviderOwnedUserMessageEchoClassifier?: (classifier: ProviderOwnedUserMessageEchoClassifier | null) => void;
   fetchCommittedClaudeJsonlMessageBaseline?: (opts?: { take?: number }) => Promise<import('@/backends/claude/utils/claudeJsonlMessageKey').CommittedClaudeJsonlMessageBaseline>;
@@ -27,18 +39,32 @@ export type DeferredApiSessionTarget = Readonly<{
     opts: { localId: string; meta?: Record<string, unknown> },
   ) => Promise<void>;
   sendCodexMessage: (body: unknown) => void;
+  sendCodexMessageCommitted?: (body: unknown, opts: { localId: string }) => Promise<unknown>;
   sendUserTextMessage: (text: string, opts?: { localId?: string; meta?: Record<string, unknown> }) => void;
+  sendUserTextMessageCommitted?: (
+    text: string,
+    opts: { localId: string; meta?: Record<string, unknown> },
+  ) => Promise<void>;
+  sendSessionEventCommitted?: (event: unknown, opts: { localId: string }) => Promise<unknown>;
+  enqueueSessionUserMessage?: (params: Readonly<{
+    text: string;
+    localId?: string;
+    meta?: Record<string, unknown>;
+  }>) => Promise<SessionUserMessageEnqueueResult>;
   updateMetadata: (updater: (metadata: Metadata) => Metadata) => void | Promise<void>;
   updateAgentState: (updater: (state: AgentState) => AgentState) => void | Promise<void>;
+  getRuntimeActivitySnapshotPublisher?: () => SessionRuntimeActivitySnapshotPublisher | null;
   keepAlive: (thinking: boolean, mode: 'local' | 'remote') => void;
   getMetadataSnapshot: () => Metadata | null;
   refreshSessionSnapshotFromServerBestEffort?: (opts?: { reason?: 'connect' | 'waitForMetadataUpdate' }) => Promise<void>;
   waitForMetadataUpdate: (abortSignal?: AbortSignal) => Promise<boolean>;
+  waitForPendingEligibilityUpdate?: (abortSignal?: AbortSignal) => Promise<boolean>;
   shouldAttemptPendingMaterialization?: () => boolean;
   reconcilePendingQueueState?: (opts?: { force?: boolean }) => Promise<boolean>;
   materializeNextPendingMessageSafely?: (opts?: {
     reconcileWhenEmpty?: PendingQueueReconcileWhenEmpty;
   }) => Promise<MaterializeNextPendingResult>;
+  wakePendingMaterialization?: () => void;
   popPendingMessage: () => Promise<boolean>;
   peekPendingMessageQueueV2Count: (opts?: PendingQueueReadOptions) => Promise<number>;
   discardPendingMessageQueueV2All: (opts: { reason: 'switch_to_local' | 'manual' }) => Promise<number>;
@@ -58,7 +84,14 @@ export class DeferredApiSessionClient {
   sessionId: string;
   private readonly limits: DeferredSessionBufferLimits;
   readonly rpcHandlerManager: RpcHandlerManagerLike;
+  readonly startupRpcHandlerManager: RpcHandlerManagerLike;
   private readonly registeredHandlers = new Map<string, RpcHandler>();
+  private readonly startupHandlers = new Map<string, RpcHandler>();
+  private baseSessionRuntimeControls: Partial<SessionRuntimeControls> = {};
+  private readonly sessionRuntimeControlRegistrations = new Set<{
+    controls: Partial<SessionRuntimeControls>;
+    targetDispose: (() => void) | null;
+  }>();
   private target: DeferredApiSessionTarget | null = null;
   private attachPromise: Promise<void> | null = null;
   private flushInFlight: Promise<void> | null = null;
@@ -69,6 +102,8 @@ export class DeferredApiSessionClient {
   private flushHadErrors = false;
   private flushErrorWarningSent = false;
   private cancelled = false;
+  private runtimeTerminationStarted = false;
+  private pendingWakeDebt = false;
   private providerOwnedUserMessageEchoClassifier: ProviderOwnedUserMessageEchoClassifier | null = null;
   private providerOwnedUserMessageEchoClassifierSet = false;
 
@@ -87,12 +122,53 @@ export class DeferredApiSessionClient {
         }
       },
       invokeLocal: async (method: string, params: unknown): Promise<unknown> => {
+        const target = this.target;
+        if (target) return await target.rpcHandlerManager.invokeLocal(method, params);
         const handler = this.registeredHandlers.get(method);
         if (!handler) {
           return { error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
         }
         return await handler(params);
       },
+    };
+    this.startupRpcHandlerManager = {
+      registerHandler: <TRequest = any, TResponse = any>(
+        method: string,
+        handler: RpcHandler<TRequest, TResponse>,
+      ) => {
+        this.startupHandlers.set(method, handler as RpcHandler);
+      },
+      invokeLocal: async (method: string, params: unknown): Promise<unknown> => {
+        const handler = this.startupHandlers.get(method);
+        if (!handler) {
+          return { error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
+        }
+        return await handler(params);
+      },
+    };
+  }
+
+  setSessionRuntimeControls(controls: SessionRuntimeControls | null): void {
+    this.baseSessionRuntimeControls = cloneCallableSessionRuntimeControls(controls);
+    this.target?.setSessionRuntimeControls?.(this.baseSessionRuntimeControls);
+  }
+
+  registerSessionRuntimeControls(controls: Partial<SessionRuntimeControls> | null): () => void {
+    const copiedControls = cloneCallableSessionRuntimeControls(controls);
+    if (Object.keys(copiedControls).length === 0) return () => {};
+
+    const registration = {
+      controls: copiedControls,
+      targetDispose: this.target?.registerSessionRuntimeControls?.(copiedControls) ?? null,
+    };
+    this.sessionRuntimeControlRegistrations.add(registration);
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      this.sessionRuntimeControlRegistrations.delete(registration);
+      registration.targetDispose?.();
+      registration.targetDispose = null;
     };
   }
 
@@ -120,6 +196,19 @@ export class DeferredApiSessionClient {
       return;
     }
     this.pushBufferedCall((t) => t.sendClaudeSessionMessage(_message, _meta), { hint: 'sendClaudeSessionMessage' });
+  }
+
+  sendClaudeSessionMessageCommittedExact(
+    _message: unknown,
+    _meta?: Record<string, unknown>,
+  ): Promise<void> {
+    return this.forwardCommittedCall(async (target) => {
+      const commit = target.sendClaudeSessionMessageCommittedExact;
+      if (!commit) {
+        throw new Error('Attached session client does not support exact Claude transcript commits');
+      }
+      await commit.call(target, _message, _meta);
+    }, 'sendClaudeSessionMessageCommittedExact');
   }
 
   hasActiveCanonicalTurn(): boolean {
@@ -187,26 +276,10 @@ export class DeferredApiSessionClient {
     _body: unknown,
     _opts: { localId: string; meta?: Record<string, unknown> },
   ): Promise<void> {
-    const target = this.target;
-    if (target && !this.flushInFlight) {
-      return target.sendAgentMessageCommitted(_provider, _body, _opts);
-    }
-
-    const deferred = createDeferredPromise<void>();
-    if (this.cancelled) {
-      deferred.resolve();
-      return deferred.promise;
-    }
-
-    this.pushBufferedCall(
-      async (t) => {
-        await t.sendAgentMessageCommitted(_provider, _body, _opts);
-        deferred.resolve();
-      },
-      { hint: 'sendAgentMessageCommitted' },
-      { onDrop: () => deferred.resolve() },
+    return this.forwardCommittedCall(
+      (target) => target.sendAgentMessageCommitted(_provider, _body, _opts),
+      'sendAgentMessageCommitted',
     );
-    return deferred.promise;
   }
 
   sendCodexMessage(_body: unknown): void {
@@ -222,6 +295,18 @@ export class DeferredApiSessionClient {
     this.pushBufferedCall((t) => t.sendCodexMessage(_body), { hint: 'sendCodexMessage' });
   }
 
+  sendCodexMessageCommitted(_body: unknown, _opts: { localId: string }): Promise<unknown> {
+    return this.forwardCommittedCall(
+      (target) => {
+        if (!target.sendCodexMessageCommitted) {
+          throw new Error('Attached session does not support committed Codex messages');
+        }
+        return target.sendCodexMessageCommitted(_body, _opts);
+      },
+      'sendCodexMessageCommitted',
+    );
+  }
+
   sendUserTextMessage(_text: string, _opts?: { localId?: string; meta?: Record<string, unknown> }): void {
     const target = this.target;
     if (target && !this.flushInFlight) {
@@ -233,6 +318,77 @@ export class DeferredApiSessionClient {
       return;
     }
     this.pushBufferedCall((t) => t.sendUserTextMessage(_text, _opts), { hint: 'sendUserTextMessage' });
+  }
+
+  sendUserTextMessageCommitted(
+    _text: string,
+    _opts: { localId: string; meta?: Record<string, unknown> },
+  ): Promise<void> {
+    return this.forwardCommittedCall(
+      (target) => {
+        if (!target.sendUserTextMessageCommitted) {
+          throw new Error('Attached session does not support committed user messages');
+        }
+        return target.sendUserTextMessageCommitted(_text, _opts);
+      },
+      'sendUserTextMessageCommitted',
+    );
+  }
+
+  sendSessionEventCommitted(_event: unknown, _opts: { localId: string }): Promise<unknown> {
+    return this.forwardCommittedCall(
+      (target) => {
+        if (!target.sendSessionEventCommitted) {
+          throw new Error('Attached session does not support committed session events');
+        }
+        return target.sendSessionEventCommitted(_event, _opts);
+      },
+      'sendSessionEventCommitted',
+    );
+  }
+
+  async enqueueSessionUserMessage(_params: Readonly<{
+    text: string;
+    localId?: string;
+    meta?: Record<string, unknown>;
+  }>): Promise<SessionUserMessageEnqueueResult> {
+    const target = this.target;
+    if (target && !this.flushInFlight) {
+      if (typeof target.enqueueSessionUserMessage === 'function') {
+        return await target.enqueueSessionUserMessage(_params);
+      }
+      target.sendUserTextMessage(_params.text, {
+        localId: _params.localId,
+        meta: _params.meta,
+      });
+      return;
+    }
+
+    const deferred = createDeferredPromise<SessionUserMessageEnqueueResult>();
+    if (this.cancelled) {
+      deferred.resolve(startupEnqueueUnavailable('cancelled'));
+      return deferred.promise;
+    }
+
+    this.pushBufferedCall(
+      async (t) => {
+        if (typeof t.enqueueSessionUserMessage === 'function') {
+          deferred.resolve(await t.enqueueSessionUserMessage(_params));
+          return;
+        }
+        t.sendUserTextMessage(_params.text, {
+          localId: _params.localId,
+          meta: _params.meta,
+        });
+        deferred.resolve();
+      },
+      { hint: 'enqueueSessionUserMessage' },
+      {
+        onDrop: (reason) => deferred.resolve(startupEnqueueUnavailable(reason)),
+        onError: () => deferred.resolve(startupEnqueueUnavailable('flush_error')),
+      },
+    );
+    return deferred.promise;
   }
 
   updateMetadata(_updater: (metadata: Metadata) => Metadata): void | Promise<void> {
@@ -334,6 +490,14 @@ export class DeferredApiSessionClient {
     return await this.withAttachedTarget((t) => t.waitForMetadataUpdate(abortSignal), false);
   }
 
+  async waitForPendingEligibilityUpdate(abortSignal?: AbortSignal): Promise<boolean> {
+    if (abortSignal?.aborted) return false;
+    return await this.withAttachedTarget(
+      (t) => t.waitForPendingEligibilityUpdate?.(abortSignal) ?? Promise.resolve(false),
+      false,
+    );
+  }
+
   shouldAttemptPendingMaterialization(): boolean {
     const target = this.target;
     if (!target || this.flushInFlight) return false;
@@ -348,7 +512,8 @@ export class DeferredApiSessionClient {
     reconcileWhenEmpty?: PendingQueueReconcileWhenEmpty;
   }): Promise<MaterializeNextPendingResult> {
     return await this.withAttachedTarget(
-      (t) => t.materializeNextPendingMessageSafely?.(opts) ?? Promise.resolve({ type: 'no_pending' as const }),
+      (t): Promise<MaterializeNextPendingResult> => t.materializeNextPendingMessageSafely?.(opts)
+        ?? Promise.resolve({ type: 'retryable_transport' as const }),
       { type: 'deferred' as const, reason: 'supervisor_offline' as const },
     );
   }
@@ -390,6 +555,19 @@ export class DeferredApiSessionClient {
     await this.withAttachedTarget((t) => t.close(), undefined);
   }
 
+  getRuntimeActivitySnapshotPublisher(): SessionRuntimeActivitySnapshotPublisher | null {
+    return this.target?.getRuntimeActivitySnapshotPublisher?.() ?? null;
+  }
+
+  wakePendingMaterialization(): void {
+    if (this.cancelled) return;
+    if (this.target) {
+      this.target.wakePendingMaterialization?.();
+      return;
+    }
+    this.pendingWakeDebt = true;
+  }
+
   attach(_real: DeferredApiSessionTarget): Promise<void> {
     const existingPromise = this.attachPromise;
     if (existingPromise) return existingPromise;
@@ -399,6 +577,10 @@ export class DeferredApiSessionClient {
       return this.attachPromise;
     }
 
+    if (this.runtimeTerminationStarted) {
+      _real.beginRuntimeTermination?.();
+    }
+
     this.target = _real;
     this.sessionId = _real.sessionId;
 
@@ -406,20 +588,41 @@ export class DeferredApiSessionClient {
       _real.rpcHandlerManager.registerHandler(method, handler);
     }
 
+    _real.setSessionRuntimeControls?.(this.baseSessionRuntimeControls);
+    for (const registration of this.sessionRuntimeControlRegistrations) {
+      registration.targetDispose = _real.registerSessionRuntimeControls?.(registration.controls) ?? null;
+    }
+
+    if (this.pendingWakeDebt) {
+      this.pendingWakeDebt = false;
+      _real.wakePendingMaterialization?.();
+    }
+
     if (this.providerOwnedUserMessageEchoClassifierSet) {
       _real.setProviderOwnedUserMessageEchoClassifier?.(this.providerOwnedUserMessageEchoClassifier);
     }
 
     this.flushInFlight = this.drainBufferedCallsUntilEmpty();
-    this.attachPromise = this.flushInFlight.finally(() => {
-      this.flushInFlight = null;
-    });
+    this.attachPromise = (async () => {
+      try {
+        await this.flushInFlight;
+        // A call can arrive after the first drain observes an empty buffer but before its
+        // completion clears the attach fence. Drain that tail before making direct forwarding
+        // observable; otherwise an exact startup dispatch can remain buffered forever.
+        while (this.buffer.length > 0) {
+          await this.drainBufferedCallsUntilEmpty();
+        }
+      } finally {
+        this.flushInFlight = null;
+      }
+    })();
     return this.attachPromise;
   }
 
   cancel(): void {
     if (this.cancelled) return;
     this.cancelled = true;
+    this.pendingWakeDebt = false;
 
     const entries = this.buffer;
     this.buffer = [];
@@ -427,11 +630,22 @@ export class DeferredApiSessionClient {
 
     for (const entry of entries) {
       try {
-        entry.onDrop?.();
+        entry.onDrop?.('cancelled');
       } catch {
         // ignore
       }
     }
+  }
+
+  beginRuntimeTermination(): void {
+    if (this.runtimeTerminationStarted) return;
+    this.runtimeTerminationStarted = true;
+    this.target?.beginRuntimeTermination?.();
+    if (!this.target) this.cancel();
+  }
+
+  hasRuntimeTerminationStarted(): boolean {
+    return this.runtimeTerminationStarted || this.target?.hasRuntimeTerminationStarted?.() === true;
   }
 
   getBufferStats(): DeferredSessionBufferStats {
@@ -458,7 +672,7 @@ export class DeferredApiSessionClient {
         hadError = true;
         try {
           if (entry.onError) entry.onError(error);
-          else entry.onDrop?.();
+          else entry.onDrop?.('flush_error');
         } catch {
           // ignore
         }
@@ -528,10 +742,38 @@ export class DeferredApiSessionClient {
     return await Promise.resolve(fn(after));
   }
 
+  private forwardCommittedCall<TResult>(
+    call: (target: DeferredApiSessionTarget) => Promise<TResult>,
+    hint: string,
+  ): Promise<TResult> {
+    const target = this.target;
+    if (target && !this.flushInFlight) {
+      return call(target);
+    }
+
+    const deferred = createDeferredPromise<TResult>();
+    if (this.cancelled) {
+      deferred.resolve(undefined as TResult);
+      return deferred.promise;
+    }
+
+    this.pushBufferedCall(
+      async (attachedTarget) => {
+        deferred.resolve(await call(attachedTarget));
+      },
+      { hint },
+      {
+        onDrop: () => deferred.resolve(undefined as TResult),
+        onError: (error) => deferred.reject(error),
+      },
+    );
+    return deferred.promise;
+  }
+
   private pushBufferedCall(
     flush: (target: DeferredApiSessionTarget) => void | Promise<void>,
     opts: { hint: string },
-    extra?: { onDrop?: () => void; onError?: (error: unknown) => void },
+    extra?: { onDrop?: (reason: DeferredSessionBufferDropReason) => void; onError?: (error: unknown) => void },
   ): void {
     const approxBytes = approxBytesForHint(opts.hint);
     this.buffer.push({ approxBytes, flush, onDrop: extra?.onDrop, onError: extra?.onError });
@@ -551,12 +793,28 @@ export class DeferredApiSessionClient {
         this.overflowed = true;
       }
       try {
-        dropped.onDrop?.();
+        dropped.onDrop?.('overflow');
       } catch {
         // ignore
       }
     }
   }
+}
+
+function startupEnqueueUnavailable(
+  reason: DeferredSessionBufferDropReason,
+): Exclude<SessionUserMessageEnqueueResult, void> {
+  const errorCode = reason === 'cancelled'
+    ? 'session_user_message_startup_cancelled'
+    : reason === 'overflow'
+      ? 'session_user_message_startup_buffer_overflow'
+      : 'session_user_message_startup_flush_error';
+  return {
+    recoveryBlocked: {
+      status: 'unavailable',
+      errorCode,
+    },
+  };
 }
 
 function createDeferredPromise<T>(): {

@@ -2,6 +2,12 @@ import type { PlainObject } from './_shared';
 import { isPlainObject, mergeObjects } from './_shared';
 
 export type TestReactNativeOverrides = Record<string, unknown>;
+export type TestReactNativeAppStateStatus =
+    | 'active'
+    | 'background'
+    | 'extension'
+    | 'inactive'
+    | 'unknown';
 type ReactNativeStubModule = typeof import('../../reactNativeStub');
 type DeepMutable<T> = T extends (...args: infer TArgs) => infer TResult
     ? (...args: TArgs) => TResult
@@ -69,4 +75,124 @@ export async function createReactNativeWebMock(
 
 export function installReactNativeWebMock(overrides?: TestReactNativeOverrides) {
     return async () => createReactNativeWebMock(overrides);
+}
+
+export type TestReactNativeNativePlatformOS = 'ios' | 'android';
+
+/**
+ * The native counterpart of {@link createReactNativeWebMock}.
+ *
+ * The shared stub reports `Platform.OS === 'node'` and omits a few real React Native exports that
+ * only native-build consumers reach for. `@legendapp/list`'s native artifact needs all of them at
+ * module evaluation - `ReactNative.unstable_batchedUpdates`, `Animated.ScrollView`,
+ * `Animated.event` and `I18nManager` - and a missing one surfaces as a module-init crash rather
+ * than a behavioural failure, which is how a native harness ends up quietly disabled.
+ *
+ * `Platform.select` is switched to native precedence to match the device: `web` is no longer a
+ * candidate, and the requested OS key wins over the generic `native` key.
+ */
+export async function createReactNativeNativeMock(
+    options: Readonly<{ platformOS: TestReactNativeNativePlatformOS }>,
+    overrides?: TestReactNativeOverrides,
+): Promise<DeepMutable<ReactNativeStubModule> & TestReactNativeOverrides> {
+    const stub = await import('../../reactNativeStub');
+    const { Platform: platformOverrides, Animated: animatedOverrides, ...restOverrides } = overrides ?? {};
+    const mergedModule = mergeObjects(stub as PlainObject, restOverrides as PlainObject | undefined);
+    const { platformOS } = options;
+
+    const basePlatform = {
+        ...(stub.Platform ?? {}),
+        OS: platformOS,
+        select: <T,>(choices: { web?: T; default?: T; native?: T; ios?: T; android?: T }) => (
+            choices?.[platformOS] ?? choices?.native ?? choices?.default
+        ),
+    };
+
+    const baseAnimated = {
+        ...(stub.Animated ?? {}),
+        // The list drives its scroller through `Animated.ScrollView`; react-test-renderer needs a
+        // host name it can find, and the rest of the suite already targets the string 'ScrollView'.
+        ScrollView: 'ScrollView',
+        event: (_argMapping: unknown, config?: { listener?: (...args: unknown[]) => void }) => (
+            (...args: unknown[]) => config?.listener?.(...args)
+        ),
+    };
+
+    return {
+        ...mergedModule,
+        Animated: mergeObjectsPreservingDescriptors(
+            baseAnimated as PlainObject,
+            animatedOverrides as PlainObject | undefined,
+        ),
+        I18nManager: { isRTL: false, ...(restOverrides.I18nManager as PlainObject | undefined) },
+        Platform: mergeObjectsPreservingDescriptors(
+            basePlatform as PlainObject,
+            (platformOverrides as PlainObject | undefined) ?? undefined,
+        ),
+        unstable_batchedUpdates: (callback: () => void) => callback(),
+    } as unknown as DeepMutable<ReactNativeStubModule> & TestReactNativeOverrides;
+}
+
+export function createReactNativeAppStateEmitter(
+    initialState: TestReactNativeAppStateStatus = 'active',
+) {
+    let currentState = initialState;
+    const changeListeners = new Set<(state: TestReactNativeAppStateStatus) => void>();
+    const appState = {
+        get currentState() {
+            return currentState;
+        },
+        addEventListener(
+            eventName: string,
+            listener: (state: TestReactNativeAppStateStatus) => void,
+        ) {
+            if (eventName !== 'change') {
+                return { remove: () => {} };
+            }
+            changeListeners.add(listener);
+            return {
+                remove: () => {
+                    changeListeners.delete(listener);
+                },
+            };
+        },
+    };
+
+    return {
+        appState,
+        emit(state: TestReactNativeAppStateStatus) {
+            currentState = state;
+            for (const listener of [...changeListeners]) {
+                listener(state);
+            }
+        },
+        getListenerCount() {
+            return changeListeners.size;
+        },
+        install(target: object) {
+            const keys = ['currentState', 'addEventListener'] as const;
+            const originalDescriptors = new Map(
+                keys.map((key) => [key, Object.getOwnPropertyDescriptor(target, key)]),
+            );
+            for (const key of keys) {
+                const descriptor = Object.getOwnPropertyDescriptor(appState, key);
+                if (descriptor) {
+                    Object.defineProperty(target, key, {
+                        ...descriptor,
+                        configurable: true,
+                    });
+                }
+            }
+            return () => {
+                for (const key of keys) {
+                    const descriptor = originalDescriptors.get(key);
+                    if (descriptor) {
+                        Object.defineProperty(target, key, descriptor);
+                    } else {
+                        Reflect.deleteProperty(target, key);
+                    }
+                }
+            };
+        },
+    };
 }

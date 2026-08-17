@@ -6,6 +6,7 @@ import {
   readOpenCodeTimestampMs,
 } from './openCodeProjectionParsing';
 import type { OpenCodeAssistantCompletion } from './openCodeTranscriptProjectionTypes';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
 
 const CONTINUATION_FINISHES = new Set([
   'tool-calls',
@@ -34,13 +35,19 @@ export function classifyOpenCodeAssistantCompletion(messageOrInfo: unknown): Ope
   const projection = classifyOpenCodeMessageForProjection(messageOrInfo);
   const info = projection.info;
   const finish = normalizeFinish(info?.finish);
-  const messageId = projection.messageId || normalizeOpenCodeProjectionString(info?.id).trim();
+  const messageId = projection.messageId || readNonBlankOpaqueIdentifier(normalizeOpenCodeProjectionString(info?.id)) || '';
 
   if (projection.kind === 'compaction_internal' || projection.kind === 'ignored_internal') {
     return { kind: 'ignored_internal', messageId, completedAtMs: null, finish };
   }
 
   if (projection.kind !== 'assistant_transcript') {
+    return { kind: 'non_terminal', messageId, completedAtMs: null, finish };
+  }
+
+  // Provider failures are settled by the runtime's existing session-error or authoritative-history
+  // reconciliation owner. Never let a completed error envelope manufacture terminal success first.
+  if (info?.error != null) {
     return { kind: 'non_terminal', messageId, completedAtMs: null, finish };
   }
 

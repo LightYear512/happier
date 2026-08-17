@@ -4,6 +4,8 @@ import type {
     DirectSessionTranscriptDeltaEphemeral,
     ExecutionRunPublicState,
     PrimaryTurnStatusV1,
+    SessionRuntimeActivityState,
+    SessionMessageAttentionImpact,
     SessionRuntimeIssueV1,
     SessionStoredMessageContent,
 } from "@happier-dev/protocol";
@@ -58,6 +60,7 @@ export type UpdateEvent = {
         content: any;
         localId: string | null;
         sidechainId?: string | null;
+        attentionImpact?: SessionMessageAttentionImpact;
         createdAt: number;
         updatedAt: number;
     }
@@ -70,6 +73,7 @@ export type UpdateEvent = {
         content: any;
         localId: string | null;
         sidechainId?: string | null;
+        attentionImpact?: SessionMessageAttentionImpact;
         createdAt: number;
         updatedAt: number;
     }
@@ -86,6 +90,10 @@ export type UpdateEvent = {
     activeAt: number;
     createdAt: number;
     updatedAt: number;
+    runtimeActivityState?: SessionRuntimeActivityState;
+    runtimeActivityRevision?: number;
+    runtimeActivityActiveCount?: number;
+    runtimeActivityObservedAt?: number | null;
 } | {
     type: 'update-session';
     sessionId: string;
@@ -109,12 +117,17 @@ export type UpdateEvent = {
     latestTurnStatus?: PrimaryTurnStatusV1 | null | undefined;
     latestTurnStatusObservedAt?: number | null | undefined;
     lastRuntimeIssue?: SessionRuntimeIssueV1 | null | undefined;
+    runtimeActivityState?: SessionRuntimeActivityState | null | undefined;
+    runtimeActivityRevision?: number | undefined;
+    runtimeActivityActiveCount?: number | undefined;
+    runtimeActivityObservedAt?: number | null | undefined;
     archivedAt?: number | null | undefined;
 } | {
     type: 'pending-changed';
     sessionId: string;
     pendingVersion: number;
     pendingCount: number;
+    pendingBlockedCount?: number;
     meaningfulActivityAt?: number;
     changedByAccountId?: string;
 } | {
@@ -307,6 +320,19 @@ export type EphemeralEvent = {
         localId: string;
         sidechainId?: string | null;
         content: SessionStoredMessageContent;
+        tick?: number;
+        createdAt: number;
+        updatedAt: number;
+    };
+} | {
+    type: 'transcript-stream-segment-delta';
+    sessionId: string;
+    message: {
+        localId: string;
+        sidechainId?: string | null;
+        content: SessionStoredMessageContent;
+        tick: number;
+        baseLength: number;
         createdAt: number;
         updatedAt: number;
     };

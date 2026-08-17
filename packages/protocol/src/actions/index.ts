@@ -71,6 +71,22 @@ export {
   resolveActionToolExposureMode,
   type ActionToolExposureResolutionContext,
 } from './actionToolExposure.js';
+export {
+  resolveActionSurfaceAvailability,
+  type ActionSurfaceAvailability,
+  type ActionSurfaceAvailabilityReason,
+  type ActionSurfaceSettingsState,
+  type ResolveActionSurfaceAvailabilityArgs,
+} from './actionSurfaceAvailability.js';
+export {
+  SpawnConfigOptionValueSchema,
+  buildAcpConfigOptionOverridesV1FromConfigOptions,
+  findSpawnConfigOptionAliasConflicts,
+  mergeSpawnConfigOptionAliases,
+  readSpawnConfigOptionOverrideValue,
+  type SpawnConfigOptionValue,
+  type SpawnConfigOptionsAliasConflict,
+} from './sessionSpawnConfigOptions.js';
 
 export {
   createActionExecutor,

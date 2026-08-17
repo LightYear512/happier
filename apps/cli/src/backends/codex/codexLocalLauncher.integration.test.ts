@@ -5,6 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+import {
+  DeferredApiSessionClient,
+  type DeferredApiSessionTarget,
+} from '@/agent/runtime/startup/DeferredApiSessionClient';
+import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { codexLocalLauncher } from './codexLocalLauncher';
 import {
   applyCodexLauncherEnv,
@@ -556,6 +561,148 @@ describe('codexLocalLauncher', () => {
         expect(existsSync(fixture.terminatedFlag)).toBe(true);
       });
       expect(metadataUpdates.some((m) => m && m.codexSessionId === sessionId)).toBe(true);
+    } finally {
+      restoreEnv();
+      await cleanupCodexBinaryFixture(fixture);
+    }
+  });
+
+  it('publishes a fresh fast-start rollout identity before completing remote takeover', async () => {
+    const fixture = await createCodexBinaryFixture();
+    const sessionId = randomUUID();
+    const nowIso = new Date().toISOString();
+
+    await writeFakeCodexScript(fixture.fakeCodex, {
+      terminatedFlag: fixture.terminatedFlag,
+      recordArgv: false,
+    });
+
+    const { session, sessionEvents, metadataUpdates } = createLocalSessionHarness();
+    const targetSession = {
+      ...(session as unknown as Record<string, unknown>),
+      sessionId: 'happier-session-1',
+      getMetadataSnapshot: () => ({ codexSessionId: null }),
+    } as unknown as DeferredApiSessionTarget;
+    const deferredSession = new DeferredApiSessionClient({
+      placeholderSessionId: 'PID-fast-start',
+      limits: { maxEntries: 1_000, maxBytes: 100_000 },
+    });
+    const messageQueue = createLocalMessageQueue();
+    const restoreEnv = applyCodexLauncherEnv({
+      HAPPIER_CODEX_SESSIONS_DIR: fixture.sessionsRoot,
+      HAPPIER_CODEX_TUI_BIN: fixture.fakeCodex,
+      TEST_CODEX_SESSION_ID: sessionId,
+      TEST_CODEX_TIMESTAMP: nowIso,
+      TEST_CODEX_ARGV_PATH: undefined,
+    });
+
+    let launcherPromise: ReturnType<typeof codexLocalLauncher> | null = null;
+    try {
+      launcherPromise = codexLocalLauncher({
+        path: fixture.sessionsRoot,
+        api: null,
+        session: deferredSession as unknown as ApiSessionClient,
+        messageQueue,
+        permissionMode: 'default',
+      });
+      let launcherSettled = false;
+      void launcherPromise.finally(() => {
+        launcherSettled = true;
+      });
+
+      messageQueue.push('take over remotely', { permissionMode: 'default' });
+      await waitFor(() => {
+        expect(existsSync(join(fixture.sessionsRoot, 'rollout-test.jsonl'))).toBe(true);
+      });
+      await sleep(500);
+
+      // Discovery happens before backend API initialization during fast start. The local
+      // launcher must retain the discovered identity and wait for its metadata write to attach.
+      expect(launcherSettled).toBe(false);
+
+      await deferredSession.attach(targetSession);
+      const result = await launcherPromise;
+      expect(result, JSON.stringify(sessionEvents)).toEqual({ type: 'switch', resumeId: sessionId });
+      expect(metadataUpdates.some((metadata) => metadata.codexSessionId === sessionId)).toBe(true);
+    } finally {
+      await deferredSession.attach(targetSession);
+      if (launcherPromise) {
+        messageQueue.push('take over remotely', { permissionMode: 'default' });
+        await launcherPromise.catch(() => undefined);
+      }
+      restoreEnv();
+      await cleanupCodexBinaryFixture(fixture);
+    }
+  });
+
+  it('does not bind a fresh session to a concurrent rollout from another workspace', async () => {
+    const fixture = await createCodexBinaryFixture();
+    const unrelatedSessionId = randomUUID();
+    const ownSessionId = randomUUID();
+    const nowIso = new Date().toISOString();
+    const unrelatedRollout = join(fixture.sessionsRoot, 'rollout-unrelated.jsonl');
+
+    await writeFile(
+      unrelatedRollout,
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: unrelatedSessionId,
+          timestamp: nowIso,
+          cwd: join(fixture.sessionsRoot, 'other-workspace'),
+          originator: 'happier_cli',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: randomUUID(),
+                depth: 1,
+              },
+            },
+          },
+        },
+      })}\n`,
+      'utf8',
+    );
+    await writeFakeCodexScript(fixture.fakeCodex, {
+      terminatedFlag: fixture.terminatedFlag,
+      sessionMetaDelayMs: 300,
+      recordArgv: false,
+    });
+
+    const { session, metadataUpdates } = createLocalSessionHarness();
+    const messageQueue = createLocalMessageQueue();
+    const restoreEnv = applyCodexLauncherEnv({
+      HAPPIER_CODEX_SESSIONS_DIR: fixture.sessionsRoot,
+      HAPPIER_CODEX_TUI_BIN: fixture.fakeCodex,
+      TEST_CODEX_SESSION_ID: ownSessionId,
+      TEST_CODEX_TIMESTAMP: nowIso,
+      TEST_CODEX_ARGV_PATH: undefined,
+    });
+
+    try {
+      const launcherPromise = codexLocalLauncher({
+        path: fixture.sessionsRoot,
+        api: {},
+        session,
+        messageQueue,
+        permissionMode: 'default',
+        rolloutDiscovery: {
+          initialTimeoutMs: 1_000,
+          initialPollIntervalMs: 25,
+          extendedPollIntervalMs: 25,
+        },
+      });
+
+      await waitFor(() => {
+        expect(metadataUpdates.some((metadata) => metadata.codexSessionId === ownSessionId)).toBe(true);
+      });
+      expect(metadataUpdates.some((metadata) => metadata.codexSessionId === unrelatedSessionId)).toBe(false);
+
+      messageQueue.push('switch', { permissionMode: 'default' });
+      await expect(launcherPromise).resolves.toEqual({ type: 'switch', resumeId: ownSessionId });
+      await waitFor(() => {
+        expect(existsSync(fixture.terminatedFlag)).toBe(true);
+      });
     } finally {
       restoreEnv();
       await cleanupCodexBinaryFixture(fixture);

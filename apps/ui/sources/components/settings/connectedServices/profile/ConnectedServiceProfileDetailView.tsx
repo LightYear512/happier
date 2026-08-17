@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -28,11 +27,18 @@ import {
 } from '@/sync/domains/connectedServices/connectedServiceProfilePreferences';
 import { getConnectedServiceRegistryEntry } from '@/sync/domains/connectedServices/connectedServiceRegistry';
 import { resolveConnectedServiceCredentialHealthStatus } from '@/sync/domains/connectedServices/resolveConnectedServiceCredentialHealthStatus';
-import { buildConnectedServiceCredentialRecord, ConnectedServiceIdSchema, type ConnectedServiceCredentialHealthStatusV1, type ConnectedServiceId } from '@happier-dev/protocol';
+import {
+  buildConnectedServiceCredentialRecord,
+  ConnectedServiceIdSchema,
+  isConnectedServiceCredentialHealthStatusUsable,
+  type ConnectedServiceCredentialHealthStatusV1,
+  type ConnectedServiceId,
+} from '@happier-dev/protocol';
 
 import { AccountBlock } from '../account/AccountBlock';
 import {
   isConnectedServiceCredentialReferencedByGroupError,
+  refreshConnectedServiceProfileAfterSupersededMutation,
   resolveConnectedServiceSettingsErrorMessage,
 } from '../errors/connectedServiceSettingsErrors';
 import { resolveConnectedServiceDisplayName } from '../model/resolveConnectedServiceDisplayName';
@@ -44,6 +50,7 @@ import { resolveConnectedServiceProfileIdentityDisplay } from '../model/resolveC
 import { promptConnectedServiceTokenValue } from '../promptConnectedServiceTokenValue';
 import { storeConnectedServiceCredentialWithIdentityConfirmation } from '../storeConnectedServiceCredentialWithIdentityConfirmation';
 import { runConnectedServiceCredentialStoredEffects } from '../runConnectedServiceCredentialStoredEffects';
+import { Icon } from '@/components/ui/icons/Icon';
 
 function asStringParam(value: unknown): string {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : '';
@@ -176,7 +183,10 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
     );
   }
 
-  const status = resolveConnectedServiceCredentialHealthStatus(profileRecord.status);
+  // Fail-closed normalization drives actions/labels only; AccountBlock receives the
+  // RAW status so its fail-open usage gate stays live (UI-1).
+  const rawStatus: unknown = profileRecord.status;
+  const status = resolveConnectedServiceCredentialHealthStatus(rawStatus);
   const kind = profileRecord.kind === 'token' ? 'token' : profileRecord.kind === 'oauth' ? 'oauth' : null;
   const providerEmail = typeof profileRecord.providerEmail === 'string' ? profileRecord.providerEmail : '';
   const providerAccountId = typeof profileRecord.providerAccountId === 'string' ? profileRecord.providerAccountId : '';
@@ -195,7 +205,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
   const profileConfirmationLabel = identityDisplay.diagnosticLabel;
 
   const isDefault = (settings.connectedServicesDefaultProfileByServiceId[serviceId] ?? '') === profileId;
-  const isConnected = status === 'connected';
+  const isUsable = isConnectedServiceCredentialHealthStatusUsable(status);
 
   const poolLabels = accountGroupsEnabled
     ? resolveConnectedServiceProfileGroupReferenceLabels({ profileId, projectedGroups: svc.groups })
@@ -230,9 +240,13 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
     if (!ok) return;
     const disconnect = async (cleanup: boolean) => {
       const credentials = ensureCredentials();
+      const expectedCredentialRevision = profile.connectedServiceCredentialRevisionsV1.find((candidate) => (
+        candidate.serviceId === serviceId && candidate.profileId === profileId
+      ))?.credentialRevision;
       await deleteConnectedServiceCredentialForAccount(credentials, {
         serviceId,
         profileId,
+        expectedCredentialRevision,
         ...(cleanup ? { cleanupGroupReferences: true } : {}),
       });
       applySettings(pruneConnectedServiceProfilePreferencesForDeletedProfile({
@@ -261,12 +275,14 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
             await disconnect(true);
             return;
           } catch (retryError: unknown) {
+            await refreshConnectedServiceProfileAfterSupersededMutation(retryError, () => sync.refreshProfile());
             await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(retryError));
             return;
           }
         }
         return;
       }
+      await refreshConnectedServiceProfileAfterSupersededMutation(error, () => sync.refreshProfile());
       await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(error));
     }
   };
@@ -341,11 +357,18 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
   };
 
   const handleAddToPool = () => {
-    router.push({ pathname: '/settings/connected-services/[serviceId]', params: { serviceId } });
+    // Route straight to the provider's Pools segment (not the default Accounts tab)
+    // and carry the profile through so the pools surface lands where the account can
+    // actually be added, instead of dropping the user on a generic provider page.
+    router.push({
+      pathname: '/settings/connected-services/[serviceId]',
+      params: { serviceId, segment: 'pools', profileId },
+    });
   };
 
   // Header kebab actions reuse the canonical mutation flows (replace token,
-  // reconnect). The connected/needs-re-auth split mirrors the actions section.
+  // reconnect). Usable retryable profiles stay in the account block; only
+  // reconnect-required profiles fall through to the re-auth section below.
   const headerActions = buildConnectedServiceAccountRowActions({
     kind,
     status,
@@ -355,7 +378,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
 
   return (
     <ItemList>
-      {isConnected ? (
+      {isUsable ? (
         <ItemGroup>
           <AccountBlock
             testID="connected-service-profile-account"
@@ -363,7 +386,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
             profileId={profileId}
             title={title}
             identityLabel={identityDisplay.secondaryLabel}
-            status={status}
+            status={rawStatus}
             isDefault={isDefault}
             onToggleDefault={handleSetDefault}
             poolLabels={poolLabels}
@@ -414,7 +437,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
                 key={`${poolLabel}:${index}`}
                 testID={`connected-service-profile-pool:${index}`}
                 title={poolLabel}
-                icon={<Ionicons name="layers-outline" size={22} color={theme.colors.text.secondary} />}
+                icon={<Icon name="stack-simple" size={20} color={theme.colors.text.secondary} />}
                 showChevron={false}
               />
             ))
@@ -422,7 +445,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
             <EmptyState
               testID="connected-service-profile-pools:empty"
               titleTestID="connected-service-profile-pools:empty:title"
-              icon={<Ionicons name="layers-outline" size={28} color={theme.colors.text.secondary} />}
+              icon={<Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />}
               title={t('connectedServices.profile.pools.emptyTitle')}
               subtitle={t('connectedServices.profile.pools.emptySubtitle')}
             />
@@ -431,7 +454,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
             testID="connected-service-profile-action:add-to-pool"
             title={t('connectedServices.profile.addToPool')}
             subtitle={t('connectedServices.profile.addToPoolSubtitle')}
-            icon={<Ionicons name="add-circle-outline" size={22} color={theme.colors.accent.blue} />}
+            icon={<Icon name="plus-circle" size={20} color={theme.colors.accent.blue} />}
             onPress={handleAddToPool}
           />
         </ItemGroup>
@@ -460,12 +483,12 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
           testID="connected-service-profile-action:edit-label"
           title={t('connectedServices.detail.actions.editLabel')}
           subtitle={t('connectedServices.detail.setProfileLabelSubtitle')}
-          icon={<Ionicons name="pencil-outline" size={22} color={theme.colors.accent.blue} />}
+          icon={<Icon name="pencil" size={20} color={theme.colors.accent.blue} />}
           onPress={() => void handleEditLabel()}
         />
       </ItemGroup>
 
-      {isConnected ? (
+      {isUsable ? (
         <ConnectionSection
           serviceId={serviceId}
           profileId={profileId}
@@ -481,7 +504,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
             testID="connected-services-profile-action:reconnect"
             title={t('connectedServices.detail.actions.reconnect')}
             subtitle={t('connectedServices.profile.reconnectSubtitle')}
-            icon={<Ionicons name={CONNECTED_SERVICE_RECONNECT_ICON} size={22} color={theme.colors.accent.blue} />}
+            icon={<Icon name={CONNECTED_SERVICE_RECONNECT_ICON} size={20} color={theme.colors.accent.blue} />}
             onPress={handleReconnect}
           />
         </ItemGroup>
@@ -492,7 +515,7 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
           testID="connected-service-profile-action:disconnect"
           title={t('modals.disconnect')}
           subtitle={t('connectedServices.profile.disconnectSubtitle')}
-          icon={<Ionicons name="trash-outline" size={22} color={theme.colors.state.danger.foreground} />}
+          icon={<Icon name="trash" size={20} color={theme.colors.state.danger.foreground} />}
           onPress={() => void handleDisconnect()}
         />
       </ItemGroup>

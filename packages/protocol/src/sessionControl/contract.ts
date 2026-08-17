@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PendingLocalIdSchema } from '../sessionMessages/pendingLocalId.js';
 import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
 
 import {
@@ -9,6 +10,7 @@ import {
 import { ActionIdSchema, ActionInputHintsSchema, ActionSafetySchema, ActionSurfaceSchema } from '../actions/index.js';
 import { ActionUiPlacementSchema } from '../actions/actionUiPlacements.js';
 import { SubAgentRunResultV2Schema } from '../tools/v2/index.js';
+import { StopSessionIncompleteReasonSchema } from '../sessionStop.js';
 import { AccountEncryptionModeSchema } from '../features/payload/capabilities/encryptionCapabilities.js';
 import {
   PrimaryTurnStatusV1Schema,
@@ -16,17 +18,24 @@ import {
   SessionRuntimeTemporaryThrottleDetailsV1Schema,
 } from '../sessions/control/runtimeIssueV1.js';
 import {
+  parseSessionRuntimeActivityProjectionFields,
+  SessionRuntimeActivityActiveCountSchema,
+  SessionRuntimeActivityStateSchema,
+} from '../sessionRuntimeActivity/projection.js';
+import {
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
   SessionUsageLimitRecoveryV1Schema,
 } from '../sessionMetadata/sessionUsageLimitRecoveryV1.js';
 import {
-  SESSION_CONTINUATION_RECOVERY_METADATA_KEY,
-  SessionContinuationRecoveryV1Schema,
-} from '../sessionMetadata/sessionContinuationRecoveryV1.js';
+  PROVIDER_ACCOUNT_USAGE_REFS_METADATA_KEY,
+  ProviderAccountUsageRefsV1Schema,
+} from '../sessionMetadata/providerAccountUsageRefsV1.js';
 import {
-  CONNECTED_SERVICE_QUOTA_REFS_METADATA_KEY,
-  ConnectedServiceQuotaRefsV1Schema,
-} from '../sessionMetadata/connectedServiceQuotaRefsV1.js';
+  createSessionWorkspaceLocationV1Schema,
+  SESSION_WORKSPACE_LOCATION_METADATA_KEY,
+} from '../sessionMetadata/sessionWorkspaceLocationV1.js';
+
+const LEGACY_CONNECTED_SERVICE_QUOTA_REFS_METADATA_KEY = 'connectedServiceQuotaRefsV1' as const;
 export {
   SessionTurnIdentifierV1Schema,
   SessionTurnLifecycleStatusV1Schema,
@@ -50,10 +59,16 @@ export {
   type SessionTurnV1,
 } from '../sessions/turns/sessionTurnV1.js';
 export {
+  ExactSessionTurnEndMutationV1Schema,
+  ExactSessionTurnMutationPositiveReceiptV1Schema,
+  isExactSessionTurnEndMutationV1,
+  isExactSessionTurnMutationPositiveReceiptV1,
   SessionTurnMutationActionV1Schema,
   SessionTurnMutationDecisionV1Schema,
   SessionTurnMutationReceiptV1Schema,
   SessionTurnMutationV1Schema,
+  type ExactSessionTurnEndMutationV1,
+  type ExactSessionTurnMutationPositiveReceiptV1,
   type SessionTurnMutationActionV1,
   type SessionTurnMutationDecisionV1,
   type SessionTurnMutationReceiptV1,
@@ -79,24 +94,13 @@ export {
   type TurnTerminalStatusV1,
 } from '../sessions/control/runtimeIssueV1.js';
 export {
-  SESSION_CONTINUATION_RECOVERY_METADATA_KEY,
-  SessionContinuationRecoveryAttemptStatusV1Schema,
-  SessionContinuationRecoveryAttemptV1Schema,
   SessionContinuationRecoveryIdentityV1Schema,
   SessionContinuationRecoverySelectionKindV1Schema,
-  SessionContinuationReplayModeV1Schema,
-  SessionContinuationRecoveryV1Schema,
   SessionContinuationResumePromptModeV1Schema,
-  isSessionContinuationRecoveryBlockingPendingDrain,
-  readSessionContinuationRecoveryFromMetadata,
-  type SessionContinuationRecoveryAttemptStatusV1,
-  type SessionContinuationRecoveryAttemptV1,
   type SessionContinuationRecoveryIdentityV1,
   type SessionContinuationRecoverySelectionKindV1,
-  type SessionContinuationReplayModeV1,
-  type SessionContinuationRecoveryV1,
   type SessionContinuationResumePromptModeV1,
-} from '../sessionMetadata/sessionContinuationRecoveryV1.js';
+} from '../sessionMetadata/sessionContinuationRecoveryIdentityV1.js';
 export {
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
   SESSION_USAGE_LIMIT_RECOVERY_STATE_FIELD_ID,
@@ -133,6 +137,8 @@ export const SessionControlErrorCodeSchema = z.enum([
   'execution_run_invalid_action_input',
   'execution_run_stream_not_found',
   'execution_run_not_allowed',
+  'execution_run_protocol_unsupported',
+  'execution_run_target_unavailable',
   'run_depth_exceeded',
   'conflict',
   'timeout',
@@ -193,6 +199,7 @@ export const SessionSummarySchema = z.object({
   activeAt: z.number().int().nonnegative(),
   archivedAt: z.number().int().nonnegative().nullable().optional(),
   pendingCount: z.number().int().nonnegative().optional(),
+  pendingBlockedCount: z.number().int().nonnegative().optional(),
   tag: z.string().optional(),
   title: z.string().min(1).optional(),
   path: z.string().optional(),
@@ -210,7 +217,11 @@ export const SessionSummarySchema = z.object({
   latestTurnId: z.string().min(1).nullable().optional(),
   latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
   lastRuntimeIssue: SessionRuntimeIssueV1Schema.nullable().optional(),
-}).passthrough();
+  runtimeActivityState: SessionRuntimeActivityStateSchema.nullable().optional(),
+  runtimeActivityActiveCount: SessionRuntimeActivityActiveCountSchema.optional(),
+  runtimeActivityObservedAt: z.number().int().nonnegative().nullable().optional(),
+  runtimeActivityRevision: z.number().int().nonnegative().safe().optional(),
+}).passthrough().superRefine(refineRuntimeActivityProjectionFields);
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
 /**
@@ -233,22 +244,36 @@ export function createSessionMetadataSchema(zod: typeof z) {
   return zod
     .object({
       systemSessionV1: createSessionSystemSessionV1Schema(zod).optional(),
+      [SESSION_WORKSPACE_LOCATION_METADATA_KEY]: createSessionWorkspaceLocationV1Schema(zod).optional(),
       // Remote-dev does not yet have the registered session-state field catalog used by dev.
       // This metadata key is the compatible storage binding for runtime.usageLimitRecovery.
       [SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY]: SessionUsageLimitRecoveryV1Schema.optional(),
-      [SESSION_CONTINUATION_RECOVERY_METADATA_KEY]: SessionContinuationRecoveryV1Schema.optional(),
-      [CONNECTED_SERVICE_QUOTA_REFS_METADATA_KEY]: ConnectedServiceQuotaRefsV1Schema.optional(),
+      [PROVIDER_ACCOUNT_USAGE_REFS_METADATA_KEY]: ProviderAccountUsageRefsV1Schema.optional(),
     })
-    .passthrough();
+    .passthrough()
+    .transform((metadata) => {
+      const {
+        [LEGACY_CONNECTED_SERVICE_QUOTA_REFS_METADATA_KEY]: _legacyConnectedServiceQuotaRefs,
+        ...nextMetadata
+      } = metadata;
+      return nextMetadata;
+    });
 }
 
 export const SessionMetadataSchema = createSessionMetadataSchema(z);
 export type SessionMetadata = z.infer<typeof SessionMetadataSchema>;
 
 export function readSystemSessionMetadataFromMetadata(params: Readonly<{ metadata: unknown }>): SessionSystemSessionV1 | null {
-  const parsed = SessionMetadataSchema.safeParse(params.metadata);
-  if (!parsed.success) return null;
-  return parsed.data.systemSessionV1 ?? null;
+  // Hot path: this runs inside per-session loops on store notifications (session list
+  // filtering, voice lookups, CLI row building). Parse only the marker field itself —
+  // validating the whole metadata blob here is both wasteful and wrong (a malformed
+  // sibling field must not hide a system session).
+  const metadata = params.metadata;
+  if (typeof metadata !== 'object' || metadata === null) return null;
+  const marker = (metadata as Record<string, unknown>).systemSessionV1;
+  if (typeof marker !== 'object' || marker === null) return null;
+  const parsed = SessionSystemSessionV1Schema.safeParse(marker);
+  return parsed.success ? parsed.data : null;
 }
 
 export function isHiddenSystemSession(params: Readonly<{ metadata: unknown }>): boolean {
@@ -298,6 +323,10 @@ export const V2SessionRecordSchema = z
     agentState: z.string().nullable(),
     agentStateVersion: z.number().int().nonnegative(),
     lastViewedSessionSeq: z.number().int().nonnegative().nullable().optional(),
+    // Server-materialized instant the session entered the unread state (cleared on read).
+    // Declared rather than left to passthrough so it is typed for readers and so the
+    // consumers that derive their coverage from this shape can catch it being dropped.
+    unreadSince: z.number().int().nonnegative().nullable().optional(),
     pendingPermissionRequestCount: z.number().int().min(0).optional(),
     pendingUserActionRequestCount: z.number().int().min(0).optional(),
     pendingRequestObservedAt: z.number().int().nonnegative().nullable().optional(),
@@ -306,6 +335,7 @@ export const V2SessionRecordSchema = z
     thinking: z.boolean().optional(),
     thinkingAt: z.number().int().nonnegative().nullable().optional(),
     pendingCount: z.number().int().min(0).optional(),
+    pendingBlockedCount: z.number().int().min(0).optional(),
     pendingVersion: z.number().int().min(0).optional(),
     dataEncryptionKey: z.string().nullable(),
     share: SessionShareSchema.nullable().optional(),
@@ -313,9 +343,26 @@ export const V2SessionRecordSchema = z
     latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
     latestTurnStatusObservedAt: z.number().int().nonnegative().nullable().optional(),
     lastRuntimeIssue: SessionRuntimeIssueV1Schema.nullable().optional(),
+    runtimeActivityState: SessionRuntimeActivityStateSchema.nullable().optional(),
+    runtimeActivityActiveCount: SessionRuntimeActivityActiveCountSchema.optional(),
+    runtimeActivityObservedAt: z.number().int().nonnegative().nullable().optional(),
+    runtimeActivityRevision: z.number().int().nonnegative().safe().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine(refineRuntimeActivityProjectionFields);
 export type V2SessionRecord = z.infer<typeof V2SessionRecordSchema>;
+
+function refineRuntimeActivityProjectionFields(
+  value: unknown,
+  context: z.RefinementCtx,
+): void {
+  if (parseSessionRuntimeActivityProjectionFields(value).kind !== 'invalid') return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: 'Runtime Activity projection fields must form one complete valid tuple',
+    path: ['runtimeActivityState'],
+  });
+}
 
 export const V2SessionListResponseSchema = z
   .object({
@@ -417,7 +464,7 @@ export type SessionCreateResult = z.infer<typeof SessionCreateResultSchema>;
 
 export const SessionSendResultSchema = z.object({
   sessionId: z.string().min(1),
-  localId: z.string().min(1),
+  localId: PendingLocalIdSchema,
   waited: z.boolean(),
 }).passthrough();
 export type SessionSendResult = z.infer<typeof SessionSendResultSchema>;
@@ -429,10 +476,59 @@ export const SessionWaitResultSchema = z.object({
 }).passthrough();
 export type SessionWaitResult = z.infer<typeof SessionWaitResultSchema>;
 
-export const SessionStopResultSchema = z.object({
+export const SessionStopCleanupIncompleteReasonSchema = StopSessionIncompleteReasonSchema.extract([
+  'terminal_control_serviceability_retirement_failed',
+  'terminal_attachment_descriptor_retirement_failed',
+]);
+export type SessionStopCleanupIncompleteReason = z.infer<typeof SessionStopCleanupIncompleteReasonSchema>;
+
+const SessionStopPhysicalUnconfirmedReasonSchema = z.union([
+  StopSessionIncompleteReasonSchema.exclude([
+    'terminal_control_serviceability_retirement_failed',
+    'terminal_attachment_descriptor_retirement_failed',
+  ]),
+  z.enum([
+    'transport_ambiguous',
+    'marker_fallback_failed',
+    'local_session_not_found',
+    'target_daemon_unavailable',
+    'target_session_not_found',
+    'daemon_stop_requested',
+    'unexpected_error',
+  ]),
+]);
+
+export const SessionStopOutcomeSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('stopped_projection_unconfirmed'),
+    reason: z.literal('relay_inactive_not_observed'),
+  }).strict(),
+  z.object({
+    status: z.literal('stopped_cleanup_incomplete'),
+    reason: SessionStopCleanupIncompleteReasonSchema,
+  }).strict(),
+  z.object({
+    status: z.literal('physical_stop_unconfirmed'),
+    reason: SessionStopPhysicalUnconfirmedReasonSchema,
+  }).strict(),
+]);
+export type SessionStopOutcome = z.infer<typeof SessionStopOutcomeSchema>;
+
+const SessionStopResultBaseSchema = z.object({
   sessionId: z.string().min(1),
-  stopped: z.literal(true),
-}).passthrough();
+});
+
+export const SessionStopResultSchema = z.discriminatedUnion('stopped', [
+  SessionStopResultBaseSchema.extend({
+    stopped: z.literal(true),
+  }).passthrough(),
+  SessionStopResultBaseSchema.extend({
+    stopped: z.literal(false),
+    // cli-v0.2.0 and cli-v0.2.1 emitted `{ stopped: false }`; keep reading that
+    // released shape while current writers add the structured reason.
+    stopOutcome: SessionStopOutcomeSchema.optional(),
+  }).passthrough(),
+]);
 export type SessionStopResult = z.infer<typeof SessionStopResultSchema>;
 
 export const SessionArchiveResultSchema = z.object({

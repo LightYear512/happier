@@ -1,17 +1,22 @@
 import { URLSearchParams } from 'node:url';
 
 import type { ConnectedServiceId } from '@happier-dev/protocol';
+import type { ConnectedServiceOauthCredentialRawMetadata } from '@happier-dev/protocol';
 
 import { readSafeOauthProviderErrorCode } from '@/cloud/safeOauthProviderError';
 import { resolveConnectedAccountOauthConfig } from '@/daemon/connectedServices/descriptors/connectedAccountDescriptors';
-import {
-  extractOpenAiCodexAccountId,
-  extractOpenAiCodexEmail,
-} from '@/daemon/connectedServices/descriptors/openAiCodexIdentityClaims';
 import type { ConnectedServiceRefreshFailureCategory } from '@/daemon/connectedServices/credentials/lifecycleTypes';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+const CONNECTED_SERVICE_OAUTH_REFRESH_FETCH_TIMEOUT_MS = 120_000;
+
+function buildRefreshAbortSignal(): AbortSignal | undefined {
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(CONNECTED_SERVICE_OAUTH_REFRESH_FETCH_TIMEOUT_MS)
+    : undefined;
 }
 
 function classifyProviderRefreshFailure(params: Readonly<{
@@ -55,6 +60,7 @@ export type ConnectedAccountOauthRefreshResult = Readonly<{
   providerAccountId?: string | null;
   providerEmail?: string | null;
   expiresAt: number | null;
+  raw?: ConnectedServiceOauthCredentialRawMetadata | null;
 }>;
 
 function readTrimmedString(value: unknown): string | null {
@@ -112,6 +118,7 @@ export async function refreshConnectedAccountOauthTokens(params: Readonly<{
       method: 'POST',
       headers: request.headers,
       body: request.body,
+      signal: buildRefreshAbortSignal(),
     });
   } catch {
     throw new ConnectedServiceOauthRefreshError({
@@ -162,19 +169,44 @@ export async function refreshConnectedAccountOauthTokens(params: Readonly<{
       ? params.now + Math.max(0, Math.trunc(data.expires_in)) * 1000
       : null;
   const idToken = typeof data.id_token === 'string' ? data.id_token : null;
-  const openAiCodexIdentity = params.serviceId === 'openai-codex'
-    ? {
-      providerAccountId: extractOpenAiCodexAccountId(idToken),
-      providerEmail: extractOpenAiCodexEmail(idToken),
+  // CS-FIX-4: provider identity extraction lives in the provider's descriptor hook, not a
+  // serviceId branch here — the central refresher stays pure config mapping.
+  const refreshResponseIdentity = config.extractRefreshResponseIdentity?.({ idToken, payload: data }) ?? {};
+  let raw: ConnectedServiceOauthCredentialRawMetadata | null | undefined;
+  if (config.resolveRefreshCredentialEvidence) {
+    let evidence: Awaited<ReturnType<typeof config.resolveRefreshCredentialEvidence>> | undefined;
+    try {
+      evidence = await config.resolveRefreshCredentialEvidence({
+        accessToken,
+        fetcher: fetch,
+        signal: buildRefreshAbortSignal(),
+      });
+    } catch {
+      evidence = undefined;
     }
-    : {};
+    if (evidence?.status === 'rejected') {
+      throw new ConnectedServiceOauthRefreshError({
+        serviceId: params.serviceId,
+        category: classifyProviderRefreshFailure({
+          status: evidence.providerStatus,
+          providerErrorCode: evidence.providerErrorCode,
+        }),
+        status: evidence.providerStatus,
+        providerErrorCode: evidence.providerErrorCode,
+        detail: 'refreshed_access_token_rejected',
+      });
+    }
+    // Missing entitlement evidence must not turn a successful token rotation into a failure.
+    raw = evidence?.status === 'accepted' ? evidence.raw : undefined;
+  }
   return {
     accessToken,
     refreshToken: typeof data.refresh_token === 'string' && data.refresh_token.trim() ? data.refresh_token : params.refreshToken,
     idToken,
     scope: readTrimmedString(data.scope),
     tokenType: readTrimmedString(data.token_type),
-    ...openAiCodexIdentity,
+    ...refreshResponseIdentity,
+    ...(raw !== undefined ? { raw } : {}),
     expiresAt,
   };
 }

@@ -99,6 +99,14 @@ export type ConnectedServiceRecoveryPolicyDecision =
       actor: ConnectedServiceRecoveryPolicyActor;
     }>
   | Readonly<{
+      action: 're_resolve_binding';
+      serviceId: string;
+      profileId: string | null;
+      groupId: string | null;
+      reason: 'account_changed';
+      actor: ConnectedServiceRecoveryPolicyActor;
+    }>
+  | Readonly<{
       action: 'profile_action_required' | 'connected_service_required' | 'shared_state_required' | 'retry_required';
       serviceId: string;
       profileId: string | null;
@@ -117,7 +125,6 @@ type DecideConnectedServiceRecoveryInput = Readonly<{
   credentialHealth?: ConnectedServiceCredentialHealthPolicyInput | null;
   groupSwitch?: Readonly<{ status: 'idle' | 'in_progress' }> | null;
   groupCandidate?: ConnectedServiceRecoveryGroupCandidatePolicyInput | null;
-  providerContinuity?: Readonly<{ restart: 'available' | 'unavailable' | 'shared_state_required' }> | null;
   credentialRefresh?: Readonly<{ status: 'refreshable' | 'not_refreshable' }> | null;
 }>;
 
@@ -142,22 +149,19 @@ function issueGroupId(
 
 function isCredentialFailure(kind: ConnectedServiceRecoveryPolicyIssue['kind']): boolean {
   return kind === 'auth_expired'
-    || kind === 'account_changed'
     || kind === 'refresh_failed'
-    || kind === 'permission_denied'
-    || kind === 'account_disabled';
+    || kind === 'permission_denied';
 }
 
 function isSwitchableGroupIssue(kind: ConnectedServiceRecoveryPolicyIssue['kind']): boolean {
   return kind === 'usage_limit'
     || kind === 'rate_limit'
     || kind === 'capacity'
-    || kind === 'auth_expired'
-    || kind === 'account_changed'
-    || kind === 'refresh_failed'
     || kind === 'dependency_failure'
-    || kind === 'account_disabled'
     || kind === 'soft_limit'
+    || kind === 'auth_expired'
+    || kind === 'refresh_failed'
+    || kind === 'permission_denied'
     || kind === 'unknown';
 }
 
@@ -211,24 +215,11 @@ export function decideConnectedServiceRecovery(
   }
 
   if (
-    (
-      hasProviderSharedStateRecoveryAction(issue)
-      || input.providerContinuity?.restart === 'shared_state_required'
-    )
+    hasProviderSharedStateRecoveryAction(issue)
     && !isSwitchableGroupSelection(issue, input.selection)
   ) {
     return {
       action: 'shared_state_required',
-      serviceId: issue.serviceId,
-      profileId,
-      groupId,
-      reason: issue.kind,
-    };
-  }
-
-  if (input.providerContinuity?.restart === 'unavailable') {
-    return {
-      action: 'retry_required',
       serviceId: issue.serviceId,
       profileId,
       groupId,
@@ -253,6 +244,32 @@ export function decideConnectedServiceRecovery(
   }
 
   if (
+    issue.kind === 'account_changed'
+  ) {
+    return {
+      action: 're_resolve_binding',
+      serviceId: issue.serviceId,
+      profileId,
+      groupId,
+      reason: 'account_changed',
+      actor: input.actor,
+    };
+  }
+
+  if (
+    issue.kind === 'account_disabled'
+  ) {
+    return {
+      action: 'reconnect_required',
+      serviceId: issue.serviceId,
+      profileId,
+      groupId,
+      reason: issue.kind,
+      actor: input.actor,
+    };
+  }
+
+  if (
     isCredentialFailure(issue.kind)
     && input.credentialRefresh?.status === 'refreshable'
     && profileId
@@ -269,23 +286,12 @@ export function decideConnectedServiceRecovery(
 
   if (
     isCredentialFailure(issue.kind)
+    && input.selection?.kind !== 'group'
     && (
       input.credentialHealth?.cachedStatus === 'needs_reauth'
       || input.credentialHealth?.liveEvidence === 'auth_failed'
     )
   ) {
-    if (input.selection?.kind === 'group' && input.groupCandidate?.status === 'selected') {
-      return {
-        action: 'switch_account',
-        mode: input.groupCandidate.applyMode,
-        serviceId: input.selection.serviceId,
-        groupId: input.selection.groupId,
-        fromProfileId: input.selection.activeProfileId,
-        toProfileId: input.groupCandidate.profileId,
-        reason: issue.kind,
-        actor: input.actor,
-      };
-    }
     return {
       action: 'reconnect_required',
       serviceId: issue.serviceId,

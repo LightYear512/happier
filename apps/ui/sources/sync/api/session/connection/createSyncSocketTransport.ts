@@ -1,6 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 
 import type { ManagedConnectionTransport, TransportDisconnectEvent } from '@happier-dev/connection-supervisor';
+import { applyUiClientUpgradeRequired } from '@/sync/runtime/clientCompatibility/uiClientUpgradeRequired';
 
 type SyncSocket = Socket;
 
@@ -65,6 +66,7 @@ export function createSyncSocketTransport(params: Readonly<{
     });
 
     socket.on('connect_error', (error) => {
+        if (applyUiClientUpgradeRequired(error)) return;
         errorListeners.forEach((listener) => listener(error));
     });
 

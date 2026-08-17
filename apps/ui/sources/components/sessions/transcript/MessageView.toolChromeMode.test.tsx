@@ -88,7 +88,8 @@ vi.mock('@/components/tools/shell/views/ToolTimelineRow', () => ({
 }));
 
 vi.mock('@/components/sessions/transcript/messageCopyVisibility', () => ({
-    shouldShowMessageCopyButton: () => false,
+    shouldShowTranscriptRowActions: () => false,
+    shouldShowTranscriptRowPinAction: () => false,
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -103,6 +104,7 @@ vi.mock('expo-clipboard', () => ({
 
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
+    Octicons: 'Octicons',
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
@@ -115,15 +117,17 @@ vi.mock('@/utils/sessions/discardedCommittedMessages', () => ({
 
 vi.mock('@/components/sessions/transcript/structured/StructuredMessageBlock', () => ({
     StructuredMessageBlock: () => null,
-    renderStructuredMessage: () => null,
+    renderStructuredMessage: (params: any) => (
+        params?.message?.meta?.happier ? React.createElement('StructuredNode') : null
+    ),
 }));
 
 vi.mock('@/components/sessions/linkedFiles/extractWorkspaceFileMentions', () => ({
     extractWorkspaceFileMentions: () => [],
 }));
 
-vi.mock('@/components/sessions/linkedFiles/LinkedWorkspaceFilesRow', () => ({
-    LinkedWorkspaceFilesRow: () => null,
+vi.mock('@/components/sessions/transcript/references/StructuredReferencesRow', () => ({
+    StructuredReferencesRow: () => null,
 }));
 
 afterEach(() => {
@@ -339,5 +343,89 @@ describe('MessageView (tool timeline chrome mode)', () => {
 
         expect(renderedToolViewProps).toHaveLength(1);
         expect(renderedToolViewProps[0]!.approvalRequests).toBe(approvalRequests);
+    });
+
+    it('does not reserve a tool header action slot when tool pin identity facts are unavailable', async () => {
+        toolChromeMode = 'cards';
+        const { MessageView } = await import('./MessageView');
+        const onToggleToolPin = vi.fn();
+
+        const message: any = {
+            kind: 'tool-call',
+            id: 'm1',
+            localId: null,
+            createdAt: 1,
+            tool: {
+                name: 'read',
+                state: 'completed',
+                input: {},
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                result: {},
+            },
+            children: [],
+        };
+
+        await renderScreen(
+            <MessageView
+                message={message}
+                metadata={null}
+                sessionId="s1"
+                onToggleToolPin={onToggleToolPin}
+            />,
+        );
+
+        expect(renderedToolViewProps).toHaveLength(1);
+        expect(renderedToolViewProps[0]!.headerAction).toBeNull();
+    });
+
+    it('renders a pin action for structured activity-feed tool rows that suppress tool chrome', async () => {
+        toolChromeMode = 'activity_feed';
+        const { MessageView } = await import('./MessageView');
+        const onToggleToolPin = vi.fn();
+
+        const message: any = {
+            kind: 'tool-call',
+            id: 'tool-structured-1',
+            localId: null,
+            createdAt: 1,
+            seq: 12,
+            transcriptBlockIndex: 2,
+            meta: { happier: { kind: 'activity_feed.v1', payload: {} } },
+            tool: {
+                id: 'call_read_1',
+                name: 'read',
+                state: 'completed',
+                input: {},
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                result: {},
+            },
+            children: [],
+        };
+
+        const screen = await renderScreen(
+            <MessageView
+                message={message}
+                metadata={null}
+                sessionId="s1"
+                onToggleToolPin={onToggleToolPin}
+            />,
+        );
+
+        expect(renderedToolTimelineRowProps).toHaveLength(0);
+        screen.pressByTestId('transcript-tool-call-pin:tool-structured-1');
+
+        expect(onToggleToolPin).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 's1',
+            seq: 12,
+            transcriptBlockIndex: 2,
+            routeMessageId: 'tool:call_read_1',
+            role: 'tool',
+        }));
     });
 });

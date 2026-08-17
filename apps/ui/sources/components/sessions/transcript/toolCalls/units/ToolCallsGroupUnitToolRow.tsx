@@ -6,18 +6,21 @@ import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 
 import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/TranscriptEnterWrapper';
-import { TRANSCRIPT_WEB_TOOL_CALL_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/webTranscriptPrependAnchor';
+import { TRANSCRIPT_WEB_TOOL_CALL_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/viewport/prepend/webTranscriptPrependAnchor';
 import {
     type TranscriptSessionCommonProps,
     useTranscriptSessionCommon,
 } from '@/components/sessions/transcript/transcriptSessionCommon';
+import { resolveToolRowPinAction } from '@/components/sessions/transcript/toolCalls/ToolCallPinAction';
 import { resolveMessageRouteIdForDisplay } from '@/sync/domains/messages/messageRouteIds';
+import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
 import { useEnsureSidechainsLoaded } from '@/hooks/session/useEnsureSidechainsLoaded';
 
+import { renderGroupedToolCallRowContent } from './groupedToolCallRowContent';
 import {
-    renderGroupedToolCallRowContent,
     resolveGroupedPreviewSidechainIds,
-} from './groupedToolCallRowContent';
+    shouldRenderGroupedToolCallWithMessageView,
+} from './groupedToolCallRowRenderDecision';
 import {
     resolveToolCallMessageForSession,
     resolveToolCallsGroupChromeVariant,
@@ -32,6 +35,8 @@ type ToolCallsGroupUnitToolRowProps = ToolCallsGroupUnitRowCommonProps & Readonl
     expanded: boolean;
     forcePermissionPromptsInTranscript?: boolean;
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
+    messagePins?: readonly PersistedSessionMessagePinV1[];
+    onToggleToolPin?: (pin: PersistedSessionMessagePinV1) => void;
 }>;
 
 export const ToolCallsGroupUnitToolRow = React.memo(function ToolCallsGroupUnitToolRow(
@@ -78,9 +83,22 @@ export const ToolCallsGroupUnitToolRowWithSessionCommon = React.memo(function To
         sidechainIds: previewSidechainIds,
     });
 
-    const nestedMessageId = props.interaction.disableToolNavigation
+    // A row rendered through MessageView resolves its own route id and pin, so this
+    // renderer must not compute a second copy of both for every render.
+    const rendersWithMessageView = shouldRenderGroupedToolCallWithMessageView(message, chromeMode, props.expanded);
+    const nestedMessageId = rendersWithMessageView || props.interaction.disableToolNavigation
         ? undefined
         : resolveMessageRouteIdForDisplay({ message, messagesById, reducerState });
+    const toolPinAction = rendersWithMessageView ? null : resolveToolRowPinAction({
+        sessionId: props.sessionId,
+        seq: message.seq ?? null,
+        transcriptBlockIndex: message.transcriptBlockIndex ?? null,
+        routeMessageId: nestedMessageId ?? null,
+        pins: props.messagePins,
+        readOnlyContext: props.interaction.permissionDisabledReason === 'readOnly',
+        onTogglePin: props.onToggleToolPin,
+        testID: `transcript-tool-call-pin:${message.id}`,
+    });
 
     return (
         <ToolCallsGroupUnitRowFrame
@@ -104,6 +122,9 @@ export const ToolCallsGroupUnitToolRowWithSessionCommon = React.memo(function To
                                 nestedMessageId,
                                 forcePermissionPromptsInTranscript: props.forcePermissionPromptsInTranscript,
                                 approvalRequests: props.approvalRequests,
+                                messagePins: props.messagePins,
+                                onToggleToolPin: props.onToggleToolPin,
+                                toolPinAction,
                                 interaction: props.interaction,
                                 forkCommon: props.forkCommon,
                                 messageDisplayCommon: props.messageDisplayCommon,

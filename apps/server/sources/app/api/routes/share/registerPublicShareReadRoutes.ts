@@ -6,6 +6,28 @@ import { PROFILE_SELECT, toShareUserProfile } from "@/app/share/types";
 import { createHash } from "crypto";
 import { auth } from "@/app/auth/auth";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
+import { parseSessionMessageRole } from "@/app/session/messageRole/resolveSessionMessageRole";
+import { inTx, type Tx } from "@/storage/inTx";
+import * as privacyKit from "privacy-kit";
+import { tryParsePersistedEncryptedDataKeyEnvelopeV1 } from "./encryptedDataKeyValidation";
+import {
+    createPublicShareMessagesAccessToken,
+    PUBLIC_SHARE_MESSAGES_ACCESS_TOKEN_HEADER,
+    requirePublicShareAccessGrantSecret,
+    resolvePublicShareUseLimit,
+    validatePublicShareMessagesAccessToken,
+} from "./publicShareMessageAccessGrant";
+
+const PublicShareConsentQuerySchema = z.object({
+    consent: z.union([
+        z.literal(true),
+        z.literal(false),
+        z.literal("true"),
+        z.literal("false"),
+        z.literal("0"),
+        z.literal(0),
+    ]).transform((value) => value === true || value === "true").optional(),
+}).optional();
 
 async function getOptionalAuthenticatedUserId(request: any): Promise<string | null> {
     const authHeader = request?.headers?.authorization;
@@ -22,6 +44,36 @@ async function getOptionalAuthenticatedUserId(request: any): Promise<string | nu
     }
 }
 
+interface PublicShareUseRecord {
+    id: string;
+    maxUses: number | null;
+    expiresAt: Date | null;
+    isConsentRequired: boolean;
+}
+
+async function consumePublicShareUse(
+    tx: Tx,
+    publicShare: PublicShareUseRecord,
+    tokenHash: Uint8Array<ArrayBuffer>,
+): Promise<boolean> {
+    const useLimit = resolvePublicShareUseLimit(publicShare.maxUses);
+    if (useLimit.type === "invalid") return false;
+    const consumed = await tx.publicSessionShare.updateMany({
+        where: {
+            id: publicShare.id,
+            tokenHash,
+            maxUses: publicShare.maxUses,
+            expiresAt: publicShare.expiresAt,
+            isConsentRequired: publicShare.isConsentRequired,
+            ...(useLimit.type === "capped" ? {
+                useCount: { lt: useLimit.maxUses },
+            } : {}),
+        },
+        data: { useCount: { increment: 1 } },
+    });
+    return consumed.count === 1;
+}
+
 export function registerPublicShareReadRoutes(app: Fastify): void {
     /**
      * Access session via public share token (no auth required)
@@ -36,21 +88,24 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             params: z.object({
                 token: z.string()
             }),
-            querystring: z.object({
-                consent: z.coerce.boolean().optional()
-            }).optional()
+            querystring: PublicShareConsentQuerySchema,
         }
     }, async (request, reply) => {
         const { token } = request.params;
         const { consent } = request.query || {};
-        const tokenHash = createHash('sha256').update(token, 'utf8').digest();
+        const tokenHashDigest = createHash('sha256').update(token, 'utf8').digest();
+        const tokenHash: Uint8Array<ArrayBuffer> = new Uint8Array(tokenHashDigest.byteLength);
+        tokenHash.set(tokenHashDigest);
+        const tokenHashHex = tokenHashDigest.toString("hex");
 
         // Optional auth: never call `app.authenticate()` here because it sends a reply on failure,
         // which can cause "Reply was already sent" issues for public routes.
         const userId = await getOptionalAuthenticatedUserId(request);
+        const ipAddress = getIpAddress(request.headers);
+        const userAgent = getUserAgent(request.headers);
 
         // Use transaction to atomically check limits and increment use count
-        const result = await db.$transaction(async (tx) => {
+        const result = await inTx(async (tx) => {
             // Check access and get full public share data
             const publicShare = await tx.publicSessionShare.findUnique({
                 where: { tokenHash },
@@ -59,13 +114,8 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                     sessionId: true,
                     expiresAt: true,
                     maxUses: true,
-                    useCount: true,
                     isConsentRequired: true,
                     encryptedDataKey: true,
-                    blockedUsers: userId ? {
-                        where: { userId },
-                        select: { id: true }
-                    } : undefined
                 }
             });
 
@@ -75,16 +125,6 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
 
             // Check if expired
             if (publicShare.expiresAt && publicShare.expiresAt < new Date()) {
-                return { error: 'Public share not found or expired' };
-            }
-
-            // Check if max uses exceeded (before incrementing)
-            if (publicShare.maxUses && publicShare.useCount >= publicShare.maxUses) {
-                return { error: 'Public share not found or expired' };
-            }
-
-            // Check if user is blocked
-            if (userId && publicShare.blockedUsers && publicShare.blockedUsers.length > 0) {
                 return { error: 'Public share not found or expired' };
             }
 
@@ -98,18 +138,70 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                 };
             }
 
-            // Increment use count atomically
-            await tx.publicSessionShare.update({
-                where: { id: publicShare.id },
-                data: { useCount: { increment: 1 } }
+            const useLimit = resolvePublicShareUseLimit(publicShare.maxUses);
+            if (useLimit.type === "invalid") {
+                return { error: 'Public share not found or expired' };
+            }
+
+            const session = await tx.session.findUnique({
+                where: { id: publicShare.sessionId },
+                select: {
+                    id: true,
+                    seq: true,
+                    encryptionMode: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    metadata: true,
+                    metadataVersion: true,
+                    agentState: true,
+                    agentStateVersion: true,
+                    active: true,
+                    lastActiveAt: true,
+                    account: {
+                        select: PROFILE_SELECT,
+                    },
+                },
             });
+            if (!session) {
+                return { error: 'Public share not found or expired' };
+            }
+            const sessionEncryptionMode: "e2ee" | "plain" = session.encryptionMode === "plain" ? "plain" : "e2ee";
+            let encryptedDataKey: Uint8Array<ArrayBuffer> | null = null;
+            if (sessionEncryptionMode === "e2ee") {
+                const parsedEncryptedDataKey = tryParsePersistedEncryptedDataKeyEnvelopeV1(publicShare.encryptedDataKey);
+                if (parsedEncryptedDataKey.type === "error") {
+                    return { error: "Public share not found or expired" };
+                }
+                encryptedDataKey = parsedEncryptedDataKey.encryptedDataKey;
+            }
+
+            const consumed = await consumePublicShareUse(tx, publicShare, tokenHash);
+            if (!consumed) {
+                return { error: 'Public share not found or expired' };
+            }
+            await logPublicShareAccess(
+                publicShare.id,
+                userId,
+                publicShare.isConsentRequired ? ipAddress : undefined,
+                publicShare.isConsentRequired ? userAgent : undefined,
+                tx,
+            );
+            const messagesAccessToken = useLimit.type === "capped"
+                ? createPublicShareMessagesAccessToken({
+                    secret: requirePublicShareAccessGrantSecret(),
+                    publicShareId: publicShare.id,
+                    sessionId: publicShare.sessionId,
+                    tokenHashHex,
+                })
+                : undefined;
 
             return {
                 success: true,
                 publicShareId: publicShare.id,
-                sessionId: publicShare.sessionId,
+                session,
                 isConsentRequired: publicShare.isConsentRequired,
-                encryptedDataKey: publicShare.encryptedDataKey
+                encryptedDataKey,
+                messagesAccessToken,
             };
         });
 
@@ -136,42 +228,13 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             return reply.code(404).send({ error: result.error });
         }
 
-        // Log access (only log IP/UA if consent was given)
-        const ipAddress = result.isConsentRequired ? getIpAddress(request.headers) : undefined;
-        const userAgent = result.isConsentRequired ? getUserAgent(request.headers) : undefined;
-        await logPublicShareAccess(result.publicShareId, userId, ipAddress, userAgent);
-
-        // Get session info with owner profile
-        const session = await db.session.findUnique({
-            where: { id: result.sessionId },
-            select: {
-                id: true,
-                seq: true,
-                encryptionMode: true,
-                createdAt: true,
-                updatedAt: true,
-                metadata: true,
-                metadataVersion: true,
-                agentState: true,
-                agentStateVersion: true,
-                active: true,
-                lastActiveAt: true,
-                account: {
-                    select: PROFILE_SELECT
-                }
-            }
-        });
-
-        if (!session) {
-            return reply.code(404).send({ error: 'Session not found' });
-        }
-
+        const session = result.session;
         const sessionEncryptionMode: "e2ee" | "plain" = session.encryptionMode === "plain" ? "plain" : "e2ee";
         const encryptedDataKeyB64 =
             sessionEncryptionMode === "plain"
                 ? null
                 : result.encryptedDataKey
-                    ? Buffer.from(result.encryptedDataKey).toString("base64")
+                    ? privacyKit.encodeBase64(result.encryptedDataKey)
                     : null;
         if (sessionEncryptionMode === "e2ee" && !encryptedDataKeyB64) {
             return reply.code(404).send({ error: "Public share not found or expired" });
@@ -194,14 +257,13 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             owner: toShareUserProfile(session.account),
             accessLevel: 'view',
             encryptedDataKey: encryptedDataKeyB64,
-            isConsentRequired: result.isConsentRequired
+            isConsentRequired: result.isConsentRequired,
+            messagesAccessToken: result.messagesAccessToken,
         });
     });
 
     /**
      * Get messages for a public share token (no auth required, read-only)
-     *
-     * NOTE: Does not increment useCount (useCount is incremented on /v1/public-share/:token).
      */
     app.get('/v1/public-share/:token/messages', {
         config: {
@@ -211,109 +273,140 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             params: z.object({
                 token: z.string()
             }),
-            querystring: z.object({
-                consent: z.coerce.boolean().optional()
-            }).optional()
+            querystring: PublicShareConsentQuerySchema,
         }
     }, async (request, reply) => {
         const { token } = request.params;
         const { consent } = request.query || {};
         const tokenHash = createHash('sha256').update(token, 'utf8').digest();
+        const tokenHashHex = tokenHash.toString("hex");
+        const messageAccessTokenHeader = request.headers[PUBLIC_SHARE_MESSAGES_ACCESS_TOKEN_HEADER];
+        const messagesAccessToken = Array.isArray(messageAccessTokenHeader)
+            ? messageAccessTokenHeader[0]
+            : messageAccessTokenHeader;
 
         // Optional auth: never call `app.authenticate()` here because it sends a reply on failure,
         // which can cause "Reply was already sent" issues for public routes.
         const userId = await getOptionalAuthenticatedUserId(request);
 
-        const publicShare = await db.publicSessionShare.findUnique({
-            where: { tokenHash },
-            select: {
-                id: true,
-                sessionId: true,
-                expiresAt: true,
-                maxUses: true,
-                useCount: true,
-                isConsentRequired: true,
-                encryptedDataKey: true,
-                blockedUsers: userId ? {
-                    where: { userId },
-                    select: { id: true }
-                } : undefined
-            }
-        });
-
-        if (!publicShare) {
-            return reply.code(404).send({ error: 'Public share not found or expired' });
-        }
-
-        // Check if expired
-        if (publicShare.expiresAt && publicShare.expiresAt < new Date()) {
-            return reply.code(404).send({ error: 'Public share not found or expired' });
-        }
-
-        // Check if max uses exceeded
-        if (publicShare.maxUses && publicShare.useCount >= publicShare.maxUses) {
-            return reply.code(404).send({ error: 'Public share not found or expired' });
-        }
-
-        // Check if user is blocked
-        if (userId && publicShare.blockedUsers && publicShare.blockedUsers.length > 0) {
-            return reply.code(404).send({ error: 'Public share not found or expired' });
-        }
-
-        // Check consent requirement
-        if (publicShare.isConsentRequired && !consent) {
-            const session = await db.session.findUnique({
-                where: { id: publicShare.sessionId },
+        const accessResult = await inTx(async (tx) => {
+            const publicShare = await tx.publicSessionShare.findUnique({
+                where: { tokenHash },
                 select: {
-                    account: {
-                        select: PROFILE_SELECT
-                    }
+                    id: true,
+                    sessionId: true,
+                    expiresAt: true,
+                    maxUses: true,
+                    isConsentRequired: true,
+                    encryptedDataKey: true,
                 }
             });
 
-            return reply.code(403).send({
-                error: 'Consent required',
-                requiresConsent: true,
-                sessionId: publicShare.sessionId,
-                owner: session?.account ? toShareUserProfile(session.account) : null
-            });
-        }
-
-        const session = await db.session.findUnique({
-            where: { id: publicShare.sessionId },
-            select: { encryptionMode: true },
-        });
-        if (!session) {
-            return reply.code(404).send({ error: 'Public share not found or expired' });
-        }
-        const sessionEncryptionMode: "e2ee" | "plain" = session.encryptionMode === "plain" ? "plain" : "e2ee";
-        if (sessionEncryptionMode === "e2ee" && !publicShare.encryptedDataKey) {
-            return reply.code(404).send({ error: "Public share not found or expired" });
-        }
-
-        const messages = await db.sessionMessage.findMany({
-            where: { sessionId: publicShare.sessionId },
-            orderBy: { createdAt: 'desc' },
-            take: 150,
-            select: {
-                id: true,
-                seq: true,
-                localId: true,
-                content: true,
-                createdAt: true,
-                updatedAt: true
+            if (!publicShare) {
+                return { error: 'Public share not found or expired' };
             }
+
+            if (publicShare.expiresAt && publicShare.expiresAt < new Date()) {
+                return { error: 'Public share not found or expired' };
+            }
+
+            if (publicShare.isConsentRequired && !consent) {
+                return {
+                    error: 'Consent required',
+                    requiresConsent: true,
+                    sessionId: publicShare.sessionId,
+                };
+            }
+
+            const useLimit = resolvePublicShareUseLimit(publicShare.maxUses);
+            if (useLimit.type === "invalid") {
+                return { error: 'Public share not found or expired' };
+            }
+
+            if (useLimit.type === "capped") {
+                const hasMessageAccess = validatePublicShareMessagesAccessToken({
+                    secret: requirePublicShareAccessGrantSecret(),
+                    token: messagesAccessToken,
+                    publicShareId: publicShare.id,
+                    sessionId: publicShare.sessionId,
+                    tokenHashHex,
+                });
+                if (!hasMessageAccess) {
+                    return { error: 'Public share not found or expired' };
+                }
+            }
+
+            const session = await tx.session.findUnique({
+                where: { id: publicShare.sessionId },
+                select: { encryptionMode: true },
+            });
+            if (!session) {
+                return { error: 'Public share not found or expired' };
+            }
+            const sessionEncryptionMode: "e2ee" | "plain" = session.encryptionMode === "plain" ? "plain" : "e2ee";
+            if (sessionEncryptionMode === "e2ee") {
+                const parsedEncryptedDataKey = tryParsePersistedEncryptedDataKeyEnvelopeV1(publicShare.encryptedDataKey);
+                if (parsedEncryptedDataKey.type === "error") {
+                    return { error: "Public share not found or expired" };
+                }
+            }
+
+            const messages = await tx.sessionMessage.findMany({
+                where: { sessionId: publicShare.sessionId, sidechainId: null },
+                // Canonical transcript order is seq, not wall-clock: createdAt can
+                // disagree with seq (imported/migrated sessions, clock skew, out-of-order
+                // writes), and selecting the newest page by createdAt silently omits
+                // newer transcript rows under the page cap.
+                orderBy: { seq: 'desc' },
+                take: 150,
+                select: {
+                    id: true,
+                    seq: true,
+                    localId: true,
+                    messageRole: true,
+                    content: true,
+                    createdAt: true,
+                    updatedAt: true,
+                },
+            });
+
+            return { success: true, messages };
         });
+
+        if ('error' in accessResult) {
+            if (accessResult.requiresConsent) {
+                const session = await db.session.findUnique({
+                    where: { id: accessResult.sessionId },
+                    select: {
+                        account: {
+                            select: PROFILE_SELECT
+                        }
+                    }
+                });
+
+                return reply.code(403).send({
+                    error: 'Consent required',
+                    requiresConsent: true,
+                    sessionId: accessResult.sessionId,
+                    owner: session?.account ? toShareUserProfile(session.account) : null
+                });
+            }
+            return reply.code(404).send({ error: accessResult.error });
+        }
 
         return reply.send({
-            messages: messages.map((v) => ({
-                id: v.id,
-                seq: v.seq,
-                content: v.content,
-                localId: v.localId,
-                createdAt: v.createdAt.getTime(),
-                updatedAt: v.updatedAt.getTime()
-            }))
+            messages: accessResult.messages.map((v) => {
+                const messageRole = parseSessionMessageRole(v.messageRole);
+                return {
+                    id: v.id,
+                    seq: v.seq,
+                    ...(messageRole ? { messageRole } : {}),
+                    content: v.content,
+                    localId: v.localId,
+                    createdAt: v.createdAt.getTime(),
+                    updatedAt: v.updatedAt.getTime()
+                };
+            })
         });
     });
 }

@@ -6,6 +6,7 @@ import { buildUpdateSessionUpdate, eventRouter } from "@/app/events/eventRouter"
 import { inTx } from "@/storage/inTx";
 import { didSessionActivityBadgeContributionChange } from "@/app/activity/accountActivityBadge";
 import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { writeSessionRuntimeActivityProjectionInTx } from "@/app/session/runtimeActivity/writeProjection";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { type Fastify } from "../../types";
 
@@ -37,11 +38,16 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                     id: true,
                     seq: true,
                     pendingCount: true,
+                    pendingBlockedCount: true,
                     lastViewedSessionSeq: true,
                     pendingPermissionRequestCount: true,
                     pendingUserActionRequestCount: true,
                     active: true,
                     archivedAt: true,
+                    runtimeActivityState: true,
+                    runtimeActivityActiveCount: true,
+                    runtimeActivityObservedAt: true,
+                    runtimeActivityRevision: true,
                 },
             });
             if (!session) {
@@ -51,11 +57,27 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 return { ok: false as const, error: "session-active" as const };
             }
 
+            const activityResult = await writeSessionRuntimeActivityProjectionInTx({
+                tx,
+                sessionId,
+                completeSnapshot: { state: "unknown", activeCount: 0 },
+            });
+            if (activityResult.status === "rejected") {
+                return { ok: false as const, error: "not-found" as const };
+            }
             const updated = await tx.session.update({
                 where: { id: sessionId },
                 data: { archivedAt: new Date() },
                 select: { archivedAt: true },
             });
+            const runtimeActivityProjection = activityResult.status === "applied"
+                ? {
+                    runtimeActivityState: activityResult.projection.state,
+                    runtimeActivityRevision: activityResult.projection.revision,
+                    runtimeActivityActiveCount: activityResult.projection.activeCount,
+                    runtimeActivityObservedAt: activityResult.projection.observedAt,
+                }
+                : {};
 
             const participantCursors = await markSessionParticipantsChanged({ tx, sessionId });
 
@@ -70,7 +92,9 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 badgeAttentionChanged: didSessionActivityBadgeContributionChange(session, {
                     ...session,
                     archivedAt: new Date(archivedAt),
+                    ...runtimeActivityProjection,
                 }),
+                runtimeActivityProjection,
             };
         });
 
@@ -91,7 +115,7 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 randomKeyNaked(12),
                 undefined,
                 undefined,
-                { archivedAt: res.archivedAt },
+                { archivedAt: res.archivedAt, ...res.runtimeActivityProjection },
             );
             eventRouter.emitUpdate({
                 userId: accountId,
@@ -128,6 +152,7 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                     id: true,
                     seq: true,
                     pendingCount: true,
+                    pendingBlockedCount: true,
                     lastViewedSessionSeq: true,
                     pendingPermissionRequestCount: true,
                     pendingUserActionRequestCount: true,
@@ -138,13 +163,33 @@ export function registerSessionArchiveRoutes(app: Fastify) {
             if (!session) {
                 return { ok: false as const };
             }
+            if (session.archivedAt === null) {
+                return {
+                    ok: true as const,
+                    participantCursors: [],
+                    badgeAttentionChanged: false,
+                };
+            }
 
-            await tx.session.update({
-                where: { id: sessionId },
+            const transitioned = await tx.session.updateMany({
+                where: { id: sessionId, archivedAt: session.archivedAt },
                 data: { archivedAt: null },
-                select: { id: true },
             });
-
+            if (transitioned.count !== 1) {
+                const current = await tx.session.findUnique({
+                    where: { id: sessionId },
+                    select: { archivedAt: true },
+                });
+                if (!current) return { ok: false as const };
+                if (current.archivedAt === null) {
+                    return {
+                        ok: true as const,
+                        participantCursors: [],
+                        badgeAttentionChanged: false,
+                    };
+                }
+                throw new Error("Concurrent session unarchive did not converge");
+            }
             const participantCursors = await markSessionParticipantsChanged({ tx, sessionId });
             return {
                 ok: true as const,

@@ -114,7 +114,7 @@ vi.mock('@/sync/domains/models/modelOptions', () => ({
 }));
 
 vi.mock('@/sync/domains/models/describeEffectiveModelMode', () => ({
-    describeEffectiveModelMode: () => ({ effectiveModelId: 'default' }),
+    describeEffectiveModelMode: () => ({ selectedModelId: 'default', appliedModelId: null, effectiveModelId: 'default' }),
 }));
 
 vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
@@ -175,10 +175,6 @@ vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: () => null,
 }));
 
-vi.mock('@/components/autocomplete/useActiveWord', () => ({
-    useActiveWord: () => ({ word: '', start: 0, end: 0 }),
-}));
-
 vi.mock('@/components/autocomplete/useActiveSuggestions', () => ({
     useActiveSuggestions: useActiveSuggestionsMock,
 }));
@@ -228,12 +224,12 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
     useKeyboardHeight: () => 0,
 }));
 
-vi.mock('@/sync/acp/sessionModeControl', () => ({
+vi.mock('@/sync/domains/sessionControl/sessionModeControl', () => ({
     computeSessionModePickerControl: () => null,
 }));
 
-vi.mock('@/sync/acp/configOptionsControl', () => ({
-    computeAcpConfigOptionControls: () => null,
+vi.mock('@/sync/domains/sessionControl/configOptionsControl', () => ({
+    computeSessionConfigOptionControls: () => null,
 }));
 
 describe('AgentInput (send button accessibility)', () => {
@@ -252,24 +248,36 @@ describe('AgentInput (send button accessibility)', () => {
             placeholder="Type"
             onChangeText={() => {}}
             onSend={() => {}}
-            autocompletePrefixes={['@']}
+            autocompleteKinds={['file']}
             autocompleteSuggestions={autocompleteSuggestions}
         />);
 
-        expect(autocompleteSuggestions).not.toHaveBeenCalled();
+        expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
+            null,
+            autocompleteSuggestions,
+            expect.objectContaining({ wrapAround: true }),
+        );
 
         const input = screen.root.findByType('MultiTextInput' as any);
         await act(async () => {
             input.props.onFocus?.();
         });
 
-        expect(autocompleteSuggestions).not.toHaveBeenCalled();
+        expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
+            '@src',
+            autocompleteSuggestions,
+            expect.objectContaining({ wrapAround: true }),
+        );
 
         await act(async () => {
             input.props.onStateChange?.({ text: '@/src', selection: { start: 5, end: 5 } });
         });
 
-        expect(autocompleteSuggestions).not.toHaveBeenCalled();
+        expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
+            '@/src',
+            autocompleteSuggestions,
+            expect.objectContaining({ wrapAround: true }),
+        );
 
         await act(async () => {
             input.props.onChangeText?.('@/src');
@@ -279,7 +287,7 @@ describe('AgentInput (send button accessibility)', () => {
         expect(useActiveSuggestionsMock).toHaveBeenLastCalledWith(
             '@/src',
             autocompleteSuggestions,
-            expect.objectContaining({ clampSelection: true, wrapAround: true }),
+            expect.objectContaining({ wrapAround: true }),
         );
 
         await screen.unmount();
@@ -297,7 +305,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onSend={() => {}}
                     onMicPress={() => {}}
                     isMicActive={false}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -308,8 +316,8 @@ describe('AgentInput (send button accessibility)', () => {
         const images = send.findAllByType('Image' as any);
         expect(images.length).toBe(0);
 
-        const octicons = send.findAllByType('Octicons' as any);
-        expect(octicons.some((n) => n.props?.name === 'arrow-up')).toBe(true);
+        const glyphs = send.findAllByType('Icon' as any);
+        expect(glyphs.some((n) => n.props?.name === 'arrow-up')).toBe(true);
 
         await screen.unmount();
         featureEnabledState.voice = true;
@@ -327,7 +335,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onSend={() => {}}
                     onAbort={() => {}}
                     showAbortButton={true}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -335,12 +343,11 @@ describe('AgentInput (send button accessibility)', () => {
         expect(send).toBeTruthy();
         if (!send) throw new Error('session-composer-send not found');
 
-        const ionicons = send.findAllByType('Ionicons' as any);
-        expect(ionicons.some((n) => n.props?.name === 'stop')).toBe(true);
-
-        const octicons = send.findAllByType('Octicons' as any);
-        expect(octicons.some((n) => n.props?.name === 'stop')).toBe(false);
-        expect(octicons.some((n) => n.props?.name === 'arrow-up')).toBe(false);
+        // This used to assert one family drew the glyph and the other did not; behind a single-family
+        // seam the contract that still means something is which glyph the button shows.
+        const glyphs = send.findAllByType('Icon' as any);
+        expect(glyphs.some((n) => n.props?.name === 'stop')).toBe(true);
+        expect(glyphs.some((n) => n.props?.name === 'arrow-up')).toBe(false);
 
         await screen.unmount();
         featureEnabledState.voice = true;
@@ -360,7 +367,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onSend={onSend}
                     onAbort={onAbort}
                     showAbortButton={true}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -386,7 +393,7 @@ describe('AgentInput (send button accessibility)', () => {
                     placeholder="Type"
                     onChangeText={() => {}}
                     onSend={() => {}}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -407,7 +414,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onChangeText={() => {}}
                     onSend={() => {}}
                     submitAccessibilityLabel="automations.create.createButtonTitle"
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -427,7 +434,7 @@ describe('AgentInput (send button accessibility)', () => {
                     placeholder="Type"
                     onChangeText={() => {}}
                     onSend={() => {}}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -449,7 +456,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onChangeText={() => {}}
                     onSend={onSend}
                     hasSendableAttachments={true}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -475,7 +482,7 @@ describe('AgentInput (send button accessibility)', () => {
                     placeholder="Type"
                     onChangeText={() => {}}
                     onSend={firstOnSend}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -486,7 +493,7 @@ describe('AgentInput (send button accessibility)', () => {
                 placeholder="Type"
                 onChangeText={() => {}}
                 onSend={secondOnSend}
-                autocompletePrefixes={[]}
+                autocompleteKinds={[]}
                 autocompleteSuggestions={async () => []}
             />,
         );
@@ -507,7 +514,7 @@ describe('AgentInput (send button accessibility)', () => {
                     placeholder="Type"
                     onChangeText={() => {}}
                     onSend={() => {}}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -528,7 +535,7 @@ describe('AgentInput (send button accessibility)', () => {
                     placeholder="Type"
                     onChangeText={() => {}}
                     onSend={() => {}}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -538,38 +545,6 @@ describe('AgentInput (send button accessibility)', () => {
         expect(send.props.accessibilityRole).toBe('button');
         expect(send.props.accessibilityLabel).toBe('common.send');
         await screen.unmount();
-    });
-
-    it('locks session composer input while a profile switch is pending', async () => {
-        const [{ AgentInput }, { useSessionSwitchingStore }] = await Promise.all([
-            import('./AgentInput'),
-            import('@/sync/domains/profiles/sessionSwitchingStore'),
-        ]);
-        useSessionSwitchingStore.getState().clearAll();
-        useSessionSwitchingStore.getState().setFromEvents('session-1', [
-            { type: 'switch_pending', targetProfileId: 'work' },
-        ]);
-
-        const screen = await renderScreen(<AgentInput
-            sessionId="session-1"
-            value="hello"
-            placeholder="Type"
-            onChangeText={() => {}}
-            onSend={() => {}}
-            autocompletePrefixes={[]}
-            autocompleteSuggestions={async () => []}
-        />);
-
-        const input = screen.findByTestId('session-composer-input');
-        const send = screen.findByTestId('session-composer-send');
-        if (!input || !send) {
-            throw new Error('Expected session composer controls to render.');
-        }
-        expect(input.props.editable).toBe(false);
-        expect(send.props.disabled).toBe(true);
-
-        await screen.unmount();
-        useSessionSwitchingStore.getState().clearAll();
     });
 
     it('keeps the voice icon visible while mic is enabled and inactive (no text)', async () => {
@@ -583,7 +558,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onSend={() => {}}
                     onMicPress={() => {}}
                     isMicActive={false}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -593,8 +568,8 @@ describe('AgentInput (send button accessibility)', () => {
         const images = send.findAllByType('Image' as any);
         expect(images.length).toBe(1);
 
-        const octicons = send.findAllByType('Octicons' as any);
-        expect(octicons.some((n) => n.props?.name === 'arrow-up')).toBe(false);
+        const glyphs = send.findAllByType('Icon' as any);
+        expect(glyphs.some((n) => n.props?.name === 'arrow-up')).toBe(false);
 
         await screen.unmount();
     });
@@ -610,7 +585,7 @@ describe('AgentInput (send button accessibility)', () => {
                     onSend={() => {}}
                     onMicPress={() => {}}
                     isMicActive={true}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />);
 
@@ -620,11 +595,9 @@ describe('AgentInput (send button accessibility)', () => {
         const images = send.findAllByType('Image' as any);
         expect(images.length).toBe(0);
 
-        const ionicons = send.findAllByType('Ionicons' as any);
-        expect(ionicons.some((n) => n.props?.name === 'stop-circle')).toBe(true);
-
-        const octicons = send.findAllByType('Octicons' as any);
-        expect(octicons.some((n) => n.props?.name === 'arrow-up')).toBe(false);
+        const glyphs = send.findAllByType('Icon' as any);
+        expect(glyphs.some((n) => n.props?.name === 'stop-circle')).toBe(true);
+        expect(glyphs.some((n) => n.props?.name === 'arrow-up')).toBe(false);
 
         await screen.unmount();
     });
@@ -641,7 +614,7 @@ describe('AgentInput (send button accessibility)', () => {
             placeholder="Type"
             onChangeText={onChangeText}
             onSend={onSend}
-            autocompletePrefixes={[]}
+            autocompleteKinds={[]}
             autocompleteSuggestions={async () => []}
         />);
 
@@ -666,7 +639,7 @@ describe('AgentInput (send button accessibility)', () => {
             onChangeText={onChangeText}
             onSend={onSend}
             hasSendableAttachments={true}
-            autocompletePrefixes={[]}
+            autocompleteKinds={[]}
             autocompleteSuggestions={async () => []}
         />);
 
@@ -687,7 +660,7 @@ describe('AgentInput (send button accessibility)', () => {
             placeholder="Type"
             onChangeText={() => {}}
             onSend={() => {}}
-            autocompletePrefixes={[]}
+            autocompleteKinds={[]}
             autocompleteSuggestions={async () => []}
         />);
 
@@ -706,7 +679,7 @@ describe('AgentInput (send button accessibility)', () => {
                     placeholder="Type"
                     onChangeText={() => {}}
                     onSend={() => {}}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                     machineName="Machine"
                     currentPath="/tmp/project"

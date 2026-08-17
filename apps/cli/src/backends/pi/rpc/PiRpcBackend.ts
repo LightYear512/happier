@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdir, stat } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import spawn from 'cross-spawn';
@@ -9,9 +9,15 @@ import type {
   AgentBackend,
   AgentMessage,
   AgentMessageHandler,
+  AgentSessionOpenOptions,
   SessionId,
   StartSessionResult,
 } from '@/agent/core';
+import {
+  AcpPromptSubmissionPhaseError,
+  type AcpPromptSubmissionEvidence,
+} from '@/agent/acp/AcpBackend';
+import { killProcessTree } from '@/agent/acp/killProcessTree';
 import { logger } from '@/ui/logger';
 import {
   HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY,
@@ -21,6 +27,17 @@ import { reportConnectedServiceRuntimeAuthFailureToDaemon } from '@/daemon/conne
 import { projectConnectedServiceRuntimeAuthRecoveryReport } from '@/daemon/connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoverySessionEvent';
 import type { ConnectedServiceRuntimeFailureClassification } from '@/daemon/connectedServices/runtimeAuth/types';
 import { redactBugReportSensitiveText } from '@happier-dev/protocol';
+
+import {
+  PI_BROKER_LOAD_NONCE_ENV,
+  PI_BROKER_PROVIDERS,
+  PI_BROKER_SELECTIONS_ENV,
+  parsePiBrokerSelections,
+  piRegisterProviderId,
+  PiBrokerReadinessError,
+  verifyPiBrokerReadyForConnectedSession,
+  type PiBrokerReadiness,
+} from '@/backends/pi/brokerExtension';
 
 import { createPiConnectedServiceRuntimeAuthAdapter } from '../connectedServices/createPiConnectedServiceRuntimeAuthAdapter';
 import { resolvePiCompactionTurnOutcome } from './compaction/resolvePiCompactionTurnOutcome';
@@ -32,6 +49,11 @@ import {
 } from '../utils/piSessionFiles';
 import { attachPiRpcJsonlLineReader, type PiRpcJsonlLineReader } from './attachPiRpcJsonlLineReader';
 import { mapPiRpcEventToAgentMessages } from './eventMapping';
+import {
+  createPiProviderFailureError,
+  normalizePiProviderFailure,
+  type PiProviderFailureDiagnostic,
+} from './piProviderFailureDiagnostic';
 import type {
   PiRpcCommand,
   PiRpcCommandWithoutId,
@@ -47,7 +69,14 @@ type PendingRpcRequest = {
   reject: (error: Error) => void;
   timeout: NodeJS.Timeout;
   commandType: PiRpcCommandWithoutId['type'];
+  removeAbortListener: () => void;
 };
+
+type PiRpcCommandOptions = Readonly<{
+  processAlreadyEnsured?: boolean;
+  signal?: AbortSignal;
+  createCancellationError?: () => Error;
+}>;
 
 type PendingTurn = {
   promise: Promise<void>;
@@ -60,6 +89,12 @@ type PendingTurn = {
   compactionInProgress: boolean;
   /** True after Pi emitted `agent_end` but before Happier has proven the provider is idle. */
   agentEndObserved: boolean;
+  /** Activity epoch captured by the latest final `agent_end`, used to preserve late-event guards. */
+  agentEndActivityEpoch: number | null;
+  /** True after Pi emitted `agent_start` for the prompt accepted by this pending turn. */
+  agentStartObserved: boolean;
+  /** Terminal failure observed after admission but before Pi identified the current turn. */
+  preStartTerminalFailure: Error | null;
   /** Bumped on every Pi event so an in-flight liveness probe can detect stale state. */
   activityEpoch: number;
   /** Consecutive liveness probes where Pi claimed to be busy but emitted no events. */
@@ -70,6 +105,8 @@ type PendingTurn = {
   livenessProbeRerunRequested: boolean;
   /** True after a recoverable assistant error until Pi proves the turn resumed or ended normally. */
   recoverableAssistantErrorObserved: boolean;
+  /** Sanitized provider-owned evidence retained until Pi confirms whether it will retry. */
+  providerFailureDiagnostic: PiProviderFailureDiagnostic | null;
   /** Last observed `compaction_end`, used to classify a post-compaction pause vs. a stall. */
   lastCompactionEnd: { payload: Record<string, unknown>; willRetry: boolean; errorMessage: string | null } | null;
   /** Last assistant `message_end` stop reason observed before a post-turn compaction. */
@@ -145,6 +182,13 @@ class PiRpcCommandResponseTimeoutError extends Error {
   }
 }
 
+class PiRpcPromptRejectedBeforeEffectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PiRpcPromptRejectedBeforeEffectError';
+  }
+}
+
 function isPromptResponseTimeoutError(error: Error): boolean {
   if (error instanceof PiRpcCommandResponseTimeoutError) {
     return error.commandType === 'prompt';
@@ -155,6 +199,8 @@ function isPromptResponseTimeoutError(error: Error): boolean {
 type PiThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 const DEFAULT_PI_RPC_TURN_STALL_TIMEOUT_MS = 180_000;
+/** Existing Pi new-session command budget; also owns broker readiness for that session open. */
+const PI_RPC_SESSION_OPEN_TIMEOUT_MS = 60_000;
 const DEFAULT_PI_RPC_COMPACTION_RESUME_GRACE_MS = 30_000;
 const DEFAULT_PI_RPC_AGENT_END_SETTLE_MS = 250;
 const DEFAULT_PI_RPC_AGENT_END_BUSY_GRACE_MS = 30_000;
@@ -168,6 +214,11 @@ const DEFAULT_PI_RPC_LIVENESS_PROBE_TIMEOUT_MS = 10_000;
 const DEFAULT_PI_RPC_MAX_SILENT_PROBES = 4;
 const DEFAULT_PI_RPC_PROMPT_COLLISION_IDLE_WAIT_MS = 30_000;
 const DEFAULT_PI_RPC_PROMPT_COLLISION_IDLE_POLL_MS = 250;
+
+type PiRpcSessionOpenLifecycle = Readonly<{
+  deadlineMs: number;
+  signal?: AbortSignal;
+}>;
 const DEFAULT_PI_RPC_COMPACTION_AUTO_CONTINUE_MAX = 3;
 const DEFAULT_PI_RPC_COMPACTION_AUTO_CONTINUE_PROMPT =
   'Continue the interrupted work from the recovered provider context. Do not restart or repeat completed work.';
@@ -186,6 +237,97 @@ const PI_RPC_LIMIT_EXHAUSTION_TEXT_PATTERN =
   /\b(usage\s*limit|rate\s*limit|too many requests|resource[_\s-]*exhausted|limit reached|out of credits|credits exhausted)\b|\bquota(?:[_\s-]*(?:exceeded|exhausted|reached)|[_\s-]*limit[_\s-]*(?:exceeded|exhausted|reached))\b/u;
 const PI_RPC_RATE_LIMIT_STATUS_TEXT_PATTERN =
   /\b(?:http|status|code|error)["']?\s*[:=]?\s*429\b|\b429\b.*\btoo many requests\b|\btoo many requests\b.*\b429\b/u;
+const PI_RPC_PROVIDER_TOKEN_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b/gu;
+
+function redactPiDiagnosticText(value: string): string {
+  // Shared scrubber first, Pi's narrower rule second: the shared owner covers `sk-` keys of 20+
+  // body characters (including separators), and this pattern is the local backstop for the shorter
+  // ones it does not reach.
+  return redactBugReportSensitiveText(value).replace(PI_RPC_PROVIDER_TOKEN_PATTERN, '[redacted-provider-token]');
+}
+
+const PI_RPC_FAILURE_TRACE_ENV = 'HAPPIER_PI_RPC_FAILURE_TRACE';
+const PI_RPC_FAILURE_TRACE_MAX_STRING_LENGTH = 240;
+const PI_RPC_FAILURE_TRACE_MAX_ARRAY_LENGTH = 10;
+const PI_RPC_FAILURE_TRACE_SAFE_SCALAR_FIELDS = [
+  'type',
+  'command',
+  'success',
+  'error',
+  'message',
+  'detail',
+  'reason',
+  'status',
+  'terminalStatus',
+  'terminal_status',
+  'stopReason',
+  'stop_reason',
+  'errorCode',
+  'error_code',
+  'errorMessage',
+  'error_message',
+  'provider',
+  'model',
+] as const;
+
+function sanitizePiRpcFailureTraceScalar(value: unknown): string | number | boolean | null {
+  if (typeof value === 'string') {
+    const normalized = redactPiDiagnosticText(value).replace(/\s+/gu, ' ').trim();
+    return normalized.length > 0 ? normalized.slice(0, PI_RPC_FAILURE_TRACE_MAX_STRING_LENGTH) : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'boolean') return value;
+  return null;
+}
+
+function collectPiRpcFailureTraceScalars(record: Record<string, unknown>): Record<string, string | number | boolean> {
+  const output: Record<string, string | number | boolean> = {};
+  for (const key of PI_RPC_FAILURE_TRACE_SAFE_SCALAR_FIELDS) {
+    const sanitized = sanitizePiRpcFailureTraceScalar(record[key]);
+    if (sanitized !== null) output[key] = sanitized;
+  }
+  return output;
+}
+
+function buildPiRpcFailureTraceMessageShape(value: unknown): Record<string, unknown> | null {
+  const message = asRecord(value);
+  if (!message) return null;
+  const content = Array.isArray(message.content) ? message.content : null;
+  return {
+    ...collectPiRpcFailureTraceScalars(message),
+    hasContent: content !== null,
+    contentLength: content?.length ?? null,
+    contentItemTypes: content
+      ?.slice(0, PI_RPC_FAILURE_TRACE_MAX_ARRAY_LENGTH)
+      .map((item) => asNonEmptyString(asRecord(item)?.type) ?? typeof item) ?? [],
+  };
+}
+
+function sanitizePiRpcFailureTraceExtraValue(value: unknown): unknown {
+  const scalar = sanitizePiRpcFailureTraceScalar(value);
+  if (scalar !== null) return scalar;
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, PI_RPC_FAILURE_TRACE_MAX_ARRAY_LENGTH)
+      .map((item) => sanitizePiRpcFailureTraceExtraValue(item));
+  }
+  const record = asRecord(value);
+  if (record) {
+    return {
+      object: true,
+      keys: Object.keys(record).slice(0, PI_RPC_FAILURE_TRACE_MAX_ARRAY_LENGTH),
+    };
+  }
+  return null;
+}
+
+function sanitizePiRpcFailureTraceExtra(extra: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extra)) {
+    output[key] = sanitizePiRpcFailureTraceExtraValue(value);
+  }
+  return output;
+}
 
 function collectPiStderrRuntimeAuthMarkerText(value: unknown, output: string[]): void {
   if (typeof value === 'string') {
@@ -338,6 +480,26 @@ function buildPiStderrRuntimeAuthEvidence(
   };
 }
 
+function readPiTerminalStatus(value: unknown): string | null {
+  const status = asNonEmptyString(value);
+  return status ? status.toLowerCase() : null;
+}
+
+function isPiFailedAssistantTerminalEvent(event: Record<string, unknown>): boolean {
+  const type = asNonEmptyString(event.type);
+  if (type !== 'assistant_message_end' && type !== 'message_end') return false;
+  const message = asRecord(event.message);
+  if (message && message.role !== 'assistant') return false;
+
+  const terminalStatus = readPiTerminalStatus(
+    event.terminalStatus ??
+    event.terminal_status ??
+    message?.terminalStatus ??
+    message?.terminal_status,
+  );
+  return terminalStatus === 'failed' || terminalStatus === 'failure' || terminalStatus === 'error';
+}
+
 const PI_RPC_LIVENESS_PROBE_TIMEOUT_ENV = 'HAPPIER_PI_RPC_LIVENESS_PROBE_TIMEOUT_MS';
 const PI_RPC_MAX_SILENT_PROBES_ENV = 'HAPPIER_PI_RPC_MAX_SILENT_PROBES';
 const PI_RPC_PROMPT_COLLISION_IDLE_WAIT_ENV = 'HAPPIER_PI_RPC_PROMPT_COLLISION_IDLE_WAIT_MS';
@@ -367,11 +529,40 @@ async function pathIsFile(path: string): Promise<boolean> {
   }
 }
 
+async function readPiSessionHeaderId(path: string): Promise<string | null> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(path, 'r');
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const firstLineEnd = buffer.subarray(0, bytesRead).indexOf(0x0a);
+    const firstLine = buffer.subarray(0, firstLineEnd >= 0 ? firstLineEnd : bytesRead).toString('utf8').trim();
+    if (!firstLine) return null;
+    const header = asRecord(JSON.parse(firstLine));
+    if (header?.type !== 'session') return null;
+    return asNonEmptyString(header.id);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(resolve, ms);
     timeout.unref?.();
   });
+}
+
+async function stopPiRpcProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
+  // Register before signaling so a fast Windows exit cannot race the close listener. `close` is
+  // later than `exit` and proves the child's stdio/OS handles have been released as well as its PID.
+  const closed = new Promise<void>((resolve) => {
+    child.once('close', () => resolve());
+  });
+  await killProcessTree(child, { graceMs: 2_000 });
+  await closed;
 }
 
 function normalizePiThinkingEffort(raw: unknown): PiThinkingEffort | null {
@@ -411,6 +602,7 @@ export class PiRpcBackend implements AgentBackend {
   private lastAuthJsonMtimeMs: number | null = null;
   private authRestartPendingMtimeMs: number | null = null;
   private authRestartInFlight: Promise<void> | null = null;
+  private processTransitionInFlight: Promise<void> | null = null;
   private currentModelProvider: string | null = null;
   private readonly modelProviderById = new Map<string, string>();
   private sessionModelState: { currentModelId: string; availableModels: Array<{ id: string; name: string; description?: string; modelOptions?: unknown[] }> } | null =
@@ -418,6 +610,13 @@ export class PiRpcBackend implements AgentBackend {
   private lastPublishedUsageKey: string | null = null;
   private readonly connectedServiceRuntimeAuthAdapter = createPiConnectedServiceRuntimeAuthAdapter();
   private disposed = false;
+  /**
+   * Memoized once-per-session broker preflight (fail-closed). Broker readiness is a launch-time fact
+   * (extension asset on disk + daemon bridge reachable + extension actually loaded), so verify once and
+   * enforce before startup/prompt commands. Native + direct-API-key sessions resolve `ready: true`
+   * (no-op).
+   */
+  private connectedBrokerPreflight: Promise<PiBrokerReadiness> | null = null;
   private anonymousCompactionSequence = 0;
   private activeCompactionLifecycleId: string | null = null;
   /** Bounded tail of recent raw stderr lines, retained only to enrich a non-zero process-exit (O2). */
@@ -441,11 +640,19 @@ export class PiRpcBackend implements AgentBackend {
     this.messageHandlers.delete(handler);
   }
 
-  async startSession(): Promise<StartSessionResult> {
+  async startSession(
+    _initialPrompt?: string,
+    options?: AgentSessionOpenOptions,
+  ): Promise<StartSessionResult> {
+    const lifecycle = this.createSessionOpenLifecycle(options?.signal);
     await this.ensureProcess();
+    await this.ensureConnectedBrokerReady(lifecycle);
     this.emitMessage({ type: 'status', status: 'starting' });
 
-    const stateBefore = await this.getState();
+    const stateBefore = await this.getState(
+      this.resolveSessionOpenRemainingMs(lifecycle),
+      this.createSessionOpenCommandOptions(lifecycle),
+    );
     const existingSessionId = asNonEmptyString(stateBefore.sessionId);
     const existingSessionFile = asNonEmptyString(stateBefore.sessionFile);
     if (existingSessionId) {
@@ -457,12 +664,19 @@ export class PiRpcBackend implements AgentBackend {
       return { sessionId: existingSessionId };
     }
 
-    const created = await this.sendCommand({ type: 'new_session' }, 60_000);
+    const created = await this.sendProviderAffectingCommand(
+      { type: 'new_session' },
+      this.resolveSessionOpenRemainingMs(lifecycle),
+      lifecycle,
+    );
     if ((asRecord(created.data)?.cancelled ?? false) === true) {
       throw new Error('Pi cancelled new_session');
     }
 
-    const stateAfter = await this.getState();
+    const stateAfter = await this.getState(
+      this.resolveSessionOpenRemainingMs(lifecycle),
+      this.createSessionOpenCommandOptions(lifecycle),
+    );
     const nextSessionId = asNonEmptyString(stateAfter.sessionId);
     const nextSessionFile = asNonEmptyString(stateAfter.sessionFile);
     if (!nextSessionId) {
@@ -480,6 +694,7 @@ export class PiRpcBackend implements AgentBackend {
   private async resolveSessionFileForSessionId(
     expectedSessionId: string,
     preferredAbsolutePath: string | null = null,
+    requireMatchingHeader = false,
   ): Promise<string | null> {
     const candidateDirs = new Set<string>();
     const fromSessionEnv = asNonEmptyString(this.options.env.PI_CODING_AGENT_SESSION_DIR);
@@ -530,6 +745,8 @@ export class PiRpcBackend implements AgentBackend {
           const path = join(next.dir, name);
           try {
             const s = await stat(path);
+            if (!s.isFile()) continue;
+            if (requireMatchingHeader && await readPiSessionHeaderId(path) !== expectedSessionId) continue;
             matches.push({ path, mtimeMs: typeof s.mtimeMs === 'number' ? s.mtimeMs : 0 });
           } catch {
             // ignore
@@ -544,7 +761,10 @@ export class PiRpcBackend implements AgentBackend {
     return matches[0]?.path ?? null;
   }
 
-  async loadSession(sessionId: SessionId): Promise<StartSessionResult> {
+  async loadSession(
+    sessionId: SessionId,
+    options?: AgentSessionOpenOptions,
+  ): Promise<StartSessionResult> {
     if (this.disposed) {
       throw new Error('Pi backend is disposed');
     }
@@ -579,34 +799,27 @@ export class PiRpcBackend implements AgentBackend {
     // We intentionally avoid `--continue` here because it resumes "most recent", which can be the wrong
     // session when multiple sessions exist in PI_CODING_AGENT_DIR.
     this.emitMessage({ type: 'status', status: 'starting' });
+    const lifecycle = this.createSessionOpenLifecycle(options?.signal);
     try {
-      await this.stopRpcProcessForRestart();
       const preferredSessionFile = requestedAbsoluteSessionFile && await pathIsFile(requestedAbsoluteSessionFile)
         ? requestedAbsoluteSessionFile
         : null;
       const sessionFile = preferredSessionFile
         ?? await this.resolveSessionFileForSessionId(expectedSessionId, requestedAbsoluteSessionFile);
       const sessionArg = sessionFile ?? expectedSessionId;
-      this.spawnRpcProcess({ args: [...this.options.args, '--session', sessionArg] });
+      const state = await this.runProcessTransition(async () => await this.replaceRpcProcessForSession({
+        expectedSessionId,
+        sessionArg,
+        lifecycle,
+      }));
 
-      const state = await this.getState();
-      const resumedSessionId = asNonEmptyString(state.sessionId);
-      if (!resumedSessionId) {
-        throw new Error('Pi did not return a session id after --session');
-      }
-      if (resumedSessionId !== expectedSessionId) {
-        throw new Error(`Pi session mismatch after --session (expected ${expectedSessionId}, got ${resumedSessionId})`);
-      }
-
-      this.sessionId = resumedSessionId;
+      this.sessionId = expectedSessionId;
       this.sessionFile = asNonEmptyString(state.sessionFile) ?? sessionFile;
       await this.captureAuthJsonSnapshot();
       await this.publishRuntimeState(state);
       this.emitMessage({ type: 'status', status: 'idle' });
-      return { sessionId: resumedSessionId };
+      return { sessionId: expectedSessionId };
     } catch (error) {
-      // Ensure we don't leave a half-initialized process around after a failed load attempt.
-      await this.stopRpcProcessForRestart();
       this.sessionId = null;
       throw error;
     }
@@ -620,10 +833,142 @@ export class PiRpcBackend implements AgentBackend {
     return this.sessionModelState;
   }
 
+  /**
+   * Fail-closed broker preflight before startup/prompt commands. For brokered connected sessions, the
+   * stored credential carries NO real refresh token — it only works if the Happier broker extension
+   * actually loaded and the daemon bridge is reachable. Verify that once; if not ready, throw a clear
+   * error rather than letting Pi attempt a request with a non-functional brokered credential. Native +
+   * direct-API-key sessions short-circuit to ready (no broker env present) so this is a strict no-op.
+   */
+  private createSessionOpenLifecycle(signal?: AbortSignal): PiRpcSessionOpenLifecycle {
+    return {
+      deadlineMs: Date.now() + PI_RPC_SESSION_OPEN_TIMEOUT_MS,
+      signal,
+    };
+  }
+
+  private resolveSessionOpenRemainingMs(lifecycle: PiRpcSessionOpenLifecycle): number {
+    return Math.max(1, lifecycle.deadlineMs - Date.now());
+  }
+
+  private createSessionOpenCommandOptions(
+    lifecycle: PiRpcSessionOpenLifecycle,
+  ): PiRpcCommandOptions {
+    return {
+      processAlreadyEnsured: true,
+      signal: lifecycle.signal,
+      createCancellationError: () => new PiBrokerReadinessError('broker_readiness_cancelled'),
+    };
+  }
+
+  private async ensureConnectedBrokerReady(
+    lifecycle: PiRpcSessionOpenLifecycle = this.createSessionOpenLifecycle(),
+  ): Promise<void> {
+    const owningProcess = this.process;
+    this.connectedBrokerPreflight ??= verifyPiBrokerReadyForConnectedSession(this.options.env, {
+      deadlineMs: lifecycle.deadlineMs,
+      signal: lifecycle.signal,
+      isProcessActive: owningProcess
+        ? () => this.disposed === false && this.process === owningProcess
+        : undefined,
+    });
+    const readiness = await this.connectedBrokerPreflight;
+    if (!readiness.ready) {
+      // Reset so a transient miss (e.g. handshake still in flight) can be re-verified on retry.
+      this.connectedBrokerPreflight = null;
+      throw new PiBrokerReadinessError(readiness.reason);
+    }
+  }
+
+  private async ensureConnectedBrokerReadyForProviderCommand(
+    lifecycle?: PiRpcSessionOpenLifecycle,
+  ): Promise<void> {
+    await this.ensureProcess();
+    await this.ensureConnectedBrokerReady(lifecycle);
+  }
+
+  private async sendProviderAffectingCommand(
+    command: PiRpcCommandWithoutId,
+    timeoutMs = 30_000,
+    lifecycle?: PiRpcSessionOpenLifecycle,
+  ): Promise<PiRpcResponse> {
+    await this.ensureConnectedBrokerReadyForProviderCommand(lifecycle);
+    return this.sendCommand(
+      command,
+      timeoutMs,
+      lifecycle
+        ? this.createSessionOpenCommandOptions(lifecycle)
+        : { processAlreadyEnsured: true },
+    );
+  }
+
+  private refreshPiBrokerLoadNonceForNextSpawn(): void {
+    const selections = parsePiBrokerSelections(this.options.env[PI_BROKER_SELECTIONS_ENV]);
+    const hasBrokeredProvider = PI_BROKER_PROVIDERS.some((provider) => selections[provider]);
+    if (!hasBrokeredProvider) return;
+    this.options.env[PI_BROKER_LOAD_NONCE_ENV] = randomUUID();
+    this.connectedBrokerPreflight = null;
+  }
+
   async sendPrompt(sessionId: SessionId, prompt: string): Promise<void> {
+    await this.sendPromptWithAdmission(sessionId, prompt).completion;
+  }
+
+  async sendPromptWithEvidence(
+    sessionId: SessionId,
+    prompt: string,
+  ): Promise<AcpPromptSubmissionEvidence> {
+    const outcome = await this.sendPromptWithAdmission(sessionId, prompt).admission;
+    if (outcome.status === 'accepted') {
+      return { kind: 'accepted_without_exact_final_response' };
+    }
+    throw new AcpPromptSubmissionPhaseError(outcome.status, outcome.error);
+  }
+
+  sendPromptWithAdmission(sessionId: SessionId, prompt: string): Readonly<{
+    admission: Promise<
+      | { status: 'accepted' }
+      | { status: 'rejected_before_effect'; error: Error }
+      | { status: 'effect_may_have_occurred'; error: Error }
+    >;
+    completion: Promise<void>;
+  }> {
+    const admission = createDeferred<
+      | { status: 'accepted' }
+      | { status: 'rejected_before_effect'; error: Error }
+      | { status: 'effect_may_have_occurred'; error: Error }
+    >();
+    let admissionSettled = false;
+    const settleAdmission = (outcome: Awaited<typeof admission.promise>): void => {
+      if (admissionSettled) return;
+      admissionSettled = true;
+      admission.resolve(outcome);
+    };
+    const completion = this.sendPromptAndObserveCompletion(sessionId, prompt, settleAdmission);
+    void completion.catch((error: unknown) => {
+      settleAdmission({ status: 'rejected_before_effect', error: asError(error) });
+    });
+    return { admission: admission.promise, completion };
+  }
+
+  private async sendPromptAndObserveCompletion(
+    sessionId: SessionId,
+    prompt: string,
+    settleAdmission: (outcome:
+      | { status: 'accepted' }
+      | { status: 'rejected_before_effect'; error: Error }
+      | { status: 'effect_may_have_occurred'; error: Error }
+    ) => void,
+  ): Promise<void> {
     this.assertSession(sessionId);
+    await this.ensureConnectedBrokerReady();
+    let providerSendAttempted = false;
 
     const barrier = createDeferred<void>();
+    // The barrier is observed only by concurrent waitForResponseComplete callers. Attach a handler
+    // immediately so a rejected pre-admission transition cannot become an unhandled rejection when
+    // no waiter exists; awaiting the original promise still preserves its rejection semantics.
+    void barrier.promise.catch(() => undefined);
     this.pendingTurnBarrier = barrier;
     const settleBarrier = (error?: Error) => {
       if (this.pendingTurnBarrier !== barrier) return;
@@ -640,6 +985,7 @@ export class PiRpcBackend implements AgentBackend {
       if (maybeRestart) await maybeRestart;
       const message = prompt.trim();
       if (!message) {
+        settleAdmission({ status: 'rejected_before_effect', error: new Error('Prompt text is blank') });
         settleBarrier();
         return;
       }
@@ -647,79 +993,44 @@ export class PiRpcBackend implements AgentBackend {
       // Ensure we have a live process *before* allocating a pending turn.
       // If the process died between turns, `ensureProcess()` may need to restart and reattach via --session.
       await this.ensureProcess();
+      await this.ensureConnectedBrokerReady();
 
       settleBarrier();
 
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        let turn: Promise<void> | null = null;
-        try {
-          if (this.pendingTurn) {
-            if (attempt === 0) {
-              const existingPendingTurn = this.pendingTurn;
-              await this.waitForPromptCollisionToBecomeIdle();
-              if (this.pendingTurn === existingPendingTurn) {
-                await Promise.race([
-                  existingPendingTurn.promise.catch(() => undefined),
-                  delay(this.getAgentEndSettleMs() + this.getPromptCollisionIdlePollMs()),
-                ]);
-              }
-              continue;
-            }
-            throw new Error('Pi is already processing another prompt');
-          }
-          turn = this.createPendingTurn(this.getPendingTurnStallTimeoutMs());
-          await this.sendCommand({ type: 'prompt', message });
-          await turn;
-          return;
-        } catch (error) {
-          const promptError = asError(error);
-          const normalizedError = promptError.message.toLowerCase();
-          const isPromptCollisionError =
-            normalizedError.includes('already processing') || normalizedError.includes('streamingbehavior');
-
-          if (isPromptCollisionError && attempt === 0) {
-            if (turn) {
-              this.rejectPendingTurn(promptError);
-              await turn.catch(() => undefined);
-            }
-            await this.waitForPromptCollisionToBecomeIdle();
-            continue;
-          }
-
-          if (turn && isPromptResponseTimeoutError(promptError)) {
-            // The prompt write succeeded, but Pi did not acknowledge the prompt before entering a
-            // long provider phase (for example threshold compaction). At this point the turn stream
-            // is the source of truth: keep the pending turn alive so later compaction/tool/agent_end
-            // events can complete it instead of surfacing a false transport timeout to the user.
-            await turn;
-            return;
-          }
-
-          if (turn) {
-            this.rejectPendingTurn(promptError);
-            await turn.catch(() => undefined);
-          }
-
-          const canRecoverFromProcessExit =
-            attempt === 0 &&
-            !!this.sessionId &&
-            (normalizedError.includes('pi process exited') ||
-              normalizedError.includes('pi process terminated') ||
-              normalizedError.includes('failed to write pi rpc command') ||
-              normalizedError.includes('epipe'));
-
-          if (!canRecoverFromProcessExit) {
-            throw promptError;
-          }
-
-          try {
-            await this.restartAndContinue();
-          } catch (restartError) {
-            throw asError(restartError);
-          }
+      if (this.pendingTurn) {
+        const existingPendingTurn = this.pendingTurn;
+        await this.waitForPromptCollisionToBecomeIdle();
+        if (this.pendingTurn === existingPendingTurn) {
+          await Promise.race([
+            existingPendingTurn.promise.catch(() => undefined),
+            delay(this.getAgentEndSettleMs() + this.getPromptCollisionIdlePollMs()),
+          ]);
         }
+        if (this.pendingTurn) throw new Error('Pi is already processing another prompt');
       }
+
+      await this.ensureConnectedBrokerReadyForProviderCommand();
+      const turn = this.createPendingTurn(this.getPendingTurnStallTimeoutMs());
+      providerSendAttempted = true;
+      try {
+        await this.sendCommand({ type: 'prompt', message }, 30_000, { processAlreadyEnsured: true });
+      } catch (error) {
+        const promptError = asError(error);
+        settleAdmission(promptError instanceof PiRpcPromptRejectedBeforeEffectError
+          ? { status: 'rejected_before_effect', error: promptError }
+          : { status: 'effect_may_have_occurred', error: promptError });
+        this.rejectPendingTurn(promptError);
+        await turn.catch(() => undefined);
+        throw promptError;
+      }
+      settleAdmission({ status: 'accepted' });
+      await turn;
+      return;
     } catch (error) {
+      const promptError = asError(error);
+      settleAdmission(providerSendAttempted
+        ? { status: 'effect_may_have_occurred', error: promptError }
+        : { status: 'rejected_before_effect', error: promptError });
       settleBarrier(asError(error));
       throw error;
     }
@@ -734,7 +1045,8 @@ export class PiRpcBackend implements AgentBackend {
     if (!this.process) {
       throw new Error('Pi process is not running');
     }
-    await this.sendCommand({ type: 'steer', message });
+    await this.ensureConnectedBrokerReady();
+    await this.sendCommand({ type: 'steer', message }, 30_000, { processAlreadyEnsured: true });
   }
 
   async compactContext(sessionId: SessionId, command: string): Promise<void> {
@@ -742,7 +1054,7 @@ export class PiRpcBackend implements AgentBackend {
     const maybeRestart = this.maybeRestartForUpdatedAuthJson();
     if (maybeRestart) await maybeRestart;
     const customInstructions = parseCompactInstructions(command);
-    await this.sendCommand({
+    await this.sendProviderAffectingCommand({
       type: 'compact',
       ...(customInstructions ? { customInstructions } : {}),
     }, 240_000);
@@ -756,7 +1068,7 @@ export class PiRpcBackend implements AgentBackend {
     if (!normalized) return;
 
     const selection = await this.resolveModelSelection(normalized);
-    await this.sendCommand({ type: 'set_model', provider: selection.provider, modelId: selection.modelId }, 60_000);
+    await this.sendProviderAffectingCommand({ type: 'set_model', provider: selection.provider, modelId: selection.modelId }, 60_000);
     this.currentModelProvider = selection.provider;
     await this.publishRuntimeState(await this.getState());
   }
@@ -775,7 +1087,7 @@ export class PiRpcBackend implements AgentBackend {
     const level = normalizePiThinkingEffort(value);
     if (!level) return;
 
-    await this.sendCommand({ type: 'set_thinking_level', level }, 30_000);
+    await this.sendProviderAffectingCommand({ type: 'set_thinking_level', level }, 30_000);
     await this.publishRuntimeState(await this.getState());
   }
 
@@ -840,34 +1152,15 @@ export class PiRpcBackend implements AgentBackend {
     this.process = null;
     if (!child) return;
 
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
-        resolve();
-      }, 2_000);
-      timeout.unref?.();
-
-      child.once('exit', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
+    await stopPiRpcProcess(child);
   }
 
   private async ensureProcess(): Promise<void> {
     if (this.disposed) {
       throw new Error('Pi backend is disposed');
+    }
+    if (this.processTransitionInFlight) {
+      await this.processTransitionInFlight;
     }
     if (this.process) return;
     if (this.sessionId) {
@@ -881,6 +1174,7 @@ export class PiRpcBackend implements AgentBackend {
   }
 
   private spawnRpcProcess(params: Readonly<{ args: string[] }>): void {
+    this.refreshPiBrokerLoadNonceForNextSpawn();
     const child = spawn(this.options.command, params.args, {
       cwd: this.options.cwd,
       env: {
@@ -895,11 +1189,19 @@ export class PiRpcBackend implements AgentBackend {
       throw new Error('Failed to start Pi RPC process with piped stdio');
     }
 
-    this.process = child as ChildProcessWithoutNullStreams;
-    this.stdoutLineReader = attachPiRpcJsonlLineReader(child.stdout, (line) => this.handleStdoutLine(line));
-    this.stderrLineReader = attachPiRpcJsonlLineReader(child.stderr, (line) => this.handleStderrLine(line));
+    const spawnedChild = child as ChildProcessWithoutNullStreams;
+    this.process = spawnedChild;
+    const stdoutLineReader = attachPiRpcJsonlLineReader(child.stdout, (line) => {
+      if (this.process === spawnedChild) this.handleStdoutLine(line);
+    });
+    const stderrLineReader = attachPiRpcJsonlLineReader(child.stderr, (line) => {
+      if (this.process === spawnedChild) this.handleStderrLine(line);
+    });
+    this.stdoutLineReader = stdoutLineReader;
+    this.stderrLineReader = stderrLineReader;
 
     const handleIoError = (error: unknown) => {
+      if (this.process !== spawnedChild) return;
       const resolved = asError(error);
       if (!this.disposed) {
         this.emitMessage({
@@ -918,6 +1220,7 @@ export class PiRpcBackend implements AgentBackend {
     child.stderr.on('error', handleIoError);
 
     child.on('error', (error) => {
+      if (this.process !== spawnedChild) return;
       this.emitMessage({
         type: 'status',
         status: 'error',
@@ -928,6 +1231,7 @@ export class PiRpcBackend implements AgentBackend {
     });
 
     child.on('exit', (code, signal) => {
+      if (this.process !== spawnedChild) return;
       if (!this.disposed) {
         const detail = code === 0
           ? `Pi process exited (code=0, signal=${signal ?? 'null'})`
@@ -947,6 +1251,10 @@ export class PiRpcBackend implements AgentBackend {
         this.rejectPendingTurn(new Error('Pi process exited'));
       }
       this.process = null;
+      stdoutLineReader.close();
+      stderrLineReader.close();
+      if (this.stdoutLineReader === stdoutLineReader) this.stdoutLineReader = null;
+      if (this.stderrLineReader === stderrLineReader) this.stderrLineReader = null;
     });
   }
 
@@ -992,10 +1300,23 @@ export class PiRpcBackend implements AgentBackend {
     }
   }
 
+  private isCurrentPiProviderBrokered(): boolean {
+    const currentProvider = this.currentModelProvider;
+    if (!currentProvider) return false;
+    const selections = parsePiBrokerSelections(this.options.env[PI_BROKER_SELECTIONS_ENV]);
+    return PI_BROKER_PROVIDERS.some((provider) => (
+      selections[provider] !== undefined && piRegisterProviderId(provider) === currentProvider
+    ));
+  }
+
   private maybeRestartForUpdatedAuthJson(): Promise<void> | void {
     if (this.disposed) return;
     if (!this.sessionId) return;
     if (!this.process) return;
+    // Brokered credentials are refreshed by the daemon bridge and re-fed by the Pi extension. The
+    // catalog declares these selected provider shapes as no-restart, so the local auth.json mtime
+    // watcher must not compete with that lifecycle owner.
+    if (this.isCurrentPiProviderBrokered()) return;
 
     const authPath = this.resolveAuthJsonPath();
     if (!authPath) return;
@@ -1004,11 +1325,7 @@ export class PiRpcBackend implements AgentBackend {
       if (this.authRestartInFlight) {
         // If a restart is already in-flight, await it when we're idle, but never block an in-flight turn.
         if (this.pendingTurn) return;
-        try {
-          await this.authRestartInFlight;
-        } catch {
-          // best-effort
-        }
+        await this.authRestartInFlight;
         return;
       }
 
@@ -1037,17 +1354,21 @@ export class PiRpcBackend implements AgentBackend {
         return;
       }
 
-      // Idle boundary: attempt a best-effort restart so the new credentials are picked up.
+      // Idle boundary: replace only when the vendor session is durably resumable. Once the old child
+      // has been destroyed, a failed replacement is fatal to this admission attempt and propagates.
       this.authRestartInFlight = (async () => {
         try {
-          await this.restartAndContinue();
+          const restarted = await this.restartAndContinue({ requireDurableSessionFile: true });
+          if (!restarted) {
+            this.authRestartPendingMtimeMs = nextMtimeMs;
+            return;
+          }
           this.lastAuthJsonMtimeMs = nextMtimeMs;
           this.authRestartPendingMtimeMs = null;
           await this.captureAuthJsonSnapshot();
         } catch (error) {
-          // Best-effort: keep running with the existing process; we'll retry on the next idle boundary.
           this.authRestartPendingMtimeMs = nextMtimeMs;
-          logger.debug('[pi] Failed to restart after auth.json update (non-fatal)', error);
+          throw error;
         } finally {
           this.authRestartInFlight = null;
         }
@@ -1057,29 +1378,81 @@ export class PiRpcBackend implements AgentBackend {
     })();
   }
 
-  private async restartAndContinue(): Promise<void> {
+  private async restartAndContinue(
+    options: Readonly<{ requireDurableSessionFile?: boolean }> = {},
+  ): Promise<boolean> {
     const expectedSessionId = this.sessionId;
-    if (!expectedSessionId) return;
+    if (!expectedSessionId) return false;
     if (this.pendingTurn) {
       throw new Error('Cannot restart Pi while a turn is in-flight');
     }
 
-    await this.stopRpcProcessForRestart();
-    const sessionFile = this.sessionFile ?? (await this.resolveSessionFileForSessionId(expectedSessionId));
+    const sessionFile = await this.resolveSessionFileForSessionId(
+      expectedSessionId,
+      this.sessionFile,
+      options.requireDurableSessionFile === true,
+    );
+    if (options.requireDurableSessionFile === true && !sessionFile) {
+      return false;
+    }
     const sessionArg = sessionFile ?? expectedSessionId;
-    this.spawnRpcProcess({ args: [...this.options.args, '--session', sessionArg] });
-
-    const state = await this.getState();
-    const nextSessionId = asNonEmptyString(state.sessionId);
-    if (!nextSessionId) {
-      throw new Error('Pi did not return a session id after --session');
-    }
-    if (nextSessionId !== expectedSessionId) {
-      throw new Error(`Pi session mismatch after --session (expected ${expectedSessionId}, got ${nextSessionId})`);
-    }
+    const state = await this.runProcessTransition(async () => await this.replaceRpcProcessForSession({
+      expectedSessionId,
+      sessionArg,
+    }));
     this.sessionFile = asNonEmptyString(state.sessionFile) ?? sessionFile;
     await this.publishRuntimeState(state);
     this.emitMessage({ type: 'status', status: 'idle' });
+    return true;
+  }
+
+  private async runProcessTransition<T>(operation: () => Promise<T>): Promise<T> {
+    while (this.processTransitionInFlight) {
+      await this.processTransitionInFlight;
+    }
+    const operationPromise = operation();
+    const gate = operationPromise.then(() => undefined, () => undefined);
+    this.processTransitionInFlight = gate;
+    try {
+      return await operationPromise;
+    } finally {
+      if (this.processTransitionInFlight === gate) {
+        this.processTransitionInFlight = null;
+      }
+    }
+  }
+
+  private async replaceRpcProcessForSession(params: Readonly<{
+    expectedSessionId: string;
+    sessionArg: string;
+    lifecycle?: PiRpcSessionOpenLifecycle;
+  }>): Promise<PiRpcStateData> {
+    await this.stopRpcProcessForRestart();
+    this.spawnRpcProcess({ args: [...this.options.args, '--session', params.sessionArg] });
+
+    try {
+      const lifecycle = params.lifecycle ?? this.createSessionOpenLifecycle();
+      await this.ensureConnectedBrokerReady(lifecycle);
+      const state = await this.getState(
+        this.resolveSessionOpenRemainingMs(lifecycle),
+        this.createSessionOpenCommandOptions(lifecycle),
+      );
+      const nextSessionId = asNonEmptyString(state.sessionId);
+      if (!nextSessionId) {
+        throw new Error('Pi did not return a session id after --session');
+      }
+      if (nextSessionId !== params.expectedSessionId) {
+        throw new Error(
+          `Pi session mismatch after --session (expected ${params.expectedSessionId}, got ${nextSessionId})`,
+        );
+      }
+      return state;
+    } catch (error) {
+      // A successor is not usable until its reported identity matches. Stop every half-initialized
+      // candidate before releasing the transition gate so no prompt can reach it.
+      await this.stopRpcProcessForRestart();
+      throw error;
+    }
   }
 
   private async stopRpcProcessForRestart(): Promise<void> {
@@ -1099,28 +1472,33 @@ export class PiRpcBackend implements AgentBackend {
     this.process = null;
     if (!child) return;
 
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
-        resolve();
-      }, 2_000);
-      timeout.unref?.();
+    await stopPiRpcProcess(child);
+  }
 
-      child.once('exit', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
+  private isPiRpcFailureTraceEnabled(): boolean {
+    return this.options.env[PI_RPC_FAILURE_TRACE_ENV] === '1' || process.env[PI_RPC_FAILURE_TRACE_ENV] === '1';
+  }
 
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        clearTimeout(timeout);
-        resolve();
-      }
+  private tracePiRpcFailureBoundary(
+    branch: string,
+    record: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ): void {
+    if (!this.isPiRpcFailureTraceEnabled()) return;
+    const id = asNonEmptyString(record.id);
+    const pending = id ? this.pendingRequests.get(id) ?? null : null;
+    const messageShape = buildPiRpcFailureTraceMessageShape(record.message);
+
+    logger.debug('[pi] RPC failure trace', {
+      branch,
+      ...collectPiRpcFailureTraceScalars(record),
+      idPresent: id !== null,
+      idMatchesOpenPrompt: id !== null && this.openPromptRequestIds.has(id),
+      hasPendingRequest: pending !== null,
+      pendingCommandType: pending?.commandType ?? null,
+      pendingTurnPresent: this.pendingTurn !== null,
+      ...(messageShape ? { messageShape } : {}),
+      ...sanitizePiRpcFailureTraceExtra(extra),
     });
   }
 
@@ -1140,6 +1518,9 @@ export class PiRpcBackend implements AgentBackend {
 
     const record = asRecord(parsed);
     if (!record) return;
+    if (this.pendingTurn) {
+      this.tracePiRpcFailureBoundary('stdout_record', record);
+    }
 
     if (record.type === 'response') {
       this.handleResponse(record as PiRpcResponse);
@@ -1155,20 +1536,37 @@ export class PiRpcBackend implements AgentBackend {
     const pending = this.pendingRequests.get(id);
     if (!pending) {
       if (response.command === 'prompt' && !response.success && this.openPromptRequestIds.has(id)) {
+        this.tracePiRpcFailureBoundary('late_open_prompt_response', response);
         this.openPromptRequestIds.delete(id);
-        const detail = asNonEmptyString(response.error) ?? 'Pi prompt failed';
-        this.rejectPendingTurn(new Error(detail));
-        this.emitMessage({ type: 'status', status: 'error', detail });
+        this.surfacePiProviderFailure(normalizePiProviderFailure('post_acceptance_prompt', { error: response.error }));
+      } else {
+        this.tracePiRpcFailureBoundary('ignored_response_no_pending_request', response);
       }
       return;
     }
 
-    clearTimeout(pending.timeout);
-    this.pendingRequests.delete(id);
+    if (this.pendingTurn || response.command === 'prompt' || !response.success) {
+      this.tracePiRpcFailureBoundary('pending_request_response', response, {
+        pendingCommandType: pending.commandType,
+      });
+    }
+    this.clearPendingRpcRequest(id, pending);
 
     if (!response.success) {
       this.openPromptRequestIds.delete(id);
-      pending.reject(new Error(asNonEmptyString(response.error) ?? `Pi RPC command failed: ${response.command}`));
+      const rawDetail = asNonEmptyString(response.error) ?? `Pi RPC command failed: ${response.command}`;
+      if (pending.commandType === 'prompt') {
+        this.tracePiRpcFailureBoundary('pending_prompt_failure_response', response, { detail: rawDetail });
+        const failure = normalizePiProviderFailure('prompt_rejected', { error: rawDetail });
+        this.logPiProviderFailure(failure);
+        this.emitPiProviderFailureDiagnostic(failure.sanitizedPreview);
+        pending.reject(Object.assign(
+          new PiRpcPromptRejectedBeforeEffectError(failure.sanitizedPreview),
+          { piProviderFailure: failure },
+        ));
+        return;
+      }
+      pending.reject(new Error(rawDetail));
       return;
     }
     if (pending.commandType === 'prompt') {
@@ -1213,6 +1611,10 @@ export class PiRpcBackend implements AgentBackend {
     return Object.assign(error, { runtimeAuthClassification: classification });
   }
 
+  private isAcceptedPromptAwaitingAgentStart(): boolean {
+    return this.pendingTurn !== null && !this.pendingTurn.agentStartObserved;
+  }
+
   private async reportPiRuntimeAuthFailureToDaemon(
     classification: ConnectedServiceRuntimeFailureClassification,
   ): Promise<void> {
@@ -1244,7 +1646,17 @@ export class PiRpcBackend implements AgentBackend {
   private handlePiAssistantFailureEvent(event: Record<string, unknown>): void {
     const detail = this.readPiAssistantErrorMessage(event);
     if (!detail) return;
+    this.tracePiRpcFailureBoundary('assistant_failure_event_detail_present', event);
+    if (this.isAcceptedPromptAwaitingAgentStart()) {
+      // A resumed Pi RPC session can replay a stale assistant error just after accepting the next
+      // prompt. Do not fail that new turn unless Pi has emitted agent_start for it first.
+      return;
+    }
+    const failure = normalizePiProviderFailure('assistant_message_end', event);
     const classification = this.classifyPiAssistantRuntimeAuthFailure(event);
+    if (this.pendingTurn) {
+      this.pendingTurn.providerFailureDiagnostic ??= failure;
+    }
     // Pi's overflow/server-capacity recovery *begins* with an assistant
     // `message_end{stopReason:'error'}` and then self-heals via compaction, retry, or resumed tool
     // activity. Terminating the turn here re-creates the original stuck-after-compaction bug:
@@ -1258,9 +1670,40 @@ export class PiRpcBackend implements AgentBackend {
       void this.reportPiRuntimeAuthFailureToDaemon(classification);
       return;
     }
-    this.emitMessage({ type: 'status', status: 'error', detail });
     void this.reportPiRuntimeAuthFailureToDaemon(classification);
-    this.rejectPendingTurn(this.createPiAssistantFailureError(detail, classification));
+    this.surfacePiProviderFailure(failure, classification);
+  }
+
+  private handlePiTurnFailedEvent(event: Record<string, unknown>): void {
+    if (!this.pendingTurn) return;
+    const failure = normalizePiProviderFailure('turn_failed', event);
+    const detail = failure.sanitizedPreview;
+    if (this.isAcceptedPromptAwaitingAgentStart()) {
+      this.pendingTurn.preStartTerminalFailure ??= createPiProviderFailureError(failure);
+      return;
+    }
+    this.tracePiRpcFailureBoundary('turn_failed_event_matched', event);
+    this.surfacePiProviderFailure(failure);
+  }
+
+  private handlePiAssistantMessageEndTerminalFailureEvent(event: Record<string, unknown>): void {
+    if (!this.pendingTurn) return;
+    if (!isPiFailedAssistantTerminalEvent(event)) return;
+    const failure = normalizePiProviderFailure('assistant_message_end', event);
+    const detail = failure.sanitizedPreview;
+    const classification = this.classifyPiAssistantRuntimeAuthFailure(event);
+    if (this.isAcceptedPromptAwaitingAgentStart()) {
+      this.pendingTurn.preStartTerminalFailure ??= Object.assign(
+        createPiProviderFailureError(failure),
+        classification ? { runtimeAuthClassification: classification } : {},
+      );
+      return;
+    }
+    this.tracePiRpcFailureBoundary('failed_assistant_terminal_event_matched', event);
+    if (classification) {
+      void this.reportPiRuntimeAuthFailureToDaemon(classification);
+    }
+    this.surfacePiProviderFailure(failure, classification);
   }
 
   private readCompactionLifecycleId(event: Record<string, unknown>): string | null {
@@ -1292,20 +1735,48 @@ export class PiRpcBackend implements AgentBackend {
     const normalizedEvent = this.normalizeCompactionLifecycleEvent(event);
     this.notePendingTurnActivity(normalizedEvent);
 
-    for (const msg of mapPiRpcEventToAgentMessages(normalizedEvent)) {
+    const mappedMessages = mapPiRpcEventToAgentMessages(normalizedEvent);
+    this.tracePiRpcFailureBoundary('event_mapped', normalizedEvent, {
+      mappedAgentMessageTypes: mappedMessages.map((msg) => msg.type).slice(0, PI_RPC_FAILURE_TRACE_MAX_ARRAY_LENGTH),
+    });
+
+    for (const msg of mappedMessages) {
       this.emitMessage(msg);
     }
 
     this.handlePiAssistantFailureEvent(normalizedEvent);
+    this.handlePiAssistantMessageEndTerminalFailureEvent(normalizedEvent);
+
+    if (normalizedEvent.type === 'turn_failed') {
+      this.handlePiTurnFailedEvent(normalizedEvent);
+      return;
+    }
 
     if (normalizedEvent.type === 'agent_end') {
       if (this.pendingTurn) {
-        if (normalizedEvent.willRetry === true || this.pendingTurn.recoverableAssistantErrorObserved) {
+        if (!this.pendingTurn.agentStartObserved && this.pendingTurn.preStartTerminalFailure) {
+          const failure = this.pendingTurn.preStartTerminalFailure;
+          this.emitPiProviderFailureDiagnostic(failure.message);
+          this.emitMessage({ type: 'status', status: 'error', detail: failure.message });
+          this.rejectPendingTurn(failure);
+          return;
+        }
+        if (normalizedEvent.willRetry === true) {
           this.pendingTurn.agentEndObserved = false;
+          this.pendingTurn.agentEndActivityEpoch = null;
+          this.cancelPendingTurnAgentEndSettle(this.pendingTurn);
+          this.armPendingTurnInactivityTimer(this.pendingTurn);
+        } else if (this.pendingTurn.providerFailureDiagnostic) {
+          this.surfacePiProviderFailure(this.pendingTurn.providerFailureDiagnostic);
+          return;
+        } else if (this.pendingTurn.recoverableAssistantErrorObserved) {
+          this.pendingTurn.agentEndObserved = false;
+          this.pendingTurn.agentEndActivityEpoch = null;
           this.cancelPendingTurnAgentEndSettle(this.pendingTurn);
           this.armPendingTurnInactivityTimer(this.pendingTurn);
         } else {
           this.pendingTurn.agentEndObserved = true;
+          this.pendingTurn.agentEndActivityEpoch = this.pendingTurn.activityEpoch;
           this.schedulePendingTurnCompletion();
         }
       } else {
@@ -1405,7 +1876,7 @@ export class PiRpcBackend implements AgentBackend {
   private emitMessage(message: AgentMessage): void {
     const safeMessage: AgentMessage =
       message.type === 'terminal-output'
-        ? ({ ...message, data: redactBugReportSensitiveText(String(message.data ?? '')) } as AgentMessage)
+        ? ({ ...message, data: redactPiDiagnosticText(String(message.data ?? '')) } as AgentMessage)
         : message;
 
     for (const handler of this.messageHandlers) {
@@ -1420,8 +1891,11 @@ export class PiRpcBackend implements AgentBackend {
   private async sendCommand(
     command: PiRpcCommandWithoutId,
     timeoutMs = 30_000,
+    options: PiRpcCommandOptions = {},
   ): Promise<PiRpcResponse> {
-    await this.ensureProcess();
+    if (options.processAlreadyEnsured !== true) {
+      await this.ensureProcess();
+    }
     const child = this.process;
     if (!child?.stdin) {
       throw new Error('Pi process stdin is unavailable');
@@ -1433,27 +1907,55 @@ export class PiRpcBackend implements AgentBackend {
 
     const response = await new Promise<PiRpcResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pendingRequests.delete(id);
+        const pending = this.pendingRequests.get(id);
+        if (!pending || !this.clearPendingRpcRequest(id, pending)) return;
         if (command.type === 'prompt') {
           this.openPromptRequestIds.add(id);
         } else {
           this.openPromptRequestIds.delete(id);
         }
-        reject(new PiRpcCommandResponseTimeoutError(command.type));
+        pending.reject(new PiRpcCommandResponseTimeoutError(command.type));
       }, timeoutMs);
       timeout.unref?.();
 
-      this.pendingRequests.set(id, { resolve, reject, timeout, commandType: command.type });
+      const pending: PendingRpcRequest = {
+        resolve,
+        reject,
+        timeout,
+        commandType: command.type,
+        removeAbortListener: () => undefined,
+      };
+      this.pendingRequests.set(id, pending);
+
+      if (options.signal) {
+        const onAbort = () => {
+          if (!this.clearPendingRpcRequest(id, pending)) return;
+          this.openPromptRequestIds.delete(id);
+          pending.reject(options.createCancellationError?.() ?? new Error(`Pi RPC command cancelled (${command.type})`));
+        };
+        options.signal.addEventListener('abort', onAbort, { once: true });
+        pending.removeAbortListener = () => options.signal?.removeEventListener('abort', onAbort);
+        if (options.signal.aborted) onAbort();
+      }
+
+      if (!this.pendingRequests.has(id)) return;
       child.stdin.write(`${encoded}\n`, (error) => {
         if (!error) return;
-        clearTimeout(timeout);
-        this.pendingRequests.delete(id);
+        if (!this.clearPendingRpcRequest(id, pending)) return;
         this.openPromptRequestIds.delete(id);
-        reject(new Error(`Failed to write Pi RPC command (${command.type}): ${error.message}`));
+        pending.reject(new Error(`Failed to write Pi RPC command (${command.type}): ${error.message}`));
       });
     });
 
     return response;
+  }
+
+  private clearPendingRpcRequest(id: string, pending: PendingRpcRequest): boolean {
+    if (this.pendingRequests.get(id) !== pending) return false;
+    clearTimeout(pending.timeout);
+    pending.removeAbortListener();
+    this.pendingRequests.delete(id);
+    return true;
   }
 
   private createPendingTurn(timeoutMs: number): Promise<void> {
@@ -1482,11 +1984,15 @@ export class PiRpcBackend implements AgentBackend {
       compactionResumeTimeout: null,
       compactionInProgress: false,
       agentEndObserved: false,
+      agentEndActivityEpoch: null,
+      agentStartObserved: false,
+      preStartTerminalFailure: null,
       activityEpoch: 0,
       consecutiveSilentProbes: 0,
       livenessProbeInFlight: false,
       livenessProbeRerunRequested: false,
       recoverableAssistantErrorObserved: false,
+      providerFailureDiagnostic: null,
       lastCompactionEnd: null,
       lastAssistantStopReason: null,
       compactionAutoContinueAttempts: 0,
@@ -1515,6 +2021,37 @@ export class PiRpcBackend implements AgentBackend {
     this.clearPendingTurnTimers(pending);
     this.openPromptRequestIds.clear();
     pending.reject(error);
+  }
+
+  private surfacePiProviderFailure(
+    failure: PiProviderFailureDiagnostic,
+    runtimeAuthClassification: ConnectedServiceRuntimeFailureClassification | null = null,
+  ): void {
+    this.logPiProviderFailure(failure);
+    this.emitPiProviderFailureDiagnostic(failure.sanitizedPreview);
+    this.emitMessage({ type: 'status', status: 'error', detail: failure.sanitizedPreview });
+    this.rejectPendingTurn(Object.assign(
+      createPiProviderFailureError(failure),
+      runtimeAuthClassification ? { runtimeAuthClassification } : {},
+    ));
+  }
+
+  private emitPiProviderFailureDiagnostic(result: string): void {
+    this.emitMessage({
+      type: 'tool-result',
+      callId: randomUUID(),
+      toolName: 'terminal-output',
+      result,
+      isError: true,
+    });
+  }
+
+  private logPiProviderFailure(failure: PiProviderFailureDiagnostic): void {
+    logger.warn('[pi] Provider turn failed', {
+      classification: failure.classification,
+      providerCode: failure.code,
+      sanitizedPreview: failure.sanitizedPreview,
+    });
   }
 
   private rejectPendingTurnAsStalled(pending: PendingTurn): void {
@@ -1702,6 +2239,7 @@ export class PiRpcBackend implements AgentBackend {
     if (type === 'compaction_start') {
       pending.compactionInProgress = true;
       pending.agentEndObserved = false;
+      pending.agentEndActivityEpoch = null;
       pending.lastCompactionEnd = null;
       this.cancelPendingTurnAgentEndSettle(pending);
       this.cancelPendingTurnCompactionResume(pending);
@@ -1714,7 +2252,11 @@ export class PiRpcBackend implements AgentBackend {
     if (type === 'agent_start') {
       pending.compactionInProgress = false;
       pending.agentEndObserved = false;
+      pending.agentEndActivityEpoch = null;
+      pending.agentStartObserved = true;
+      pending.preStartTerminalFailure = null;
       pending.recoverableAssistantErrorObserved = false;
+      pending.providerFailureDiagnostic = null;
       pending.lastCompactionEnd = null;
       pending.lastAssistantStopReason = null;
       this.cancelPendingTurnAgentEndSettle(pending);
@@ -1726,6 +2268,7 @@ export class PiRpcBackend implements AgentBackend {
     if (type === 'compaction_end') {
       pending.compactionInProgress = false;
       pending.agentEndObserved = false;
+      pending.agentEndActivityEpoch = null;
       pending.lastCompactionEnd = {
         payload: findContextCompactionPayload(mapPiRpcEventToAgentMessages(event)) ?? {
           type: 'context-compaction',
@@ -1901,7 +2444,27 @@ export class PiRpcBackend implements AgentBackend {
     }
 
     if (this.pendingTurn !== pending) return;
-    if (state && (state.isStreaming === true || state.isCompacting === true)) {
+    if (pending.compactionInProgress || !pending.agentEndObserved) {
+      this.armPendingTurnInactivityTimer(pending);
+      return;
+    }
+    if (!state) {
+      pending.consecutiveSilentProbes += 1;
+      if (pending.consecutiveSilentProbes >= this.getMaxSilentProbes()) {
+        this.rejectPendingTurnAsStalled(pending);
+        return;
+      }
+      this.armPendingTurnInactivityTimer(pending);
+      return;
+    }
+    const finalAssistantBoundaryIsCurrent = (
+      pending.lastAssistantStopReason === 'stop'
+      && pending.agentEndActivityEpoch === pending.activityEpoch
+    );
+    if (
+      state.isCompacting === true
+      || (state.isStreaming === true && !finalAssistantBoundaryIsCurrent)
+    ) {
       this.schedulePendingTurnCompletionBusyGrace(pending);
       return;
     }
@@ -2046,14 +2609,16 @@ export class PiRpcBackend implements AgentBackend {
 
   private rejectAllPending(error: Error): void {
     for (const [id, pending] of this.pendingRequests.entries()) {
-      clearTimeout(pending.timeout);
+      this.clearPendingRpcRequest(id, pending);
       pending.reject(error);
-      this.pendingRequests.delete(id);
     }
   }
 
-  private async getState(timeoutMs = 30_000): Promise<PiRpcStateData> {
-    const response = await this.sendCommand({ type: 'get_state' }, timeoutMs);
+  private async getState(
+    timeoutMs = 30_000,
+    options: PiRpcCommandOptions = {},
+  ): Promise<PiRpcStateData> {
+    const response = await this.sendCommand({ type: 'get_state' }, timeoutMs, options);
     return (asRecord(response.data) ?? {}) as PiRpcStateData;
   }
 

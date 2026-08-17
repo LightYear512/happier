@@ -11,6 +11,8 @@ const selection = {
   serviceId: 'claude-subscription',
   activeProfileId: 'work',
   groupId: 'claude',
+  generation: 42,
+  credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
 };
 
 describe('classifyClaudeConnectedServiceRuntimeAuthFailure', () => {
@@ -34,6 +36,8 @@ describe('classifyClaudeConnectedServiceRuntimeAuthFailure', () => {
       serviceId: 'claude-subscription',
       profileId: 'work',
       groupId: 'claude',
+      groupGeneration: 42,
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
       source: 'stable_provider_message',
     });
   });
@@ -167,6 +171,7 @@ describe('classifyClaudeConnectedServiceRuntimeAuthFailure', () => {
       serviceId: 'claude-subscription',
       profileId: 'work',
       groupId: 'claude',
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
     });
   });
 
@@ -190,6 +195,7 @@ describe('classifyClaudeConnectedServiceRuntimeAuthFailure', () => {
     ).toMatchObject({
       kind: 'usage_limit',
       limitCategory: 'usage_limit',
+      credentialRevision: 'csr_7123456789ABCDEFGHJKMNPQRS',
     });
   });
 

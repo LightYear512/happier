@@ -26,6 +26,10 @@ const invalidateMachine = vi.fn();
 vi.mock("@/app/presence/sessionCache", () => ({
     activityCache: { invalidateMachine },
 }));
+const invalidateSessionRelayAuthorizationForMachine = vi.fn();
+vi.mock("@/app/api/socket/sessionRelayAuthCache", () => ({
+    invalidateSessionRelayAuthorizationForMachine,
+}));
 
 const existingMachine = {
     id: "m1",
@@ -103,6 +107,12 @@ describe("machinesRoutes (revoke machine)", () => {
         expect(txDbMocks.db.automationAssignment.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({ machineId: "m1" }),
         }));
+        expect(txDbMocks.db.machine.update).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                active: false,
+                revokedAt: expect.any(Date),
+            }),
+        }));
         expect(markAccountChanged).toHaveBeenCalledWith(
             expect.anything(),
             expect.objectContaining({ accountId: "u1", kind: "machine", entityId: "m1" }),
@@ -117,6 +127,7 @@ describe("machinesRoutes (revoke machine)", () => {
         );
         expect(emitUpdate).toHaveBeenCalledTimes(1);
         expect(invalidateMachine).toHaveBeenCalledWith("m1");
+        expect(invalidateSessionRelayAuthorizationForMachine).toHaveBeenCalledWith("m1");
 
         expect(reply.send).toHaveBeenCalled();
         expect(response).toEqual(

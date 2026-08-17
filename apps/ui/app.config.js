@@ -99,11 +99,25 @@ const androidEnableMinifyInReleaseBuilds = readBoolEnv('HAPPIER_ANDROID_ENABLE_M
 const androidEnableShrinkResourcesInReleaseBuilds = readBoolEnv('HAPPIER_ANDROID_ENABLE_SHRINK_RESOURCES', false);
 const androidGradleJvmArgsOverride = String(process.env.HAPPIER_ANDROID_GRADLE_JVMARGS ?? '').trim();
 const androidUsesCleartextTraffic = readBoolEnv('HAPPIER_ANDROID_USES_CLEARTEXT_TRAFFIC', true);
-const expoAndroidBuildPropertiesPlugin = [
+// Canonical owner of the generated native build properties. Every prebuild path derives
+// ios/Podfile.properties.json from this: `yarn prebuild`, `expo run:ios`, `hstack mobile`,
+// and EAS (which re-prebuilds because /ios/ is .easignore'd).
+//
+// `ios.buildReactNativeFromSource` is load-bearing, not a preference: patches/ edits React
+// Native core .mm sources (composer caret reveal + jiggle, ScrollView MVCP). With prebuilt
+// RNCore, React-RCTFabric compiles headers only, so those patches apply to node_modules and
+// are then silently discarded at compile time — which is exactly how they went dead for a
+// week in July 2026 after a prebuild regenerated ios/ without the property.
+// Enforced by the verify-native-patch-compilation postinstall task.
+const expoBuildPropertiesPlugin = [
     "expo-build-properties",
     {
         android: {
             usesCleartextTraffic: androidUsesCleartextTraffic === true,
+        },
+        ios: {
+            buildReactNativeFromSource: true,
+            deploymentTarget: "16.0",
         },
     },
 ];
@@ -176,6 +190,7 @@ function resolveDefaultExpoRuntimeVersion() {
 
 const devClientLaunchMode = (process.env.HAPPIER_EXPO_DEVCLIENT_LAUNCH_MODE || '').trim();
 const devClientSilentLaunch = parseOptionalBoolean(process.env.HAPPIER_EXPO_DEVCLIENT_SILENT_LAUNCH);
+const iosMemoryProfilingRuntime = readBoolEnv('HAPPIER_IOS_MEMORY_PROFILING_RUNTIME', false);
 const updatesNativeDebugEnabled =
     parseOptionalBoolean(process.env.HAPPIER_EXPO_USE_NATIVE_DEBUG) ??
     parseOptionalBoolean(process.env.EX_UPDATES_NATIVE_DEBUG) ??
@@ -338,7 +353,7 @@ const baseExpoConfig = {
             favicon: "./sources/assets/images/favicon.png"
         },
         plugins: [
-            expoAndroidBuildPropertiesPlugin,
+            expoBuildPropertiesPlugin,
             require("./plugins/withEinkCompatibility.js"),
             require("./plugins/withAndroidReactNativeArchitectures.js"),
             require("./modules/happier-hardware-keyboard-shortcuts/app.plugin.js"),
@@ -357,7 +372,7 @@ const baseExpoConfig = {
                     root: "./sources/app"
                 }
             ],
-            ...(devClientLaunchMode ? [[
+            ...(devClientLaunchMode && !iosMemoryProfilingRuntime ? [[
                 "expo-dev-client",
                 {
                     launchMode: devClientLaunchMode
@@ -427,7 +442,7 @@ const baseExpoConfig = {
             ]
         ],
         updates: updatesConfig,
-        ...(devClientSilentLaunch === true ? { developmentClient: { silentLaunch: true } } : {}),
+        ...(devClientSilentLaunch === true && !iosMemoryProfilingRuntime ? { developmentClient: { silentLaunch: true } } : {}),
         experiments: {
             typedRoutes: true
         },

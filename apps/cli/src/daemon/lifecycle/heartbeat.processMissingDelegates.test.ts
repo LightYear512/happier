@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type SessionMarkerReadResult = Awaited<ReturnType<typeof import('../sessionRegistry').readSessionMarkerForPid>>;
+const readSessionMarkerForPid = vi.hoisted(() => vi.fn<
+  (_pid: number) => Promise<SessionMarkerReadResult>
+>(async () => null));
+
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {
@@ -10,12 +15,14 @@ vi.mock('fs', async (importOriginal) => {
 
 vi.mock('@/persistence', () => ({
   readDaemonState: vi.fn(),
-  writeDaemonState: vi.fn(),
+  writeDaemonStateIfLockOwned: vi.fn(),
 }));
 
 vi.mock('../sessionRegistry', () => ({
   promoteSessionMarkerConnectedServiceRestartIntent: vi.fn(async () => {}),
+  readSessionMarkerForPid,
   removeSessionMarker: vi.fn(async () => {}),
+  updateSessionMarkerActiveTurn: vi.fn(async () => {}),
 }));
 
 import { readDaemonState } from '@/persistence';
@@ -26,6 +33,8 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
     process.env.HAPPIER_DAEMON_HEARTBEAT_INTERVAL = '1';
     vi.useFakeTimers();
     vi.resetModules();
+    readSessionMarkerForPid.mockReset();
+    readSessionMarkerForPid.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -95,7 +104,7 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
     expect(pidToTrackedSession.has(pid)).toBe(false);
   });
 
-  it('delegates live pids to onChildExited when their stored hash belongs to a non-Happier process', async () => {
+  it('does not treat legacy command drift as proof that a live pid was reused', async () => {
     vi.mocked(readDaemonState).mockResolvedValue({
       pid: process.pid,
       httpPort: 4001,
@@ -153,9 +162,28 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
 
     await tick!();
 
-    expect(onChildExitedMock).toHaveBeenCalledTimes(1);
-    expect(onChildExitedMock).toHaveBeenCalledWith(pid, expect.objectContaining({ reason: 'process-reused' }));
-    expect(pidToTrackedSession.has(pid)).toBe(false);
+    expect(onChildExitedMock).not.toHaveBeenCalled();
+    expect(pidToTrackedSession.has(pid)).toBe(true);
+  });
+
+  it('prunes a live pid when the process-instance fingerprint proves reuse', async () => {
+    const tracked = {
+      startedBy: 'terminal',
+      pid: 555557,
+      processCommandHash: 'a'.repeat(64),
+      processInstanceFingerprint: 'linux-proc:old',
+    } as const;
+    const { getTrackedSessionHeartbeatPruneReason } = await import('./heartbeat');
+
+    expect(getTrackedSessionHeartbeatPruneReason({
+      isPidAlive: true,
+      trackedSession: tracked,
+      currentIdentity: {
+        kind: 'happy',
+        processCommandHash: 'b'.repeat(64),
+        processInstanceFingerprint: 'linux-proc:new',
+      },
+    })).toBe('process-reused');
   });
 
   it('does not prune a daemon-owned session while its child process handle is still live', async () => {
@@ -230,7 +258,7 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
     expect(pidToTrackedSession.has(pid)).toBe(true);
   });
 
-  it('removes stale session runner markers when onChildExited is not provided', async () => {
+  it('releases stale session runner markers through the canonical no-exact-turn observation', async () => {
     vi.mocked(readDaemonState).mockResolvedValue({
       pid: process.pid,
       httpPort: 4001,
@@ -284,9 +312,9 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
 
     await tick!();
 
-    expect(vi.mocked(removeSessionMarker).mock.calls.map((call) => call[0])).toEqual(
-      expect.arrayContaining([pid, runnerPid]),
-    );
+    expect(removeSessionMarker).toHaveBeenCalledWith(pid);
+    expect(removeSessionMarker).toHaveBeenCalledWith(runnerPid);
+    expect(pidToTrackedSession.has(pid)).toBe(false);
   });
 
   it('does not prune sessions when kill(0) fails with EPERM (process exists but permission denied)', async () => {
@@ -347,5 +375,64 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
 
     expect(onChildExitedMock).not.toHaveBeenCalled();
     expect(pidToTrackedSession.has(pid)).toBe(true);
+  });
+
+  it('clears tracked host-dead status after the runner marker reports a recovered host', async () => {
+    vi.mocked(readDaemonState).mockResolvedValue({
+      pid: process.pid,
+      httpPort: 4001,
+      startedAt: Date.now(),
+      startedWithCliVersion: '1.0.0',
+      lastHeartbeatAt: Date.now(),
+    });
+    readSessionMarkerForPid.mockResolvedValue({
+      pid: process.pid,
+      happySessionId: 'sess-recovered',
+      startedBy: 'daemon',
+      cwd: '/workspace',
+      happyHomeDir: '/tmp/happier',
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    vi.spyOn(global, 'setInterval').mockImplementation(((handler: (...args: any[]) => any) => {
+      (globalThis as any).__tick = handler;
+      return 1 as any;
+    }) as any);
+    const tracked = {
+      pid: process.pid,
+      happySessionId: 'sess-recovered',
+      terminalHostHealth: {
+        status: 'host_dead',
+        sessionId: 'sess-recovered',
+        runnerPid: process.pid,
+        hostKind: 'zellij',
+        observedAt: 1,
+        reason: 'pane_dead',
+      },
+    };
+    const pidToTrackedSession = new Map<number, any>([[process.pid, tracked]]);
+
+    const { startDaemonHeartbeatLoop } = await import('./heartbeat');
+    startDaemonHeartbeatLoop({
+      pidToTrackedSession,
+      spawnResourceCleanupByPid: new Map(),
+      sessionAttachCleanupByPid: new Map(),
+      getApiMachineForSessions: () => null,
+      controlPort: 8765,
+      fileState: {
+        pid: process.pid,
+        httpPort: 8765,
+        startedAt: Date.now(),
+        startedWithCliVersion: '1.0.0',
+        daemonLogPath: '/tmp/daemon.log',
+      },
+      currentCliVersion: '1.0.0',
+      requestShutdown: vi.fn(),
+    });
+
+    const tick: (() => Promise<void>) | undefined = (globalThis as any).__tick;
+    await tick?.();
+
+    expect(tracked.terminalHostHealth).toBeUndefined();
   });
 });

@@ -5,26 +5,24 @@ import type {
   SessionProviderInputConsumerOptions,
   SessionProviderInputConsumerSession,
 } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
-import type { MessageBatch } from '@/agent/runtime/sessionInput/types';
+import type { MessageBatch, SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 
 export async function waitForNextPermissionModeMessage<Mode, Message>(opts: {
   messageQueue: MessageQueue2<Mode, Message>;
   abortSignal: AbortSignal;
   session: ApiSessionClient;
+  inputConsumer?: SessionProviderInputConsumer<Mode, Message>;
   onMetadataUpdate?: (() => void | Promise<void>) | null;
 }): Promise<MessageBatch<Mode, Message> | null> {
   const session: SessionProviderInputConsumerSession = {
-    popPendingMessage: () => opts.session.popPendingMessage(),
+    materializeNextPendingMessageSafely: (materializeOpts) =>
+      opts.session.materializeNextPendingMessageSafely(materializeOpts),
     shouldAttemptPendingMaterialization: () => opts.session.shouldAttemptPendingMaterialization?.() ?? true,
     reconcilePendingQueueState: async (reconcileOpts) => {
       await opts.session.reconcilePendingQueueState?.(reconcileOpts);
     },
-    waitForMetadataUpdate: (signal) => opts.session.waitForMetadataUpdate(signal),
+    waitForPendingEligibilityUpdate: (signal) => opts.session.waitForPendingEligibilityUpdate(signal),
   };
-  const safeMaterialize = opts.session.materializeNextPendingMessageSafely;
-  if (safeMaterialize) {
-    session.materializeNextPendingMessageSafely = (materializeOpts) => safeMaterialize.call(opts.session, materializeOpts);
-  }
 
   const consumerOptions: SessionProviderInputConsumerOptions<Mode, Message> = {
     messageQueue: opts.messageQueue,
@@ -35,7 +33,7 @@ export async function waitForNextPermissionModeMessage<Mode, Message>(opts: {
     consumerOptions.onMetadataUpdate = opts.onMetadataUpdate;
   }
 
-  const inputConsumer = createSessionProviderInputConsumer(consumerOptions);
+  const inputConsumer = opts.inputConsumer ?? createSessionProviderInputConsumer(consumerOptions);
 
   return await inputConsumer.waitForNextInput({ abortSignal: opts.abortSignal });
 }

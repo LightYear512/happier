@@ -1,18 +1,28 @@
 import { surfacePrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/surfacePrimarySessionRuntimeIssue';
 import { isTerminalHostStartupError } from '@/integrations/terminalHost/errors';
+import { isZellijActionTimeoutError } from '@/integrations/zellij/actions';
 import { logger } from '@/ui/logger';
 
 import { isClaudeUnifiedTerminalManagedSettingsOptionError } from './buildClaudeUnifiedTerminalSpawn';
 import { isClaudeUnifiedTerminalHostDeadError } from './createClaudeUnifiedController';
+import { isClaudeUnifiedTerminalHookActivationError } from './claudeUnifiedHookActivation';
 import { isClaudeUnifiedTerminalReadinessTimeoutError } from './createClaudeUnifiedTerminalReadinessBridge';
-import { isClaudeUnifiedTerminalTerminalInjectionFailureError } from './terminalInjectionFailureError';
+import {
+  isClaudeUnifiedTerminalProviderAcceptanceTimeoutError,
+  isClaudeUnifiedTerminalTerminalInjectionFailureError,
+  isClaudeUnifiedTerminalUnconfirmedSubmitFailureError,
+} from './terminalInjectionFailureError';
 
 type RuntimeIssueSessionClient = Parameters<typeof surfacePrimarySessionRuntimeIssue>[0]['session'];
 
 export function isClaudeUnifiedTerminalRuntimeIssueError(error: unknown): boolean {
   return isClaudeUnifiedTerminalHostDeadError(error)
     || isClaudeUnifiedTerminalTerminalInjectionFailureError(error)
+    || isClaudeUnifiedTerminalUnconfirmedSubmitFailureError(error)
+    || isClaudeUnifiedTerminalProviderAcceptanceTimeoutError(error)
     || isClaudeUnifiedTerminalReadinessTimeoutError(error)
+    || isClaudeUnifiedTerminalHookActivationError(error)
+    || isZellijActionTimeoutError(error)
     || isTerminalHostStartupError(error)
     || isClaudeUnifiedTerminalManagedSettingsOptionError(error);
 }
@@ -28,6 +38,14 @@ export async function surfaceClaudeUnifiedTerminalRuntimeIssue(params: Readonly<
   if (isClaudeUnifiedTerminalReadinessTimeoutError(params.error) && params.error.diagnostics) {
     logger.debug('[unified]: Claude unified terminal startup readiness timed out before injection', {
       timeoutMs: params.error.timeoutMs,
+      ...params.error.diagnostics,
+    });
+  }
+  if (isTerminalHostStartupError(params.error) && params.error.diagnostics) {
+    logger.debug('[unified]: Claude unified terminal host startup failed before injection', {
+      hostKind: params.error.hostKind,
+      reason: params.error.reason,
+      message: params.error.message,
       ...params.error.diagnostics,
     });
   }

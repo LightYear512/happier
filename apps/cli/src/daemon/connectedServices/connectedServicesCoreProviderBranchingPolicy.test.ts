@@ -16,6 +16,10 @@ const providerBackendImportPattern =
   /from\s+(['"])@\/backends\/(codex|claude|opencode|gemini|pi)(?:\/|\1)/gu;
 const providerPersistedSessionMetadataPattern =
   /\b(codex|claude|opencode|gemini|pi)SessionFile\b/gu;
+const providerQuotaEndpointLiteralPattern =
+  /(chatgpt\.com\/backend-api\/wham|api\.anthropic\.com\/api\/oauth|HAPPIER_CONNECTED_SERVICES_(?:OPENAI_CODEX|CLAUDE_SUBSCRIPTION|ANTHROPIC)_[A-Z0-9_]*(?:USAGE_URL|RESET_CREDITS_URL|QUOTA_ENDPOINT|USER_AGENT))/gu;
+const providerQuotaLeafImportPattern =
+  /from\s+(['"]).*\/(?:claudeSubscriptionQuotaFetcher|geminiQuotaFetcher|openAiCodexQuotaFetcher|quotaFetcher)\1/gu;
 
 /**
  * Documented provider-owned seams in the daemon `connectedServices` core.
@@ -29,16 +33,14 @@ const allowedDaemonProviderLiteralFiles: Readonly<Record<string, string>> = {
     'provider-owned GitHub connected-account target owns the GitHub service id',
   'notifications/dispatchConnectedServiceAccountSwitchNotification.ts':
     'notification copy maps canonical service ids to product display names',
-  'quotas/fetchers/claudeSubscriptionQuotaFetcher.ts':
-    'provider-owned quota fetcher is keyed to the Claude subscription service',
-  'quotas/fetchers/geminiQuotaFetcher.ts':
-    'provider-owned quota fetcher is keyed to the Gemini service',
-  'quotas/fetchers/openAiCodexQuotaFetcher.ts':
-    'provider-owned quota fetcher is keyed to the OpenAI Codex service',
   'refresh/ConnectedServiceRefreshCoordinator.ts':
-    'Codex app-server ChatGPT bridge refresh is the central daemon lifecycle entrypoint for openai-codex',
+    'ONE generic bridge-refresh skeleton (refreshServiceTokensForBridge) dispatches to provider-owned '
+    + 'bridge hooks; the thin typed public adapters for openai-codex + claude-subscription name their '
+    + 'service ids and import their provider hook modules (CS-FIX-1)',
   'refresh/serviceRefreshers.ts':
-    'central OAuth refreshers own service-id to provider OAuth metadata mapping',
+    'central OAuth refreshers own the service-id → provider OAuth metadata mapping (convenience '
+    + 'wrappers); provider identity extraction lives behind the descriptor extractRefreshResponseIdentity '
+    + 'hook, not a service-id branch (CS-FIX-4)',
   'shared/oauthConfig.ts':
     'legacy OAuth config accessors intentionally wrap canonical service descriptors',
 };
@@ -73,7 +75,12 @@ async function listSourceFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = await Promise.all(entries.map(async (entry) => {
     const fullPath = `${dir}${sep}${entry.name}`;
-    if (entry.isDirectory()) return await listSourceFiles(fullPath);
+    if (entry.isDirectory()) {
+      // Executable test fixtures intentionally carry realistic provider wire data. They are not
+      // product branching and remain covered by their owning tests rather than the production scan.
+      if (entry.name === 'fixtures' || entry.name === '__fixtures__') return [];
+      return await listSourceFiles(fullPath);
+    }
     if (!entry.isFile()) return [];
     if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) return [];
     return [fullPath];
@@ -120,5 +127,26 @@ describe('connected-services shared core provider branching policy', () => {
     );
 
     expect(Array.from(new Set(matches))).toEqual([]);
+  });
+
+  it('keeps provider quota endpoint literals and leaf imports out of the generic quota fetcher factory', async () => {
+    const factoryPath = fileURLToPath(new URL('quotas/createConnectedServiceQuotaFetchers.ts', import.meta.url));
+    const source = await readFile(factoryPath, 'utf8');
+    const endpointLiterals = Array.from(
+      source.matchAll(providerQuotaEndpointLiteralPattern),
+      (match) => match[0],
+    );
+    const providerLeafImports = Array.from(
+      source.matchAll(providerQuotaLeafImportPattern),
+      (match) => match[0],
+    );
+
+    expect({
+      endpointLiterals: Array.from(new Set(endpointLiterals)),
+      providerLeafImports: Array.from(new Set(providerLeafImports)),
+    }).toEqual({
+      endpointLiterals: [],
+      providerLeafImports: [],
+    });
   });
 });

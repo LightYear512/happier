@@ -1,5 +1,9 @@
 import Constants from 'expo-constants';
 
+// The external key is retained for persisted compatibility. `off` is the Legend default;
+// `flashList` is the explicit compatibility escape hatch.
+export type TranscriptLegendListSpikeSurface = 'off' | 'flashList';
+
 export type SyncTuning = Readonly<{
     messageLargeGapSeq: number;
     messageMaxIncrementalPagesOnResume: number;
@@ -8,9 +12,17 @@ export type SyncTuning = Readonly<{
     transcriptNativeOlderMessagesPageSize: number;
     transcriptForwardPrefetchThresholdPx: number;
     transcriptBackwardPrefetchThresholdPx: number;
+    /**
+     * Item-space arm threshold for older-page prefetch on native lists (count of loaded
+     * rows between the viewport and the older edge). Estimate-immune companion to the px
+     * threshold: native canonical px offsets are derived from estimated content height,
+     * whose error routinely swallows the px margin.
+     */
+    transcriptBackwardPrefetchThresholdItems: number;
     transcriptFlashListEstimatedItemSize: number;
     transcriptWebHotTailItemCount: number;
     transcriptNativeHotTailItemCount: number;
+    transcriptLegendListSpikeSurface: TranscriptLegendListSpikeSurface;
     transcriptMaxTurnEntriesPerListItem: number;
     transcriptWebInitialPinStabilizeMs: number;
     transcriptWebInitialPinRetryIntervalMs: number;
@@ -38,6 +50,12 @@ export type SyncTuning = Readonly<{
     messageCatchUpConcurrencyLimit: number;
     sessionListHydrationConcurrencyLimit: number;
     machineDisplayHydrationConcurrencyLimit: number;
+    machineDisplayEagerHydrationCount: number;
+    machineDisplayBackgroundHydrationMaxRows: number;
+    machineDisplayBackgroundHydrationApplyBatchSize: number;
+    feedItemsRetentionMaxCount: number;
+    artifactHeadsRetentionMaxCount: number;
+    automationRunsRetentionMaxPerAutomation: number;
     sessionListEagerHydrationCount: number;
     sessionListAppendEagerHydrationCount: number;
     sessionListBackgroundHydrationConcurrencyLimit: number;
@@ -55,6 +73,16 @@ export type SyncTuning = Readonly<{
     sessionSocketApplyCoalescingWindowMs: number;
     sessionSocketApplyCoalescingMaxBatchSize: number;
     sessionRealtimeProjectionMode: 'disabled' | 'shadow' | 'enabled';
+    /**
+     * Bounded transcript retention: how many recently-viewed hydrated transcripts to keep
+     * resident BEYOND mounted/live-consumer sessions. Older unprotected transcripts are
+     * evicted and rehydrate through the normal first-open load pipeline on re-open.
+     */
+    sessionTranscriptRetentionRecentKeepCount: number;
+    /** Minimum idle time since last view/mount release before a transcript may be evicted. */
+    sessionTranscriptRetentionGraceMs: number;
+    /** Debounce for the eviction sweep so rapid navigation does not thrash. */
+    sessionTranscriptRetentionSweepDebounceMs: number;
     sidechainDemandHydrationConcurrencyLimit: number;
     changesPageLimit: number;
     changesMaxPagesPerResume: number;
@@ -187,6 +215,13 @@ function readSessionRealtimeProjectionMode(obj: Record<string, unknown>): SyncTu
     return value === 'disabled' || value === 'shadow' || value === 'enabled' ? value : null;
 }
 
+function readTranscriptLegendListSpikeSurface(obj: Record<string, unknown>): TranscriptLegendListSpikeSurface | null {
+    const value = obj.transcriptLegendListSpikeSurface;
+    if (value === 'flashList') return 'flashList';
+    if (value === 'off' || value === 'readOnly' || value === 'sidechain' || value === 'main') return 'off';
+    return null;
+}
+
 function readRatio(obj: Record<string, unknown>, key: keyof SyncTuning): number | null {
     const value = obj[key as string];
     if (typeof value !== 'number' || !Number.isFinite(value)) return null;
@@ -207,19 +242,29 @@ export function loadSyncTuning(opts?: {
         transcriptNativeOlderMessagesPageSize: 64,
         transcriptForwardPrefetchThresholdPx: 800,
         transcriptBackwardPrefetchThresholdPx: 800,
+        transcriptBackwardPrefetchThresholdItems: 12,
         transcriptFlashListEstimatedItemSize: 120,
         transcriptWebHotTailItemCount: 24,
         // Native hot/cold streaming carve-out (live-tail rows rendered in the inverted edge slot,
         // outside the recycler). The number is a hard ceiling on hot-tail items (see
         // buildTranscriptHotColdSegments#maxHotTailItems). 0 = OFF (all-in-FlashList); >0 = ON.
         //
-        // DEFAULT-ON (4): the carve is the streaming transcript path on native. It eliminates
-        // streaming-overlap (the growing row renders in real layout), fixes the composer-inset gap,
-        // bounds the hot tail (no blank), and — critically — AUTO-FOLLOW: the inverted bottom pin
+        // INERT ON THE SHIPPED DEFAULT PATH — this 4 currently changes nothing. The carve is
+        // FlashList-only: resolveTranscriptRenderWindowProjection gates it on
+        // `rendererKind === 'flashList'`, and resolveTranscriptListRendererSelection returns the
+        // Legend renderer unless `transcriptLegendListSpikeSurface === 'flashList'` (default 'off',
+        // see below). Under Legend there is one chronological recycler projection and no edge slot,
+        // so buildTranscriptHotColdSegments yields zero hot items and TranscriptHotTail renders
+        // nothing. The value only takes effect when the FlashList transcript surface is selected
+        // explicitly. Do not read it as a live streaming-path setting.
+        //
+        // WHAT IT DID ON THE FLASHLIST SURFACE (historical, pre-Legend): it eliminated
+        // streaming-overlap (the growing row renders in real layout), fixed the composer-inset gap,
+        // bounded the hot tail (no blank), and — critically — AUTO-FOLLOW: the inverted bottom pin
         // fires authoritatively on a pre-change following decision (mirrors web's
         // capture-before/write-after), beating FlashList MVCP's index-0 re-anchor.
         //
-        // VALIDATION STATUS:
+        // VALIDATION STATUS (FlashList surface only; never re-measured under Legend):
         // - iOS: DEVICE-VALIDATED (2026-06-15) — measured proof for overlap (dist≈0, was 2055px),
         //   multi-row hot-tail ordering on a complex turn, the deterministic synced pin, idle/finalize
         //   (no orphan), and scrolled-up readers not yanked; jump-to-bottom + entry-restore land flush.
@@ -238,6 +283,7 @@ export function loadSyncTuning(opts?: {
         // explicit flag>0 tests + segments/webHotColdSplit/TranscriptHotTail. Detail:
         // .project/plans/native-streaming-hot-cold-split-scoping.md (§ON-path device findings).
         transcriptNativeHotTailItemCount: 4,
+        transcriptLegendListSpikeSurface: 'off',
         transcriptMaxTurnEntriesPerListItem: 8,
         transcriptWebInitialPinStabilizeMs: 1500,
         transcriptWebInitialPinRetryIntervalMs: 250,
@@ -265,6 +311,12 @@ export function loadSyncTuning(opts?: {
         messageCatchUpConcurrencyLimit: 1,
         sessionListHydrationConcurrencyLimit: 4,
         machineDisplayHydrationConcurrencyLimit: 4,
+        machineDisplayEagerHydrationCount: 4,
+        machineDisplayBackgroundHydrationMaxRows: 0,
+        machineDisplayBackgroundHydrationApplyBatchSize: 4,
+        feedItemsRetentionMaxCount: 500,
+        artifactHeadsRetentionMaxCount: 1000,
+        automationRunsRetentionMaxPerAutomation: 200,
         sessionListEagerHydrationCount: 4,
         sessionListAppendEagerHydrationCount: 50,
         sessionListBackgroundHydrationConcurrencyLimit: 1,
@@ -282,6 +334,9 @@ export function loadSyncTuning(opts?: {
         sessionSocketApplyCoalescingWindowMs: 16,
         sessionSocketApplyCoalescingMaxBatchSize: 64,
         sessionRealtimeProjectionMode: 'enabled',
+        sessionTranscriptRetentionRecentKeepCount: 3,
+        sessionTranscriptRetentionGraceMs: 3 * 60 * 1000,
+        sessionTranscriptRetentionSweepDebounceMs: 1_000,
         sidechainDemandHydrationConcurrencyLimit: 2,
         changesPageLimit: 200,
         changesMaxPagesPerResume: 5,
@@ -335,9 +390,11 @@ export function loadSyncTuning(opts?: {
         transcriptNativeOlderMessagesPageSize: readNumber(merged, 'transcriptNativeOlderMessagesPageSize', { min: 1, max: 1000 }) ?? defaults.transcriptNativeOlderMessagesPageSize,
         transcriptForwardPrefetchThresholdPx: readNumber(merged, 'transcriptForwardPrefetchThresholdPx', { min: 0, max: 50_000 }) ?? defaults.transcriptForwardPrefetchThresholdPx,
         transcriptBackwardPrefetchThresholdPx: readNumber(merged, 'transcriptBackwardPrefetchThresholdPx', { min: 0, max: 50_000 }) ?? defaults.transcriptBackwardPrefetchThresholdPx,
+        transcriptBackwardPrefetchThresholdItems: readNumber(merged, 'transcriptBackwardPrefetchThresholdItems', { min: 1, max: 500 }) ?? defaults.transcriptBackwardPrefetchThresholdItems,
         transcriptFlashListEstimatedItemSize: readNumber(merged, 'transcriptFlashListEstimatedItemSize', { min: 20, max: 2000 }) ?? defaults.transcriptFlashListEstimatedItemSize,
         transcriptWebHotTailItemCount: readNumber(merged, 'transcriptWebHotTailItemCount', { min: 1, max: 200 }) ?? defaults.transcriptWebHotTailItemCount,
         transcriptNativeHotTailItemCount: readNumber(merged, 'transcriptNativeHotTailItemCount', { min: 0, max: 200 }) ?? defaults.transcriptNativeHotTailItemCount,
+        transcriptLegendListSpikeSurface: readTranscriptLegendListSpikeSurface(merged) ?? defaults.transcriptLegendListSpikeSurface,
         transcriptMaxTurnEntriesPerListItem: readNumber(merged, 'transcriptMaxTurnEntriesPerListItem', { min: 0, max: 200 }) ?? defaults.transcriptMaxTurnEntriesPerListItem,
         transcriptWebInitialPinStabilizeMs: readNumber(merged, 'transcriptWebInitialPinStabilizeMs', { min: 0, max: 20_000 }) ?? defaults.transcriptWebInitialPinStabilizeMs,
         transcriptWebInitialPinRetryIntervalMs: readNumber(merged, 'transcriptWebInitialPinRetryIntervalMs', { min: 16, max: 2000 }) ?? defaults.transcriptWebInitialPinRetryIntervalMs,
@@ -367,6 +424,12 @@ export function loadSyncTuning(opts?: {
         messageCatchUpConcurrencyLimit: readNumber(merged, 'messageCatchUpConcurrencyLimit', { min: 1, max: 10 }) ?? defaults.messageCatchUpConcurrencyLimit,
         sessionListHydrationConcurrencyLimit: readNumber(merged, 'sessionListHydrationConcurrencyLimit', { min: 1, max: 20 }) ?? defaults.sessionListHydrationConcurrencyLimit,
         machineDisplayHydrationConcurrencyLimit: readNumber(merged, 'machineDisplayHydrationConcurrencyLimit', { min: 1, max: 20 }) ?? defaults.machineDisplayHydrationConcurrencyLimit,
+        machineDisplayEagerHydrationCount: readNumber(merged, 'machineDisplayEagerHydrationCount', { min: 0, max: 200 }) ?? defaults.machineDisplayEagerHydrationCount,
+        machineDisplayBackgroundHydrationMaxRows: readNumber(merged, 'machineDisplayBackgroundHydrationMaxRows', { min: 0, max: 200 }) ?? defaults.machineDisplayBackgroundHydrationMaxRows,
+        machineDisplayBackgroundHydrationApplyBatchSize: readNumber(merged, 'machineDisplayBackgroundHydrationApplyBatchSize', { min: 1, max: 20 }) ?? defaults.machineDisplayBackgroundHydrationApplyBatchSize,
+        feedItemsRetentionMaxCount: readNumber(merged, 'feedItemsRetentionMaxCount', { min: 1, max: 10_000 }) ?? defaults.feedItemsRetentionMaxCount,
+        artifactHeadsRetentionMaxCount: readNumber(merged, 'artifactHeadsRetentionMaxCount', { min: 1, max: 10_000 }) ?? defaults.artifactHeadsRetentionMaxCount,
+        automationRunsRetentionMaxPerAutomation: readNumber(merged, 'automationRunsRetentionMaxPerAutomation', { min: 1, max: 10_000 }) ?? defaults.automationRunsRetentionMaxPerAutomation,
         sessionListEagerHydrationCount: readNumber(merged, 'sessionListEagerHydrationCount', { min: 0, max: 200 }) ?? defaults.sessionListEagerHydrationCount,
         sessionListAppendEagerHydrationCount: readNumber(merged, 'sessionListAppendEagerHydrationCount', { min: 0, max: 200 }) ?? defaults.sessionListAppendEagerHydrationCount,
         sessionListBackgroundHydrationConcurrencyLimit: readNumber(merged, 'sessionListBackgroundHydrationConcurrencyLimit', { min: 1, max: 20 }) ?? defaults.sessionListBackgroundHydrationConcurrencyLimit,
@@ -384,6 +447,9 @@ export function loadSyncTuning(opts?: {
         sessionSocketApplyCoalescingWindowMs: readNumber(merged, 'sessionSocketApplyCoalescingWindowMs', { min: 0, max: 200 }) ?? defaults.sessionSocketApplyCoalescingWindowMs,
         sessionSocketApplyCoalescingMaxBatchSize: readNumber(merged, 'sessionSocketApplyCoalescingMaxBatchSize', { min: 2, max: 1000 }) ?? defaults.sessionSocketApplyCoalescingMaxBatchSize,
         sessionRealtimeProjectionMode: readSessionRealtimeProjectionMode(merged) ?? defaults.sessionRealtimeProjectionMode,
+        sessionTranscriptRetentionRecentKeepCount: readNumber(merged, 'sessionTranscriptRetentionRecentKeepCount', { min: 0, max: 200 }) ?? defaults.sessionTranscriptRetentionRecentKeepCount,
+        sessionTranscriptRetentionGraceMs: readNumber(merged, 'sessionTranscriptRetentionGraceMs', { min: 0, max: 24 * 60 * 60 * 1000 }) ?? defaults.sessionTranscriptRetentionGraceMs,
+        sessionTranscriptRetentionSweepDebounceMs: readNumber(merged, 'sessionTranscriptRetentionSweepDebounceMs', { min: 0, max: 60_000 }) ?? defaults.sessionTranscriptRetentionSweepDebounceMs,
         sidechainDemandHydrationConcurrencyLimit: readNumber(merged, 'sidechainDemandHydrationConcurrencyLimit', { min: 1, max: 8 }) ?? defaults.sidechainDemandHydrationConcurrencyLimit,
         changesPageLimit: readNumber(merged, 'changesPageLimit', { min: 1, max: 10_000 }) ?? defaults.changesPageLimit,
         changesMaxPagesPerResume: readNumber(merged, 'changesMaxPagesPerResume', { min: 1, max: 100 }) ?? defaults.changesMaxPagesPerResume,

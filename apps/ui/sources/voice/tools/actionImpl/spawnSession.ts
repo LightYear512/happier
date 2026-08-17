@@ -1,8 +1,9 @@
-import { machineSpawnNewSession } from '@/sync/ops/machines';
+import { machineSpawnNewSessionUntilResolved } from '@/sync/ops/machines';
 import { storage } from '@/sync/domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import { resolveEffectiveWindowsRemoteSessionLaunchMode } from '@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode';
+import { supportsSpawnPendingFirstInput } from '@/sync/domains/session/spawn/spawnSessionPayload';
 import { buildSafeWorkspaceLabel } from '@/utils/worktree/workspaceHandles';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
@@ -13,11 +14,16 @@ import { resolveSpawnAgentIdFromState } from './spawnSessionAgent';
 import { isAgentId } from '@/agents/registry/registryCore';
 import { resolveVoiceSessionRef } from './sessionReference';
 import { resolveCanonicalMachineId } from '@/sync/domains/machines/identity/resolveCanonicalMachineId';
-import { resolveMachineExactSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineExactSpawnReadiness';
+import { canAttemptMachineSpawn, resolveMachineSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import {
   resolveMachineTargetForSessionFromState,
   type SessionMachineTargetState,
 } from '@/sync/ops/sessionMachineTarget';
+import {
+  completeVoiceSpawnAttemptCustody,
+  createVoiceSpawnAttempt,
+  readVoiceSpawnedSessionIdForAttempt,
+} from '@/voice/shared/voiceSpawnAttempt';
 
 type VoiceSpawnTarget = Readonly<{
   machineId: string;
@@ -136,8 +142,12 @@ export async function spawnSessionForVoiceTool(params: Readonly<{
     return { type: 'error', errorCode: 'spawn_target_missing', errorMessage: 'spawn_target_missing' };
   }
   const targetMachine = machinesObj[machineId] ?? null;
-  const targetReadiness = resolveMachineExactSpawnReadiness(targetMachine);
-  if (targetReadiness.status !== 'ready') {
+  const targetReadiness = resolveMachineSpawnReadiness({
+    selectedMachineId: machineId,
+    machine: targetMachine,
+    requireExactSpawnReadiness: true,
+  });
+  if (!canAttemptMachineSpawn({ selectedMachineId: machineId, machine: targetMachine, spawnReadiness: targetReadiness })) {
     return {
       type: 'error',
       errorCode: 'spawn_target_unavailable',
@@ -167,22 +177,42 @@ export async function spawnSessionForVoiceTool(params: Readonly<{
     path: directory,
   });
 
-  const spawned = await machineSpawnNewSession({
+  const spawnAttempt = createVoiceSpawnAttempt();
+  const initialMessage = normalizeNonEmptyString(params.initialMessage);
+  const daemonOwnsFirstTurn = supportsSpawnPendingFirstInput(targetMachine?.daemonState?.startedWithCliVersion);
+  const spawned = await machineSpawnNewSessionUntilResolved({
     machineId,
     directory,
     backendTarget: { kind: 'builtInAgent', agentId: agent },
     serverId,
+    userAttemptId: spawnAttempt.userAttemptId,
+    firstTurnLocalId: spawnAttempt.firstTurnLocalId,
+    attachmentMessageLocalId: spawnAttempt.attachmentMessageLocalId,
+    ...(daemonOwnsFirstTurn && initialMessage
+      ? { pendingFirstInput: { text: initialMessage, localId: spawnAttempt.firstTurnLocalId } }
+      : {}),
     ...(windowsRemoteSessionLaunchMode ? { windowsRemoteSessionLaunchMode } : {}),
     ...(modelId ? { modelId, modelUpdatedAt: modelUpdatedAt ?? Date.now() } : {}),
   });
 
-  const spawnedSessionId = spawned.type === 'success' && typeof spawned.sessionId === 'string'
-    ? spawned.sessionId
-    : null;
+  const spawnedSessionId = readVoiceSpawnedSessionIdForAttempt(spawned, spawnAttempt);
 
   const tag = normalizeNonEmptyString(params.tag);
-  const initialMessage = normalizeNonEmptyString(params.initialMessage);
-  await postprocessSpawnedSession({ sessionId: spawnedSessionId, tag, initialMessage });
+  if (spawnedSessionId) {
+    await postprocessSpawnedSession({
+      sessionId: spawnedSessionId,
+      serverId,
+      tag,
+      initialMessage: daemonOwnsFirstTurn ? null : initialMessage,
+      firstTurnLocalId: spawnAttempt.firstTurnLocalId,
+    });
+    await completeVoiceSpawnAttemptCustody({
+      spawned,
+      attempt: spawnAttempt,
+      machineId,
+      serverId,
+    });
+  }
 
   if (!spawned || typeof spawned !== 'object' || Array.isArray(spawned)) {
     return spawned;

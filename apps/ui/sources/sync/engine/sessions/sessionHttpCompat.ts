@@ -11,8 +11,12 @@ import {
     type SyncPerformanceTelemetryFields,
 } from '@/sync/runtime/syncPerformanceTelemetry';
 import { HappyError } from '@/utils/errors/errors';
+import { resolveSessionRuntimeActivityProjectionFields } from './sessionRuntimeActivityProjection';
 
 type SessionRequest = (path: string, init: RequestInit) => Promise<Response>;
+type SessionListRequestHeadersOptions = Readonly<{
+    includeSessionListTiming?: boolean;
+}>;
 type ReadJsonSafeOptions = Readonly<{
     telemetryNamePrefix?: string;
     fields?: SyncPerformanceTelemetryFields;
@@ -26,11 +30,15 @@ const V2_SESSIONS_SERVER_TIMING_FIELD_BY_NAME: Readonly<Record<string, string>> 
     happier_v2_sessions_total: 'serverTimingTotalMs',
 };
 
-function buildSessionRequestHeaders(token: string): HeadersInit {
-    return {
+function buildSessionRequestHeaders(token: string, options?: SessionListRequestHeadersOptions): HeadersInit {
+    const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
     };
+    if (options?.includeSessionListTiming === true && syncPerformanceTelemetry.isEnabled()) {
+        headers['X-Happier-Session-List-Timing'] = '1';
+    }
+    return headers;
 }
 
 async function readJsonSafe(response: Response, options?: ReadJsonSafeOptions): Promise<unknown> {
@@ -72,6 +80,11 @@ function readNumber(value: unknown): number | null {
 function readNullableNumber(value: unknown): number | null | undefined {
     if (value == null) return null;
     return readNumber(value);
+}
+
+function readPositiveSafeInteger(value: unknown): number | undefined {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return undefined;
+    return value;
 }
 
 function readOptionalBoolean(value: unknown): boolean | undefined {
@@ -170,6 +183,7 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
     const shareAccessLevel = readOptionalString(shareRecord?.accessLevel) ?? topLevelAccessLevel;
     const shareCanApprovePermissions = readOptionalBoolean(shareRecord?.canApprovePermissions) ?? topLevelCanApprovePermissions;
     const rollbackEligibleTurnStarts = readRollbackEligibleTurnStarts(raw.rollbackEligibleTurnStarts);
+    const runtimeActivityProjection = resolveSessionRuntimeActivityProjectionFields({}, raw);
 
     return {
         id,
@@ -186,8 +200,16 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
         agentState: coerceStringPayload(raw.agentState),
         agentStateVersion,
         lastViewedSessionSeq: readNullableNumber(raw.lastViewedSessionSeq),
+        // Server-materialized unread entry fact. It is the only value that is
+        // identical on every device and across boots, so the transport must not
+        // drop it: without it every client falls back to a local stamp and the
+        // attention lane re-sorts per device.
+        unreadSince: readNullableNumber(raw.unreadSince),
         pendingPermissionRequestCount: readNumber(raw.pendingPermissionRequestCount) ?? undefined,
         pendingUserActionRequestCount: readNumber(raw.pendingUserActionRequestCount) ?? undefined,
+        pendingRequestObservedAt: readNullableNumber(raw.pendingRequestObservedAt),
+        latestReadyEventSeq: readNullableNumber(raw.latestReadyEventSeq),
+        latestReadyEventAt: readNullableNumber(raw.latestReadyEventAt),
         latestTurnId: readNullableString(raw.latestTurnId),
         latestTurnStatus: raw.latestTurnStatus === 'in_progress'
             || raw.latestTurnStatus === 'completed'
@@ -198,13 +220,20 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
                     ? null
                     : undefined,
         latestTurnStatusObservedAt: readNullableNumber(raw.latestTurnStatusObservedAt),
+        runtimeActivityState: runtimeActivityProjection.runtimeActivityState,
+        runtimeActivityRevision: runtimeActivityProjection.runtimeActivityRevision,
+        runtimeActivityActiveCount: runtimeActivityProjection.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: runtimeActivityProjection.runtimeActivityObservedAt,
         lastRuntimeIssue: raw.lastRuntimeIssue === null
             || (raw.lastRuntimeIssue && typeof raw.lastRuntimeIssue === 'object')
                 ? raw.lastRuntimeIssue as V2SessionRecord['lastRuntimeIssue']
                 : undefined,
         ...(rollbackEligibleTurnStarts !== undefined ? { rollbackEligibleTurnStarts } : {}),
         pendingCount: readNumber(raw.pendingCount) ?? undefined,
+        pendingBlockedCount: readNumber(raw.pendingBlockedCount) ?? undefined,
         pendingVersion: readNumber(raw.pendingVersion) ?? undefined,
+        thinking: readOptionalBoolean(raw.thinking),
+        thinkingAt: readNumber(raw.thinkingAt) ?? undefined,
         dataEncryptionKey: readNullableString(raw.dataEncryptionKey) ?? null,
         share:
             shareAccessLevel && typeof shareCanApprovePermissions === 'boolean'
@@ -229,7 +258,9 @@ function parseCompatSessionListResponse(raw: unknown, telemetryFields?: SyncPerf
 function parseCompatSessionListResponseValue(raw: unknown): V2SessionListResponse | null {
     const parsed = V2SessionListResponseSchema.safeParse(raw);
     if (parsed.success) {
-        return parsed.data;
+        const sessions = parsed.data.sessions.map((row) => coerceLegacySessionRecord(row));
+        if (sessions.some((row) => row === null)) return null;
+        return { ...parsed.data, sessions: sessions as V2SessionRecord[] };
     }
 
     if (!isRecord(raw) || !Array.isArray(raw.sessions)) {
@@ -252,7 +283,8 @@ export function parseCompatSessionByIdResponse(raw: unknown): { session: V2Sessi
     if (isRecord(raw) && isRecord(raw.session)) {
         const parsed = V2SessionListResponseSchema.safeParse({ sessions: [raw.session] });
         if (parsed.success && parsed.data.sessions[0]) {
-            return { session: parsed.data.sessions[0] };
+            const coerced = coerceLegacySessionRecord(parsed.data.sessions[0]);
+            return coerced ? { session: coerced } : null;
         }
 
         const coerced = coerceLegacySessionRecord(raw.session);
@@ -272,6 +304,18 @@ function throwSessionListHttpError(status: number, routeLabel: string): never {
         throw new HappyError(`Failed to fetch sessions (${status})`, false);
     }
     throw new Error(`Failed to fetch ${routeLabel}: ${status}`);
+}
+
+/**
+ * Whether a requested list path IS the `/v2/sessions` route rather than a sibling under it.
+ *
+ * Route identity is the path; the query string only selects which row families the route merges.
+ * Comparing the whole string silently disabled the `/v1/sessions` fallback for every initial page
+ * that carries a flag, while a sibling route such as `/v2/sessions/active` must never be diverted
+ * to the legacy list.
+ */
+function isV2SessionsListRoute(sessionListPath: string): boolean {
+    return sessionListPath === '/v2/sessions' || sessionListPath.startsWith('/v2/sessions?');
 }
 
 function looksLikeMissingV2SessionsListRoute(status: number, body: unknown): boolean {
@@ -310,6 +354,16 @@ export function looksLikeCurrentV2SessionNotFound404(body: unknown): boolean {
     return V2SessionByIdNotFoundSchema.safeParse(body).success;
 }
 
+/**
+ * `includedActiveRows` reports whether the server merged the active-session row family into this
+ * response, which it advertises with a top-level `includedActive: true` on the initial page.
+ *
+ * The advertisement is what makes `includeActive=true` negotiable at all: an older server drops an
+ * unknown query parameter in its zod querystring schema and answers with a perfectly valid page that
+ * is simply missing those rows, so absence of the rows proves nothing (an account can legitimately
+ * have none). `V2SessionListResponseSchema` is `.passthrough()`, so the marker rides the existing
+ * response without a format change and older clients never see it.
+ */
 export async function fetchSessionListPageCompat(params: Readonly<{
     request: SessionRequest;
     token: string;
@@ -322,6 +376,7 @@ export async function fetchSessionListPageCompat(params: Readonly<{
     nextCursor: string | null;
     hasNext: boolean;
     source: 'v2' | 'v1';
+    includedActiveRows: boolean;
 }> {
     const sessionListPath = params.sessionListPath || '/v2/sessions';
     const url = new URL(sessionListPath, 'http://placeholder.local');
@@ -331,9 +386,13 @@ export async function fetchSessionListPageCompat(params: Readonly<{
     }
 
     let v2ResponseChars: number | undefined;
-    const v2Response = await params.request(url.pathname + url.search, {
-        headers: buildSessionRequestHeaders(params.token),
-    });
+    const v2Response = await syncPerformanceTelemetry.measureAsync(
+        'sync.sessions.snapshot.fetchPage.request',
+        params.telemetryFields,
+        async () => params.request(url.pathname + url.search, {
+            headers: buildSessionRequestHeaders(params.token, { includeSessionListTiming: true }),
+        }),
+    );
     const v2TelemetryFields = {
         ...(params.telemetryFields ?? {}),
         ...readV2SessionsServerTimingFields(v2Response),
@@ -357,9 +416,10 @@ export async function fetchSessionListPageCompat(params: Readonly<{
                 nextCursor: typeof parsed.nextCursor === 'string' ? parsed.nextCursor : null,
                 hasNext: parsed.hasNext === true,
                 source: 'v2',
+                includedActiveRows: parsed.includedActive === true,
             };
         }
-    } else if (sessionListPath !== '/v2/sessions' || !looksLikeMissingV2SessionsListRoute(v2Response.status, v2Body)) {
+    } else if (!isV2SessionsListRoute(sessionListPath) || !looksLikeMissingV2SessionsListRoute(v2Response.status, v2Body)) {
         throwSessionListHttpError(v2Response.status, sessionListPath);
     }
 
@@ -391,6 +451,7 @@ export async function fetchSessionListPageCompat(params: Readonly<{
         nextCursor: null,
         hasNext: false,
         source: 'v1',
+        includedActiveRows: false,
     };
 }
 

@@ -171,7 +171,7 @@ vi.mock('@/sync/domains/models/modelOptions', () => ({
 }));
 
 vi.mock('@/sync/domains/models/describeEffectiveModelMode', () => ({
-    describeEffectiveModelMode: () => ({ effectiveModelId: 'default' }),
+    describeEffectiveModelMode: () => ({ selectedModelId: 'default', appliedModelId: null, effectiveModelId: 'default' }),
 }));
 
 vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
@@ -205,10 +205,6 @@ vi.mock('@/components/ui/feedback/Shaker', () => ({
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: () => null,
-}));
-
-vi.mock('@/components/autocomplete/useActiveWord', () => ({
-    useActiveWord: () => ({ word: '', start: 0, end: 0 }),
 }));
 
 vi.mock('@/components/autocomplete/useActiveSuggestions', () => ({
@@ -298,7 +294,7 @@ describe('AgentInput (machine chip)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     onMachineClick: () => {},
                     currentPath: '/tmp',
@@ -324,7 +320,7 @@ describe('AgentInput (machine chip)', () => {
                     onMachineClick: () => {},
                     currentPath: '/tmp/project',
                     onPathClick: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                 }))).tree;
 
@@ -340,7 +336,7 @@ describe('AgentInput (machine chip)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     onMachineClick: () => {},
                     currentPath: '/tmp',
@@ -357,7 +353,7 @@ describe('AgentInput (machine chip)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     onMachineClick: () => {},
                     currentPath: '',
@@ -374,7 +370,7 @@ describe('AgentInput (machine chip)', () => {
                     placeholder: 'placeholder',
                     onChangeText: () => {},
                     onSend: () => {},
-                    autocompletePrefixes: [],
+                    autocompleteKinds: [],
                     autocompleteSuggestions: async () => [],
                     connectionStatus: {
                         text: 'online',

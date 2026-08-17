@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BasePermissionHandler, type PermissionResult } from './BasePermissionHandler';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { PUBLIC_RPC_HANDLER_ERROR_CODES } from '@happier-dev/protocol/rpcErrors';
 
 class FakeRpcHandlerManager {
   handlers = new Map<string, (payload: any) => any>();
@@ -60,7 +62,9 @@ describe('BasePermissionHandler allowlist', () => {
     const session = new FakeSession();
     const handler = new TestPermissionHandler(session as any);
 
-    const askPromise = handler.request('perm-ask', 'AskUserQuestion', { questions: [] });
+    const askPromise = handler.request('perm-ask', 'AskUserQuestion', {
+      questions: [{ question: 'Continue?', choices: ['Yes', 'No'] }],
+    });
     expect(session.agentState.requests['perm-ask']).toEqual(
       expect.objectContaining({ tool: 'AskUserQuestion', kind: 'user_action' }),
     );
@@ -127,6 +131,53 @@ describe('BasePermissionHandler allowlist', () => {
         allowedTools: ['bash(echo hello)'],
       }),
     );
+  });
+
+  it('ignores legacy UI responses for opaque claimed requests before terminal or allowlist effects', async () => {
+    const session = new FakeSession();
+    const input = { command: ['bash', '-lc', 'echo claimed'] };
+    const opaqueClaim = { malformed: ['newer', 'runtime'] };
+    session.agentState.requests.claimed = {
+      tool: 'bash',
+      arguments: input,
+      createdAt: Date.now(),
+      permissionResponseClaimV1: opaqueClaim,
+    };
+    const handler = new TestPermissionHandler(session as any);
+    const rpc = session.rpcHandlerManager.handlers.get('permission');
+
+    await rpc!({
+      id: 'claimed',
+      approved: true,
+      decision: 'approved_for_session',
+      allowedTools: ['bash(echo claimed)'],
+      updatedPermissions: [{ type: 'addRules', behavior: 'allow', rules: ['bash(echo claimed)'] }],
+    });
+
+    const retained = session.agentState.requests.claimed as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(retained, 'permissionResponseClaimV1')).toBe(true);
+    expect(retained.permissionResponseClaimV1).toBe(opaqueClaim);
+    expect(session.agentState.completedRequests.claimed).toBeUndefined();
+    expect(handler.isAllowed('bash', input)).toBe(false);
+  });
+
+  it('does not seed legacy allowlists from a remote-mediation completion', () => {
+    const session = new FakeSession();
+    const input = { command: ['bash', '-lc', 'echo mediated'] };
+    session.agentState.completedRequests.mediated = {
+      tool: 'bash',
+      arguments: input,
+      createdAt: 1,
+      completedAt: 2,
+      status: 'approved',
+      decision: 'approved_for_session',
+      remoteMediationSettlementId: { malformed: true },
+      allowedTools: ['bash(echo mediated)'],
+      updatedPermissions: [{ type: 'addRules', behavior: 'allow', rules: ['bash(echo mediated)'] }],
+    };
+
+    const handler = new TestPermissionHandler(session as any);
+    expect(handler.isAllowed('bash', input)).toBe(false);
   });
 
   it('ignores legacy pending responses that are not correlated with agentState', async () => {
@@ -233,7 +284,7 @@ describe('BasePermissionHandler allowlist', () => {
     const handler = new TestPermissionHandler(session as any);
 
     const input1 = { command: ['bash', '-lc', 'find . -maxdepth 2 -type f | head -n 5'] };
-    const input2 = { command: ['bash', '-lc', 'find . -maxdepth 1 -type f | head -n 5'] };
+    const input2 = { command: ['bash', '-lc', 'find . -maxdepth 1 -type f'] };
     const p1 = handler.request('perm-1', 'Bash', input1);
     const p2 = handler.request('perm-2', 'Bash', input2);
 
@@ -254,6 +305,12 @@ describe('BasePermissionHandler allowlist', () => {
     });
 
     await expect(p1).resolves.toEqual(expect.objectContaining({ decision: 'approved' }));
+
+    expect(session.agentState.completedRequests['perm-1']?.updatedPermissions).toBeTruthy();
+    expect(handler.isAllowed('Bash', input2)).toBe(true);
+    expect(session.agentState.completedRequests['perm-2']).toEqual(
+      expect.objectContaining({ status: 'approved' }),
+    );
 
     const raced = await Promise.race([
       p2.then(() => 'resolved' as const),
@@ -319,8 +376,80 @@ describe('BasePermissionHandler allowlist', () => {
 
     const result = await promise;
     expect(result.decision).toBe('approved');
-    expect((result as any).answers).toEqual({ q1: 'a' });
+    expect(result.answers).toEqual({ q1: ['a'] });
   });
+
+  it('accepts structured answers only for a request owned by this handler', async () => {
+    const session = new FakeSession();
+    session.agentState.requests.foreign = {
+      tool: 'AskUserQuestion',
+      kind: 'user_action',
+      arguments: { questions: [{ question: 'q1', options: [{ label: 'a' }] }] },
+      createdAt: Date.now(),
+    };
+    const handler = new TestPermissionHandler(session as any);
+    const owned = handler.request('owned', 'AskUserQuestion', {
+      questions: [{ question: 'q1', options: [{ label: 'a' }] }],
+    });
+    const rpc = session.rpcHandlerManager.handlers.get(
+      SESSION_RPC_METHODS.SESSION_STRUCTURED_QUESTION_RESPOND_V1,
+    );
+
+    await expect(rpc!({
+      id: 'foreign',
+      structuredAnswersV1: { q1: ['a'] },
+    })).rejects.toMatchObject({
+      rpcErrorCode: PUBLIC_RPC_HANDLER_ERROR_CODES.STRUCTURED_QUESTION_RECEIVER_NOT_OWNER,
+    });
+    await rpc!({ id: 'owned', structuredAnswersV1: { q1: ['a'] } });
+    await expect(owned).resolves.toEqual({ decision: 'approved', answers: { q1: ['a'] } });
+  });
+
+  it('keeps an invalid structured answer retryable until a valid answer arrives', async () => {
+    const session = new FakeSession();
+    const handler = new TestPermissionHandler(session as any);
+    const pending = handler.request('retryable', 'AskUserQuestion', {
+      questions: [{ question: 'q1', multiSelect: false, options: [], freeform: {} }],
+    });
+    const rpc = session.rpcHandlerManager.handlers.get(
+      SESSION_RPC_METHODS.SESSION_STRUCTURED_QUESTION_RESPOND_V1,
+    );
+
+    await expect(rpc!({
+      id: 'retryable',
+      structuredAnswersV1: { q1: ['   '] },
+    })).rejects.toMatchObject({
+      rpcErrorCode: PUBLIC_RPC_HANDLER_ERROR_CODES.STRUCTURED_QUESTION_INVALID,
+    });
+    expect(session.agentState.requests.retryable).toBeDefined();
+    expect(await settledState(pending)).toBe('pending');
+
+    await rpc!({ id: 'retryable', structuredAnswersV1: { q1: ['answer'] } });
+    await expect(pending).resolves.toEqual({
+      decision: 'approved',
+      answers: { q1: ['answer'] },
+    });
+  });
+
+  it.each(['denied', 'abort'] as const)(
+    'delivers an answerless AskUserQuestion %s decision to its live waiter',
+    async (decision) => {
+      const session = new FakeSession();
+      const handler = new TestPermissionHandler(session as any);
+      const pending = handler.request(`question-${decision}`, 'AskUserQuestion', {
+        questions: [{ question: 'q1', options: [{ label: 'a' }] }],
+      });
+      const rpc = session.rpcHandlerManager.handlers.get(
+        SESSION_RPC_METHODS.SESSION_PERMISSION_RESPOND_LEGACY,
+      );
+
+      await rpc!({ id: `question-${decision}`, approved: false, decision });
+      await expect(pending).resolves.toEqual({ decision });
+      expect(session.agentState.completedRequests[`question-${decision}`]).toEqual(
+        expect.objectContaining({ status: 'denied', decision }),
+      );
+    },
+  );
 
   it('invokes onAbortRequested when user responds with abort', async () => {
     const session = new FakeSession();

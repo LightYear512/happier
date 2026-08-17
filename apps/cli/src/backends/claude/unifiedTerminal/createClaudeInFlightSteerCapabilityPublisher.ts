@@ -11,6 +11,7 @@ export type ClaudeInFlightSteerAvailabilitySnapshot = Readonly<{
 
 export type ClaudeInFlightSteerCapabilityPublisher = Readonly<{
   publish: (snapshot: ClaudeInFlightSteerAvailabilitySnapshot) => void;
+  publishPendingInputInterruptAndRunLocalId: (localId: string | null) => void;
   dispose: () => void;
 }>;
 
@@ -31,6 +32,8 @@ export function createClaudeInFlightSteerCapabilityPublisher(opts: Readonly<{
   isCanonicalTurnActive?: (() => boolean) | undefined;
   nowMs?: (() => number) | undefined;
   minPublishIntervalMs?: number | undefined;
+  /** Agent SDK shares steerability publication but has no terminal composer to clear. */
+  terminalComposerControls?: boolean | undefined;
 }>): ClaudeInFlightSteerCapabilityPublisher {
   const nowMs = opts.nowMs ?? Date.now;
   const minPublishIntervalMs = Math.max(0, opts.minPublishIntervalMs ?? DEFAULT_MIN_PUBLISH_INTERVAL_MS);
@@ -40,6 +43,7 @@ export function createClaudeInFlightSteerCapabilityPublisher(opts: Readonly<{
   let lastPublishAtMs: number | null = null;
   let pendingSnapshot: ClaudeInFlightSteerAvailabilitySnapshot | null = null;
   let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastPendingInputInterruptAndRunLocalId: string | null | undefined;
 
   function resolveReason(snapshot: ClaudeInFlightSteerAvailabilitySnapshot): InFlightSteerUnavailableReason | null {
     if (snapshot.available) return null;
@@ -49,7 +53,10 @@ export function createClaudeInFlightSteerCapabilityPublisher(opts: Readonly<{
 
   function write(snapshot: ClaudeInFlightSteerAvailabilitySnapshot): void {
     const reason = resolveReason(snapshot);
-    const terminalComposerDraftPresent = !snapshot.available && snapshot.reason === 'user_terminal_draft';
+    const terminalComposerControls = opts.terminalComposerControls !== false;
+    const terminalComposerDraftPresent = terminalComposerControls
+      && !snapshot.available
+      && snapshot.reason === 'user_terminal_draft';
     const key = `${snapshot.available}:${reason ?? ''}:${terminalComposerDraftPresent}`;
     if (key === lastPublishedKey) return;
     lastPublishedKey = key;
@@ -64,8 +71,12 @@ export function createClaudeInFlightSteerCapabilityPublisher(opts: Readonly<{
           inFlightSteerAvailable: snapshot.available,
           inFlightSteerUnavailableReason: reason,
           inFlightSteerStateAt: stateAt,
-          terminalComposerClearSupported: true,
-          terminalComposerDraftPresent,
+          ...(terminalComposerControls
+            ? {
+                terminalComposerClearSupported: true,
+                terminalComposerDraftPresent,
+              }
+            : {}),
         },
       }),
       '[unified]',
@@ -97,13 +108,51 @@ export function createClaudeInFlightSteerCapabilityPublisher(opts: Readonly<{
         trailingTimer.unref?.();
       }
     },
+    publishPendingInputInterruptAndRunLocalId(localId) {
+      if (disposed || lastPendingInputInterruptAndRunLocalId === localId) return;
+      lastPendingInputInterruptAndRunLocalId = localId;
+      const stateAt = nowMs();
+      updateAgentStateBestEffort(
+        opts.session,
+        (currentState) => ({
+          ...currentState,
+          capabilities: {
+            ...(currentState.capabilities && typeof currentState.capabilities === 'object' ? currentState.capabilities : {}),
+            pendingInputInterruptAndRunLocalId: localId,
+            pendingInputInterruptAndRunStateAt: stateAt,
+          },
+        }),
+        '[unified]',
+        'pending_input_interrupt_and_run_capability',
+      );
+    },
     dispose() {
-      disposed = true;
       if (trailingTimer !== null) {
         clearTimeout(trailingTimer);
         trailingTimer = null;
       }
       pendingSnapshot = null;
+      if (lastPendingInputInterruptAndRunLocalId !== undefined && lastPendingInputInterruptAndRunLocalId !== null) {
+        const stateAt = nowMs();
+        updateAgentStateBestEffort(
+          opts.session,
+          (currentState) => ({
+            ...currentState,
+            capabilities: {
+              ...(currentState.capabilities && typeof currentState.capabilities === 'object' ? currentState.capabilities : {}),
+              pendingInputInterruptAndRunLocalId: null,
+              pendingInputInterruptAndRunStateAt: stateAt,
+            },
+          }),
+          '[unified]',
+          'pending_input_interrupt_and_run_capability',
+        );
+      }
+      lastPendingInputInterruptAndRunLocalId = null;
+      if (lastPublishedKey !== null) {
+        write({ available: true, reason: null });
+      }
+      disposed = true;
     },
   };
 }

@@ -26,7 +26,12 @@ import type { EncryptionScopeInput } from '@/sync/encryption/encryption';
 
 import { parsePlainSessionAgentState, parsePlainSessionMetadata } from './parsePlainSessionPayload';
 import { fetchSessionListPageCompat } from './sessionHttpCompat';
-import { orderRowsForSessionListHydration } from './sessionListHydrationPriority';
+import { resolveSessionRuntimeActivityProjectionFields } from './sessionRuntimeActivityProjection';
+import {
+    isSessionListRowAttentionHydrationPriority,
+    normalizeSessionListHydrationSessionIds,
+    orderRowsForSessionListHydration,
+} from './sessionListHydrationPriority';
 
 type SessionEncryption = {
     decryptAgentState: (version: number, value: string | null) => Promise<any>;
@@ -84,9 +89,15 @@ type SessionListRenderablePatch = Readonly<{
     sessionId: string;
     patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
 }>;
+type HydrationCandidateAttribution = Readonly<{
+    rows: SessionListRow[];
+    fields: Record<string, number>;
+}>;
 
 const DEFAULT_SESSION_LIST_PATH = '/v2/sessions';
 const NO_SERVER_ID_ABORT_KEY = '__default__';
+const DEFAULT_BACKGROUND_HYDRATION_APPLY_BATCH_SIZE = 4;
+const DEFAULT_BACKGROUND_HYDRATION_APPLY_FLUSH_DELAY_MS = 64;
 const activeSessionListDataKeyHydrationControllers = new WeakMap<SessionDataKeyHydrationEncryption, Map<string, AbortController>>();
 
 function normalizeSessionListAbortKey(params: Readonly<{
@@ -120,26 +131,13 @@ function createSessionListDataKeyHydrationAbortController(params: Readonly<{
     return controller;
 }
 
-function normalizeSessionListPinnedSessionIds(values: ReadonlyArray<string> | undefined): string[] {
-    if (!values) return [];
-    const seen = new Set<string>();
-    const ids: string[] = [];
-    for (const value of values) {
-        const id = String(value ?? '').trim();
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        ids.push(id);
-    }
-    return ids;
-}
-
 function buildSessionListInitialPath(params: {
-    pinnedSessionIds: readonly string[];
+    includeActiveRows: boolean;
     includeAttentionRows: boolean;
 }): string | undefined {
     const query: string[] = [];
-    if (params.pinnedSessionIds.length > 0) {
-        query.push(`pinnedSessionIds=${encodeURIComponent(params.pinnedSessionIds.join(','))}`);
+    if (params.includeActiveRows) {
+        query.push('includeActive=true');
     }
     if (params.includeAttentionRows) {
         query.push('includeAttention=true');
@@ -161,27 +159,70 @@ function normalizeSessionListSeq(value: number | null | undefined): number | nul
         : null;
 }
 
-function normalizeSessionListTimestamp(value: number | null | undefined): number | null {
+/**
+ * Accepts `unknown` because session-list rows are a `.passthrough()` protocol
+ * shape: fields the schema does not declare (see `rowRecord` below) arrive
+ * typed as `unknown` and are validated here rather than at each call site.
+ */
+function normalizeSessionListTimestamp(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value)
         ? Math.max(0, Math.trunc(value))
         : null;
 }
 
-function isSessionListRowAttentionHydrationPriority(row: SessionListRow): boolean {
-    if ((row.pendingPermissionRequestCount ?? 0) > 0 || (row.pendingUserActionRequestCount ?? 0) > 0) {
-        return true;
-    }
-    if (row.latestTurnStatus === 'failed' && row.lastRuntimeIssue != null) {
-        return true;
-    }
-    return normalizeSessionListSeq(row.latestReadyEventSeq) !== null
-        && (normalizeSessionListSeq(row.latestReadyEventSeq) ?? 0) > (normalizeSessionListSeq(row.lastViewedSessionSeq) ?? 0);
+function buildHydratedSessionFromDecryptedRow(
+    row: SessionListRow,
+    encryptionMode: 'e2ee' | 'plain',
+    decryptedState: Readonly<{ metadata: any; agentState: any }>,
+    serverId?: string | null,
+): HydratedSession {
+    const runtimeActivityProjection = resolveSessionRuntimeActivityProjectionFields({}, row);
+    const latestTurnStatus = row.latestTurnStatus ?? null;
+    const latestTurnStatusObservedAt = row.latestTurnStatusObservedAt ?? null;
+    const runtimePresence = resolveSessionRuntimePresenceFields({
+        thinking: row.thinking === true,
+        thinkingAt: normalizeSessionListTimestamp(row.thinkingAt ?? null) ?? 0,
+        latestTurnStatus,
+        latestTurnStatusObservedAt,
+    });
+
+    return {
+        ...row,
+        serverId: typeof serverId === 'string' && serverId.trim().length > 0 ? serverId.trim() : undefined,
+        encryptionMode,
+        thinking: runtimePresence.thinking,
+        thinkingAt: runtimePresence.thinkingAt,
+        metadata: decryptedState.metadata,
+        agentState: decryptedState.agentState,
+        metadataUnavailable: row.metadata != null && decryptedState.metadata == null,
+        accessLevel: normalizeAccessLevel(row.share?.accessLevel),
+        canApprovePermissions: row.share?.canApprovePermissions ?? undefined,
+        latestReadyEventSeq: normalizeSessionListSeq(row.latestReadyEventSeq ?? null),
+        latestReadyEventAt: normalizeSessionListTimestamp(row.latestReadyEventAt ?? null),
+        pendingRequestObservedAt: normalizeSessionListTimestamp(row.pendingRequestObservedAt ?? null),
+        latestTurnStatus,
+        latestTurnStatusObservedAt,
+        ...runtimeActivityProjection,
+        rollbackEligibleTurnStarts: (row as Record<string, unknown>).rollbackEligibleTurnStarts === undefined
+            ? null
+            : readRollbackEligibleTurnStarts((row as Record<string, unknown>).rollbackEligibleTurnStarts),
+        presence: row.active ? 'online' : row.activeAt,
+    };
+}
+
+function buildPlainHydratedSessionFromRow(row: SessionListRow): HydratedSession | null {
+    if (row.encryptionMode !== 'plain') return null;
+    return buildHydratedSessionFromDecryptedRow(row, 'plain', {
+        metadata: parsePlainSessionMetadata(row.metadata),
+        agentState: parsePlainSessionAgentState(row.agentState),
+    });
 }
 
 function buildRenderableFromRowAndCache(
     row: SessionListRow,
     cachedEntry: SessionListCacheEntryV1 | undefined,
     existingSession?: Session | null | undefined,
+    currentRenderable?: SessionListRenderableSession | null | undefined,
 ): SessionListRenderableSession {
     const rowRecord = row as Record<string, unknown>;
     const metadataMatches = cachedEntry?.metadataVersion === row.metadataVersion;
@@ -190,6 +231,11 @@ function buildRenderableFromRowAndCache(
     const existingMetadataMatches = existingSession?.metadataVersion === row.metadataVersion
         && existingRenderable?.metadata != null;
     const existingAgentStateMatches = existingSession?.agentStateVersion === row.agentStateVersion;
+    const currentMetadataMatches = row.encryptionMode === 'plain'
+        && currentRenderable?.metadataVersion === row.metadataVersion
+        && currentRenderable.metadata != null;
+    const currentAgentStateMatches = row.encryptionMode === 'plain'
+        && currentRenderable?.agentStateVersion === row.agentStateVersion;
     const metadataFromCache: SessionListRenderableMetadata | null = isSessionListCacheEntryMetadataUsable(cachedEntry)
         ? {
             name: cachedEntry.name,
@@ -205,13 +251,38 @@ function buildRenderableFromRowAndCache(
         : null;
     const useMatchingCacheMetadata = metadataMatches && metadataFromCache != null;
     const useExistingSessionMetadata = !useMatchingCacheMetadata && existingMetadataMatches;
-    const useStaleCacheMetadata = !useMatchingCacheMetadata && !useExistingSessionMetadata && metadataFromCache != null;
+    const useCurrentRenderableMetadata =
+        !useMatchingCacheMetadata && !useExistingSessionMetadata && currentMetadataMatches;
     const staleCacheMetadataVersion = cachedEntry?.metadataVersion ?? row.metadataVersion;
+    const plainHydratedSession = !useMatchingCacheMetadata && !useExistingSessionMetadata && !useCurrentRenderableMetadata
+        ? buildPlainHydratedSessionFromRow(row)
+        : null;
+    const plainRenderable = plainHydratedSession?.metadata != null
+        ? buildSessionListRenderableFromSession(plainHydratedSession as Session)
+        : null;
+    if (plainRenderable && !existingSession && !currentRenderable && metadataFromCache == null) {
+        return plainRenderable;
+    }
+    const usePlainRenderableMetadata =
+        !useMatchingCacheMetadata
+        && !useExistingSessionMetadata
+        && !useCurrentRenderableMetadata
+        && plainRenderable?.metadata != null;
+    const useStaleCacheMetadata =
+        !useMatchingCacheMetadata
+        && !useExistingSessionMetadata
+        && !useCurrentRenderableMetadata
+        && !usePlainRenderableMetadata
+        && metadataFromCache != null;
     const renderableMetadata = useMatchingCacheMetadata || useStaleCacheMetadata
         ? metadataFromCache
         : useExistingSessionMetadata
             ? existingRenderable?.metadata ?? null
-            : null;
+            : useCurrentRenderableMetadata
+                ? currentRenderable?.metadata ?? null
+                : usePlainRenderableMetadata
+                    ? plainRenderable?.metadata ?? null
+                    : null;
 
     const hasPendingPermissionRequests =
         typeof row.pendingPermissionRequestCount === 'number'
@@ -220,7 +291,11 @@ function buildRenderableFromRowAndCache(
                 ? cachedEntry?.hasPendingPermissionRequests === true
                 : existingAgentStateMatches
                     ? existingRenderable?.hasPendingPermissionRequests === true
-                    : undefined;
+                    : currentAgentStateMatches
+                        ? currentRenderable?.hasPendingPermissionRequests === true
+                        : plainRenderable
+                            ? plainRenderable.hasPendingPermissionRequests === true
+                            : undefined;
     const hasPendingUserActionRequests =
         typeof row.pendingUserActionRequestCount === 'number'
             ? row.pendingUserActionRequestCount > 0
@@ -228,7 +303,11 @@ function buildRenderableFromRowAndCache(
                 ? cachedEntry?.hasPendingUserActionRequests === true
                 : existingAgentStateMatches
                     ? existingRenderable?.hasPendingUserActionRequests === true
-                    : undefined;
+                    : currentAgentStateMatches
+                        ? currentRenderable?.hasPendingUserActionRequests === true
+                        : plainRenderable
+                            ? plainRenderable.hasPendingUserActionRequests === true
+                            : undefined;
     const lastViewedSessionSeq = normalizeLastViewedSessionSeq(row.lastViewedSessionSeq);
     const latestReadyEventSeq =
         normalizeSessionListSeq(row.latestReadyEventSeq ?? null)
@@ -238,7 +317,10 @@ function buildRenderableFromRowAndCache(
         ?? normalizeSessionListTimestamp(existingSession?.latestReadyEventAt ?? null);
     const pendingRequestObservedAt =
         normalizeSessionListTimestamp(row.pendingRequestObservedAt ?? null)
-        ?? normalizeSessionListTimestamp(existingRenderable?.pendingRequestObservedAt ?? null);
+        ?? normalizeSessionListTimestamp(existingRenderable?.pendingRequestObservedAt ?? null)
+        ?? normalizeSessionListTimestamp(currentRenderable?.pendingRequestObservedAt ?? null)
+        ?? normalizeSessionListTimestamp(plainRenderable?.pendingRequestObservedAt ?? null);
+    const runtimeActivityProjection = resolveSessionRuntimeActivityProjectionFields({}, row);
     const latestTurnStatus = row.latestTurnStatus ?? null;
     const latestTurnStatusObservedAt = row.latestTurnStatusObservedAt ?? null;
     const runtimePresence = resolveSessionRuntimePresenceFields({
@@ -276,6 +358,7 @@ function buildRenderableFromRowAndCache(
         activeAt: row.activeAt,
         archivedAt: row.archivedAt ?? null,
         pendingCount: row.pendingCount,
+        pendingBlockedCount: row.pendingBlockedCount,
         pendingVersion: row.pendingVersion,
         lastViewedSessionSeq,
         metadataVersion: useStaleCacheMetadata
@@ -296,11 +379,20 @@ function buildRenderableFromRowAndCache(
         hasPendingUserActionRequests,
         latestTurnStatus,
         latestTurnStatusObservedAt,
+        ...runtimeActivityProjection,
         lastRuntimeIssue: row.lastRuntimeIssue ?? null,
         latestReadyEventSeq,
         latestReadyEventAt,
         pendingRequestObservedAt,
         hasUnreadMessages,
+        // Warm first paint must already hold the stable ordering key. Dropping
+        // it here would order this row by its (moving) activity time until
+        // hydration lands and supplies the server value — the exact reorder the
+        // materialized entry fact exists to remove. Server value only, same as
+        // `buildSessionListRenderableFromSession`: a client stamp here would be
+        // indistinguishable from a materialized one, and the renderable merge
+        // owner is the single place allowed to stamp the fallback.
+        unreadSince: hasUnreadMessages ? normalizeSessionListTimestamp(rowRecord.unreadSince) : null,
     };
 }
 
@@ -314,6 +406,10 @@ function isCurrentRenderableCompleteForWarmHydration(
     if (currentRenderable.metadataVersion < row.metadataVersion) return false;
     if (currentRenderable.agentStateVersion < row.agentStateVersion) return false;
     if ((currentRenderable.archivedAt ?? null) !== (row.archivedAt ?? null)) return false;
+    if ((currentRenderable.runtimeActivityState ?? null) !== (row.runtimeActivityState ?? null)) return false;
+    if ((currentRenderable.runtimeActivityActiveCount ?? null) !== (row.runtimeActivityActiveCount ?? null)) return false;
+    if ((currentRenderable.runtimeActivityObservedAt ?? null) !== (row.runtimeActivityObservedAt ?? null)) return false;
+    if ((currentRenderable.runtimeActivityRevision ?? null) !== (row.runtimeActivityRevision ?? null)) return false;
     if (row.metadata != null && currentRenderable.metadata == null) return false;
     if (
         row.agentState != null
@@ -327,6 +423,31 @@ function isCurrentRenderableCompleteForWarmHydration(
     return true;
 }
 
+/**
+ * Single owner of "this row's plaintext is already decrypted and current".
+ *
+ * Keyed on the server's `metadataVersion` / `agentStateVersion`, which are safe
+ * discriminators: both session metadata writers compare-and-swap on the expected
+ * version and write `expectedVersion + 1` whenever the stored ciphertext changes,
+ * and the only path that leaves the version alone requires a byte-identical
+ * payload (or, for `plain` sessions, deeply equal JSON). An unchanged version
+ * therefore cannot conceal changed plaintext.
+ *
+ * Consumed both by the hydration-candidate filter and by the hydration row
+ * itself, so the "already decrypted" decision has exactly one definition.
+ */
+function canReuseDecryptedSessionPayload(
+    row: SessionListRow,
+    existingSession: Session | null | undefined,
+): existingSession is Session {
+    if (!existingSession) return false;
+    const metadataMatches = existingSession.metadataVersion === row.metadataVersion
+        && (row.metadata == null || existingSession.metadata != null);
+    const agentStateMatches = existingSession.agentStateVersion === row.agentStateVersion
+        && (row.agentState == null || existingSession.agentState != null || row.agentStateVersion === 0);
+    return metadataMatches && agentStateMatches;
+}
+
 function needsWarmHydration(params: {
     row: SessionListRow;
     existingSession?: Session | null | undefined;
@@ -334,18 +455,19 @@ function needsWarmHydration(params: {
     isRequiredHydrationRow?: boolean;
 }): boolean {
     const { row } = params;
+    // A required row is always re-applied: its moving scalar projection
+    // (`seq`, `updatedAt`, the runtime-activity tuple) has to reach the stored
+    // session even when the encrypted payload did not change. Whether that
+    // re-application costs a decrypt is a separate question, answered by
+    // `canReuseDecryptedSessionPayload` at hydration time.
+    if (params.isRequiredHydrationRow) return true;
     const existingSession = params.existingSession;
     if (existingSession) {
-        const existingMetadataMatches = existingSession.metadataVersion === row.metadataVersion
-            && (row.metadata == null || existingSession.metadata != null);
-        const existingAgentStateMatches = existingSession.agentStateVersion === row.agentStateVersion
-            && (row.agentState == null || existingSession.agentState != null || row.agentStateVersion === 0);
-        if (existingMetadataMatches && existingAgentStateMatches) {
+        if (canReuseDecryptedSessionPayload(row, existingSession)) {
             return false;
         }
         return true;
     }
-    if (params.isRequiredHydrationRow) return true;
     return !isCurrentRenderableCompleteForWarmHydration(row, params.currentRenderable);
 }
 
@@ -396,6 +518,74 @@ function countRowsWithIds(rows: readonly SessionListRow[], ids: ReadonlySet<stri
 
 function countBackgroundRows(totalRows: number, requiredRows: number): number {
     return Math.max(0, totalRows - Math.max(0, requiredRows));
+}
+
+function buildHydrationCandidateAttribution(params: Readonly<{
+    sessions: readonly SessionListRow[];
+    requiredHydrationSessionIds: ReadonlySet<string>;
+    missingEncryptedDataKeySessionIds: ReadonlySet<string>;
+    encryption: SessionListEncryption;
+    getExistingSession?: (sessionId: string) => Session | null | undefined;
+    getCurrentSessionListRenderable?: CurrentSessionListRenderableLookup;
+}>): HydrationCandidateAttribution {
+    const rows: SessionListRow[] = [];
+    let requiredRows = 0;
+    let missingDataKeyRows = 0;
+    let requiredRowsMissingDataKey = 0;
+    let alreadyWarmRows = 0;
+    let requiredAlreadyWarmRows = 0;
+    let requiredCandidateRows = 0;
+
+    for (const row of params.sessions) {
+        const isRequiredHydrationRow = params.requiredHydrationSessionIds.has(row.id);
+        if (isRequiredHydrationRow) {
+            requiredRows += 1;
+        }
+        if (!canHydrateSessionRow({
+            row,
+            missingEncryptedDataKeySessionIds: params.missingEncryptedDataKeySessionIds,
+            encryption: params.encryption,
+        })) {
+            missingDataKeyRows += 1;
+            if (isRequiredHydrationRow) {
+                requiredRowsMissingDataKey += 1;
+            }
+            continue;
+        }
+        if (!needsWarmHydration({
+            row,
+            existingSession: params.getExistingSession?.(row.id),
+            currentRenderable: params.getCurrentSessionListRenderable?.(row.id),
+            isRequiredHydrationRow,
+        })) {
+            alreadyWarmRows += 1;
+            if (isRequiredHydrationRow) {
+                requiredAlreadyWarmRows += 1;
+            }
+            continue;
+        }
+        rows.push(row);
+        if (isRequiredHydrationRow) {
+            requiredCandidateRows += 1;
+        }
+    }
+
+    return {
+        rows,
+        fields: {
+            totalRows: params.sessions.length,
+            requiredIds: params.requiredHydrationSessionIds.size,
+            requiredRows,
+            missingRequiredRows: Math.max(0, params.requiredHydrationSessionIds.size - requiredRows),
+            candidateRows: rows.length,
+            requiredCandidateRows,
+            backgroundCandidateRows: Math.max(0, rows.length - requiredCandidateRows),
+            alreadyWarmRows,
+            requiredAlreadyWarmRows,
+            missingDataKeyRows,
+            requiredRowsMissingDataKey,
+        },
+    };
 }
 
 function isDeferrableHydrationReason(reason: string | undefined): boolean {
@@ -735,6 +925,38 @@ function reportStaleHydratedSessionsSkipped(params: Readonly<{
     });
 }
 
+/**
+ * Re-projects a row onto plaintext this client already decrypted, without
+ * touching the crypto path.
+ *
+ * A row is re-hydrated whenever any of its scalars move — `seq`, `updatedAt`,
+ * the runtime-activity tuple — and those move on every streaming tick. Only the
+ * encrypted payload is expensive, and only `metadataVersion` /
+ * `agentStateVersion` say whether it changed. Splitting the two lets a required
+ * row keep publishing its fresh scalars while the unchanged envelope is decrypted
+ * once instead of once per refresh.
+ */
+function reuseHydratedSessionForRow(
+    row: SessionListRow,
+    existingSession: Session | null | undefined,
+    serverId?: string | null,
+): HydratedSession | null {
+    if (!canReuseDecryptedSessionPayload(row, existingSession)) return null;
+    const encryptionMode: 'e2ee' | 'plain' = row.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+    const hydrated = buildHydratedSessionFromDecryptedRow(
+        row,
+        encryptionMode,
+        { metadata: existingSession.metadata, agentState: existingSession.agentState },
+        serverId,
+    );
+    syncPerformanceTelemetry.count('sync.sessions.snapshot.decryptRow.reusedPayload', {
+        sessions: 1,
+        encrypted: encryptionMode === 'plain' ? 0 : 1,
+        plain: encryptionMode === 'plain' ? 1 : 0,
+    });
+    return hydrated;
+}
+
 async function decryptSessionRow(
     row: SessionListRow,
     encryption: SessionListEncryption,
@@ -777,36 +999,7 @@ async function decryptSessionRow(
                             return { metadata, agentState };
                         })();
 
-                const latestTurnStatus = row.latestTurnStatus ?? null;
-                const latestTurnStatusObservedAt = row.latestTurnStatusObservedAt ?? null;
-                const runtimePresence = resolveSessionRuntimePresenceFields({
-                    thinking: row.thinking === true,
-                    thinkingAt: normalizeSessionListTimestamp(row.thinkingAt ?? null) ?? 0,
-                    latestTurnStatus,
-                    latestTurnStatusObservedAt,
-                });
-
-                return {
-                    ...row,
-                    serverId: typeof serverId === 'string' && serverId.trim().length > 0 ? serverId.trim() : undefined,
-                    encryptionMode,
-                    thinking: runtimePresence.thinking,
-                    thinkingAt: runtimePresence.thinkingAt,
-                    metadata: decryptedState.metadata,
-                    agentState: decryptedState.agentState,
-                    metadataUnavailable: row.metadata != null && decryptedState.metadata == null,
-                    accessLevel: normalizeAccessLevel(row.share?.accessLevel),
-                    canApprovePermissions: row.share?.canApprovePermissions ?? undefined,
-                    latestReadyEventSeq: normalizeSessionListSeq(row.latestReadyEventSeq ?? null),
-                    latestReadyEventAt: normalizeSessionListTimestamp(row.latestReadyEventAt ?? null),
-                    pendingRequestObservedAt: normalizeSessionListTimestamp(row.pendingRequestObservedAt ?? null),
-                    latestTurnStatus,
-                    latestTurnStatusObservedAt,
-                    rollbackEligibleTurnStarts: (row as Record<string, unknown>).rollbackEligibleTurnStarts === undefined
-                        ? null
-                        : readRollbackEligibleTurnStarts((row as Record<string, unknown>).rollbackEligibleTurnStarts),
-                    presence: row.active ? 'online' : row.activeAt,
-                };
+                return buildHydratedSessionFromDecryptedRow(row, encryptionMode, decryptedState, serverId);
             } catch (error) {
                 console.error(`[sessionsSnapshot] Failed to decrypt session ${row.id}`, error);
                 return null;
@@ -890,6 +1083,7 @@ function createHydratedSessionApplyBatcher(params: {
     shouldContinue: () => boolean;
     batchSize: number;
     flushDelayMs: number;
+    coalesceRequiredRows?: boolean;
 }): {
     enqueue: (session: HydratedSession, options?: { required?: boolean }) => void;
     flush: (reason?: HydrationApplyFlushReason) => void;
@@ -900,6 +1094,7 @@ function createHydratedSessionApplyBatcher(params: {
     let pending: HydratedSession[] = [];
     let pendingRequiredRows = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let flushTimerReason: HydrationApplyFlushReason | null = null;
     let firstQueuedAtMs: number | null = null;
     let appliedRows = 0;
     let staleSkippedRows = 0;
@@ -908,6 +1103,7 @@ function createHydratedSessionApplyBatcher(params: {
         if (!flushTimer) return;
         clearTimeout(flushTimer);
         flushTimer = null;
+        flushTimerReason = null;
     };
 
     const flush = (reason: HydrationApplyFlushReason = 'manual'): void => {
@@ -980,9 +1176,13 @@ function createHydratedSessionApplyBatcher(params: {
         }
     };
 
-    const scheduleFlush = (): void => {
-        if (flushTimer) return;
-        flushTimer = setTimeout(() => flush('timer'), flushDelayMs);
+    const scheduleFlush = (delayMs = flushDelayMs, reason: HydrationApplyFlushReason = 'timer'): void => {
+        if (flushTimer) {
+            if (reason !== 'size' || flushTimerReason === 'size') return;
+            clearFlushTimer();
+        }
+        flushTimerReason = reason;
+        flushTimer = setTimeout(() => flush(reason), delayMs);
     };
 
     return {
@@ -1004,7 +1204,15 @@ function createHydratedSessionApplyBatcher(params: {
                 backgroundRows: requiredRows === 1 ? 0 : 1,
             });
             if (pending.length >= batchSize) {
-                flush('size');
+                if (pendingRequiredRows > 0) {
+                    if (params.coalesceRequiredRows === true) {
+                        scheduleFlush();
+                    } else {
+                        flush('size');
+                    }
+                    return;
+                }
+                scheduleFlush(flushDelayMs, 'size');
                 return;
             }
             scheduleFlush();
@@ -1044,7 +1252,6 @@ export async function fetchAndApplySessions(params: {
     sessionListMaxPages?: number;
     includeActiveSessionRows?: boolean;
     includeSessionListAttentionRows?: boolean;
-    sessionListPinnedSessionIds?: ReadonlyArray<string>;
     priorityHydrationSessionIds?: ReadonlyArray<string>;
     serverId?: string | null;
     credentials: AuthCredentials;
@@ -1077,7 +1284,7 @@ export async function fetchAndApplySessions(params: {
     repairInvalidReadStateV1: (params: { sessionId: string; sessionSeqUpperBound: number }) => Promise<void>;
     log: { log: (message: string) => void };
 }): Promise<SessionListFetchResult> {
-    const { credentials, encryption, sessionDataKeys, applySessions, repairInvalidReadStateV1, log } = params;
+    const { credentials, encryption, sessionDataKeys, applySessions, repairInvalidReadStateV1 } = params;
     const snapshotStartedAtMs = nowMs();
     const request =
         params.request
@@ -1090,8 +1297,12 @@ export async function fetchAndApplySessions(params: {
     const concurrencyLimit = Math.max(1, Math.trunc(params.sessionListHydrationConcurrencyLimit ?? 4));
     const backgroundHydrationConcurrencyLimit = Math.max(1, Math.trunc(params.sessionListBackgroundHydrationConcurrencyLimit ?? 1));
     const backgroundHydrationYieldEveryRows = Math.max(1, Math.trunc(params.sessionListBackgroundHydrationYieldEveryRows ?? 1));
-    const backgroundHydrationApplyBatchSize = Math.max(1, Math.trunc(params.sessionListBackgroundHydrationApplyBatchSize ?? 1));
-    const backgroundHydrationApplyFlushDelayMs = Math.max(0, Math.trunc(params.sessionListBackgroundHydrationApplyFlushDelayMs ?? 16));
+    const backgroundHydrationApplyBatchSize = Math.max(1, Math.trunc(
+        params.sessionListBackgroundHydrationApplyBatchSize ?? DEFAULT_BACKGROUND_HYDRATION_APPLY_BATCH_SIZE,
+    ));
+    const backgroundHydrationApplyFlushDelayMs = Math.max(0, Math.trunc(
+        params.sessionListBackgroundHydrationApplyFlushDelayMs ?? DEFAULT_BACKGROUND_HYDRATION_APPLY_FLUSH_DELAY_MS,
+    ));
     const backgroundHydrationYield = params.sessionListBackgroundHydrationYield
         ?? (() => yieldToSessionListBackgroundHydration(params.sessionListBackgroundHydrationYieldDelayMs ?? 0));
     const dataKeyHydrationAbortController = createSessionListDataKeyHydrationAbortController({
@@ -1129,41 +1340,31 @@ export async function fetchAndApplySessions(params: {
         }
     };
 
-    const pinnedSessionIds = normalizeSessionListPinnedSessionIds(params.sessionListPinnedSessionIds);
+    // The initial page asks the server to merge the active-session rows into the response it already
+    // builds. That removes an entire ~1 MB round trip on every foreground, and — because both
+    // requests contend for the same server DB connection — the serialization edge behind it.
+    const wantsInitialActiveRows = params.includeActiveSessionRows === true && !cursor && !params.sessionListPath;
+    let servedActiveRowsWithInitialPage = false;
     const initialSessionListPath = !cursor && !params.sessionListPath
         ? buildSessionListInitialPath({
-            pinnedSessionIds,
+            includeActiveRows: wantsInitialActiveRows,
             includeAttentionRows: params.includeSessionListAttentionRows === true,
         })
         : undefined;
-
-    if (params.includeActiveSessionRows === true && !cursor && !params.sessionListPath) {
-        const activePage = await fetchSessionListPageCompat({
-            request,
-            token: credentials.token,
-            sessionListPath: '/v2/sessions/active',
-            cursor: null,
-            limit: 500,
-        });
-        appendRows(activePage.sessions);
-    }
     while (fetchedPages < sessionListMaxPages) {
         const pageLimit = sessionListPageSize;
         const fetchPageFields = {
             loadedSessions: sessions.length,
             limit: pageLimit,
             cursorPresent: cursor ? 1 : 0,
+            activePage: 0,
+            listPage: 1,
         };
-        const timedRequest: typeof request = (path, init) => syncPerformanceTelemetry.measureAsync(
-            'sync.sessions.snapshot.fetchPage.request',
-            fetchPageFields,
-            async () => request(path, init),
-        );
         const page = await syncPerformanceTelemetry.measureAsync(
             'sync.sessions.snapshot.fetchPage',
             fetchPageFields,
             async () => fetchSessionListPageCompat({
-                request: timedRequest,
+                request,
                 token: credentials.token,
                 sessionListPath: params.sessionListPath ?? initialSessionListPath,
                 cursor,
@@ -1188,6 +1389,9 @@ export async function fetchAndApplySessions(params: {
             () => {
                 appendRows(page.sessions);
                 source = page.source;
+                if (fetchedPages === 0) {
+                    servedActiveRowsWithInitialPage = page.includedActiveRows;
+                }
                 shouldStopAfterPage = !page.hasNext || !page.nextCursor || page.source === 'v1';
                 nextCursor = page.nextCursor;
                 nextCursorForMore = page.nextCursor;
@@ -1200,6 +1404,36 @@ export async function fetchAndApplySessions(params: {
         if (nextCursor && seenCursors.has(nextCursor)) break;
         if (nextCursor) seenCursors.add(nextCursor);
         cursor = nextCursor;
+    }
+
+    if (wantsInitialActiveRows && !servedActiveRowsWithInitialPage) {
+        const activePageFields = {
+            loadedSessions: sessions.length,
+            limit: 500,
+            cursorPresent: 0,
+            activePage: 1,
+            listPage: 0,
+        };
+        const activePage = await syncPerformanceTelemetry.measureAsync(
+            'sync.sessions.snapshot.fetchPage',
+            activePageFields,
+            async () => fetchSessionListPageCompat({
+                request,
+                token: credentials.token,
+                sessionListPath: '/v2/sessions/active',
+                cursor: null,
+                limit: 500,
+                telemetryFields: activePageFields,
+            }),
+        );
+        // A server that does not merge the family still owes the snapshot the same rows in the same
+        // order it had when this call led the sequence: active rows first, winning the de-dupe
+        // against the cursor page.
+        const pageRows = sessions.slice();
+        sessions.length = 0;
+        seenSessionIds.clear();
+        appendRows(activePage.sessions);
+        appendRows(pageRows);
     }
 
     const sessionsNeedingEncryption = sessions.filter((session) => session.encryptionMode !== 'plain');
@@ -1215,10 +1449,14 @@ export async function fetchAndApplySessions(params: {
     }
 
     const cachedSessionListEntries = params.cachedSessionListEntries ?? {};
+    const requestedRequiredHydrationSessionIds = normalizeSessionListHydrationSessionIds(params.requiredHydrationSessionIds);
+    const nonAwaitedRequiredHydrationLimit = params.sessionListBackgroundHydrationMaxRows === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, Math.trunc(params.sessionListBackgroundHydrationMaxRows));
     const requiredHydrationSessionIds = new Set(
-        (params.requiredHydrationSessionIds ?? [])
-            .map((sessionId) => String(sessionId ?? '').trim())
-            .filter(Boolean),
+        params.awaitSessionListHydration === true
+            ? requestedRequiredHydrationSessionIds
+            : requestedRequiredHydrationSessionIds.slice(0, nonAwaitedRequiredHydrationLimit),
     );
     const shouldApplyRenderables = typeof params.applySessionListRenderables === 'function';
     let appliedRenderableCount = 0;
@@ -1247,6 +1485,7 @@ export async function fetchAndApplySessions(params: {
                 row,
                 cachedSessionListEntries[row.id],
                 params.getExistingSession?.(row.id),
+                params.getCurrentSessionListRenderable?.(row.id),
             )),
         );
         appliedRenderableCount = renderables.length;
@@ -1324,28 +1563,27 @@ export async function fetchAndApplySessions(params: {
 
     if (shouldApplyRenderables) {
         const priorityHydrationSessionIds = new Set([
-            ...normalizeSessionListPinnedSessionIds(params.priorityHydrationSessionIds),
-            ...pinnedSessionIds,
+            ...normalizeSessionListHydrationSessionIds(params.priorityHydrationSessionIds),
         ]);
         for (const row of sessions) {
             if (isSessionListRowAttentionHydrationPriority(row)) {
                 priorityHydrationSessionIds.add(row.id);
             }
         }
+        const hydrationCandidates = buildHydrationCandidateAttribution({
+            sessions,
+            requiredHydrationSessionIds,
+            missingEncryptedDataKeySessionIds,
+            encryption,
+            getExistingSession: params.getExistingSession,
+            getCurrentSessionListRenderable: params.getCurrentSessionListRenderable,
+        });
+        syncPerformanceTelemetry.count(
+            'sync.sessions.snapshot.hydrationCandidates',
+            hydrationCandidates.fields,
+        );
         const hydrationPriority = orderRowsForSessionListHydration({
-            rows: sessions.filter((row) =>
-                canHydrateSessionRow({
-                    row,
-                    missingEncryptedDataKeySessionIds,
-                    encryption,
-                })
-                && needsWarmHydration({
-                    row,
-                    existingSession: params.getExistingSession?.(row.id),
-                    currentRenderable: params.getCurrentSessionListRenderable?.(row.id),
-                    isRequiredHydrationRow: requiredHydrationSessionIds.has(row.id),
-                }),
-            ),
+            rows: hydrationCandidates.rows,
             requiredSessionIds: requiredHydrationSessionIds,
             routeSessionIds: params.prioritizeSessionIds,
             activeSessionIds: params.activeSessionIds,
@@ -1410,6 +1648,7 @@ export async function fetchAndApplySessions(params: {
                 shouldContinue,
                 batchSize: backgroundHydrationApplyBatchSize,
                 flushDelayMs: backgroundHydrationApplyFlushDelayMs,
+                coalesceRequiredRows: params.awaitSessionListHydration === true,
             });
             const hydrationAttribution = createBackgroundHydrationAttribution();
             const hydrationPromise = syncPerformanceTelemetry.measureAsync(
@@ -1510,7 +1749,11 @@ export async function fetchAndApplySessions(params: {
                                             return null;
                                         }
                                         const decryptStartedAtMs = nowMs();
-                                        const decryptedSession = await decryptSessionRow(row, encryption, params.serverId);
+                                        const decryptedSession = reuseHydratedSessionForRow(
+                                            row,
+                                            params.getExistingSession?.(row.id),
+                                            params.serverId,
+                                        ) ?? await decryptSessionRow(row, encryption, params.serverId);
                                         addBackgroundHydrationDuration(
                                             hydrationAttribution,
                                             'decryptRowMs',
@@ -1559,9 +1802,6 @@ export async function fetchAndApplySessions(params: {
                                         }
                                         const enqueueStartedAtMs = nowMs();
                                         hydratedSessionBatcher.enqueue(decryptedSession, { required: isRequiredHydrationRow });
-                                        if (isRequiredHydrationRow && params.awaitSessionListHydration === true) {
-                                            hydratedSessionBatcher.flush('required');
-                                        }
                                         addBackgroundHydrationDuration(
                                             hydrationAttribution,
                                             'applyEnqueueMs',
@@ -1569,6 +1809,13 @@ export async function fetchAndApplySessions(params: {
                                         );
                                         hydrationAttribution.enqueuedRows += 1;
                                         markRequiredHydrationResult(row, decryptedSession);
+                                        if (
+                                            isRequiredHydrationRow
+                                            && params.awaitSessionListHydration === true
+                                            && pendingRequiredHydrationIds.size === 0
+                                        ) {
+                                            hydratedSessionBatcher.flush('required');
+                                        }
                                         return decryptedSession;
                                     } catch (error) {
                                         if (pendingRequiredHydrationIds.has(row.id)) {
@@ -1592,6 +1839,12 @@ export async function fetchAndApplySessions(params: {
                         backgroundHydrationConcurrencyLimit,
                     );
                     const finalFlushStartedAtMs = nowMs();
+                    if (
+                        params.awaitSessionListHydration !== true
+                        && backgroundHydrationApplyFlushDelayMs > 0
+                    ) {
+                        await yieldToSessionListBackgroundHydration(backgroundHydrationApplyFlushDelayMs);
+                    }
                     hydratedSessionBatcher.flush('final');
                     addBackgroundHydrationDuration(
                         hydrationAttribution,
@@ -1632,7 +1885,16 @@ export async function fetchAndApplySessions(params: {
 
             if (params.awaitSessionListHydration === true) {
                 void hydrationPromise.catch(logBackgroundHydrationError);
-                const hydratedSessions = await syncPerformanceTelemetry.measureAsync(
+                // The gate's contract is "every required row reached a terminal state", which
+                // `requiredHydrationPromise` already enforces: it resolves only once
+                // `pendingRequiredHydrationIds` is empty, and a genuine hydration error rejects it
+                // through `rejectRequiredHydration`. A required row that decrypted to nothing or was
+                // superseded by newer list state has a terminal disposition that was already applied
+                // (unavailable / stale renderable patches), so the refresh completed. Treating those
+                // as a failed refresh made the caller's `refreshedByCatchUp.sessions` stay false and
+                // the resume tail repeat the entire session-list refresh — the second foreground
+                // catch-up wave measured on device.
+                await syncPerformanceTelemetry.measureAsync(
                     'sync.sessions.snapshot.requiredHydration.wait',
                     {
                         requiredRows: requiredRowsNeedingHydration.length,
@@ -1643,23 +1905,11 @@ export async function fetchAndApplySessions(params: {
                 if (!shouldContinue()) {
                     return buildFetchResult();
                 }
-                if (requiredRowsNeedingHydration.length > 0) {
-                    const hydratedSessionIds = new Set(
-                        hydratedSessions
-                            .filter((session): session is HydratedSession => Boolean(session))
-                            .map((session) => session.id),
-                    );
-                    const missingRequiredHydration = requiredRowsNeedingHydration.find((row) => !hydratedSessionIds.has(row.id));
-                    if (missingRequiredHydration) {
-                        throw new Error(`Required session hydration failed for ${missingRequiredHydration.id}`);
-                    }
-                }
             } else {
                 void hydrationPromise.catch(logBackgroundHydrationError);
             }
         }
 
-        log.log(`📥 fetchSessions completed - rendered ${appliedRenderableCount} session list rows before selective hydration`);
         return buildFetchResult();
     }
 
@@ -1673,7 +1923,11 @@ export async function fetchAndApplySessions(params: {
                     missingEncryptedDataKeySessionIds,
                     encryption,
                 }))
-                .map((row) => async () => decryptSessionRow(row, encryption, params.serverId)),
+                .map((row) => async () => reuseHydratedSessionForRow(
+                    row,
+                    params.getExistingSession?.(row.id),
+                    params.serverId,
+                ) ?? decryptSessionRow(row, encryption, params.serverId)),
             concurrencyLimit,
         ),
     );
@@ -1692,6 +1946,5 @@ export async function fetchAndApplySessions(params: {
         repairInvalidReadStateV1,
     });
 
-    log.log(`📥 fetchSessions completed - processed ${decryptedSessions.length} sessions`);
     return buildFetchResult();
 }

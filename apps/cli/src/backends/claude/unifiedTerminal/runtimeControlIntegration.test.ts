@@ -72,6 +72,17 @@ describe('mapEnhancedModeToDesiredRuntimeConfig', () => {
     expect(desired.reasoningEffort).toBeUndefined();
   });
 
+  it('clamps a discovered model effort to the highest evidenced supported tier', () => {
+    const desired = mapEnhancedModeToDesiredRuntimeConfig(mode({
+      model: 'claude-opus-9',
+      reasoningEffort: 'max',
+      modelEffortLevels: ['low', 'medium'],
+      modelEffortLevelsModelId: 'claude-opus-9',
+    }));
+
+    expect(desired.reasoningEffort).toBe('medium');
+  });
+
   it('maps ultracode gated by xhigh capability of the mode model', () => {
     expect(mapEnhancedModeToDesiredRuntimeConfig(mode({ model: 'claude-fable-5', ultracode: true })).ultracode).toBe(true);
     // Requested but not honorable on this model → resolved off.
@@ -378,8 +389,9 @@ describe('createClaudeUnifiedRuntimeControlBridge', () => {
     expect(events[0].changes.map((c) => c.key)).toEqual(['maxThinkingTokens']);
   });
 
-  it('blocks the prompt when a control cannot be applied this turn and retries on the next prompt', async () => {
-    // First attempt: TUI is generating → model slash command is scheduled for next idle (deferred → blocked).
+  it('does not block the prompt when an ambient model change is deferred to next idle', async () => {
+    // First attempt: TUI is generating → model slash command is scheduled for next idle, but model is
+    // an ambient next-turn default and must not hold the user's current message hostage.
     // Second attempt: TUI is idle → model applies and the prompt may proceed.
     const port = createFakeControlPort({ captures: [GENERATING, IDLE, IDLE, MODEL_OK] });
     const controller = await makeController(port);
@@ -391,37 +403,69 @@ describe('createClaudeUnifiedRuntimeControlBridge', () => {
     });
 
     const blocked = await bridge.applyBeforePrompt(mode({ model: 'opus' }));
-    expect(blocked.promptMayProceed).toBe(false);
+    expect(blocked.promptMayProceed).toBe(true);
     expect(blocked.attempted).toBe(true);
+    expect(blocked).not.toHaveProperty('blockedReason');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      status: 'applied',
+      timing: 'next_idle',
+      changes: [expect.objectContaining({ key: 'model', requested: 'opus', reason: 'generating' })],
+    });
 
-    // Baseline must NOT have committed, so the same change is re-attempted on the next prompt.
+    // Baseline must NOT have committed, so the same ambient change is re-attempted at the next idle.
     const retried = await bridge.applyBeforePrompt(mode({ model: 'opus' }));
     expect(retried.promptMayProceed).toBe(true);
     expect(port.sentLiteral).toContain('/model opus');
   });
 
-  it('blocks the prompt when a required slash control was delivered but not verified', async () => {
+  it('does not block the prompt when an ambient effort change is deferred during a busy turn', async () => {
+    const EFFORT_OK = ['Set effort level to medium', '╭─────╮', '│ >   │', '╰─────╯'].join('\n');
+    const port = createFakeControlPort({ captures: [GENERATING, IDLE, IDLE, EFFORT_OK] });
+    const controller = await makeController(port);
+    const events: ClaudeUnifiedRuntimeConfigOutcomeEvent[] = [];
+    const bridge = createClaudeUnifiedRuntimeControlBridge({
+      controller,
+      emitRuntimeConfigOutcome: (event) => events.push(event),
+      startupMode: mode({ model: 'sonnet', reasoningEffort: 'high' }),
+    });
+
+    const deferred = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
+    expect(deferred).toEqual({ promptMayProceed: true, attempted: true });
+    expect(port.sentLiteral).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      status: 'applied',
+      timing: 'next_idle',
+      changes: [expect.objectContaining({ key: 'reasoningEffort', requested: 'medium', reason: 'generating' })],
+    });
+
+    const retried = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
+    expect(retried.promptMayProceed).toBe(true);
+    expect(port.sentLiteral).toContain('/effort medium');
+  });
+
+  it('does not block the prompt when an ambient effort change was delivered but not verified', async () => {
     const port = createFakeControlPort({ captures: [IDLE, IDLE, IDLE] });
     const controller = await makeController(port);
     const events: ClaudeUnifiedRuntimeConfigOutcomeEvent[] = [];
     const bridge = createClaudeUnifiedRuntimeControlBridge({
       controller,
       emitRuntimeConfigOutcome: (event) => events.push(event),
-      startupMode: mode({ model: 'sonnet' }),
+      startupMode: mode({ model: 'sonnet', reasoningEffort: 'high' }),
     });
 
-    const result = await bridge.applyBeforePrompt(mode({ model: 'opus' }));
+    const result = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
 
     expect(result).toEqual({
-      promptMayProceed: false,
+      promptMayProceed: true,
       attempted: true,
-      blockedReason: 'delivered_unverified',
     });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       status: 'applied',
       timing: 'queued_until_safe_window',
-      changes: [expect.objectContaining({ key: 'model', requested: 'opus', reason: 'delivered_unverified' })],
+      changes: [expect.objectContaining({ key: 'reasoningEffort', requested: 'medium', reason: 'delivered_unverified' })],
     });
   });
 
@@ -467,6 +511,53 @@ describe('createClaudeUnifiedRuntimeControlBridge', () => {
       timing: 'queued_until_safe_window',
       changes: [expect.objectContaining({ key: 'permissionMode', reason: 'user_draft' })],
     });
+  });
+
+  it('still blocks the prompt when a dependent permission-mode delta is deferred by a user draft', async () => {
+    const port = createFakeControlPort({ captures: [USER_DRAFT] });
+    const controller = await makeController(port);
+    const bridge = createClaudeUnifiedRuntimeControlBridge({
+      controller,
+      emitRuntimeConfigOutcome: () => undefined,
+      startupMode: mode({ permissionMode: 'default', reasoningEffort: 'high' }),
+    });
+
+    const result = await bridge.applyBeforePrompt(mode({
+      permissionMode: 'acceptEdits',
+      reasoningEffort: 'medium',
+    }));
+
+    expect(result).toEqual({
+      promptMayProceed: false,
+      attempted: true,
+      blockedReason: 'user_draft',
+    });
+  });
+
+  it('keeps a previously deferred ambient effort out of a later dependent permission gate', async () => {
+    const port = createFakeControlPort({ captures: [GENERATING, USER_DRAFT] });
+    const controller = await makeController(port);
+    const bridge = createClaudeUnifiedRuntimeControlBridge({
+      controller,
+      emitRuntimeConfigOutcome: () => undefined,
+      startupMode: mode({ model: 'sonnet', permissionMode: 'default', reasoningEffort: 'high' }),
+    });
+
+    const deferredAmbient = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
+    expect(deferredAmbient).toEqual({ promptMayProceed: true, attempted: true });
+
+    const dependent = await bridge.applyBeforePrompt(mode({
+      permissionMode: 'acceptEdits',
+      model: 'sonnet',
+      reasoningEffort: 'medium',
+    }));
+
+    expect(dependent).toEqual({
+      promptMayProceed: false,
+      attempted: true,
+      blockedReason: 'user_draft',
+    });
+    expect(port.sentLiteral).toHaveLength(0);
   });
 
   it('preserves the root user-draft blocker reason after stuck unsafe-window escalation', async () => {
@@ -608,21 +699,21 @@ describe('createClaudeUnifiedRuntimeControlBridge', () => {
     const bridge = createClaudeUnifiedRuntimeControlBridge({
       controller,
       emitRuntimeConfigOutcome: (event) => events.push(event),
-      startupMode: mode({ reasoningEffort: 'high' }),
+      startupMode: mode({ model: 'sonnet', reasoningEffort: 'high' }),
     });
 
-    const first = await bridge.applyBeforePrompt(mode({ reasoningEffort: 'medium' }));
-    expect(first.promptMayProceed).toBe(false);
+    const first = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
+    expect(first.promptMayProceed).toBe(true);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ status: 'applied', timing: 'queued_until_safe_window' });
 
     // Identical blocked outcomes: no new transcript events.
-    await bridge.applyBeforePrompt(mode({ reasoningEffort: 'medium' }));
-    await bridge.applyBeforePrompt(mode({ reasoningEffort: 'medium' }));
+    await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
+    await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
     expect(events).toHaveLength(1);
 
     // Transition (applied in the current window) emits exactly one new event.
-    const resolved = await bridge.applyBeforePrompt(mode({ reasoningEffort: 'medium' }));
+    const resolved = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
     expect(resolved.promptMayProceed).toBe(true);
     expect(events).toHaveLength(2);
     expect(events[1]).toMatchObject({
@@ -640,13 +731,13 @@ describe('createClaudeUnifiedRuntimeControlBridge', () => {
     const bridge = createClaudeUnifiedRuntimeControlBridge({
       controller,
       emitRuntimeConfigOutcome: (event) => events.push(event),
-      startupMode: mode({ reasoningEffort: 'high' }),
+      startupMode: mode({ model: 'sonnet', reasoningEffort: 'high' }),
     });
 
     // Later evidence (UserPromptSubmit metadata) proves the desired effort is already active.
     bridge.reconcileFromPromptSubmitMetadata({ reasoningEffort: 'medium' });
 
-    const result = await bridge.applyBeforePrompt(mode({ reasoningEffort: 'medium' }));
+    const result = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
     expect(result.promptMayProceed).toBe(true);
     expect(port.sentLiteral).toHaveLength(0);
     expect(events).toHaveLength(1);
@@ -657,7 +748,7 @@ describe('createClaudeUnifiedRuntimeControlBridge', () => {
     });
 
     // Converged: the next prompt attempts nothing and emits nothing.
-    const again = await bridge.applyBeforePrompt(mode({ reasoningEffort: 'medium' }));
+    const again = await bridge.applyBeforePrompt(mode({ model: 'sonnet', reasoningEffort: 'medium' }));
     expect(again).toEqual({ promptMayProceed: true, attempted: false });
     expect(events).toHaveLength(1);
   });

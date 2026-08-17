@@ -53,7 +53,7 @@ describe('OpenCode transcript projection', () => {
   it('classifies unknown roles as unknown instead of transcript content', () => {
     const projection = classifyOpenCodeMessageForProjection({
       info: {
-        id: 'msg_system',
+        id: ' msg_system\n',
         role: 'system',
         time: { created: 12 },
       },
@@ -62,7 +62,7 @@ describe('OpenCode transcript projection', () => {
     expect(projection).toMatchObject({
       kind: 'unknown',
       role: null,
-      messageId: 'msg_system',
+      messageId: ' msg_system\n',
       createdAtMs: 12,
     });
   });
@@ -126,6 +126,19 @@ describe('OpenCode transcript projection', () => {
         time: { completed: 11 },
       },
     }).kind).toBe('terminal_success');
+
+    expect(classifyOpenCodeAssistantCompletion({
+      info: {
+        id: 'msg_failed',
+        role: 'assistant',
+        finish: 'stop',
+        time: { completed: 12 },
+        error: {
+          name: 'UnknownError',
+          data: { message: 'provider failed before generating output' },
+        },
+      },
+    }).kind).toBe('non_terminal');
   });
 
   it('never treats compaction internals as assistant completion', () => {

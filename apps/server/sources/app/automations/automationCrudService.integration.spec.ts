@@ -5,7 +5,7 @@ import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { eventRouter } from "@/app/events/eventRouter";
 
-import { createAutomation, runAutomationNow, setAutomationEnabled, updateAutomation } from "./automationCrudService";
+import { AutomationDisabledError, createAutomation, runAutomationNow, setAutomationEnabled, updateAutomation } from "./automationCrudService";
 import { AutomationValidationError } from "./automationValidation";
 
 function buildTemplateEnvelope(existingSessionId?: string): string {
@@ -13,6 +13,13 @@ function buildTemplateEnvelope(existingSessionId?: string): string {
         kind: "happier_automation_template_encrypted_v1",
         payloadCiphertext: "ciphertext-base64",
         ...(existingSessionId ? { existingSessionId } : {}),
+    });
+}
+
+function buildPlainTemplateEnvelope(): string {
+    return JSON.stringify({
+        kind: "happier_automation_template_plain_v1",
+        payload: { directory: "/tmp/project", prompt: "run automation" },
     });
 }
 
@@ -82,6 +89,30 @@ describe("automationCrudService (integration)", () => {
             where: { automationId: created.id, state: "queued" },
         });
         expect(queuedRuns).toBe(1);
+    });
+
+    it("stores enabled manual automations without scheduling a run", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "pk-automation-crud-manual" },
+            select: { id: true },
+        });
+
+        const created = await createAutomation({
+            accountId: account.id,
+            input: {
+                name: "Triggered by CI",
+                description: null,
+                enabled: true,
+                schedule: { kind: "manual" },
+                targetType: "new_session",
+                templateCiphertext: buildTemplateEnvelope(),
+                assignments: [],
+            },
+        });
+
+        expect(created.scheduleKind).toBe("manual");
+        expect(created.nextRunAt).toBeNull();
+        expect(await db.automationRun.count({ where: { automationId: created.id } })).toBe(0);
     });
 
     it("pause/resume toggles queued scheduled runs coherently", async () => {
@@ -205,6 +236,59 @@ describe("automationCrudService (integration)", () => {
             orderBy: [{ dueAt: "asc" }],
         });
         expect(afterRunNow).toHaveLength(2);
+    });
+
+    it("deduplicates keyed manual triggers and rejects new triggers while paused", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "pk-automation-crud-manual-run-now" },
+            select: { id: true },
+        });
+        const created = await createAutomation({
+            accountId: account.id,
+            input: {
+                name: "Triggered by CI",
+                description: null,
+                enabled: true,
+                schedule: { kind: "manual" },
+                targetType: "new_session",
+                templateCiphertext: buildTemplateEnvelope(),
+                assignments: [],
+            },
+        });
+
+        const [first, retry] = await Promise.all([
+            runAutomationNow({ accountId: account.id, automationId: created.id, idempotencyKey: "ci-build-42" }),
+            runAutomationNow({ accountId: account.id, automationId: created.id, idempotencyKey: "ci-build-42" }),
+        ]);
+        const distinct = await runAutomationNow({
+            accountId: account.id,
+            automationId: created.id,
+            idempotencyKey: "ci-build-43",
+        });
+        const unkeyed = await runAutomationNow({
+            accountId: account.id,
+            automationId: created.id,
+        });
+
+        expect(retry?.id).toBe(first?.id);
+        expect(distinct?.id).not.toBe(first?.id);
+        expect(await db.automationRun.count({ where: { automationId: created.id } })).toBe(3);
+
+        await setAutomationEnabled({ accountId: account.id, automationId: created.id, enabled: false });
+        await expect(runAutomationNow({
+            accountId: account.id,
+            automationId: created.id,
+            idempotencyKey: "ci-build-44",
+        })).rejects.toBeInstanceOf(AutomationDisabledError);
+        expect(await runAutomationNow({
+            accountId: account.id,
+            automationId: created.id,
+            idempotencyKey: "ci-build-42",
+        })).toEqual(expect.objectContaining({ id: first?.id, state: "cancelled" }));
+        expect(await db.automationRun.findUnique({
+            where: { id: unkeyed!.id },
+            select: { state: true, finishedAt: true },
+        })).toEqual({ state: "cancelled", finishedAt: expect.any(Date) });
     });
 
     it("updates queued run dueAt (and nextRunAt) when schedule is changed", async () => {
@@ -488,6 +572,55 @@ describe("automationCrudService (integration)", () => {
                     templateCiphertext: buildTemplateEnvelope(),
                     assignments: [{ machineId: "machine-not-owned", enabled: true, priority: 0 }],
                 },
+            }),
+        ).rejects.toBeInstanceOf(AutomationValidationError);
+    });
+
+    it("revalidates create templates against the account's current encryption mode", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "pk-automation-crud-e2ee-create", encryptionMode: "e2ee" },
+            select: { id: true },
+        });
+
+        await expect(() =>
+            createAutomation({
+                accountId: account.id,
+                input: {
+                    name: "Wrong envelope",
+                    description: null,
+                    enabled: true,
+                    schedule: { kind: "interval", everyMs: 60_000, timezone: null },
+                    targetType: "new_session",
+                    templateCiphertext: buildPlainTemplateEnvelope(),
+                    assignments: [],
+                },
+            }),
+        ).rejects.toBeInstanceOf(AutomationValidationError);
+    });
+
+    it("revalidates replacement templates against the account's current encryption mode", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "pk-automation-crud-e2ee-update", encryptionMode: "e2ee" },
+            select: { id: true },
+        });
+        const created = await createAutomation({
+            accountId: account.id,
+            input: {
+                name: "Valid envelope",
+                description: null,
+                enabled: true,
+                schedule: { kind: "interval", everyMs: 60_000, timezone: null },
+                targetType: "new_session",
+                templateCiphertext: buildTemplateEnvelope(),
+                assignments: [],
+            },
+        });
+
+        await expect(() =>
+            updateAutomation({
+                accountId: account.id,
+                automationId: created.id,
+                input: { templateCiphertext: buildPlainTemplateEnvelope() },
             }),
         ).rejects.toBeInstanceOf(AutomationValidationError);
     });

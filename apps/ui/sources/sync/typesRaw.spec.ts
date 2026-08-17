@@ -552,6 +552,42 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                 ]);
             }
         });
+
+        it('normalizeRawMessage() preserves unavailable-media-only assistant output', () => {
+            const normalized = normalizeRawMessage(
+                'server-message-id-media-unavailable',
+                null,
+                1710000000000,
+                {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'assistant',
+                            message: { role: 'assistant', model: 'cursor', content: [] },
+                        },
+                    },
+                    meta: {
+                        happier: {
+                            kind: 'session_media.v1',
+                            payload: {
+                                media: [],
+                                unavailable: [{
+                                    id: 'd'.repeat(64),
+                                    role: 'output',
+                                    category: 'generated',
+                                    mediaKind: 'image',
+                                    code: 'provider_file_unavailable',
+                                    origin: { source: 'provider-generated' },
+                                }],
+                            },
+                        },
+                    },
+                } as any,
+            );
+
+            expect(normalized).not.toBeNull();
+        });
     });
 
     describe('Codex/Gemini messages use native hyphenated schema (no transformation)', () => {
@@ -1488,7 +1524,7 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
             expect(normalizeRawMessage('msg-compact-hook-stdout-user', null, Date.now(), raw)).toBeNull();
         });
 
-        it('drops Claude local command caveat and compact command rows at read time', () => {
+        it('drops Claude local command caveat and slash-command rows at read time', () => {
             const localCommandCaveat = {
                 role: 'agent',
                 content: {
@@ -1511,6 +1547,30 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                     text: '<command-name>/compact</command-name>\n<command-message>compact</command-message>',
                 },
             };
+            const modelCommand = {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>',
+                },
+            };
+            const effortCommand = {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: '<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args></command-args>',
+                },
+            };
+            const modelStdout = {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: [
+                        '<local-command-stdout>Set model to Opus 4.8 and saved as your default for new sessions',
+                        'Additional genuine multi-line Claude local-command stdout</local-command-stdout>',
+                    ].join('\n'),
+                },
+            };
             const plainCompactPrompt = {
                 role: 'user',
                 content: {
@@ -1521,6 +1581,9 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
 
             expect(normalizeRawMessage('msg-local-command-caveat', null, Date.now(), localCommandCaveat)).toBeNull();
             expect(normalizeRawMessage('msg-compact-command', null, Date.now(), compactCommand)).toBeNull();
+            expect(normalizeRawMessage('msg-model-command', null, Date.now(), modelCommand)).toBeNull();
+            expect(normalizeRawMessage('msg-effort-command', null, Date.now(), effortCommand)).toBeNull();
+            expect(normalizeRawMessage('msg-model-stdout', null, Date.now(), modelStdout)).toBeNull();
             expect(normalizeRawMessage('msg-plain-compact-prompt', null, Date.now(), plainCompactPrompt)).not.toBeNull();
         });
     });

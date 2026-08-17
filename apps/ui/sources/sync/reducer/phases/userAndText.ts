@@ -1,4 +1,5 @@
 import type { TracedMessage } from '../reducerTracer';
+import { isRecoveredHistoryTranscriptObservationProvenance } from '@happier-dev/protocol';
 import type { UsageData } from '../../typesRaw';
 import type { ReducerState } from '../reducer';
 import type { ToolCall } from '../../domains/messages/messageTypes';
@@ -34,20 +35,21 @@ export function runUserAndTextPhase(params: Readonly<{
     let lastMainThinkingMessageId = params.lastMainThinkingMessageId;
     let lastMainStreamMessageId: string | null = params.lastMainStreamMessageId;
     let lastMainStreamKey: string | null = params.lastMainStreamKey;
+    let isolateRecoveredHistory = false;
 
     const setThinkingCursor = (next: string | null, reason: string) => {
-        setThinkingMergeCursor(state, next, reason);
+        if (!isolateRecoveredHistory) setThinkingMergeCursor(state, next, reason);
         lastMainThinkingMessageId = next;
     };
 
     const setStreamCursor = (next: { messageId: string; streamKey: string } | null, reason: string) => {
-        setStreamMergeCursor(state, next, reason);
+        if (!isolateRecoveredHistory) setStreamMergeCursor(state, next, reason);
         lastMainStreamMessageId = next?.messageId ?? null;
         lastMainStreamKey = next?.streamKey ?? null;
     };
 
     const clearAllCursors = (reason: string) => {
-        clearAllMainMergeCursors(state, reason);
+        if (!isolateRecoveredHistory) clearAllMainMergeCursors(state, reason);
         lastMainThinkingMessageId = null;
         lastMainStreamMessageId = null;
         lastMainStreamKey = null;
@@ -58,13 +60,34 @@ export function runUserAndTextPhase(params: Readonly<{
     //
 
     for (let msg of nonSidechainMessages) {
+        const isRecoveredHistory = isRecoveredHistoryTranscriptObservationProvenance(
+            msg.transcriptObservationProvenance,
+        );
+        const retainedThinkingMessageId = lastMainThinkingMessageId;
+        const retainedStreamMessageId = lastMainStreamMessageId;
+        const retainedStreamKey = lastMainStreamKey;
+        isolateRecoveredHistory = isRecoveredHistory;
+        if (isRecoveredHistory) {
+            lastMainThinkingMessageId = null;
+            lastMainStreamMessageId = null;
+            lastMainStreamKey = null;
+        }
+        const restoreLiveMergeCursors = () => {
+            if (!isRecoveredHistory) return;
+            lastMainThinkingMessageId = retainedThinkingMessageId;
+            lastMainStreamMessageId = retainedStreamMessageId;
+            lastMainStreamKey = retainedStreamKey;
+            isolateRecoveredHistory = false;
+        };
         if (msg.role === 'user') {
             // Check if we've seen this localId before
-            if (msg.localId && state.localIds.has(msg.localId)) {
+            if (!isRecoveredHistory && msg.localId && state.localIds.has(msg.localId)) {
+                restoreLiveMergeCursors();
                 continue;
             }
             // Check if we've seen this message ID before
             if (state.messageIds.has(msg.id)) {
+                restoreLiveMergeCursors();
                 continue;
             }
 
@@ -84,7 +107,7 @@ export function runUserAndTextPhase(params: Readonly<{
             });
 
             // Track both localId and messageId
-            if (msg.localId) {
+            if (msg.localId && !isRecoveredHistory) {
                 state.localIds.set(msg.localId, mid);
             }
             state.messageIds.set(msg.id, mid);
@@ -93,7 +116,7 @@ export function runUserAndTextPhase(params: Readonly<{
             clearAllCursors('user-message');
         } else if (msg.role === 'agent') {
             // Process usage data if present
-            if (msg.usage) {
+            if (msg.usage && !isRecoveredHistory) {
                 processUsageData(state, msg.usage, msg.createdAt);
             }
 
@@ -112,11 +135,13 @@ export function runUserAndTextPhase(params: Readonly<{
                     const text = String(c.text ?? '');
                     const isNoResponseRequested = hasSyntheticNoResponseMeta(msg.meta);
                     if (isNoResponseRequested) {
-                        markRunningToolsUnavailable({
-                            state,
-                            completedAt: msg.createdAt,
-                            changed,
-                        });
+                        if (!isRecoveredHistory) {
+                            markRunningToolsUnavailable({
+                                state,
+                                completedAt: msg.createdAt,
+                                changed,
+                            });
+                        }
                         clearAllCursors('synthetic-no-response');
                         continue;
                     }
@@ -398,5 +423,6 @@ export function runUserAndTextPhase(params: Readonly<{
                 }
             }
         }
+        restoreLiveMergeCursors();
     }
 }

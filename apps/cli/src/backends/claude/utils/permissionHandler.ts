@@ -20,13 +20,20 @@ import { syncClaudePermissionModeFromMetadata } from '@/backends/claude/utils/sy
 import type { PermissionRpcPayload } from './permissionRpc';
 import { updateAgentStateBestEffort, updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import { configuration } from '@/configuration';
+import { waitForSessionMetadataRetryBackoff } from '@/agent/runtime/sessionMetadataWaitRetryBackoff';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import { readPendingLocalId } from '@happier-dev/protocol';
 import { cloneStringKeyedRecordToNullProto } from '@/api/session/agentStateRecords';
 import type { Metadata } from '@/api/types';
 import { resolveAgentRequestKind } from '@/agent/permissions/requestKind';
 import { isToolAllowedForSession } from '@/agent/permissions/permissionToolIdentifier';
 import { shouldSuppressProviderPermissionForHappierApproval } from '@/agent/tools/happierTools/resolveHappierActionForMcpToolName';
 import { applyAllowedToolsToAllowlist, applyUpdatedPermissionsToAllowlist, seedAllowlistFromCompletedRequests } from '@/agent/permissions/applyPermissionAllowlistUpdates';
-import { AgentStateRequestStore, type AgentStateOutstandingRequest } from '@/agent/permissions/agentStateRequestStore';
+import {
+    AgentStateRequestStore,
+    hasPermissionResponseClaimV1,
+    type AgentStateOutstandingRequest,
+} from '@/agent/permissions/agentStateRequestStore';
 import {
     createPermissionRequestCoordinator,
     type PermissionRequestCoordinator,
@@ -37,17 +44,23 @@ import {
 import {
     computeNextMetadataStringOverrideV1,
     isClaudeLocalPermissionBridgeAgentStateRequest,
-    isClaudeUnifiedTerminalResumeChoiceAgentStateRequest,
+    isClaudeUnifiedTerminalDialogChoiceAgentStateRequest,
     SESSION_MODE_OVERRIDE_KEY,
 } from '@happier-dev/agents';
 import { isChangeTitleToolLikeName } from '@happier-dev/protocol/tools/v2';
+import { isAskUserQuestionToolName, type StructuredQuestionAnswersV1 } from '@happier-dev/protocol';
+import {
+    normalizeLegacyStructuredQuestionAnswers,
+    normalizeStructuredQuestionAnswersV1,
+    type StructuredQuestionLike,
+} from '@/agent/questions/normalizeStructuredQuestionAnswersV1';
+import { buildAskUserQuestionAnswersForClaude } from './askUserQuestionAnswersForClaude';
 
 type PermissionResponse = PermissionRpcPayload;
 
 function isInteractiveTool(toolName: string): boolean {
     return (
-        toolName === 'AskUserQuestion' ||
-        toolName === 'ask_user_question' ||
+        isAskUserQuestionToolName(toolName) ||
         toolName === 'ExitPlanMode' ||
         toolName === 'exit_plan_mode'
     );
@@ -61,7 +74,7 @@ type PendingPermissionMetadata = {
 
 function isRequestOwnedOutsideRemotePermissionHandler(request: unknown): boolean {
     return isClaudeLocalPermissionBridgeAgentStateRequest(request)
-        || isClaudeUnifiedTerminalResumeChoiceAgentStateRequest(request);
+        || isClaudeUnifiedTerminalDialogChoiceAgentStateRequest(request);
 }
 
 export class PermissionHandler {
@@ -111,26 +124,7 @@ export class PermissionHandler {
 
         const backoffMs = configuration.claudeMetadataWatcherIdleBackoffMs;
         const waitForAbortOrBackoff = async (): Promise<void> => {
-            if (signal.aborted) return;
-            if (backoffMs <= 0) return;
-            await new Promise<void>((resolve) => {
-                let settled = false;
-                const onAbort = () => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timer);
-                    signal.removeEventListener('abort', onAbort);
-                    resolve();
-                };
-                const timer = setTimeout(() => {
-                    if (settled) return;
-                    settled = true;
-                    signal.removeEventListener('abort', onAbort);
-                    resolve();
-                }, backoffMs);
-                timer.unref?.();
-                signal.addEventListener('abort', onAbort, { once: true });
-            });
+            await waitForSessionMetadataRetryBackoff({ abortSignal: signal, backoffMs });
         };
 
         void (async () => {
@@ -207,7 +201,7 @@ export class PermissionHandler {
 
     private noteExitPlanModeApproved(sourceLocalId: string | null): void {
         const nowMs = Date.now();
-        const localId = typeof sourceLocalId === 'string' ? sourceLocalId.trim() : '';
+        const localId = readPendingLocalId(sourceLocalId) ?? '';
         if (localId.length > 0) {
             this.exitedPlanModeLocalIds.set(localId, nowMs);
             this.pruneExitPlanModeLocalIds(nowMs);
@@ -222,7 +216,7 @@ export class PermissionHandler {
         const nowMs = Date.now();
         this.pruneExitPlanModeLocalIds(nowMs);
 
-        const normalized = typeof localId === 'string' ? localId.trim() : '';
+        const normalized = readPendingLocalId(localId) ?? '';
         if (normalized.length > 0) {
             const approvedAt = this.exitedPlanModeLocalIds.get(normalized);
             if (!approvedAt) return false;
@@ -298,7 +292,9 @@ export class PermissionHandler {
             this.session.client,
             (currentState) => {
                 const currentCaps = (currentState as any).capabilities;
-                if (currentCaps && currentCaps.askUserQuestionAnswersInPermission === true) {
+                if (currentCaps
+                    && currentCaps.askUserQuestionAnswersInPermission === true
+                    && currentCaps.structuredQuestionAnswersV1Supported === true) {
                     return currentState;
                 }
                 return {
@@ -306,6 +302,7 @@ export class PermissionHandler {
                     capabilities: {
                         ...(currentCaps && typeof currentCaps === 'object' ? currentCaps : {}),
                         askUserQuestionAnswersInPermission: true,
+                        structuredQuestionAnswersV1Supported: true,
                     },
                 };
             },
@@ -314,8 +311,8 @@ export class PermissionHandler {
         );
     }
 
-    approveToolCall(toolCallId: string, opts?: { answers?: Record<string, string> }): void {
-        this.applyPermissionResponse({ id: toolCallId, approved: true, answers: opts?.answers });
+    approveToolCall(toolCallId: string, opts?: { answers?: StructuredQuestionAnswersV1 }): void {
+        this.applyPermissionResponse({ id: toolCallId, approved: true, structuredAnswersV1: opts?.answers });
     }
 
     private tryHandlePermissionRpc(message: PermissionResponse): boolean {
@@ -323,13 +320,38 @@ export class PermissionHandler {
         if (!id) {
             return false;
         }
-        const context = this.permissionCoordinator.getResponseContext(id);
+        const hasStructuredAnswers = message.answers !== undefined || message.structuredAnswersV1 !== undefined;
+        const context = hasStructuredAnswers
+            ? this.permissionCoordinator.getLocallyOwnedLiveResponseContext(id)
+            : this.permissionCoordinator.getResponseContext(id);
         if (!context) {
             return false;
         }
 
-        this.applyPermissionResponse(message, context);
+        const isAskUserQuestion = isAskUserQuestionToolName(context.toolName);
+        if (hasStructuredAnswers && (!this.pendingRequestMetadata.has(id) || !isAskUserQuestion)) return false;
+
+        const structuredAnswersV1 = message.structuredAnswersV1 !== undefined
+            ? normalizeStructuredQuestionAnswersV1(
+                message.structuredAnswersV1,
+                this.readStructuredQuestions(context),
+            )
+            : message.answers !== undefined
+                ? normalizeLegacyStructuredQuestionAnswers({
+                    answers: message.answers,
+                    questions: this.readStructuredQuestions(context),
+                })
+                : undefined;
+
+        this.applyPermissionResponse({ ...message, ...(structuredAnswersV1 ? { structuredAnswersV1 } : {}) }, context);
         return true;
+    }
+
+    private readStructuredQuestions(context: PermissionRequestCoordinatorContext): readonly StructuredQuestionLike[] {
+        const input = context.toolInput;
+        if (!input || typeof input !== 'object' || Array.isArray(input)) return [];
+        const questions = (input as { questions?: unknown }).questions;
+        return Array.isArray(questions) ? questions as readonly StructuredQuestionLike[] : [];
     }
 
     private createCoordinatorStore(): PermissionRequestCoordinatorStore {
@@ -343,12 +365,18 @@ export class PermissionHandler {
                             ? state.capabilities
                             : {}),
                         askUserQuestionAnswersInPermission: true,
+                        structuredQuestionAnswersV1Supported: true,
                     },
                 }),
             }),
             completeRequest: (params) => this.agentStateRequestStore.completeRequest(params),
             cancelAllRequests: (params) => this.cancelRemoteOutstandingRequests(params.reason),
             hasOutstandingRequest: (requestId) => this.readOutstandingRemoteRequest(requestId) !== null,
+            isOutstandingRequestClaimed: (requestId) => {
+                const rawRequest = (this.session.client as any).getAgentStateSnapshot?.()?.requests?.[requestId] ?? null;
+                return !isRequestOwnedOutsideRemotePermissionHandler(rawRequest)
+                    && this.agentStateRequestStore.isOutstandingRequestClaimed(requestId);
+            },
             readOutstandingRequest: (requestId) => this.readOutstandingRemoteRequest(requestId),
         };
     }
@@ -376,6 +404,7 @@ export class PermissionHandler {
 
                 for (const [id, request] of Object.entries(requests)) {
                     if (isRequestOwnedOutsideRemotePermissionHandler(request)) continue;
+                    if (hasPermissionResponseClaimV1(request)) continue;
                     delete requests[id];
                     const completedEntry = { ...(request && typeof request === 'object' ? request : {}) } as Record<string, unknown>;
                     completedEntry.completedAt = now;
@@ -445,6 +474,13 @@ export class PermissionHandler {
             answersCount: message.answers ? Object.keys(message.answers).length : 0,
         });
 
+        const completion = this.buildPermissionCompletion(message, context);
+
+        if (!this.permissionCoordinator.completeResponse({ context, completion })) {
+            logger.debug('[Claude] Permission response did not complete an outstanding request');
+            return;
+        }
+
         if (this.isToolTraceEnabled()) {
             recordToolTraceEvent({
                 direction: 'inbound',
@@ -465,10 +501,8 @@ export class PermissionHandler {
             });
         }
 
-        // Store the response with timestamp
+        // Store the response with timestamp only after the canonical coordinator completed it.
         this.responses.set(id, { ...message, receivedAt: Date.now() });
-
-        const completion = this.buildPermissionCompletion(message, context);
 
         this.pendingRequestMetadata.delete(id);
         this.applyPermissionResponseSideEffects({
@@ -477,7 +511,6 @@ export class PermissionHandler {
             sourceLocalId: context.sourceLocalId,
         });
 
-        this.permissionCoordinator.completeResponse({ context, completion });
     }
     
     /**
@@ -556,25 +589,25 @@ export class PermissionHandler {
             ...(typeof response.mode === 'string' ? { mode: response.mode } : {}),
             ...(Array.isArray(allowedTools) ? { allowedTools } : {}),
             ...(typeof updatedPermissions !== 'undefined' ? { updatedPermissions } : {}),
-            ...(response.answers && typeof response.answers === 'object'
-                ? { extraCompletedFields: { answers: response.answers } }
+            ...(response.structuredAnswersV1
+                ? { extraCompletedFields: { structuredAnswersV1: response.structuredAnswersV1 } }
                 : {}),
         };
 
-        if (context.toolName === 'AskUserQuestion' && response.approved && response.answers) {
+        if (isAskUserQuestionToolName(context.toolName) && response.approved && response.structuredAnswersV1) {
             const baseInput =
                 context.toolInput && typeof context.toolInput === 'object' && !Array.isArray(context.toolInput)
                     ? (context.toolInput as Record<string, unknown>)
                     : {};
             logger.debug(
-                `[AskUserQuestion] Resolving canCallTool with ${Object.keys(response.answers).length} answer(s) via updatedInput`,
+                `[AskUserQuestion] Resolving canCallTool with ${Object.keys(response.structuredAnswersV1).length} answer(s) via updatedInput`,
             );
             return {
                 result: {
                     behavior: 'allow',
                     updatedInput: {
                         ...baseInput,
-                        answers: response.answers,
+                        answers: buildAskUserQuestionAnswersForClaude(response.structuredAnswersV1),
                     },
                 },
                 completedRequest,
@@ -619,6 +652,14 @@ export class PermissionHandler {
         },
     ): Promise<PermissionResult> => {
         const rewrittenInput = this.rewriteToolInput(toolName, input);
+        const providedToolUseId = readNonBlankOpaqueIdentifier(options?.toolUseId) ?? '';
+        const claimedToolUseId = providedToolUseId || this.findUnusedToolCallId(toolName, input);
+        if (claimedToolUseId && this.agentStateRequestStore.isOutstandingRequestClaimed(claimedToolUseId)) {
+            return this.handlePermissionRequest(claimedToolUseId, toolName, rewrittenInput, options.signal, {
+                suggestions: options.suggestions,
+                sourceLocalId: mode?.localId ?? null,
+            });
+        }
 
         // Check if tool is explicitly allowed
         if (this.isToolExplicitlyAllowed(toolName, rewrittenInput)) {
@@ -671,7 +712,6 @@ export class PermissionHandler {
         // Approval flow
         //
 
-        const providedToolUseId = typeof options?.toolUseId === 'string' ? options.toolUseId.trim() : '';
         let toolCallId = providedToolUseId.length > 0 ? providedToolUseId : this.resolveToolCallId(toolName, input);
         if (!toolCallId) { // What if we got permission before tool call
             await delay(1000);
@@ -820,16 +860,23 @@ export class PermissionHandler {
      * Resolves tool call ID based on tool name and input
      */
     private resolveToolCallId(name: string, args: any): string | null {
-        // Search in reverse (most recent first)
+        const toolCall = this.findUnusedToolCall(name, args);
+        if (!toolCall) return null;
+        toolCall.used = true;
+        return toolCall.id;
+    }
+
+    private findUnusedToolCallId(name: string, args: unknown): string | null {
+        return this.findUnusedToolCall(name, args)?.id ?? null;
+    }
+
+    private findUnusedToolCall(name: string, args: unknown): (typeof this.toolCalls)[number] | null {
+        // Search in reverse (most recent first) without consuming the record.
         for (let i = this.toolCalls.length - 1; i >= 0; i--) {
             const call = this.toolCalls[i];
             if (call.name === name && isDeepStrictEqual(call.input, args)) {
-                if (call.used) {
-                    return null;
-                }
-                // Found unused match - mark as used and return
-                call.used = true;
-                return call.id;
+                if (!call.used) return call;
+                return null;
             }
         }
 

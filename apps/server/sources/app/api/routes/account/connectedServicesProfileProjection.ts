@@ -12,8 +12,12 @@ import {
     normalizeConnectedServiceCredentialMetadataV3,
 } from "../connect/connectedServicesV3/credentialMetadataV3";
 import { deriveConnectedServiceCredentialStatus } from "../connect/credentialHealthMetadata";
+import { resolveConnectedServiceCredentialRevision } from "../connect/credentials/credentialRevision";
 
-export type AccountConnectedServicesProjection = Pick<AccountProfile, "connectedServices" | "connectedServicesV2">;
+export type AccountConnectedServicesProjection = Pick<
+    AccountProfile,
+    "connectedServices" | "connectedServicesV2" | "connectedServiceCredentialRevisionsV1"
+>;
 export type ConnectedServicesProjectionClient = Pick<Tx, "serviceAccountToken" | "connectedServiceAuthGroup">;
 
 type ConnectedServiceProfile = AccountProfile["connectedServicesV2"][number]["profiles"][number];
@@ -21,6 +25,7 @@ type ConnectedServiceGroup = AccountProfile["connectedServicesV2"][number]["grou
 type ConnectedServiceEntry = AccountProfile["connectedServicesV2"][number];
 
 type ServiceAccountTokenProjectionRow = Readonly<{
+    id: string;
     vendor: string;
     profileId: string;
     metadata: unknown;
@@ -86,12 +91,13 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
     const env = params.env ?? process.env;
     const connectedServicesEnabled = isServerFeatureEnabledForRequest("connectedServices", env);
     if (!connectedServicesEnabled) {
-        return { connectedServices: [], connectedServicesV2: [] };
+        return { connectedServices: [], connectedServicesV2: [], connectedServiceCredentialRevisionsV1: [] };
     }
 
     const tokens = await params.tx.serviceAccountToken.findMany({
         where: { accountId: params.accountId },
         select: {
+            id: true,
             vendor: true,
             profileId: true,
             metadata: true,
@@ -103,9 +109,22 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
 
     const connectedServices = buildConnectedVendors(tokens);
     const connectedServicesV2 = buildConnectedServicesV2FromTokens(tokens);
+    const connectedServiceCredentialRevisionsV1 = tokens.flatMap((row) => {
+        const serviceId = ConnectedServiceIdSchema.safeParse(row.vendor);
+        return serviceId.success
+            ? [{
+                serviceId: serviceId.data,
+                profileId: row.profileId,
+                credentialRevision: resolveConnectedServiceCredentialRevision({
+                    rowId: row.id,
+                    metadata: row.metadata,
+                }),
+            }]
+            : [];
+    });
 
     if (!isServerFeatureEnabledForRequest("connectedServices.accountGroups", env)) {
-        return { connectedServices, connectedServicesV2 };
+        return { connectedServices, connectedServicesV2, connectedServiceCredentialRevisionsV1 };
     }
 
     const authGroups = await params.tx.connectedServiceAuthGroup.findMany({
@@ -152,5 +171,6 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
     return {
         connectedServices,
         connectedServicesV2: Array.from(servicesById.values()),
+        connectedServiceCredentialRevisionsV1,
     };
 }

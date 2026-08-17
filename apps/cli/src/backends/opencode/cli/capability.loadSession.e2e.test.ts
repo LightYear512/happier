@@ -30,6 +30,7 @@ function makeCliSnapshot(overrides: Partial<DetectCliSnapshot['clis']>): DetectC
       codex: makeUnavailableCliEntry(),
       opencode: makeUnavailableCliEntry(),
       gemini: makeUnavailableCliEntry(),
+      grok: makeUnavailableCliEntry(),
       auggie: makeUnavailableCliEntry(),
       qwen: makeUnavailableCliEntry(),
       kimi: makeUnavailableCliEntry(),

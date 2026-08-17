@@ -11,6 +11,12 @@ export function resolveConnectedServiceOauthErrorMessage(
   if (code === 'connect_oauth_state_mismatch') return t('errors.oauthStateMismatch');
   if (code === 'connect_oauth_timeout') return t('errors.connectionTimeout');
   if (
+    'code' in error
+    && error.code === 'connected_service_credential_binding_mismatch'
+  ) {
+    return t('connectedServices.reconnect.targetMismatch');
+  }
+  if (
     code === 'connect_oauth_invalid_client'
     || code === 'connect_oauth_invalid_grant'
     || code === 'connect_oauth_missing_refresh_token'

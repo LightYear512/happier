@@ -19,8 +19,11 @@ import {
     shutdownDbPglite,
 } from '@/storage/db';
 import {
+    resolveSqliteIncrementalVacuumIntervalMsFromEnv,
+    resolveSqliteIncrementalVacuumPagesFromEnv,
     resolveSqliteWalCheckpointBusyTimeoutMsFromEnv,
     resolveSqliteWalCheckpointIntervalMsFromEnv,
+    startSqliteIncrementalVacuumWorker,
     startSqliteWalCheckpointWorker,
 } from '@/storage/sqliteWalCheckpoint';
 import { log } from '@/utils/logging/log';
@@ -31,7 +34,7 @@ import {
     ensureHandyMasterSecret,
     resolveLightSqliteDatabaseUrl,
 } from '@/flavors/light/env';
-import { applySqliteMigrationsIfNeeded } from '@/flavors/light/sqliteMigrations';
+import { applySqliteMigrationsIfNeeded, resolveSqliteDatabaseFilePath } from '@/flavors/light/sqliteMigrations';
 import {
     getFilesBackendFromEnv,
     getSocketAdapterFromEnv,
@@ -40,6 +43,8 @@ import {
     resolveDefaultSocketAdapter,
 } from '@/config/backends';
 import http from 'node:http';
+import { stat } from 'node:fs/promises';
+import { writeStartupReceiptFromEnvironment } from '@/app/runtime/startupReceipt';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-streams-adapter';
 import { getRedisClient } from '@/storage/redis/redis';
@@ -66,6 +71,55 @@ export function getServerRoleFromEnv(env: NodeJS.ProcessEnv): ServerRole {
 function shouldEnableRedisAdapterFromEnv(env: NodeJS.ProcessEnv, flavor: ServerFlavor): boolean {
     const socketAdapter = getSocketAdapterFromEnv(env, resolveDefaultSocketAdapter(flavor));
     return isRedisStreamsEnabled(env, socketAdapter);
+}
+
+function resolveSqliteSizeWarnBytes(env: NodeJS.ProcessEnv): number | null {
+    const raw = String(env.HAPPIER_SERVER_DB_SIZE_WARN_BYTES ?? '').trim();
+    if (!raw) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function warnIfSqliteFileExceedsThreshold(params: Readonly<{
+    path: string;
+    label: string;
+    thresholdBytes: number;
+}>): Promise<void> {
+    const fileStat = await stat(params.path).catch((error: any) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+    });
+    if (!fileStat || !fileStat.isFile() || fileStat.size <= params.thresholdBytes) return;
+
+    log(
+        {
+            module: 'sqlite',
+            level: 'warn',
+            path: params.path,
+            sizeBytes: fileStat.size,
+            thresholdBytes: params.thresholdBytes,
+        },
+        `SQLite ${params.label} file is larger than the configured warning threshold`,
+    );
+}
+
+async function warnIfSqliteDatabaseFilesExceedThreshold(env: NodeJS.ProcessEnv): Promise<void> {
+    const thresholdBytes = resolveSqliteSizeWarnBytes(env);
+    if (thresholdBytes === null) return;
+
+    const dbPath = resolveSqliteDatabaseFilePath(String(env.DATABASE_URL ?? '').trim());
+    if (!dbPath) return;
+
+    await warnIfSqliteFileExceedsThreshold({
+        path: dbPath,
+        label: 'database',
+        thresholdBytes,
+    });
+    await warnIfSqliteFileExceedsThreshold({
+        path: `${dbPath}-wal`,
+        label: 'WAL',
+        thresholdBytes,
+    });
 }
 
 export async function startServer(flavor: ServerFlavor): Promise<void> {
@@ -119,6 +173,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         if (dataDir) {
             await applySqliteMigrationsIfNeeded({ env: process.env, dataDir });
         }
+        await warnIfSqliteDatabaseFilesExceedThreshold(process.env);
         await initDbSqlite();
     } else {
         throw new Error(`Unsupported HAPPY_DB_PROVIDER/HAPPIER_DB_PROVIDER: ${dbProvider}`);
@@ -135,17 +190,27 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     const sqliteWalCheckpointIntervalMs = dbProvider === 'sqlite'
         ? resolveSqliteWalCheckpointIntervalMsFromEnv(process.env)
         : null;
+    const sqliteIncrementalVacuumIntervalMs = dbProvider === 'sqlite'
+        ? resolveSqliteIncrementalVacuumIntervalMsFromEnv(process.env)
+        : null;
     const shouldStartSqliteWalCheckpointWorker =
         sqliteWalCheckpointIntervalMs !== null && sqliteWalCheckpointIntervalMs > 0;
-    const sqliteWalCheckpointBusyTimeoutMs = shouldStartSqliteWalCheckpointWorker
+    const shouldStartSqliteIncrementalVacuumWorker =
+        sqliteIncrementalVacuumIntervalMs !== null && sqliteIncrementalVacuumIntervalMs > 0;
+    const shouldStartSqliteMaintenanceClient =
+        shouldStartSqliteWalCheckpointWorker || shouldStartSqliteIncrementalVacuumWorker;
+    const sqliteWalCheckpointBusyTimeoutMs = shouldStartSqliteMaintenanceClient
         ? resolveSqliteWalCheckpointBusyTimeoutMsFromEnv(process.env)
+        : null;
+    const sqliteIncrementalVacuumPages = shouldStartSqliteIncrementalVacuumWorker
+        ? resolveSqliteIncrementalVacuumPagesFromEnv(process.env)
         : null;
 
     // Storage
     await db.$connect();
     let sqliteWalCheckpointClient: typeof db | null = null;
     try {
-        if (shouldStartSqliteWalCheckpointWorker) {
+        if (shouldStartSqliteMaintenanceClient) {
             sqliteWalCheckpointClient = await createDbSqliteMaintenanceClient();
             await sqliteWalCheckpointClient.$connect();
             await applySqliteRuntimePragmas(sqliteWalCheckpointClient, {
@@ -169,6 +234,18 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
             intervalMs: sqliteWalCheckpointIntervalMs,
         });
     }
+    let sqliteIncrementalVacuumWorker: ReturnType<typeof startSqliteIncrementalVacuumWorker> = null;
+    if (
+        sqliteWalCheckpointClient
+        && sqliteIncrementalVacuumIntervalMs !== null
+        && sqliteIncrementalVacuumPages !== null
+    ) {
+        sqliteIncrementalVacuumWorker = startSqliteIncrementalVacuumWorker({
+            client: sqliteWalCheckpointClient,
+            intervalMs: sqliteIncrementalVacuumIntervalMs,
+            pages: sqliteIncrementalVacuumPages,
+        });
+    }
     if (dbProvider === 'pglite') {
         // When using embedded pglite, ensure Prisma disconnect happens before stopping the socket server.
         onShutdown('db', async () => {
@@ -178,6 +255,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     } else if (dbProvider === 'sqlite') {
         onShutdown('db', async () => {
             await sqliteWalCheckpointWorker?.stop();
+            await sqliteIncrementalVacuumWorker?.stop();
             try {
                 await sqliteWalCheckpointClient?.$disconnect();
             } finally {
@@ -204,7 +282,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     if (shouldEnableRedisAdapter && role === 'api') {
         log(
             { module: 'presence' },
-            'Redis adapter is enabled: durable presence writes are consumed by a worker process. Ensure at least one replica runs with SERVER_ROLE=worker.',
+            'Redis adapter is enabled: durable machine-presence writes and legacy presence-stream cleanup are handled by a worker process. Ensure at least one replica runs with SERVER_ROLE=worker.',
         );
     }
 
@@ -248,7 +326,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     }
 
     // Expose health + metrics in all roles (metrics server can be disabled via METRICS_ENABLED=false).
-    await startMetricsServer();
+    const metricsServerStarted = await startMetricsServer();
 
     if (role === 'all' || role === 'api') {
         void inferAndApplyTailscaleServePublicServerUrl(process.env);
@@ -262,7 +340,11 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
                 retentionWorker.stop();
             });
         }
-        startDatabaseMetricsUpdater();
+        // SQLite intentionally uses one Prisma connection. Exact table counts can hold that
+        // sole connection long enough to starve readiness and presence transactions.
+        if (metricsServerStarted && dbProvider !== 'sqlite') {
+            startDatabaseMetricsUpdater();
+        }
         startTimeout();
     }
 
@@ -270,6 +352,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     // Ready
     //
 
+    await writeStartupReceiptFromEnvironment(process.env);
     log('Ready');
     await awaitShutdown();
     log('Shutting down...');

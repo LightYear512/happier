@@ -3,6 +3,7 @@ import { configuration } from '@/configuration';
 import { logger } from '@/ui/logger';
 
 import { inferAgentIdFromSessionMetadata, resolveVendorResumeIdFromSessionMetadata } from '@happier-dev/agents';
+import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
 import { execFileSync } from 'node:child_process';
 import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath';
 import { readCredentials } from '@/persistence';
@@ -114,8 +115,9 @@ export function createOnHappySessionWebhook(params: Readonly<{
   writeSessionMarkerFn?: typeof writeSessionMarker;
   getParentPidFn?: (pid: number) => number | null;
   readCredentialsFn?: typeof readCredentials;
+  onTrackedSessionReady?: (tracked: TrackedSession) => Promise<void> | void;
   onTrackedSessionReported?: (tracked: TrackedSession) => Promise<void> | void;
-}>): (sessionId: string, sessionMetadata: Metadata) => void {
+}>): (sessionId: string, sessionMetadata: Metadata) => Promise<void> {
   const {
     pidToTrackedSession,
     pidToAwaiter,
@@ -123,10 +125,11 @@ export function createOnHappySessionWebhook(params: Readonly<{
     writeSessionMarkerFn = writeSessionMarker,
     getParentPidFn = getParentPid,
     readCredentialsFn = readCredentials,
+    onTrackedSessionReady,
     onTrackedSessionReported,
   } = params;
 
-  return (sessionId: string, sessionMetadata: Metadata) => {
+  return async (sessionId: string, sessionMetadata: Metadata) => {
     const normalizedPath = expandHomeDirPath(sessionMetadata.path, process.env);
     const normalizedMetadata =
       normalizedPath === sessionMetadata.path ? sessionMetadata : { ...sessionMetadata, path: normalizedPath };
@@ -306,9 +309,19 @@ export function createOnHappySessionWebhook(params: Readonly<{
       const vendorResumeId = resolveVendorResumeIdFromSessionMetadata(agentId, normalizedMetadata);
       if (vendorResumeId) trackedForPid.vendorResumeId = vendorResumeId;
       if (trackedForPid.startedBy === 'daemon' && !isPlaceholderSessionId) {
-        void Promise.resolve(onTrackedSessionReported?.(trackedForPid)).catch((error) => {
+        // Best-effort report observers must not wait on strict startup reconciliation:
+        // terminal-host serviceability is produced by this exact report and is independently useful.
+        const reportObserverFailure = (error: unknown): void => {
           logger.debug('[DAEMON RUN] Tracked session reported callback failed', error);
-        });
+        };
+        try {
+          void Promise.resolve(onTrackedSessionReported?.(trackedForPid)).catch(reportObserverFailure);
+        } catch (error) {
+          reportObserverFailure(error);
+        }
+        if (onTrackedSessionReady) {
+          await onTrackedSessionReady(trackedForPid);
+        }
       }
     }
 
@@ -332,6 +345,8 @@ export function createOnHappySessionWebhook(params: Readonly<{
           : undefined;
       const processCommand = discoveredProcessCommand ?? trackedProcessCommand ?? daemonChildSpawnArgsCommand;
       const processCommandHash = processCommand ? hashProcessCommand(processCommand) : undefined;
+      const processInstanceFingerprint = readProcessInstanceFingerprintSync(pid)
+        ?? trackedForPid?.processInstanceFingerprint;
       if (processCommandHash) {
         // Store on the tracked session too so stopSession can require a match.
         if (trackedForPid) {
@@ -341,16 +356,26 @@ export function createOnHappySessionWebhook(params: Readonly<{
       } else {
         logger.debug(`[DAEMON RUN] Could not determine process command for PID ${pid}; marker will be weaker`);
       }
+      if (trackedForPid && processInstanceFingerprint) {
+        trackedForPid.processInstanceFingerprint = processInstanceFingerprint;
+      }
 
       const storedCredentials =
         trackedForPid?.startedBy === 'daemon' && trackedForPid.spawnOptions
           ? await readCredentialsFn().catch(() => null)
           : null;
+      const trackedVendorResumeId =
+        typeof trackedForPid?.vendorResumeId === 'string' && trackedForPid.vendorResumeId.trim().length > 0
+          ? trackedForPid.vendorResumeId.trim()
+          : undefined;
       const respawn =
         trackedForPid?.startedBy === 'daemon' && trackedForPid.spawnOptions
           ? buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
             trackedForPid.spawnOptions,
-            storedCredentials ? { encryptionMaterial: storedCredentials.encryption } : undefined,
+            {
+              ...(storedCredentials ? { encryptionMaterial: storedCredentials.encryption } : {}),
+              ...(trackedVendorResumeId ? { vendorResumeId: trackedVendorResumeId } : {}),
+            },
           )
           : null;
       await writeSessionMarkerFn({
@@ -359,9 +384,11 @@ export function createOnHappySessionWebhook(params: Readonly<{
         startedBy: normalizedMetadata.startedBy ?? 'terminal',
         cwd: normalizedPath,
         processCommandHash,
+        processInstanceFingerprint,
         processCommand,
         metadata: normalizedMetadata,
         ...(respawn ? { respawn } : {}),
+        ...(trackedForPid?.activeTurnId ? { activeTurnId: trackedForPid.activeTurnId } : {}),
       });
     })().catch((e) => {
       logger.debug('[DAEMON RUN] Failed to write session marker', e);

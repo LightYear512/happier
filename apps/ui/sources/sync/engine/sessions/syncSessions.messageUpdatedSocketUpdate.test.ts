@@ -7,6 +7,7 @@ function buildUpdate(params: {
     sid?: string;
     messageId: string;
     messageSeq: number;
+    attentionImpact?: { affectsUnread: boolean; affectsMeaningfulActivity: boolean };
     content?: { t: 'encrypted'; c: string } | { t: 'plain'; v: unknown };
     updateCreatedAt?: number;
     messageCreatedAt?: number;
@@ -18,13 +19,14 @@ function buildUpdate(params: {
     body: {
         t: 'message-updated';
         sid?: string;
-        message: {
-            id: string;
-            seq: number;
+            message: {
+                id: string;
+                seq: number;
+                attentionImpact?: { affectsUnread: boolean; affectsMeaningfulActivity: boolean };
                 content: { t: 'encrypted'; c: string } | { t: 'plain'; v: unknown };
-            localId: null;
-            sidechainId: null;
-            createdAt: number;
+                localId: null;
+                sidechainId: null;
+                createdAt: number;
             updatedAt: number;
         };
     };
@@ -39,22 +41,13 @@ function buildUpdate(params: {
             message: {
                 id: params.messageId,
                 seq: params.messageSeq,
+                ...(params.attentionImpact ? { attentionImpact: params.attentionImpact } : {}),
                 content: params.content ?? { t: 'encrypted', c: 'x' },
                 localId: null,
                 sidechainId: null,
                 createdAt: params.messageCreatedAt ?? 1_000,
                 updatedAt: params.messageUpdatedAt ?? 2_000,
             },
-        },
-    };
-}
-
-function buildPlainUserTextContent(text = 'edited'): { t: 'plain'; v: unknown } {
-    return {
-        t: 'plain',
-        v: {
-            role: 'user',
-            content: { type: 'text', text },
         },
     };
 }
@@ -212,7 +205,7 @@ describe('handleMessageUpdatedSocketUpdate', () => {
         expect(applySessions).not.toHaveBeenCalled();
     });
 
-    it('marks hidden message updates stale without decrypting or advancing materialized seq', async () => {
+    it('marks hidden encrypted message updates stale without decrypting or applying an unsafe projection patch', async () => {
         const decryptMessage = vi.fn(async () => ({
             id: 'm2',
             localId: null,
@@ -221,13 +214,8 @@ describe('handleMessageUpdatedSocketUpdate', () => {
         }));
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptStale = vi.fn();
-        const { params, applyMessages, applySessions, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({
-                sid: 's1',
-                messageId: 'm2',
-                messageSeq: 2,
-                content: buildPlainUserTextContent(),
-            }),
+        const { params, applyMessages, applySessions, fetchSessions, markSessionMaterializedMaxSeq } = buildHarness({
+            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
             getSession: () => ({
                 ...buildSession('s1'),
                 latestTurnStatus: 'in_progress',
@@ -245,16 +233,44 @@ describe('handleMessageUpdatedSocketUpdate', () => {
 
         expect(decryptMessage).not.toHaveBeenCalled();
         expect(applyMessages).not.toHaveBeenCalled();
+        expect(applySessions).not.toHaveBeenCalled();
+        expect(fetchSessions).toHaveBeenCalledTimes(1);
         expect(markSessionMaterializedMaxSeq).not.toHaveBeenCalled();
         expect(markSessionKnownRemoteSeq).toHaveBeenCalledWith('s1', 2);
         expect(markSessionTranscriptStale).toHaveBeenCalledWith('s1', expect.objectContaining({
             messageId: 'm2',
             seq: 2,
         }));
-        expect(applySessions).toHaveBeenCalledTimes(1);
     });
 
-    it('marks already-loaded hidden message updates stale while still advancing projection', async () => {
+    it('requests a targeted session shell refresh instead of a full refetch for hidden stale-marked updates without attention metadata', async () => {
+        const decryptMessage = vi.fn();
+        const requestSessionShellRefresh = vi.fn();
+        const { params, applyMessages, applySessions, fetchSessions } = buildHarness({
+            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            getSession: () => ({
+                ...buildSession('s1'),
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: 900,
+            }),
+            getSessionEncryption: () => ({ decryptMessage }),
+            isSessionActivelyViewed: () => false,
+            isSessionFullContentConsumerActive: () => false,
+            realtimeProjectionMode: 'enabled',
+            requestSessionShellRefresh,
+        });
+
+        await handleMessageUpdatedSocketUpdate(params);
+
+        expect(requestSessionShellRefresh).toHaveBeenCalledTimes(1);
+        expect(requestSessionShellRefresh).toHaveBeenCalledWith('s1');
+        expect(fetchSessions).not.toHaveBeenCalled();
+        expect(decryptMessage).not.toHaveBeenCalled();
+        expect(applyMessages).not.toHaveBeenCalled();
+        expect(applySessions).not.toHaveBeenCalled();
+    });
+
+    it('marks already-loaded hidden encrypted message updates with attention impact stale while still advancing projection', async () => {
         const decryptMessage = vi.fn(async () => ({
             id: 'm2',
             localId: null,
@@ -268,7 +284,7 @@ describe('handleMessageUpdatedSocketUpdate', () => {
                 sid: 's1',
                 messageId: 'm2',
                 messageSeq: 2,
-                content: buildPlainUserTextContent(),
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
             }),
             getSession: () => ({
                 ...buildSession('s1'),
@@ -315,12 +331,7 @@ describe('handleMessageUpdatedSocketUpdate', () => {
         const markSessionKnownRemoteSeq = vi.fn();
         const markSessionTranscriptStale = vi.fn();
         const { params, applySessions } = buildHarness({
-            updateData: buildUpdate({
-                sid: 's1',
-                messageId: 'm2',
-                messageSeq: 2,
-                content: buildPlainUserTextContent(),
-            }),
+            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
             getSession: () => ({
                 ...buildSession('s1', 5),
                 updatedAt: 5_000,

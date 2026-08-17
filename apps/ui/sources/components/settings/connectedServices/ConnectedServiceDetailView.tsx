@@ -6,7 +6,6 @@ import { useUnistyles } from 'react-native-unistyles';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
-import { Ionicons } from '@expo/vector-icons';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -43,6 +42,7 @@ import { PoolsList } from './pools/PoolsList';
 import { SettingsHeaderAddButton } from '../navigation/SettingsHeaderAddButton';
 import {
   isConnectedServiceCredentialReferencedByGroupError,
+  refreshConnectedServiceProfileAfterSupersededMutation,
   resolveConnectedServiceSettingsErrorMessage,
 } from './errors/connectedServiceSettingsErrors';
 import { resolveConnectedServiceRuntimeGroupCapability } from './model/connectedServiceRuntimeFallbackCapability';
@@ -58,6 +58,7 @@ import { storeConnectedServiceCredentialWithIdentityConfirmation } from './store
 import { runConnectedServiceCredentialStoredEffects } from './runConnectedServiceCredentialStoredEffects';
 import { invalidateConnectedServiceGroupsRefreshSignal } from './connectedServiceGroupsRefreshSignal';
 import { useConnectedServiceAuthGroups } from './model/useConnectedServiceAuthGroups';
+import { Icon } from '@/components/ui/icons/Icon';
 
 function asStringParam(value: unknown): string {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : '';
@@ -159,6 +160,18 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
 
   const poolsAvailable = accountGroupsEnabled && groupConfigurationSupported;
 
+  // Honor an initial `segment` deep-link param (e.g. the profile "Add to pool" action
+  // routes here with `segment: 'pools'`) exactly once, once pools are actually available.
+  const requestedSegment = asStringParam((params as Record<string, unknown>).segment).trim();
+  const didApplyRequestedSegmentRef = React.useRef(false);
+  React.useEffect(() => {
+    if (didApplyRequestedSegmentRef.current) return;
+    if (requestedSegment === 'pools' && poolsAvailable) {
+      didApplyRequestedSegmentRef.current = true;
+      setActiveSegment('pools');
+    }
+  }, [poolsAvailable, requestedSegment]);
+
   const ensureCredentials = () => {
     if (!auth.credentials) {
       throw new Error('Not authenticated');
@@ -181,9 +194,13 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
     opts?: Readonly<{ cleanupGroupReferences?: boolean }>,
   ) => {
     const credentials = ensureCredentials();
+    const expectedCredentialRevision = profile.connectedServiceCredentialRevisionsV1.find((candidate) => (
+      candidate.serviceId === serviceId && candidate.profileId === profileId
+    ))?.credentialRevision;
     await deleteConnectedServiceCredentialForAccount(credentials, {
       serviceId: serviceId!,
       profileId,
+      expectedCredentialRevision,
       ...(opts?.cleanupGroupReferences ? { cleanupGroupReferences: true } : {}),
     });
     applySettings(pruneConnectedServiceProfilePreferencesForDeletedProfile({
@@ -196,6 +213,7 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
     invalidateConnectedServiceGroupsRefreshSignal();
   }, [
     applySettings,
+    profile.connectedServiceCredentialRevisionsV1,
     serviceId,
     settings.connectedServicesDefaultProfileByServiceId,
     settings.connectedServicesProfileLabelByKey,
@@ -269,12 +287,14 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
             await finishDisconnect(profileId, { cleanupGroupReferences: true });
             return;
           } catch (retryError: unknown) {
+            await refreshConnectedServiceProfileAfterSupersededMutation(retryError, () => sync.refreshProfile());
             await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(retryError));
             return;
           }
         }
         return;
       }
+      await refreshConnectedServiceProfileAfterSupersededMutation(e, () => sync.refreshProfile());
       await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(e));
     }
   };
@@ -521,11 +541,14 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
   const sortedProfiles = profiles
     .map((p) => {
       const profileId = typeof p?.profileId === 'string' ? p.profileId : '';
-      const status = resolveConnectedServiceCredentialHealthStatus(p?.status);
+      // Fail-closed normalization drives ordering + row ACTIONS only; AccountBlock
+      // receives the RAW status so its fail-open usage gate stays live (UI-1).
+      const rawStatus: unknown = p?.status;
+      const status = resolveConnectedServiceCredentialHealthStatus(rawStatus);
       // Attention-first ordering uses the status dimension of the canonical
       // health derivation (quota capacity is fetched inside AccountBlock).
       const health = deriveAccountHealth({ status, capacityPct: null });
-      return { record: p, profileId, status, health };
+      return { record: p, profileId, rawStatus, status, health };
     })
     .filter((entryRow) => entryRow.profileId.length > 0)
     .sort((a, b) => {
@@ -536,16 +559,16 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
 
   const accountsContent = (
     <>
-      <ItemGroup title={serviceLabel}>
+      <ItemGroup title={serviceLabel} columns={2}>
         {sortedProfiles.length === 0 ? (
           <EmptyState
             testID="connected-services-accounts:empty"
-            icon={<Ionicons name="key-outline" size={28} color={theme.colors.text.secondary} />}
+            icon={<Icon name="key" size={29} color={theme.colors.text.secondary} />}
             title={t('connectedServices.detail.profiles.empty')}
           />
         ) : null}
-        {sortedProfiles.map((row, index) => {
-          const { profileId, status, record } = row;
+        {sortedProfiles.map((row) => {
+          const { profileId, rawStatus, status, record } = row;
           const isDefault = profileId === defaultProfileId;
           const kind = record.kind === 'token' ? 'token' : record.kind === 'oauth' ? 'oauth' : null;
           const label = resolveConnectedServiceProfileLabel({
@@ -567,7 +590,7 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
             onEditLabel: () => void handleEditProfileLabel(profileId),
             onReplaceToken: () => void handleReplaceToken(profileId),
             onReconnect: () => void handleConnectOauth(profileId),
-            onDisconnect: () => void handleDisconnect(profileId),
+            onDisconnect: () => handleDisconnect(profileId),
           });
           return (
             <AccountBlock
@@ -576,12 +599,11 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
               profileId={profileId}
               title={title}
               identityLabel={identityDisplay.secondaryLabel}
-              status={status}
+              status={rawStatus}
               isDefault={isDefault}
               onToggleDefault={() => void handleToggleDefaultProfile(profileId)}
               poolLabels={poolLabels}
               actions={actions}
-              showDivider={index < sortedProfiles.length - 1}
             />
           );
         })}
@@ -618,6 +640,7 @@ export const ConnectedServiceDetailView = React.memo(function ConnectedServiceDe
             groupConfigurationSupported={groupConfigurationSupported}
             onOpenPool={handleOpenPool}
             onCreatePool={() => void authGroups.createPool()}
+            onRetryLoad={() => void authGroups.refresh()}
           />
         )}
       />

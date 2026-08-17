@@ -6,6 +6,8 @@ import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { createOpenCodeServerRuntime } from '@/backends/opencode/server/runtime';
 import { parseSpecialCommand } from '@/cli/parsers/specialCommands';
 import { createExecutionRunTimeoutError, isExecutionRunTimeoutError } from '@/agent/executionRuns/runtime/executionRunErrors';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import type { PermissionResult } from '@/agent/permissions/permissionResult';
 
 type ToolMessageBody = Readonly<{
     type: 'tool-call' | 'tool-result';
@@ -82,11 +84,7 @@ export function createOpenCodeServerExecutionRunBackend(args: Readonly<{
     env?: NodeJS.ProcessEnv;
     permissionMode: PermissionMode;
     permissionHandler?: Readonly<{
-        handleToolCall: (toolCallId: string, toolName: string, input: unknown) => Promise<{
-            decision: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
-            execPolicyAmendment?: Readonly<{ command: string[] }>;
-            answers?: Record<string, string>;
-        }>;
+        handleToolCall: (toolCallId: string, toolName: string, input: unknown) => Promise<PermissionResult>;
     }> | null;
 }>): AgentBackend {
     const handlers = new Set<AgentMessageHandler>();
@@ -112,7 +110,7 @@ export function createOpenCodeServerExecutionRunBackend(args: Readonly<{
 
     const emitAssistantMessage = (localId: string | null | undefined, message: string): void => {
         if (!message) return;
-        const assistantKey = String(localId ?? '').trim() || '__main__';
+        const assistantKey = readNonBlankOpaqueIdentifier(localId) ?? '__main__';
         const previousText = assistantTextByLocalId.get(assistantKey) ?? '';
         const nextFullText = message.startsWith(previousText) ? message : `${previousText}${message}`;
         if (nextFullText === previousText) return;
@@ -190,6 +188,7 @@ export function createOpenCodeServerExecutionRunBackend(args: Readonly<{
         session: sessionAdapter as unknown as ApiSessionClient,
         messageBuffer: new MessageBuffer(),
         mcpServers: {},
+        happierMcpAdmission: { kind: 'not_available_for_execution_run' },
         permissionHandler: (args.permissionHandler ?? null) as any,
         onThinkingChange: (thinking) => {
             emit({ type: 'status', status: thinking ? 'running' : 'idle' });

@@ -1,13 +1,13 @@
 import axios from 'axios';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
 
 import {
   createAuthenticationHttpStatusError,
   isAuthenticationStatus,
   readAuthenticationStatus,
 } from '@/api/client/httpStatusError';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { Credentials } from '@/persistence';
-import { configuration } from '@/configuration';
-import { resolveLoopbackHttpUrl } from '@/api/client/loopbackUrl';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import {
   resolveSessionEncryptionContextFromCredentials,
@@ -33,14 +33,13 @@ function extractOpenCodeSessionMessageId(raw: unknown): string | null {
   if (!rec) return null;
   const info = asRecord(rec.info);
   if (!info) return null;
-  const id = normalizeString(info.id).trim();
-  return id.length > 0 ? id : null;
+  return readNonBlankOpaqueIdentifier(normalizeString(info.id));
 }
 
 function deriveLegacyOpenCodeMessageIdFromLocalId(localId: string | null): string | null {
-  const normalized = typeof localId === 'string' ? localId.trim() : '';
-  if (!normalized) return null;
-  return `msg_${normalized}`;
+  const exactLocalId = readNonBlankOpaqueIdentifier(localId);
+  if (!exactLocalId) return null;
+  return `msg_${exactLocalId}`;
 }
 
 function readOpenCodeHttpAuthStatus(error: unknown): 401 | 403 | null {
@@ -84,7 +83,7 @@ async function fetchSingleHappyTranscriptRow(params: {
   sessionId: string;
   beforeSeq: number;
 }): Promise<RawTranscriptRow | null> {
-  const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
+  const serverUrl = resolveServerHttpBaseUrl();
   const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
     headers: {
       Authorization: `Bearer ${params.token}`,
@@ -119,7 +118,7 @@ function resolveOpenCodeForkMessageIdFromHappyRow(params: {
   if (seq === null) return null;
 
   const localIdRaw = normalizeString(params.row.localId);
-  let localId = localIdRaw.trim().length > 0 ? localIdRaw.trim() : null;
+  let localId = readNonBlankOpaqueIdentifier(localIdRaw);
 
   const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials, params.parentRawSession);
   const decrypted = decryptTranscriptRows({ ctx, rows: [params.row] })[0] ?? null;
@@ -132,15 +131,15 @@ function resolveOpenCodeForkMessageIdFromHappyRow(params: {
       : undefined;
     if (!localId) {
       const meta = asRecord(decrypted.meta);
-      const metaLocalId = meta ? normalizeString(meta.localId).trim() : '';
+      const metaLocalId = meta ? readNonBlankOpaqueIdentifier(meta.localId) : null;
       if (metaLocalId) localId = metaLocalId;
     }
     if (!localId) {
       const contentRec = asRecord(decrypted.content);
-      const contentLocalId = contentRec ? normalizeString(contentRec.localId).trim() : '';
+      const contentLocalId = contentRec ? readNonBlankOpaqueIdentifier(contentRec.localId) : null;
       if (contentLocalId) localId = contentLocalId;
       const nestedMeta = contentRec ? asRecord(contentRec.meta) : null;
-      const nestedLocalId = nestedMeta ? normalizeString(nestedMeta.localId).trim() : '';
+      const nestedLocalId = nestedMeta ? readNonBlankOpaqueIdentifier(nestedMeta.localId) : null;
       if (nestedLocalId) localId = nestedLocalId;
     }
     const parentMetadata = tryDecryptSessionMetadata({ credentials: params.credentials, rawSession: params.parentRawSession as any });

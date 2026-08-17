@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ReactTestRenderer } from 'react-test-renderer';
+import { ReactTestRenderer, act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import {
@@ -11,7 +11,21 @@ import {
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+type CapturedPickerModalConfig = Readonly<{
+    component: React.ComponentType<Record<string, unknown>>;
+    props: Record<string, unknown>;
+}>;
+const settingsViewModalShowMock = vi.fn((_config: CapturedPickerModalConfig) => 'settings-view-modal');
+
 installConnectedServicesCommonModuleMocks({
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({
+            spies: {
+                show: (config: unknown) => settingsViewModalShowMock(config as CapturedPickerModalConfig),
+            },
+        }).module;
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -23,6 +37,17 @@ installConnectedServicesCommonModuleMocks({
             Platform: {
                 OS: 'web',
                 select: (options?: Readonly<{ default?: unknown }>) => (options && 'default' in options ? options.default : undefined),
+            },
+        });
+    },
+    text: async () => {
+        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+        return createTextModuleMock({
+            translate: (key, params) => {
+                if (key === 'connectedServices.list.connectedCount') {
+                    return `${(params as { count?: number } | undefined)?.count ?? 0} connected`;
+                }
+                return key;
             },
         });
     },
@@ -76,9 +101,61 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaBadges', () =>
     useConnectedServiceQuotaBadges: () => ({}),
 }));
 
+async function openCodexDefaultAuthPicker(tree: ReactTestRenderer): Promise<ReactTestRenderer> {
+    const trigger = tree.root.findAll((node) =>
+        node.props?.testID === 'settings-connected-services-default-auth-codex'
+    )[0];
+    if (!trigger) {
+        throw new Error('Expected default auth trigger for codex');
+    }
+    await act(async () => {
+        trigger.props.onPress();
+    });
+    const config = settingsViewModalShowMock.mock.calls.at(-1)?.[0];
+    if (!config) {
+        throw new Error('Expected the default-auth picker modal to be shown');
+    }
+    const Content = config.component;
+    return (await renderScreen(<Content {...config.props} />)).tree;
+}
+
+function selectPickerOption(modalTree: ReactTestRenderer, optionId: string) {
+    const listProps = modalTree.root.findByProps({
+        testID: 'new-session.connected-services.selection-list',
+    }).props as { rootStep: { sections: ReadonlyArray<{ options: ReadonlyArray<{ id: string; onSelect: () => void }> }> } };
+    for (const section of listProps.rootStep.sections) {
+        const option = section.options.find((candidate) => candidate.id === optionId);
+        if (option) {
+            option.onSelect();
+            return;
+        }
+    }
+    throw new Error(`Selection option not found: ${optionId}`);
+}
+
 describe('ConnectedServicesSettingsView', () => {
     beforeEach(() => {
+        settingsViewModalShowMock.mockClear();
         resetConnectedServicesCommonModuleMockState();
+        connectedServicesModuleState.options.modal = async () => {
+            const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+            return createModalModuleMock({
+                spies: {
+                    show: (config: unknown) => settingsViewModalShowMock(config as CapturedPickerModalConfig),
+                },
+            }).module;
+        };
+        connectedServicesModuleState.options.text = async () => {
+            const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+            return createTextModuleMock({
+                translate: (key, params) => {
+                    if (key === 'connectedServices.list.connectedCount') {
+                        return `${(params as { count?: number } | undefined)?.count ?? 0} connected`;
+                    }
+                    return key;
+                },
+            });
+        };
         useFeatureEnabledSpy.mockReset();
         useFeatureEnabledSpy.mockReturnValue(false);
         useProfileSpy.mockReset();
@@ -116,11 +193,10 @@ describe('ConnectedServicesSettingsView', () => {
         const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
         const { tree } = await renderScreen(React.createElement(ConnectedServicesSettingsView));
 
-        const dropdown = tree.root.findAll((node) =>
-            node.props?.itemTrigger?.itemProps?.testID === 'settings-connected-services-default-auth-codex'
-        )[0];
-        expect(dropdown).toBeTruthy();
-        dropdown!.props.onSelect('connected-service:openai-codex:connect');
+        const modalTree = await openCodexDefaultAuthPicker(tree);
+        await act(async () => {
+            selectPickerOption(modalTree, 'connected-service:openai-codex:connect');
+        });
 
         expect(connectedServicesModuleState.routerPushSpy).toHaveBeenCalledWith({
             pathname: '/settings/connected-services/[serviceId]',
@@ -140,7 +216,30 @@ describe('ConnectedServicesSettingsView', () => {
         expect(screen.getTextContent()).not.toContain('connectedServices.list.empty');
     });
 
-    it('opens the profile recovery flow for default-auth reauth selections', async () => {
+    it('counts retryable refresh-failure profiles as connected on the provider summary row', async () => {
+        useFeatureEnabledSpy.mockReturnValue(true);
+        useProfileSpy.mockReturnValue({
+            connectedServicesV2: [
+                {
+                    serviceId: 'openai-codex',
+                    profiles: [
+                        { profileId: 'connected', status: 'connected', kind: 'oauth' },
+                        { profileId: 'retryable', status: 'refresh_failed_retryable', kind: 'oauth' },
+                        { profileId: 'reauth', status: 'needs_reauth', kind: 'oauth' },
+                    ],
+                },
+            ],
+        });
+
+        const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+        const screen = await renderScreen(React.createElement(ConnectedServicesSettingsView));
+
+        const row = screen.tree.findAllByType('Item' as any)
+            .find((node) => node.props?.subtitle === '2 connected');
+        expect(row?.props?.subtitle).toBe('2 connected');
+    });
+
+    it('opens the OAuth recovery flow for default-auth OAuth reauth selections', async () => {
         useFeatureEnabledSpy.mockImplementation((featureId: string) =>
             featureId === 'connectedServices' || featureId === 'connectedServices.accountGroups'
         );
@@ -156,14 +255,13 @@ describe('ConnectedServicesSettingsView', () => {
         const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
         const { tree } = await renderScreen(React.createElement(ConnectedServicesSettingsView));
 
-        const dropdown = tree.root.findAll((node) =>
-            node.props?.itemTrigger?.itemProps?.testID === 'settings-connected-services-default-auth-codex'
-        )[0];
-        expect(dropdown).toBeTruthy();
-        dropdown!.props.onSelect('connected-service:openai-codex:reauth:work');
+        const modalTree = await openCodexDefaultAuthPicker(tree);
+        await act(async () => {
+            selectPickerOption(modalTree, 'connected-service:openai-codex:reauth:work');
+        });
 
         expect(connectedServicesModuleState.routerPushSpy).toHaveBeenCalledWith({
-            pathname: '/settings/connected-services/profile',
+            pathname: '/settings/connected-services/oauth',
             params: { serviceId: 'openai-codex', profileId: 'work' },
         });
     });

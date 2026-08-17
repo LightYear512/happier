@@ -1,16 +1,20 @@
-import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureDir, readTextOrEmpty } from '../utils/fs/ops.mjs';
+import { createEnvFileExclusive, replaceEnvFile } from '../utils/env/env_file.mjs';
 import { parseEnvToObject } from '../utils/env/dotenv.mjs';
 import { getWorkspaceDir, resolveStackEnvPath } from '../utils/paths/paths.mjs';
 import { stackExistsSync } from '../utils/stack/stacks.mjs';
 import { STACK_WRAPPER_PRESERVE_KEYS, scrubHappierStackEnv } from '../utils/env/scrub_env.mjs';
-import { applyStackActiveServerScopeEnv } from '../utils/auth/stable_scope_id.mjs';
+import {
+  applyStackActiveServerScopeEnv,
+  applyStackDaemonLifecycleScopeEnv,
+} from '../utils/auth/stable_scope_id.mjs';
 import { getStackRuntimeStatePath, isPidAlive, readStackRuntimeStateFile } from '../utils/stack/runtime_state.mjs';
 import { readStackRuntimeStateWithDaemonSync } from '../utils/stack/runtime_daemon_state.mjs';
-import { checkDaemonState } from '../daemon.mjs';
+import { checkDaemonStatePingAware } from '../daemon.mjs';
 
 const readExistingEnv = readTextOrEmpty;
+
 const STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS = [
   'HAPPIER_SERVER_URL',
   'HAPPIER_PUBLIC_SERVER_URL',
@@ -27,6 +31,13 @@ const STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS = [
   'HAPPIER_EMBEDDED_POLICY_ENV',
   'HAPPIER_BUILD_FEATURES_ALLOW',
   'HAPPIER_BUILD_FEATURES_DENY',
+];
+
+const STACK_SCOPED_EXPO_PORT_KEYS = [
+  'HAPPIER_STACK_EXPO_DEV_PORT',
+  'HAPPIER_STACK_EXPO_DEV_PORT_STRATEGY',
+  'HAPPIER_STACK_EXPO_DEV_PORT_BASE',
+  'HAPPIER_STACK_EXPO_DEV_PORT_RANGE',
 ];
 
 function stringifyEnv(env) {
@@ -56,14 +67,23 @@ export async function writeStackEnv({ stackName, env }) {
   await ensureDir(stackDir);
   const envPath = resolveStackEnvPath(stackName).envPath;
   const next = stringifyEnv(env);
-  const existing = await readExistingEnv(envPath);
-  if (existing !== next) {
-    await writeFile(envPath, next, 'utf-8');
-  }
+  await replaceEnvFile({ envPath, content: next });
   return envPath;
 }
 
-export async function withStackEnv({ stackName, fn, extraEnv = {} }) {
+export async function createStackEnv({ stackName, env }) {
+  const envPath = resolveStackEnvPath(stackName).envPath;
+  const created = await createEnvFileExclusive({ envPath, content: stringifyEnv(env) });
+  return { created, envPath };
+}
+
+export async function withStackEnv({
+  stackName,
+  fn,
+  extraEnv = {},
+  reconcileDaemonRuntimeState = true,
+  beforeRuntimeReconcile = null,
+}) {
   const envPath = resolveStackEnvPath(stackName).envPath;
   if (!stackExistsSync(stackName)) {
     throw new Error(
@@ -81,6 +101,12 @@ export async function withStackEnv({ stackName, fn, extraEnv = {} }) {
     keepHappierStackKeys: STACK_WRAPPER_PRESERVE_KEYS,
     clearUnprefixedKeys: STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS,
   });
+  const callerStackName = (process.env.HAPPIER_STACK_STACK ?? '').toString().trim();
+  if (callerStackName && callerStackName !== stackName) {
+    for (const key of STACK_SCOPED_EXPO_PORT_KEYS) {
+      delete cleaned[key];
+    }
+  }
   const raw = await readExistingEnv(envPath);
   const stackEnv = parseEnvToObject(raw);
 
@@ -103,22 +129,34 @@ export async function withStackEnv({ stackName, fn, extraEnv = {} }) {
     stackName,
     cliIdentity: (env.HAPPIER_STACK_CLI_IDENTITY ?? '').toString().trim() || 'default',
   });
+  env = applyStackDaemonLifecycleScopeEnv({
+    env,
+    stackName,
+    cliIdentity: (env.HAPPIER_STACK_CLI_IDENTITY ?? '').toString().trim() || 'default',
+  });
+
+  if (typeof beforeRuntimeReconcile === 'function') {
+    await beforeRuntimeReconcile({ env, envPath, stackEnv, runtimeStatePath, initialRuntimeState });
+  }
+  const refreshedRuntimeState = await readStackRuntimeStateFile(runtimeStatePath);
 
   const runtimePortCandidate =
     Number(env.HAPPIER_STACK_SERVER_PORT) > 0
       ? Number(env.HAPPIER_STACK_SERVER_PORT)
-      : Number(initialRuntimeState?.ports?.server) > 0
-        ? Number(initialRuntimeState?.ports?.server)
+      : Number(refreshedRuntimeState?.ports?.server) > 0
+        ? Number(refreshedRuntimeState?.ports?.server)
         : null;
-  const runtimeState = await readStackRuntimeStateWithDaemonSync({
-    runtimeStatePath,
-    cliHomeDir: (env.HAPPIER_STACK_CLI_HOME_DIR ?? join(resolveStackEnvPath(stackName).baseDir, 'cli')).toString(),
-    internalServerUrl:
-      Number.isFinite(runtimePortCandidate) && runtimePortCandidate > 0 ? `http://127.0.0.1:${runtimePortCandidate}` : '',
-    env,
-  }, {
-    checkDaemonStateImpl: checkDaemonState,
-  });
+  const runtimeState = reconcileDaemonRuntimeState
+    ? await readStackRuntimeStateWithDaemonSync({
+        runtimeStatePath,
+        cliHomeDir: (env.HAPPIER_STACK_CLI_HOME_DIR ?? join(resolveStackEnvPath(stackName).baseDir, 'cli')).toString(),
+        internalServerUrl:
+          Number.isFinite(runtimePortCandidate) && runtimePortCandidate > 0 ? `http://127.0.0.1:${runtimePortCandidate}` : '',
+        env,
+      }, {
+        checkDaemonStateImpl: checkDaemonStatePingAware,
+      })
+    : refreshedRuntimeState;
 
   // Runtime-only port overlay (ephemeral stacks): prefer stack.runtime.json ports when the stack
   // is still running, even if the original "owner" process is gone (common during dev restarts).

@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import * as FlashListCompat from '@/components/ui/lists/flashListCompat/FlashListCompat';
 
 import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 
@@ -20,11 +21,13 @@ import {
     type TranscriptToolChromeCommon,
     type TranscriptToolRouteCommon,
 } from '@/components/sessions/transcript/transcriptSessionCommon';
-import { TRANSCRIPT_WEB_TOOL_CALL_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/webTranscriptPrependAnchor';
+import { TRANSCRIPT_WEB_TOOL_CALL_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/viewport/prepend/webTranscriptPrependAnchor';
+import { renderGroupedToolCallRowContent } from '@/components/sessions/transcript/toolCalls/units/groupedToolCallRowContent';
 import {
-    renderGroupedToolCallRowContent,
     resolveGroupedPreviewSidechainIds,
-} from '@/components/sessions/transcript/toolCalls/units/groupedToolCallRowContent';
+    shouldRenderGroupedToolCallWithMessageView,
+} from '@/components/sessions/transcript/toolCalls/units/groupedToolCallRowRenderDecision';
+import { resolveToolRowPinAction } from '@/components/sessions/transcript/toolCalls/ToolCallPinAction';
 import {
     ToolCallsGroupExpandMoreChrome,
     ToolCallsGroupHeaderChrome,
@@ -60,6 +63,8 @@ type ToolCallsGroupViewProps = Readonly<{
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
     expanded: boolean;
     setExpanded: (expanded: boolean) => void;
+    messagePins?: readonly PersistedSessionMessagePinV1[];
+    onToggleToolPin?: (pin: PersistedSessionMessagePinV1) => void;
     interaction: TranscriptInteraction;
 }>;
 
@@ -129,7 +134,7 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
     const showFeedBackground = normalizedChromeMode === 'activity_feed' && transcriptToolCallsGroupShowBackground === true;
     const feedBackgroundStyle = showFeedBackground
         ? {
-            borderRadius: 14,
+            borderRadius: theme.borderRadius.xl,
             backgroundColor: theme.colors.feed.card.background,
             overflow: 'hidden' as const,
             paddingHorizontal: 10,
@@ -161,14 +166,38 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
         sidechainIds: previewSidechainIds,
     });
 
-    const resolveToolRouteMessageId = React.useCallback((message: ToolCallMessage) => {
-        if (props.interaction.disableToolNavigation) return undefined;
-        return resolveMessageRouteIdForDisplay({
-            message,
-            messagesById,
-            reducerState,
-        });
-    }, [messagesById, props.interaction.disableToolNavigation, reducerState]);
+    // A row rendered through MessageView owns its own route id and pin; resolving
+    // them here too would duplicate the compute for every such row on every render.
+    const resolveGroupedRowToolChrome = React.useCallback((message: ToolCallMessage, groupExpanded: boolean) => {
+        if (shouldRenderGroupedToolCallWithMessageView(message, normalizedChromeMode, groupExpanded)) {
+            return { nestedMessageId: undefined, toolPinAction: null };
+        }
+        const nestedMessageId = props.interaction.disableToolNavigation
+            ? undefined
+            : resolveMessageRouteIdForDisplay({ message, messagesById, reducerState });
+        return {
+            nestedMessageId,
+            toolPinAction: resolveToolRowPinAction({
+                sessionId: props.sessionId,
+                seq: message.seq ?? null,
+                transcriptBlockIndex: message.transcriptBlockIndex ?? null,
+                routeMessageId: nestedMessageId ?? null,
+                pins: props.messagePins,
+                readOnlyContext: props.interaction.permissionDisabledReason === 'readOnly',
+                onTogglePin: props.onToggleToolPin,
+                testID: `transcript-tool-call-pin:${message.id}`,
+            }),
+        };
+    }, [
+        messagesById,
+        normalizedChromeMode,
+        props.interaction.disableToolNavigation,
+        props.interaction.permissionDisabledReason,
+        props.messagePins,
+        props.onToggleToolPin,
+        props.sessionId,
+        reducerState,
+    ]);
 
     return (
         <View
@@ -199,7 +228,7 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
                                 <ToolCallsGroupExpandMoreChrome hiddenCount={hiddenCount} onExpand={onExpand} />
                             ) : null}
                             {showCollapsedPreview ? previewMessages.map((m, index) => {
-                                const nestedMessageId = resolveToolRouteMessageId(m);
+                                const { nestedMessageId, toolPinAction } = resolveGroupedRowToolChrome(m, false);
                                 return (
                                 <View
                                     key={getMappingKey(`preview:${m.id}`, index)}
@@ -218,6 +247,9 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
                                             nestedMessageId,
                                             forcePermissionPromptsInTranscript: props.forcePermissionPromptsInTranscript,
                                             approvalRequests: props.approvalRequests,
+                                            messagePins: props.messagePins,
+                                            onToggleToolPin: props.onToggleToolPin,
+                                            toolPinAction,
                                             interaction: props.interaction,
                                             forkCommon: props.forkCommon,
                                             messageDisplayCommon: props.messageDisplayCommon,
@@ -235,7 +267,7 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
                         <TranscriptCollapsible id={collapsibleId} createdAt={createdAt} expanded={expanded}>
                             <View style={[styles.body, normalizedChromeMode === 'activity_feed' ? styles.bodyFeed : styles.bodyCards]}>
                                 {props.toolMessages.map((m, index) => {
-                                    const nestedMessageId = resolveToolRouteMessageId(m);
+                                    const { nestedMessageId, toolPinAction } = resolveGroupedRowToolChrome(m, expanded);
                                     return (
                                     <TranscriptEnterWrapper key={getMappingKey(m.id, index)} id={m.id} createdAt={m.createdAt}>
                                         <View
@@ -254,6 +286,9 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
                                                     nestedMessageId,
                                                     forcePermissionPromptsInTranscript: props.forcePermissionPromptsInTranscript,
                                                     approvalRequests: props.approvalRequests,
+                                                    messagePins: props.messagePins,
+                                                    onToggleToolPin: props.onToggleToolPin,
+                                                    toolPinAction,
                                                     interaction: props.interaction,
                                                     forkCommon: props.forkCommon,
                                                     messageDisplayCommon: props.messageDisplayCommon,
@@ -280,7 +315,7 @@ const styles = StyleSheet.create((theme) => ({
         marginBottom: 22,
     },
     containerCards: {
-        borderRadius: 14,
+        borderRadius: theme.borderRadius.xl,
         backgroundColor: theme.colors.surface.inset ?? theme.colors.surface.base,
         overflow: 'hidden',
     },

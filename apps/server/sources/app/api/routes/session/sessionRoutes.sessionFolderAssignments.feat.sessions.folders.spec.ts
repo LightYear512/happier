@@ -17,6 +17,7 @@ import {
     txSessionFolderAssignmentFindMany,
     txSessionFolderAssignmentUpdateMany,
     txSessionFolderAssignmentUpsert,
+    txSessionOrganizationFolderFindMany,
 } from "./sessionRoutes.testkit";
 
 type RouteMethod = "GET" | "POST" | "PUT";
@@ -55,6 +56,10 @@ function sessionListRow(id: string, overrides: Record<string, unknown> = {}) {
         metadataVersion: 1,
         agentState: null,
         agentStateVersion: 0,
+        runtimeActivityState: "unknown",
+        runtimeActivityActiveCount: 0,
+        runtimeActivityObservedAt: null,
+        runtimeActivityRevision: 0,
         lastViewedSessionSeq: 0,
         pendingPermissionRequestCount: 0,
         pendingUserActionRequestCount: 0,
@@ -68,6 +73,28 @@ function sessionListRow(id: string, overrides: Record<string, unknown> = {}) {
     };
 }
 
+/**
+ * The session-list read is issued as one statement per (visibility arm x activity branch), so these
+ * tests answer and locate statements by predicate shape instead of by call index.
+ */
+function isOwnedVisibilityArm(args: unknown): boolean {
+    return JSON.stringify((args as { where?: { AND?: unknown } } | undefined)?.where?.AND ?? []).includes('"accountId"');
+}
+
+function isNullActivityBranch(args: unknown): boolean {
+    return (args as { where?: { meaningfulActivityAt?: unknown } } | undefined)?.where?.meaningfulActivityAt === null;
+}
+
+function hasCursorClause(args: unknown): boolean {
+    return JSON.stringify((args as { where?: { AND?: unknown } } | undefined)?.where?.AND ?? []).includes('"lt"');
+}
+
+function findSessionListQuery(predicate: (args: unknown) => boolean): unknown {
+    const match = sessionFindMany.mock.calls.map(([args]: unknown[]) => args).find(predicate);
+    expect(match).toBeDefined();
+    return match;
+}
+
 describe("session folder assignment routes", () => {
     beforeEach(() => {
         resetSessionRouteMocks();
@@ -75,6 +102,7 @@ describe("session folder assignment routes", () => {
 
     it("assigns a visible owned session to a folder for the current account", async () => {
         sessionFindFirst.mockResolvedValue({ id: "s1" });
+        txSessionOrganizationFolderFindMany.mockResolvedValue([{ id: "folder-a", folderKey: "folder-a" }]);
         txSessionFolderAssignmentUpsert.mockResolvedValue({ sessionId: "s1", folderId: "folder-a" });
 
         const { response, reply } = await invokeRawRoute({
@@ -106,7 +134,14 @@ describe("session folder assignment routes", () => {
             accountId: "u1",
             kind: "session",
             entityId: "s1",
-            hint: { sessionFolderAssignment: true, folderId: "folder-a" },
+            hint: expect.objectContaining({
+                sessionFolderAssignment: true,
+                sessionOrganization: true,
+                scope: "folderAssignments",
+                sessionIds: ["s1"],
+                folderIds: ["folder-a"],
+                folderId: "folder-a",
+            }),
         });
     });
 
@@ -131,7 +166,13 @@ describe("session folder assignment routes", () => {
             accountId: "u1",
             kind: "session",
             entityId: "s1",
-            hint: { sessionFolderAssignment: true, folderId: null },
+            hint: expect.objectContaining({
+                sessionFolderAssignment: true,
+                sessionOrganization: true,
+                scope: "folderAssignments",
+                sessionIds: ["s1"],
+                folderId: null,
+            }),
         }));
     });
 
@@ -199,17 +240,16 @@ describe("session folder assignment routes", () => {
     });
 
     it("queries folder sessions through the shared v2 session-list pagination path across page 2", async () => {
-        sessionFindMany
-            .mockResolvedValueOnce([
-                sessionListRow("s9", { meaningfulActivityAt: new Date(9_000) }),
-                sessionListRow("s8", { meaningfulActivityAt: new Date(8_000) }),
-                sessionListRow("s7", { meaningfulActivityAt: new Date(7_000) }),
-            ])
-            .mockResolvedValueOnce([])
-            .mockResolvedValueOnce([
-                sessionListRow("s7", { meaningfulActivityAt: new Date(7_000) }),
-            ])
-            .mockResolvedValueOnce([]);
+        sessionFindMany.mockImplementation(async (args: unknown) => {
+            if (!isOwnedVisibilityArm(args) || isNullActivityBranch(args)) return [];
+            return hasCursorClause(args)
+                ? [sessionListRow("s7", { meaningfulActivityAt: new Date(7_000) })]
+                : [
+                    sessionListRow("s9", { meaningfulActivityAt: new Date(9_000) }),
+                    sessionListRow("s8", { meaningfulActivityAt: new Date(8_000) }),
+                    sessionListRow("s7", { meaningfulActivityAt: new Date(7_000) }),
+                ];
+        });
 
         const { response: firstPage } = await invokeRawRoute({
             method: "POST",
@@ -231,7 +271,9 @@ describe("session folder assignment routes", () => {
             nextCursor: encodeV2SessionListCursorV2({ sessionId: "s8", meaningfulActivityAt: 8_000 }),
             hasNext: true,
         });
-        expect(sessionFindMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        expect(findSessionListQuery((args) =>
+            isOwnedVisibilityArm(args) && !isNullActivityBranch(args) && !hasCursorClause(args),
+        )).toEqual(expect.objectContaining({
             where: expect.objectContaining({
                 archivedAt: null,
                 meaningfulActivityAt: { not: null },
@@ -270,16 +312,18 @@ describe("session folder assignment routes", () => {
             nextCursor: null,
             hasNext: false,
         });
-        expect(sessionFindMany).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        expect(findSessionListQuery((args) =>
+            isOwnedVisibilityArm(args) && !isNullActivityBranch(args) && hasCursorClause(args),
+        )).toEqual(expect.objectContaining({
             where: expect.objectContaining({
                 archivedAt: null,
                 meaningfulActivityAt: { not: null },
-                AND: [{
+                AND: expect.arrayContaining([{
                     OR: [
                         { meaningfulActivityAt: { lt: new Date(8_000) } },
                         { meaningfulActivityAt: new Date(8_000), id: { lt: "s8" } },
                     ],
-                }],
+                }]),
                 sessionFolderAssignments: {
                     some: {
                         accountId: "u1",
@@ -332,42 +376,32 @@ describe("session folder assignment routes", () => {
         }));
         expect(sessionFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
-                AND: [{
+                AND: expect.arrayContaining([{
                     OR: [
                         { meaningfulActivityAt: { lt: new Date(4_500) } },
                         { meaningfulActivityAt: new Date(4_500), id: { lt: "s5" } },
                     ],
-                }],
+                }]),
             }),
         }));
         expect(response).toEqual({ sessions: [], nextCursor: null, hasNext: false });
     });
 
     it("paginates null meaningfulActivityAt folder rows by createdAt without skipping the next page", async () => {
-        sessionFindMany
-            .mockResolvedValueOnce([
-                sessionListRow("s9", {
-                    createdAt: new Date(900),
-                    meaningfulActivityAt: new Date(9_000),
-                }),
-                sessionListRow("s7", {
-                    createdAt: new Date(700),
-                    meaningfulActivityAt: new Date(7_000),
-                }),
-            ])
-            .mockResolvedValueOnce([
-                sessionListRow("s8", {
-                    createdAt: new Date(8_000),
-                    meaningfulActivityAt: null,
-                }),
-            ])
-            .mockResolvedValueOnce([
-                sessionListRow("s7", {
-                    createdAt: new Date(700),
-                    meaningfulActivityAt: new Date(7_000),
-                }),
-            ])
-            .mockResolvedValueOnce([]);
+        sessionFindMany.mockImplementation(async (args: unknown) => {
+            if (!isOwnedVisibilityArm(args)) return [];
+            if (hasCursorClause(args)) {
+                return isNullActivityBranch(args)
+                    ? []
+                    : [sessionListRow("s7", { createdAt: new Date(700), meaningfulActivityAt: new Date(7_000) })];
+            }
+            return isNullActivityBranch(args)
+                ? [sessionListRow("s8", { createdAt: new Date(8_000), meaningfulActivityAt: null })]
+                : [
+                    sessionListRow("s9", { createdAt: new Date(900), meaningfulActivityAt: new Date(9_000) }),
+                    sessionListRow("s7", { createdAt: new Date(700), meaningfulActivityAt: new Date(7_000) }),
+                ];
+        });
 
         const { response: firstPage } = await invokeRawRoute({
             method: "POST",
@@ -410,16 +444,18 @@ describe("session folder assignment routes", () => {
             nextCursor: null,
             hasNext: false,
         });
-        expect(sessionFindMany).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        expect(findSessionListQuery((args) =>
+            isOwnedVisibilityArm(args) && !isNullActivityBranch(args) && hasCursorClause(args),
+        )).toEqual(expect.objectContaining({
             where: expect.objectContaining({
                 archivedAt: null,
                 meaningfulActivityAt: { not: null },
-                AND: [{
+                AND: expect.arrayContaining([{
                     OR: [
                         { meaningfulActivityAt: { lt: new Date(8_000) } },
                         { meaningfulActivityAt: new Date(8_000), id: { lt: "s8" } },
                     ],
-                }],
+                }]),
                 sessionFolderAssignments: {
                     some: {
                         accountId: "u1",
@@ -428,16 +464,18 @@ describe("session folder assignment routes", () => {
                 },
             }),
         }));
-        expect(sessionFindMany).toHaveBeenNthCalledWith(4, expect.objectContaining({
+        expect(findSessionListQuery((args) =>
+            isOwnedVisibilityArm(args) && isNullActivityBranch(args) && hasCursorClause(args),
+        )).toEqual(expect.objectContaining({
             where: expect.objectContaining({
                 archivedAt: null,
                 meaningfulActivityAt: null,
-                AND: [{
+                AND: expect.arrayContaining([{
                     OR: [
                         { createdAt: { lt: new Date(8_000) } },
                         { createdAt: new Date(8_000), id: { lt: "s8" } },
                     ],
-                }],
+                }]),
                 sessionFolderAssignments: {
                     some: {
                         accountId: "u1",
@@ -449,6 +487,7 @@ describe("session folder assignment routes", () => {
     });
 
     it("bulk moves current-account assignments and marks a bulk assignment change", async () => {
+        txSessionOrganizationFolderFindMany.mockResolvedValue([{ id: "new-folder", folderKey: "new-folder" }]);
         txSessionFolderAssignmentFindMany.mockResolvedValue([
             { sessionId: "s1", folderId: "old-a" },
             { sessionId: "s2", folderId: "old-b" },
@@ -482,11 +521,13 @@ describe("session folder assignment routes", () => {
             accountId: "u1",
             kind: "account",
             entityId: "session-folder-assignments",
-            hint: {
+            hint: expect.objectContaining({
                 sessionFolderAssignments: true,
+                sessionOrganization: true,
+                scope: "folderAssignments",
                 folderIds: ["old-a", "old-b"],
                 toFolderId: "new-folder",
-            },
+            }),
         });
     });
 

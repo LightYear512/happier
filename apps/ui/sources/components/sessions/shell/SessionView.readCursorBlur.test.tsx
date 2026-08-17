@@ -346,7 +346,7 @@ vi.mock('@/sync/domains/input/slashCommands/expandPromptTemplateInvocation', () 
 vi.mock('@/sync/domains/permissions/permissionModeApply', () => ({
     applyPermissionModeSelection: vi.fn(),
 }));
-vi.mock('@/sync/acp/sessionModeControl', () => ({
+vi.mock('@/sync/domains/sessionControl/sessionModeControl', () => ({
     supportsSessionModeOverrides: () => false,
 }));
 vi.mock('@/track', () => ({
@@ -442,9 +442,6 @@ vi.mock('@/sync/domains/session/control/sessionLocalControl', () => ({
 }));
 vi.mock('@/sync/domains/session/control/effectiveRuntimeControlSurface', () => ({
     supportsEffectiveLocalControlForSession: () => true,
-}));
-vi.mock('@/sync/domains/session/subagents/deriveSessionSubagentCounts', () => ({
-    deriveSessionSubagentCounts: () => ({ total: 0, active: 0 }),
 }));
 vi.mock('@/sync/domains/models/modelOptions', () => ({
     findModelOptionForEffectiveModelId: (options: readonly any[], id: string) =>

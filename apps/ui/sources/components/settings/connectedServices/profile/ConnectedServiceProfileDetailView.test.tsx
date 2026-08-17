@@ -2,7 +2,7 @@ import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
-import { installConnectedServicesCommonModuleMocks } from '../connectedServicesTestHelpers';
+import { connectedServicesModuleState, installConnectedServicesCommonModuleMocks } from '../connectedServicesTestHelpers';
 import type { UseConnectedServiceQuotaSnapshotResult } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshot';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,6 +29,11 @@ const profileState = vi.hoisted(() => ({
         groups: [] as Array<Record<string, unknown>>,
       },
     ],
+    connectedServiceCredentialRevisionsV1: [{
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      credentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+    }],
   } as Record<string, unknown>,
 }));
 const settingsState = vi.hoisted(() => ({
@@ -177,6 +182,8 @@ function buildQuotaResult(overrides: Partial<UseConnectedServiceQuotaSnapshotRes
     nowMs: NOW_MS,
     recoveryCreditSummary: null,
     recoveryCreditMachineId: 'machine-1',
+    canConsumeRecoveryCredit: true,
+    canRefresh: true,
     isRefreshing: false,
     refresh: quotaHookState.refresh,
     consumeRecoveryCredit: vi.fn(async () => {}),
@@ -196,6 +203,7 @@ beforeEach(() => {
   routeParams.serviceId = 'openai-codex';
   routeParams.profileId = 'work';
   applySettingsSpy.mockClear();
+  connectedServicesModuleState.routerPushSpy.mockClear();
   modalSpies.confirm.mockReset();
   modalSpies.prompt.mockReset();
   modalSpies.alert.mockReset();
@@ -217,6 +225,11 @@ beforeEach(() => {
         groups: [],
       },
     ],
+    connectedServiceCredentialRevisionsV1: [{
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      credentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+    }],
   };
   settingsState.current = {
     connectedServicesDefaultProfileByServiceId: { 'openai-codex': 'work' },
@@ -234,6 +247,30 @@ describe('ConnectedServiceProfileDetailView', () => {
 
     expect(findByTestId(screen.tree, 'connected-service-profile-account')).toBeTruthy();
     // The shared quota hook is mounted for the connected account.
+    expect(quotaHookState.callSpy).toHaveBeenCalled();
+  });
+
+  it('renders the shared AccountBlock for retryable refresh-failure profiles', async () => {
+    profileState.current = {
+      connectedServicesV2: [
+        {
+          serviceId: 'openai-codex',
+          profiles: [{
+            profileId: 'work',
+            status: 'refresh_failed_retryable',
+            kind: 'oauth',
+            providerEmail: 'me@example.com',
+            providerAccountId: 'acct-1',
+          }],
+          groups: [],
+        },
+      ],
+    };
+    const { ConnectedServiceProfileDetailView } = await import('./ConnectedServiceProfileDetailView');
+    const screen = await renderScreen(<ConnectedServiceProfileDetailView />);
+
+    expect(findByTestId(screen.tree, 'connected-service-profile-account')).toBeTruthy();
+    expect(findByTestId(screen.tree, 'connected-services-profile-action:reconnect')).toBeFalsy();
     expect(quotaHookState.callSpy).toHaveBeenCalled();
   });
 
@@ -424,7 +461,11 @@ describe('ConnectedServiceProfileDetailView', () => {
 
     expect(connectedServiceCredentialSpies.deleteConnectedServiceCredentialForAccount).toHaveBeenCalledWith(
       expect.objectContaining({ token: 't' }),
-      { serviceId: 'openai-codex', profileId: 'work' },
+      {
+        serviceId: 'openai-codex',
+        profileId: 'work',
+        expectedCredentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+      },
     );
     expect(applySettingsSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -440,6 +481,21 @@ describe('ConnectedServiceProfileDetailView', () => {
 
     expect(findByTestId(screen.tree, 'connected-service-profile-pools:empty')).toBeTruthy();
     expect(findByTestId(screen.tree, 'connected-service-profile-action:add-to-pool')).toBeTruthy();
+  });
+
+  it('routes "Add to pool" to the provider Pools segment with the profile carried through', async () => {
+    const { ConnectedServiceProfileDetailView } = await import('./ConnectedServiceProfileDetailView');
+    const screen = await renderScreen(<ConnectedServiceProfileDetailView />);
+
+    await act(async () => {
+      findByTestId(screen.tree, 'connected-service-profile-action:add-to-pool')?.props.onPress?.();
+      await flushAsyncHandlers();
+    });
+
+    expect(connectedServicesModuleState.routerPushSpy).toHaveBeenCalledWith({
+      pathname: '/settings/connected-services/[serviceId]',
+      params: { serviceId: 'openai-codex', segment: 'pools', profileId: 'work' },
+    });
   });
 
   it('lists pool memberships derived from the projected groups', async () => {

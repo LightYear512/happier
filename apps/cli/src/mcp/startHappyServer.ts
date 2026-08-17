@@ -9,7 +9,7 @@ import {
 } from "@/mcp/createHappierMcpServer";
 import { listBuiltInHappierTools } from "@/agent/tools/happierTools/listBuiltInHappierTools";
 import type { RpcHandlerManagerLike } from "@/api/rpc/types";
-import type { Metadata } from "@/api/types";
+import type { Metadata, PermissionMode } from "@/api/types";
 import { configuration } from "@/configuration";
 import type { Credentials } from '@/persistence';
 import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/session/services/executionRuns";
@@ -20,8 +20,8 @@ import { createFileSimulatorDeviceLockStore, createSimulatorDeviceService } from
 import { createSimulatorDeviceLeaseRenewalController } from '@/session/simulatorPreview/createSimulatorDeviceLeaseRenewalController';
 import { createSimulatorPreviewControlRegistryRouter } from '@/session/simulatorPreview/createSimulatorPreviewControlRegistryRouter';
 import { registerSimulatorPreviewSessionRpcHandlers } from '@/session/simulatorPreview/registerSimulatorPreviewSessionRpcHandlers';
-import type { AccountSettings } from '@happier-dev/protocol';
-import { createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
+import type { AccountSettings, BackendTargetRefV1 } from '@happier-dev/protocol';
+import { createMcpActionEnablement, createMcpActionSettingsProvider } from '@/mcp/server/createMcpActionEnablement';
 import { join } from 'node:path';
 import { closeSimulatorPreviewRuntime } from '@/mcp/simulatorPreviewRuntimeCleanup';
 
@@ -41,12 +41,24 @@ export type HappyMcpSessionClient = {
     sendClaudeSessionMessage(message: any, meta?: Record<string, unknown>): void;
     updateMetadata(updater: (metadata: Metadata) => Metadata): void | Promise<void>;
     getMetadataSnapshot?(): Metadata | null;
+    getPermissionMode?(): PermissionMode | null | undefined;
+    getBackendTarget?(): BackendTargetRefV1 | null | undefined;
+    getCurrentSessionLocation?(): Readonly<{
+        path?: string | null;
+        host?: string | null;
+        machineId?: string | null;
+    }> | null | undefined;
     executionRuns?: HappyMcpExecutionRunService;
 };
 
 export async function startHappyServer(
     client: HappyMcpSessionClient,
-    opts?: Readonly<{ credentials?: Credentials | null; accountSettings?: AccountSettings | null }>,
+    opts?: Readonly<{
+        credentials?: Credentials | null;
+        accountSettings?: AccountSettings | null;
+        getAccountSettings?: (() => AccountSettings | null) | null;
+        requestedPort?: number;
+    }>,
 ) {
     // Do not eagerly construct an MCP server on startup; only snapshot the names.
     // Full server creation is done per request inside the handler.
@@ -78,14 +90,21 @@ export async function startHappyServer(
         rpcHandlerManager: client.rpcHandlerManager,
         registry: simulatorPreviewControlRegistry,
     });
-    const isActionEnabled = createMcpActionEnablement({
+    const actionSettingsProvider = createMcpActionSettingsProvider({
         accountSettings: opts?.accountSettings ?? null,
+        getAccountSettings: opts?.getAccountSettings ?? null,
+    });
+    const isActionEnabled = createMcpActionEnablement({
+        actionSettingsProvider,
         surface: 'session_agent',
     });
+    // This is an informational startup snapshot. Direct MCP tool registrations are
+    // bound when a client initializes/lists tools; clients must refresh/reconnect
+    // to observe newly exposed direct tool names.
     const toolNamesSnapshot = listBuiltInHappierTools({
         surface: 'session_agent',
         isActionEnabled,
-        actionsSettings: opts?.accountSettings?.actionsSettingsV1 ?? null,
+        actionsSettings: actionSettingsProvider.getActionsSettings(),
     }).map((tool) => tool.name);
     const keepAliveIntervalMs = configuration.mcpSseKeepAliveIntervalMs;
 
@@ -116,6 +135,7 @@ export async function startHappyServer(
             simulatorPreviewControlPlatforms,
             simulatorDeviceService,
             simulatorDeviceLeaseRenewals,
+            getAccountSettings: opts?.getAccountSettings ?? null,
         });
 
         const transport = new StreamableHTTPServerTransport({
@@ -164,8 +184,13 @@ export async function startHappyServer(
         }
     });
 
-    const baseUrl = await new Promise<URL>((resolve) => {
-        server.listen(0, "127.0.0.1", () => {
+    const requestedPort = typeof opts?.requestedPort === 'number' && Number.isInteger(opts.requestedPort) && opts.requestedPort > 0
+        ? opts.requestedPort
+        : 0;
+    const baseUrl = await new Promise<URL>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(requestedPort, "127.0.0.1", () => {
+            server.off('error', reject);
             const addr = server.address() as AddressInfo;
             resolve(new URL(`http://127.0.0.1:${addr.port}`));
         });

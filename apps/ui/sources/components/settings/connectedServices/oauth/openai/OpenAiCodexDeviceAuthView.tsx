@@ -1,8 +1,6 @@
 import * as React from 'react';
 import { Linking, Pressable, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import tweetnacl from 'tweetnacl';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 import { Typography } from '@/constants/Typography';
@@ -28,11 +26,14 @@ import {
 import {
   pollOpenAiCodexDeviceAuthViaProxy,
   startOpenAiCodexDeviceAuthViaProxy,
+  type OpenAiCodexDeviceAuthStartResponse,
 } from '@/sync/api/account/apiConnectedServicesV2';
 import { buildOauthRecordFromProxyPayload, parseConnectedServiceOauthProxyBundle } from '@/sync/domains/connectedServices/oauth/connectedServiceOauthProxyBundle';
 import { resolveConnectedServiceOauthErrorMessage } from '../resolveConnectedServiceOauthErrorMessage';
 import { storeConnectedServiceCredentialWithIdentityConfirmation } from '../../storeConnectedServiceCredentialWithIdentityConfirmation';
 import { runConnectedServiceCredentialStoredEffects } from '../../runConnectedServiceCredentialStoredEffects';
+import { Icon } from '@/components/ui/icons/Icon';
+import { createConnectedServiceOauthExchangeKeyPair } from '@/sync/domains/connectedServices/oauth/createConnectedServiceOauthExchangeKeyPair';
 
 function asStringParam(value: unknown): string {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : '';
@@ -63,17 +64,12 @@ export const OpenAiCodexDeviceAuthView = React.memo(function OpenAiCodexDeviceAu
     return auth.credentials;
   };
 
-  const keyPairRef = React.useRef<tweetnacl.BoxKeyPair | null>(null);
+  const keyPairRef = React.useRef<ReturnType<typeof createConnectedServiceOauthExchangeKeyPair> | null>(null);
   if (!keyPairRef.current) {
-    keyPairRef.current = tweetnacl.box.keyPair();
+    keyPairRef.current = createConnectedServiceOauthExchangeKeyPair();
   }
 
-  const [deviceAuth, setDeviceAuth] = React.useState<null | Readonly<{
-    deviceAuthId: string;
-    userCode: string;
-    intervalMs: number;
-    verificationUrl: string;
-  }>>(null);
+  const [deviceAuth, setDeviceAuth] = React.useState<OpenAiCodexDeviceAuthStartResponse | null>(null);
 
   const [starting, setStarting] = React.useState(false);
   const [polling, setPolling] = React.useState(false);
@@ -147,14 +143,10 @@ export const OpenAiCodexDeviceAuthView = React.memo(function OpenAiCodexDeviceAu
       setError(null);
       try {
         const credentials = ensureCredentials();
-        const publicKey = encodeBase64(keyPairRef.current!.publicKey, 'base64url');
-
         while (!cancelledRef.current) {
           const polled = await pollOpenAiCodexDeviceAuthViaProxy(credentials, {
-            publicKey,
-            deviceAuthId: deviceAuth.deviceAuthId,
-            userCode: deviceAuth.userCode,
-            intervalMs: deviceAuth.intervalMs,
+            auth: deviceAuth,
+            publicKey: encodeBase64(keyPairRef.current!.publicKey, 'base64url'),
           });
 
           if (cancelledRef.current) return;
@@ -256,8 +248,8 @@ export const OpenAiCodexDeviceAuthView = React.memo(function OpenAiCodexDeviceAu
                 { borderColor: theme.colors.border.default, backgroundColor: theme.colors.surface.elevated },
               ]}
             >
-              <Ionicons
-                name={copied ? 'checkmark-outline' : 'copy-outline'}
+              <Icon
+                name={copied ? 'check' : 'copy'}
                 size={14}
                 color={copied ? (theme.colors.state.success.foreground ?? theme.colors.text.secondary) : theme.colors.text.secondary}
               />
@@ -326,7 +318,7 @@ export const OpenAiCodexDeviceAuthView = React.memo(function OpenAiCodexDeviceAu
             testID="connectedServices.deviceAuth.switchMethodItem"
             title={props.fallbackAction.title}
             subtitle={props.fallbackAction.subtitle}
-            icon={<Ionicons name="swap-horizontal-outline" size={22} color={theme.colors.accent.blue} />}
+            icon={<Icon name="arrows-left-right" size={20} color={theme.colors.accent.blue} />}
             onPress={props.fallbackAction.onPress}
           />
         </ItemGroup>

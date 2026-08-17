@@ -1,18 +1,17 @@
 import * as React from 'react';
-import { View, Platform, Pressable } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Pressable } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { ToolStatusIndicator } from '@/components/tools/shell/presentation/ToolStatusIndicator';
 
 import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 import { t } from '@/text';
+import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { Text } from '@/components/ui/text/Text';
 import { collectSubAgentSummaryTools } from './collectSubAgentSummaryTools';
 import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
-
 
 type TaskOperation = 'run' | 'create' | 'list' | 'update' | 'unknown';
 
@@ -122,11 +121,11 @@ export const SubAgentSummarySection = React.memo<{
     detailLevel?: 'title' | 'summary' | 'full';
     sessionId?: string;
     messageId?: string;
+    interaction?: TranscriptInteraction;
     opts?: Readonly<{
         hideResultInlineWhenBackgroundRun?: boolean;
     }>;
-}>(function SubAgentSummarySection({ tool, metadata, messages, detailLevel = 'summary', sessionId, messageId, opts }) {
-    const { theme } = useUnistyles();
+}>(function SubAgentSummarySection({ tool, metadata, messages, detailLevel = 'summary', sessionId, messageId, interaction, opts }) {
     const styles = stylesheet;
     const router = useRouter();
 
@@ -141,13 +140,15 @@ export const SubAgentSummarySection = React.memo<{
         });
     }, [messageId, tool.id]);
 
-    const canOpenDetails = Boolean(sessionId && routeMessageId) && detailLevel !== 'full';
+    const canOpenDetails = Boolean(sessionId && routeMessageId)
+        && detailLevel !== 'full'
+        && interaction?.disableToolNavigation !== true;
     const handleOpenDetails = React.useCallback(() => {
-        if (!sessionId || !routeMessageId) return;
+        if (!sessionId || !routeMessageId || interaction?.disableToolNavigation === true) return;
         navigateWithBlurOnWeb(() => {
             router.push(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(routeMessageId)}`);
         });
-    }, [routeMessageId, router, sessionId]);
+    }, [interaction?.disableToolNavigation, routeMessageId, router, sessionId]);
 
     if (detailLevel === 'title') return null;
 
@@ -208,15 +209,15 @@ export const SubAgentSummarySection = React.memo<{
                 <View key={`${item.tool.name}-${index}`} testID="task-like-summary-tool-item" style={styles.toolItem}>
                     <Text style={styles.toolTitle}>{item.title}</Text>
                     <View style={styles.statusContainer}>
-                        {item.state === 'running' && (
-                            <ActivitySpinner size={Platform.OS === 'ios' ? 'small' : 14} color={theme.colors.state.neutral.foreground} />
-                        )}
-                        {item.state === 'completed' && (
-                            <Ionicons name="checkmark-circle" size={16} color={theme.colors.state.success.foreground} />
-                        )}
-                        {item.state === 'error' && (
-                            <Ionicons name="close-circle" size={16} color={theme.colors.state.danger.foreground} />
-                        )}
+                        {/*
+                          * A summary row shows the status of a TOOL CALL, so it takes the same mark
+                          * every other tool row in the transcript takes. The three-arm switch this
+                          * replaces read `ToolCall.state` alone and was wrong twice over: a tool
+                          * that completed with an error result showed a green check, and a tool
+                          * held at an open permission prompt showed a spinner claiming progress.
+                          * `resolveToolStatusIndicatorKind` already owns both facts.
+                          */}
+                        <ToolStatusIndicator tool={item.tool} />
                     </View>
                 </View>
             ))}

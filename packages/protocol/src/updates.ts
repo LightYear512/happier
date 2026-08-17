@@ -1,9 +1,20 @@
 import { z } from 'zod';
+import { AccountSettingsV2GetResponseSchema } from './account/settings/accountSettingsApiV2.js';
 import { DirectTranscriptRawMessageV1Schema } from './directSessions/daemonRpcV1.js';
 import { ExecutionRunPublicStateSchema } from './executionRuns.js';
+import {
+  SessionMessageAttentionImpactSchema,
+} from './sessionMessages/transcriptRawRecordV1.js';
 import { SessionMessageRoleSchema } from './sessionMessages/sessionMessageRole.js';
 import { SessionStoredMessageContentSchema } from './sessionMessages/sessionStoredMessageContent.js';
+import { SessionTranscriptObservationProvenanceV1Schema } from './sessionMessages/transcriptObservationV1.js';
+import { SessionMessageDeliveryResolutionV1Schema } from './sessionMessages/sessionMessageDeliveryResolutionV1.js';
 import { PrimaryTurnStatusV1Schema, SessionRuntimeIssueV1Schema } from './sessions/control/runtimeIssueV1.js';
+import {
+  parseSessionRuntimeActivityProjectionFields,
+  SessionRuntimeActivityActiveCountSchema,
+  SessionRuntimeActivityStateSchema,
+} from './sessionRuntimeActivity/projection.js';
 
 const TimestampMsSchema = z.number().int().min(0);
 const Base64Schema = z.string();
@@ -31,8 +42,13 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
         localId: z.string().nullable(),
         sidechainId: z.string().nullable().optional(),
         messageRole: SessionMessageRoleMetadataSchema,
+        attentionImpact: SessionMessageAttentionImpactSchema.optional(),
         createdAt: TimestampMsSchema,
         updatedAt: TimestampMsSchema,
+        sourceCreatedAt: TimestampMsSchema.optional(),
+        sourceUpdatedAt: TimestampMsSchema.optional(),
+        transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
+        deliveryResolution: SessionMessageDeliveryResolutionV1Schema.optional(),
       })
       .passthrough(),
   }).passthrough(),
@@ -47,8 +63,13 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
         localId: z.string().nullable(),
         sidechainId: z.string().nullable().optional(),
         messageRole: SessionMessageRoleMetadataSchema,
+        attentionImpact: SessionMessageAttentionImpactSchema.optional(),
         createdAt: TimestampMsSchema,
         updatedAt: TimestampMsSchema,
+        sourceCreatedAt: TimestampMsSchema.optional(),
+        sourceUpdatedAt: TimestampMsSchema.optional(),
+        transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
+        deliveryResolution: SessionMessageDeliveryResolutionV1Schema.optional(),
       })
       .passthrough(),
   }).passthrough(),
@@ -66,6 +87,10 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     createdAt: TimestampMsSchema,
     updatedAt: TimestampMsSchema,
     meaningfulActivityAt: TimestampMsSchema.optional(),
+    runtimeActivityState: SessionRuntimeActivityStateSchema.optional(),
+    runtimeActivityActiveCount: SessionRuntimeActivityActiveCountSchema.optional(),
+    runtimeActivityObservedAt: TimestampMsSchema.nullable().optional(),
+    runtimeActivityRevision: z.number().int().nonnegative().safe().optional(),
   }).passthrough(),
   z.object({
     t: z.literal('update-session'),
@@ -84,6 +109,10 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
     latestTurnStatusObservedAt: TimestampMsSchema.nullable().optional(),
     lastRuntimeIssue: SessionRuntimeIssueV1Schema.nullable().optional(),
+    runtimeActivityState: SessionRuntimeActivityStateSchema.optional(),
+    runtimeActivityActiveCount: SessionRuntimeActivityActiveCountSchema.optional(),
+    runtimeActivityObservedAt: TimestampMsSchema.nullable().optional(),
+    runtimeActivityRevision: z.number().int().nonnegative().safe().optional(),
     meaningfulActivityAt: TimestampMsSchema.optional(),
     archivedAt: TimestampMsSchema.nullable().optional(),
   }).passthrough(),
@@ -93,8 +122,10 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     sessionId: z.string().optional(),
     pendingVersion: z.number().int().min(0),
     pendingCount: z.number().int().min(0),
+    pendingBlockedCount: z.number().int().min(0).optional(),
     meaningfulActivityAt: TimestampMsSchema.optional(),
     changedByAccountId: z.string().optional(),
+    pendingActivationRequestId: z.string().trim().min(1).optional(),
   }).passthrough(),
   z.object({
     t: z.literal('automation-upsert'),
@@ -133,6 +164,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('update-account'),
     id: z.string(),
+    settingsV2: AccountSettingsV2GetResponseSchema.nullable().optional(),
   }).passthrough(),
   z.object({
     t: z.literal('account-settings-changed'),
@@ -256,7 +288,18 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     t: z.literal('public-share-deleted'),
     sessionId: z.string(),
   }).passthrough(),
-]);
+]).superRefine((value, context) => {
+  if (value.t !== 'new-session' && value.t !== 'update-session') return;
+
+  const projection = parseSessionRuntimeActivityProjectionFields(value);
+  if (projection.kind === 'invalid') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Runtime Activity projection fields must form one complete valid tuple',
+      path: ['runtimeActivityState'],
+    });
+  }
+});
 
 export type UpdateBody = z.infer<typeof UpdateBodySchema>;
 
@@ -274,6 +317,34 @@ export const TranscriptStreamSegmentEphemeralMessageSchema = z.object({
   sidechainId: z.string().nullable().optional(),
   content: SessionStoredMessageContentSchema,
   messageRole: SessionMessageRoleMetadataSchema,
+  /**
+   * Live-stream tick this full snapshot corresponds to (per-segment, monotonically increasing
+   * across all live emissions). Checkpoint/resync anchor for `transcript-stream-segment-delta`
+   * chaining. Optional: absent from older CLIs and stripped by older servers.
+   */
+  tick: z.number().int().min(0).optional(),
+  createdAt: TimestampMsSchema,
+  updatedAt: TimestampMsSchema,
+}).passthrough();
+
+/**
+ * Delta form of the live transcript segment stream.
+ *
+ * `content` is the same stored-message envelope as the snapshot form (encrypted or plain), but the
+ * ACP body inside carries ONLY the text appended since the previous live emission for this segment.
+ * Receivers reconstruct the accumulated text from per-segment assembly state and MUST drop the
+ * delta (and wait for the next full-snapshot checkpoint) on any gap: unknown segment, unexpected
+ * `tick`, or `baseLength` mismatch.
+ */
+export const TranscriptStreamSegmentDeltaEphemeralMessageSchema = z.object({
+  localId: z.string().min(1),
+  sidechainId: z.string().nullable().optional(),
+  content: SessionStoredMessageContentSchema,
+  messageRole: SessionMessageRoleMetadataSchema,
+  /** Per-segment live emission sequence (1-based, includes snapshot emissions). */
+  tick: z.number().int().min(1),
+  /** Accumulated text length (UTF-16 code units) BEFORE applying this delta. */
+  baseLength: z.number().int().min(0),
   createdAt: TimestampMsSchema,
   updatedAt: TimestampMsSchema,
 }).passthrough();
@@ -301,6 +372,12 @@ export const DirectSessionTranscriptDeltaEphemeralSchema = z.object({
 });
 
 export const EphemeralUpdateSchema = z.discriminatedUnion('type', [
+  // Hottest live event first: delta ticks stream at the live cadence (~25Hz per active segment).
+  z.object({
+    type: z.literal('transcript-stream-segment-delta'),
+    sessionId: z.string(),
+    message: TranscriptStreamSegmentDeltaEphemeralMessageSchema,
+  }).passthrough(),
   z.object({
     type: z.literal('activity'),
     id: z.string(),

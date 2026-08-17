@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AcpBackend } from '@/agent/acp/AcpBackend';
-import { createAcpRuntime } from '@/agent/acp/runtime/createAcpRuntime';
+import { createTestAcpRuntime as createAcpRuntime } from '@/testkit/backends/acpRuntime';
 import { ApiSessionClient } from '@/api/session/sessionClient';
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
@@ -242,8 +242,6 @@ function createFastOpenCodeTransportHandler() {
 }
 
 describe('runPermissionModePromptLoop with ApiSessionClient idle snapshot refresh', () => {
-  const originalIdleWakePollIntervalMs = configuration.pendingQueueIdleWakePollIntervalMs;
-
   beforeEach(() => {
     sessionSocketStub = createApiSessionSocketStub({
       id: 'session-socket',
@@ -255,12 +253,10 @@ describe('runPermissionModePromptLoop with ApiSessionClient idle snapshot refres
       connected: false,
       emitWithAckResult: { ok: true },
     });
-    (configuration as any).pendingQueueIdleWakePollIntervalMs = 10;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    (configuration as any).pendingQueueIdleWakePollIntervalMs = originalIdleWakePollIntervalMs;
     sessionSocketStub = null;
     userSocketStub = null;
   });

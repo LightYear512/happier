@@ -13,12 +13,16 @@ import {
     getSessionName,
     getSessionStatus,
     getSessionSubtitle,
-    SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
-    isFreshTimestamp,
 } from '@/utils/sessions/sessionUtils';
 import {
-    readSessionRuntimePresentationFreshnessTimestamps,
+    resolveNextSessionRuntimePresentationFreshnessAtMs,
 } from '@/sync/domains/session/attention/deriveSessionRuntimePresentationState';
+import { countSessionAgentActivityFromMetadata } from '@/sync/domains/session/agentActivity/countSessionAgentActivityFromMetadata';
+import type { AgentActivityCounts } from '@/sync/domains/session/agentActivity/deriveAgentActivityCounts';
+import {
+    formatSessionAgentActivityLabel,
+    resolveSessionActivityComposerTranslate,
+} from '@/components/sessions/workState/sessionActivityPresentation';
 import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime';
 import { t } from '@/text';
 import { sessionTagKey } from '../sessionTagUtils';
@@ -58,12 +62,26 @@ function normalizeFiniteTimestamp(value: unknown): number | null {
         : null;
 }
 
+function normalizeFiniteCount(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(0, Math.trunc(value))
+        : null;
+}
+
 function readPendingCount(snapshot: Partial<SessionListRowStateSnapshot>, session: SessionStatusSource): number {
     const pendingMessages = snapshot.pending?.messages;
     if (Array.isArray(pendingMessages)) return pendingMessages.length;
     const renderableCount = (session as SessionListRenderableSession).pendingCount;
-    if (typeof renderableCount === 'number' && Number.isFinite(renderableCount)) {
-        return Math.max(0, Math.trunc(renderableCount));
+    return normalizeFiniteCount(renderableCount) ?? 0;
+}
+
+function readPendingBlockedCount(snapshot: Partial<SessionListRowStateSnapshot>, session: SessionStatusSource): number {
+    const renderableCount = (session as SessionListRenderableSession).pendingBlockedCount ?? (session as Session).pendingBlockedCount;
+    const normalizedRenderableCount = normalizeFiniteCount(renderableCount);
+    if (normalizedRenderableCount !== null) return normalizedRenderableCount;
+    const pendingMessages = snapshot.pending?.messages;
+    if (Array.isArray(pendingMessages)) {
+        return pendingMessages.reduce((count, message) => message.pendingDeliveryStatus === 'blocked' ? count + 1 : count, 0);
     }
     return 0;
 }
@@ -112,6 +130,9 @@ function resolveSessionListRowSession(
         rowRenderable.hasPendingUserActionRequests === true || storeSession.hasPendingUserActionRequests === true;
     const keepVisibleWhenInactive =
         rowRenderable.keepVisibleWhenInactive === true || storeSession.keepVisibleWhenInactive === true;
+    const rowPendingBlockedCount = normalizeFiniteCount(rowRenderable.pendingBlockedCount);
+    const storePendingBlockedCount = normalizeFiniteCount(storeSession.pendingBlockedCount);
+    const pendingBlockedCount = storePendingBlockedCount ?? rowPendingBlockedCount;
     const meaningfulActivityAt =
         typeof rowRenderable.meaningfulActivityAt === 'number'
         && Number.isFinite(rowRenderable.meaningfulActivityAt)
@@ -126,6 +147,7 @@ function resolveSessionListRowSession(
         hasPendingPermissionRequests === storeSession.hasPendingPermissionRequests
         && hasPendingUserActionRequests === storeSession.hasPendingUserActionRequests
         && keepVisibleWhenInactive === storeSession.keepVisibleWhenInactive
+        && pendingBlockedCount === normalizeFiniteCount(storeSession.pendingBlockedCount)
         && meaningfulActivityAt === (storeSession.meaningfulActivityAt ?? null)
     ) {
         return storeSession;
@@ -136,6 +158,7 @@ function resolveSessionListRowSession(
         hasPendingPermissionRequests,
         hasPendingUserActionRequests,
         keepVisibleWhenInactive,
+        ...(pendingBlockedCount === null ? {} : { pendingBlockedCount }),
         meaningfulActivityAt,
     };
 }
@@ -175,16 +198,23 @@ function resolveHasUnreadMessages(
     return (session as SessionListRenderableSession).hasUnreadMessages === true;
 }
 
+/**
+ * What agent work is live, from whichever shape of session this row was handed.
+ *
+ * A renderable-backed row carries the tally already projected (see `SessionListRenderableMetadata`),
+ * which is the path every virtualized list row takes. A row backed by a full store session — the
+ * fallback when no renderable exists — computes it from real metadata through the same owner, so the
+ * two paths cannot produce different numbers.
+ */
+function readSessionAgentActivityCounts(session: SessionStatusSource): AgentActivityCounts {
+    const projected = (session as SessionListRenderableSession).metadata?.agentActivityCounts;
+    if (projected) return projected;
+    return countSessionAgentActivityFromMetadata((session as Session).metadata);
+}
+
 function resolveNextRuntimeFreshnessAtMs(session: SessionStatusSource, nowMs: number): number | null {
     if (session.active !== true || session.presence !== 'online') return null;
-
-    const expirations: number[] = [];
-    const addExpiration = (timestamp: number | null | undefined) => {
-        if (!isFreshTimestamp(timestamp, nowMs, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS)) return;
-        expirations.push(Math.trunc(timestamp as number) + SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS);
-    };
-
-    for (const timestamp of readSessionRuntimePresentationFreshnessTimestamps({
+    return resolveNextSessionRuntimePresentationFreshnessAtMs({
         active: session.active,
         activeAt: session.activeAt,
         presence: session.presence,
@@ -192,15 +222,14 @@ function resolveNextRuntimeFreshnessAtMs(session: SessionStatusSource, nowMs: nu
         thinkingAt: session.thinkingAt,
         latestTurnStatus: session.latestTurnStatus,
         latestTurnStatusObservedAt: session.latestTurnStatusObservedAt,
+        runtimeActivityState: session.runtimeActivityState,
+        runtimeActivityActiveCount: session.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: session.runtimeActivityObservedAt,
+        runtimeActivityRevision: session.runtimeActivityRevision,
         hasPendingPermissionRequests: (session as SessionListRenderableSession).hasPendingPermissionRequests === true,
         hasPendingUserActionRequests: (session as SessionListRenderableSession).hasPendingUserActionRequests === true,
         pendingRequestObservedAt: (session as SessionListRenderableSession).pendingRequestObservedAt ?? null,
-    }, nowMs)) {
-        addExpiration(timestamp);
-    }
-
-    if (expirations.length === 0) return null;
-    return Math.min(...expirations);
+    }, nowMs);
 }
 
 function buildStatusSignature(status: ReturnType<typeof getSessionStatus>, nextRuntimeFreshnessAtMs: number | null): string {
@@ -272,10 +301,12 @@ export function buildSessionListRowModel(input: BuildSessionListRowModelInput): 
         statusColors: settings.statusColors,
     });
     const pendingCount = readPendingCount(input.state ?? {}, resolvedSession);
+    const pendingBlockedCount = readPendingBlockedCount(input.state ?? {}, resolvedSession);
     const hasUnreadMessages = resolveHasUnreadMessages(input.state ?? {}, resolvedSession);
     const attentionState = deriveSessionListAttentionState({
         hasUnreadMessages,
         pendingCount,
+        pendingBlockedCount,
         sessionState: status.state,
         latestTurnStatus: resolvedSession.latestTurnStatus ?? null,
         latestTurnStatusObservedAt: normalizeFiniteTimestamp(resolvedSession.latestTurnStatusObservedAt),
@@ -294,7 +325,21 @@ export function buildSessionListRowModel(input: BuildSessionListRowModelInput): 
             ?? null,
         lastViewedSessionSeq: resolveLastViewedSessionSeq(resolvedSession) ?? null,
     });
-    const rowAttentionState = resolveSessionRowAttentionState(attentionState);
+    const derivedRowAttentionState = resolveSessionRowAttentionState(attentionState);
+    // Retained working placement holds the session in the working group while
+    // its live signals are stale. Present it as a PAUSED working row (working
+    // indicator without animation) unless a more alerting state applies —
+    // otherwise the user sees a session in the working group with no
+    // indicator at all.
+    const presentsRetainedWorking = item.workingPlacementReason === 'working-retained'
+        && (
+            derivedRowAttentionState === 'quiet'
+            || derivedRowAttentionState === 'unread'
+            || derivedRowAttentionState === 'pending'
+        );
+    const rowAttentionState = presentsRetainedWorking
+        ? 'working'
+        : derivedRowAttentionState;
     const secondaryLineGroupKind = item.groupKind === 'folder' ? 'project' : item.groupKind;
     const secondaryLineMode = resolveSessionListSecondaryLineMode({ groupKind: secondaryLineGroupKind });
     const { subtitle, subtitleEllipsizeMode } = resolveRowSubtitle({
@@ -307,7 +352,19 @@ export function buildSessionListRowModel(input: BuildSessionListRowModelInput): 
         density: settings.density,
         requestedSecondaryLineMode: secondaryLineMode,
         hasPathSubtitle: subtitle.trim().length > 0,
+        workingRetained: presentsRetainedWorking,
+        backgroundActive: status.state === 'background_active',
     });
+    // Absent unless the person asked for it (R-8): the row model always carries the field so a host
+    // cannot invent a second way to get the sentence, and the setting decides whether it is drawn.
+    // Composed through the composer chip's own owner, so a row and the session it opens onto cannot
+    // describe the same workflow differently.
+    const agentActivityLabel = settings.agentActivityCountEnabled
+        ? formatSessionAgentActivityLabel(
+            readSessionAgentActivityCounts(resolvedSession),
+            resolveSessionActivityComposerTranslate(),
+        )
+        : null;
     const nextRuntimeFreshnessAtMs = resolveNextRuntimeFreshnessAtMs(resolvedSession, settings.runtimeNowMs);
     const isArchived = resolvedSession.archivedAt != null;
     const isPinned = item.pinned === true || settings.pinnedSessionKeys.includes(rowKey);
@@ -331,6 +388,7 @@ export function buildSessionListRowModel(input: BuildSessionListRowModelInput): 
             rowState: rowAttentionState,
         },
         presentation,
+        workingIndicatorPaused: presentsRetainedWorking,
         activity: {
             mode: activityMode,
             timestamp: activityTimestamp,
@@ -363,6 +421,8 @@ export function buildSessionListRowModel(input: BuildSessionListRowModelInput): 
         isActive: resolvedSession.active === true,
         hasUnreadMessages,
         pendingCount,
+        pendingBlockedCount,
+        agentActivityLabel,
         tags: settings.sessionTagsByKey[rowKey] ?? [],
         allKnownTags: settings.allKnownTags,
         tagsEnabled: settings.tagsEnabled,

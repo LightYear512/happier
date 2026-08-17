@@ -15,6 +15,7 @@ const SAFE_RESPAWN_ENVIRONMENT_VARIABLE_KEYS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME
 const DAEMON_OWNERSHIP_ENVIRONMENT_VARIABLE_KEYS = [
   'HAPPIER_HOME_DIR',
   'HAPPIER_ACTIVE_SERVER_ID',
+  'HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID',
   'HAPPIER_SERVER_URL',
   'HAPPIER_WEBAPP_URL',
   'HAPPIER_PUBLIC_SERVER_URL',
@@ -35,14 +36,17 @@ export type HappyProcessInfo = {
   daemonOwnershipEnvironmentVariables?: DaemonOwnershipEnvironmentVariables;
 };
 
-type RawProcessInfo = {
+export type ProcessInfoByPid = {
   pid: number;
+  stat?: string;
   name?: string;
   cmd?: string;
   cwd?: string;
   environmentVariables?: Record<string, string>;
   daemonOwnershipEnvironmentVariables?: DaemonOwnershipEnvironmentVariables;
 };
+
+type RawProcessInfo = ProcessInfoByPid;
 
 function parseEnvironmentEntries(entries: readonly string[]): Array<readonly [string, string]> {
   return entries.flatMap((entry) => {
@@ -237,19 +241,28 @@ function getProcessInfoByPidPosix(pid: number): RawProcessInfo | null {
   if (process.platform === 'linux' || process.platform === 'win32') return null;
 
   try {
-    const name = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], {
+    const output = execFileSync('ps', ['-o', 'stat=,ucomm=,command=', '-p', String(pid)], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    const line = output
+      .split('\n')
+      .map((entry) => entry.trim())
+      .find((entry) => entry.length > 0);
+    if (!line) return null;
 
-    if (!name && !cmd) return null;
+    const match = /^(\S+)\s+(\S+)\s+(.*)$/.exec(line) ?? /^(\S+)\s+(\S+)$/.exec(line);
+    if (!match) return null;
+
+    const stat = match[1]?.trim() ?? '';
+    const name = match[2]?.trim() ?? '';
+    const cmd = match[3]?.trim() || name;
+
+    if (!stat || (!name && !cmd)) return null;
     const daemonOwnershipEnvironmentVariables = readDaemonOwnershipEnvironmentVariablesFromPosixPs(pid);
     return {
       pid,
+      stat,
       ...(name ? { name } : {}),
       ...(cmd ? { cmd } : {}),
       ...(daemonOwnershipEnvironmentVariables
@@ -259,6 +272,18 @@ function getProcessInfoByPidPosix(pid: number): RawProcessInfo | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Canonical cross-platform PID inspection for callers that need the live executable/command line.
+ * Platform-specific retrieval stays here so lifecycle and provider code do not grow competing
+ * `ps`/procfs/CIM readers with divergent failure behavior.
+ */
+export async function readProcessInfoByPid(pid: number): Promise<ProcessInfoByPid | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return await getProcessInfoByPidProcfs(pid)
+    ?? getProcessInfoByPidPosix(pid)
+    ?? await getProcessInfoByPidWindows(pid);
 }
 
 /**
@@ -277,6 +302,9 @@ export function classifyHappyProcess(proc: RawProcessInfo): HappyProcessInfo | n
       (normalizedCommand.includes('/.project/logs/e2e/') || normalizedCommand.includes('/.project/tmp/')) &&
       /\/cli-[^/\s]+\/src\/index\.ts(?:\s|$)/.test(normalizedCommand)
     );
+  const isRunnerSnapshotCommand =
+    /\/\.runner-snapshots\/[^/\s]+\/index\.mjs(?:\s|$)/.test(normalizedCommand) ||
+    /\/dist\/\.runner-snapshots\/[^/\s]+\/index\.mjs(?:\s|$)/.test(normalizedCommand);
 
   // NOTE: Be intentionally strict here. This classification is used for PID reuse safety
   // (reattach + stopSession). A false positive could cause us to adopt/kill a non-Happy process.
@@ -286,6 +314,7 @@ export function classifyHappyProcess(proc: RawProcessInfo): HappyProcessInfo | n
         normalizedCommand.includes('dist/index.mjs') ||
         normalizedCommand.includes('package-dist/index.mjs') ||
         normalizedCommand.includes('bin/happier.mjs') ||
+        isRunnerSnapshotCommand ||
         // Some runtime handoff paths execute snapshot `src/index.ts` directly under `node`
         // (without the tsx import hook), so keep this as a first-class Happy process shape.
         isCliSourceSnapshotCommand ||
@@ -404,17 +433,9 @@ function classifyRawProcessByPid(proc: RawProcessInfo): ProcessByPidClassificati
 }
 
 export async function classifyProcessByPid(pid: number): Promise<ProcessByPidClassification> {
-  const procfs = await getProcessInfoByPidProcfs(pid);
-  if (procfs) {
-    return classifyRawProcessByPid(procfs);
-  }
-  const posixProc = getProcessInfoByPidPosix(pid);
-  if (posixProc) {
-    return classifyRawProcessByPid(posixProc);
-  }
-  const windowsProc = await getProcessInfoByPidWindows(pid);
-  if (windowsProc) {
-    return classifyRawProcessByPid(windowsProc);
+  const processInfo = await readProcessInfoByPid(pid);
+  if (processInfo) {
+    return classifyRawProcessByPid(processInfo);
   }
   const all = await findAllHappyProcesses();
   const happy = all.find((p) => p.pid === pid);

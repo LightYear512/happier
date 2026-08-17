@@ -1,6 +1,12 @@
 import { vi } from 'vitest';
 
-import { DEFAULT_PETS_CAPABILITIES, DEFAULT_SESSION_CAPABILITIES, type FeaturesResponse } from '@happier-dev/protocol';
+import {
+    CURRENT_PENDING_INPUT_PROTOCOL_VERSION,
+    SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
+    DEFAULT_PETS_CAPABILITIES,
+    DEFAULT_SESSION_CAPABILITIES,
+    type FeaturesResponse,
+} from '@happier-dev/protocol';
 
 type FixtureOverrides = {
     friendsEnabled?: boolean;
@@ -104,6 +110,7 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 public: { enabled: true },
                 contentKeys: { enabled: true },
                 pendingQueueV2: { enabled: false },
+                pendingDeliveryState: { enabled: false },
             },
             sessions: {
                 enabled: false,
@@ -171,6 +178,16 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
             },
         },
         capabilities: {
+            connectedServices: { credentialDelete: { revisionGuard: false } },
+            session: {
+                ...DEFAULT_SESSION_CAPABILITIES,
+                runtimeActivity: {
+                    protocolVersion: SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
+                },
+                pendingInput: {
+                    protocolVersion: CURRENT_PENDING_INPUT_PROTOCOL_VERSION,
+                },
+            },
             bugReports: {
                 providerUrl: 'https://reports.happier.dev',
                 defaultIncludeDiagnostics: true,
@@ -186,6 +203,12 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 disabledByBuildPolicy: false,
             },
             pets: DEFAULT_PETS_CAPABILITIES,
+            sharing: {
+                pendingQueueV2: {
+                    deliveryState: false,
+                    deliveryBlockedReason: false,
+                },
+            },
             encryption: {
                 storagePolicy: 'required_e2ee',
                 allowAccountOptOut: false,
@@ -211,7 +234,6 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
             oauth: {
                 providers: oauthProviders,
             },
-            session: DEFAULT_SESSION_CAPABILITIES,
             auth: {
                 methods: [],
                 signup: { methods: [{ id: 'anonymous', enabled: true }] },

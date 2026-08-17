@@ -2,6 +2,7 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { buildCodexAgentRuntimeDescriptor } from '@happier-dev/agents';
 import { renderScreen } from '@/dev/testkit';
 
 import {
@@ -20,6 +21,7 @@ const modalSpies = vi.hoisted(() => ({
     prompt: vi.fn(),
     confirm: vi.fn(),
     alert: vi.fn(),
+    show: vi.fn((_config: unknown) => 'modal-id'),
 }));
 const textSpies = vi.hoisted(() => ({
     translate: vi.fn((key: string, _params?: Record<string, unknown>) => key),
@@ -57,6 +59,18 @@ const profileState = vi.hoisted(() => ({
                 ],
             },
         ],
+    } as {
+        connectedServicesV2: Array<{
+            serviceId: string;
+            profiles: Array<{ profileId: string; status: string; providerEmail: string }>;
+            groups?: Array<{
+                groupId: string;
+                displayName: string;
+                activeProfileId: string;
+                generation: number;
+                memberProfileIds: string[];
+            }>;
+        }>;
     },
 }));
 
@@ -69,8 +83,13 @@ const settingsState = vi.hoisted(() => ({
     },
 }));
 
+const machineSessionState = vi.hoisted(() => ({
+    machines: [] as ReadonlyArray<Record<string, unknown>>,
+    sessions: null as ReadonlyArray<Record<string, unknown>> | null,
+}));
+
 const authoritativeGroupState = vi.hoisted(() => ({
-    groups: [] as unknown[],
+    groups: [] as ReturnType<typeof createAuthoritativeGroup>[],
 }));
 
 // AccountBlock is owned by another lane; render a passthrough that surfaces the
@@ -176,6 +195,7 @@ installConnectedServicesCommonModuleMocks({
                 prompt: modalSpies.prompt,
                 confirm: modalSpies.confirm,
                 alert: modalSpies.alert,
+                show: modalSpies.show,
             },
         }).module;
     },
@@ -199,6 +219,17 @@ vi.mock('@/sync/store/hooks', async () => {
         ...actual,
         useProfile: () => profileState.current,
         useSettings: () => settingsState.current,
+        useAllMachines: () => machineSessionState.machines,
+    };
+});
+
+vi.mock('@/sync/domains/state/storage', async () => {
+    const actual = await vi.importActual<typeof import('@/sync/domains/state/storage')>('@/sync/domains/state/storage');
+    return {
+        ...actual,
+        useAllMachines: () => machineSessionState.machines,
+        useProfile: () => profileState.current,
+        useSessions: () => machineSessionState.sessions,
     };
 });
 
@@ -207,6 +238,7 @@ vi.mock('@/sync/sync', () => ({
 }));
 
 vi.mock('@/sync/api/account/apiConnectedServiceAuthGroupsV3', () => authGroupApiSpies);
+
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => {
     const ReactModule = require('react');
@@ -225,15 +257,79 @@ type AccountBlockNodeProps = {
     profileId: string;
     title?: string;
     identityLabel?: string | null;
+    status?: string;
     variant?: string;
     enabled?: boolean;
     onToggleEnabled?: (next: boolean) => void;
     isDefault?: boolean;
     isActive?: boolean;
     onSetActive?: () => void;
-    actions?: ReadonlyArray<{ id: string; disabled?: boolean; onPress?: () => void }>;
+    actions?: ReadonlyArray<{ id: string; disabled?: boolean; onPress?: () => void; subtitle?: string }>;
     reorderGesture?: ReorderGesture | null;
 };
+
+function onlineMachine(id: string) {
+    return {
+        id,
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        active: true,
+        activeAt: Date.now(),
+        revokedAt: null,
+        metadata: {
+            host: id,
+            platform: 'darwin',
+            happyCliVersion: '0.0.0',
+            happyHomeDir: '/tmp/happier',
+            homeDir: '/Users/test',
+        },
+        metadataVersion: 1,
+        daemonState: null,
+        daemonStateVersion: 1,
+    };
+}
+
+function connectedServiceGroupSession(params: Readonly<{
+    id: string;
+    machineId: string;
+    groupId: string;
+}>) {
+    return {
+        id: params.id,
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        active: true,
+        activeAt: 1,
+        presence: 'online',
+        metadataVersion: 1,
+        agentStateVersion: 1,
+        thinking: false,
+        thinkingAt: 0,
+        metadata: {
+            path: '/repo',
+            machineId: params.machineId,
+            agentRuntimeDescriptorV1: buildCodexAgentRuntimeDescriptor({
+                backendMode: 'appServer',
+                home: 'connectedService',
+                connectedServiceId: 'openai-codex',
+                connectedServiceProfileId: 'work',
+            }),
+            connectedServices: {
+                v: 1,
+                bindingsByServiceId: {
+                    'openai-codex': {
+                        source: 'connected',
+                        selection: 'group',
+                        groupId: params.groupId,
+                    },
+                },
+            },
+        },
+        agentState: null,
+    };
+}
 
 /**
  * Pull the inline-reorder pan gesture wired to a member row. `AccountBlock` now
@@ -270,6 +366,37 @@ function findDropdown(screen: Awaited<ReturnType<typeof renderPoolDetail>>, test
         .find((node) => node.props.itemTrigger?.itemProps?.testID === testID);
 }
 
+/** The membership multi-select — the only menu that stays open across selections. */
+function findMembersDropdown(screen: Awaited<ReturnType<typeof renderPoolDetail>>) {
+    return screen.tree.root
+        .findAllByType('DropdownMenu' as never)
+        .find((node) => node.props.closeOnSelect === false);
+}
+
+/**
+ * Drives the membership multi-select the way a user does: open the menu, toggle
+ * the given profiles, then close it — which is what commits the batch.
+ */
+async function editMembership(
+    screen: Awaited<ReturnType<typeof renderPoolDetail>>,
+    toggledProfileIds: ReadonlyArray<string>,
+) {
+    await act(async () => {
+        findMembersDropdown(screen)?.props.onOpenChange?.(true);
+        await flushAsyncHandlers();
+    });
+    for (const profileId of toggledProfileIds) {
+        await act(async () => {
+            findMembersDropdown(screen)?.props.onSelect?.(profileId);
+            await flushAsyncHandlers();
+        });
+    }
+    await act(async () => {
+        findMembersDropdown(screen)?.props.onOpenChange?.(false);
+        await flushAsyncHandlers();
+    });
+}
+
 /** Expand the "Advanced" disclosure so its lesser-used controls render. */
 async function expandAdvanced(screen: Awaited<ReturnType<typeof renderPoolDetail>>) {
     await act(async () => {
@@ -282,6 +409,8 @@ beforeEach(() => {
     modalSpies.prompt.mockReset();
     modalSpies.confirm.mockReset();
     modalSpies.alert.mockReset();
+    modalSpies.show.mockReset();
+    modalSpies.show.mockReturnValue('modal-id');
     textSpies.translate.mockClear();
     syncSpies.refreshProfile.mockReset();
     syncSpies.refreshProfile.mockResolvedValue(undefined);
@@ -301,9 +430,22 @@ beforeEach(() => {
                     { profileId: 'work', status: 'connected', providerEmail: 'work@example.com' },
                     { profileId: 'backup', status: 'connected', providerEmail: 'backup@example.com' },
                 ],
+                groups: [
+                    {
+                        groupId: 'primary',
+                        displayName: 'Team pool',
+                        activeProfileId: 'work',
+                        generation: 2,
+                        memberProfileIds: ['work', 'backup'],
+                    },
+                ],
             },
         ],
     };
+    machineSessionState.machines = [onlineMachine('machine-1')];
+    machineSessionState.sessions = [
+        connectedServiceGroupSession({ id: 'session-owner', machineId: 'machine-1', groupId: 'primary' }),
+    ];
     authState.credentials = { token: 't', secret: Buffer.from(new Uint8Array(32).fill(3)).toString('base64url') };
     authoritativeGroupState.groups = [createAuthoritativeGroup()];
     authGroupApiSpies.listConnectedServiceAuthGroupsV3.mockReset();
@@ -320,7 +462,7 @@ beforeEach(() => {
         members: [createAuthoritativeGroup().members[0]],
     }));
     authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3.mockReset();
-    authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3.mockImplementation(async () => createAuthoritativeGroup({ activeProfileId: 'backup' }));
+    authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3.mockImplementation(async () => createAuthoritativeGroup({ activeProfileId: 'backup', generation: 3 }));
     authGroupApiSpies.deleteConnectedServiceAuthGroupV3.mockReset();
     authGroupApiSpies.deleteConnectedServiceAuthGroupV3.mockImplementation(async () => true);
 });
@@ -334,17 +476,7 @@ describe('PoolDetailView', () => {
         })];
         const screen = await renderPoolDetail();
 
-        await screen.pressByTestIdAsync('connected-services-pool-detail:add-member');
-        const pickerButtons = modalSpies.alert.mock.calls[0]?.[2] as
-            | ReadonlyArray<{ text?: string; onPress?: () => void }>
-            | undefined;
-        const backupOption = pickerButtons?.find((button) => button.text?.includes('backup'));
-        expect(backupOption).toBeTruthy();
-
-        await act(async () => {
-            backupOption?.onPress?.();
-            await flushAsyncHandlers();
-        });
+        await editMembership(screen, ['backup']);
 
         expect(authGroupApiSpies.addConnectedServiceAuthGroupMemberV3).toHaveBeenCalledWith(
             expect.objectContaining({ token: 't' }),
@@ -356,6 +488,43 @@ describe('PoolDetailView', () => {
                 enabled: true,
                 expectedGeneration: 2,
             },
+        );
+        // Adding alone is not destructive, so it must not raise a confirmation.
+        expect(modalSpies.confirm).not.toHaveBeenCalled();
+    });
+
+    it('allows retryable refresh-failure profiles to be added to a pool', async () => {
+        authoritativeGroupState.groups = [createAuthoritativeGroup({
+            activeProfileId: null,
+            generation: 2,
+            members: [],
+        })];
+        profileState.current = {
+            connectedServicesV2: [
+                {
+                    serviceId: 'openai-codex',
+                    profiles: [
+                        { profileId: 'retryable', status: 'refresh_failed_retryable', providerEmail: 'retryable@example.com' },
+                    ],
+                },
+            ],
+        };
+        const screen = await renderPoolDetail();
+
+        const candidateIds = (findMembersDropdown(screen)?.props.items as ReadonlyArray<{ id: string }>)
+            .map((item) => item.id);
+        expect(candidateIds).toContain('retryable');
+
+        await editMembership(screen, ['retryable']);
+
+        expect(authGroupApiSpies.addConnectedServiceAuthGroupMemberV3).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 't' }),
+            expect.objectContaining({
+                serviceId: 'openai-codex',
+                groupId: 'primary',
+                profileId: 'retryable',
+                expectedGeneration: 2,
+            }),
         );
     });
 
@@ -381,6 +550,145 @@ describe('PoolDetailView', () => {
                 expectedGeneration: 2,
             },
         );
+    });
+
+    it('offers one multi-select listing members and joinable non-members, with members checked', async () => {
+        profileState.current = {
+            connectedServicesV2: [
+                {
+                    serviceId: 'openai-codex',
+                    profiles: [
+                        { profileId: 'work', status: 'connected', providerEmail: 'work@example.com' },
+                        { profileId: 'backup', status: 'connected', providerEmail: 'backup@example.com' },
+                        { profileId: 'extra', status: 'connected', providerEmail: 'extra@example.com' },
+                    ],
+                },
+            ],
+        };
+        const screen = await renderPoolDetail();
+
+        const dropdown = findMembersDropdown(screen);
+        expect((dropdown?.props.items as ReadonlyArray<{ id: string }>).map((item) => item.id))
+            .toEqual(['work', 'backup', 'extra']);
+        // The two superseded affordances are gone: no alert-picker, no second modal.
+        expect(screen.findByTestId('connected-services-pool-detail:add-member')).toBeFalsy();
+        expect(screen.findByTestId('connected-services-pool-detail:edit-members')).toBeFalsy();
+    });
+
+    it('labels the members trigger with a title and a count, never an unbounded name list', async () => {
+        const screen = await renderPoolDetail();
+
+        const trigger = findMembersDropdown(screen)?.props.trigger as (
+            (state: { toggle: () => void; open: boolean }) => React.ReactElement<{
+                title?: string;
+                subtitle?: string;
+                detail?: string;
+            }>
+        );
+        const row = trigger({ toggle: () => {}, open: false });
+
+        expect(row.props.title).toBe('connectedServices.detail.groupActions.manageMembersTitle');
+        expect(row.props.subtitle).toBe('connectedServices.detail.groupActions.manageMembersSubtitle');
+        // `detail` renders in the row's RIGHT section with no width cap, so a
+        // joined member list there squeezes the title out of the row entirely.
+        expect(row.props.detail).toBeUndefined();
+    });
+
+    it('commits nothing while the menu is open, so a multi-toggle edit is one batch', async () => {
+        modalSpies.confirm.mockResolvedValue(true);
+        const screen = await renderPoolDetail();
+
+        await act(async () => {
+            findMembersDropdown(screen)?.props.onOpenChange?.(true);
+            await flushAsyncHandlers();
+        });
+        await act(async () => {
+            findMembersDropdown(screen)?.props.onSelect?.('backup');
+            await flushAsyncHandlers();
+        });
+
+        expect(authGroupApiSpies.removeConnectedServiceAuthGroupMemberV3).not.toHaveBeenCalled();
+        expect(authGroupApiSpies.addConnectedServiceAuthGroupMemberV3).not.toHaveBeenCalled();
+    });
+
+    it('confirms once before committing a batch that removes members, and applies nothing when declined', async () => {
+        modalSpies.confirm.mockResolvedValue(false);
+        const screen = await renderPoolDetail();
+
+        await editMembership(screen, ['backup']);
+
+        expect(modalSpies.confirm).toHaveBeenCalledTimes(1);
+        expect(authGroupApiSpies.removeConnectedServiceAuthGroupMemberV3).not.toHaveBeenCalled();
+    });
+
+    it('batch-applies the membership diff (add + remove) through the canonical mutations, threading the generation', async () => {
+        profileState.current = {
+            connectedServicesV2: [
+                {
+                    serviceId: 'openai-codex',
+                    profiles: [
+                        { profileId: 'work', status: 'connected', providerEmail: 'work@example.com' },
+                        { profileId: 'backup', status: 'connected', providerEmail: 'backup@example.com' },
+                        { profileId: 'extra', status: 'connected', providerEmail: 'extra@example.com' },
+                    ],
+                    groups: [
+                        {
+                            groupId: 'primary',
+                            displayName: 'Team pool',
+                            activeProfileId: 'work',
+                            generation: 2,
+                            memberProfileIds: ['work', 'backup'],
+                        },
+                    ],
+                },
+            ],
+        };
+        authGroupApiSpies.removeConnectedServiceAuthGroupMemberV3.mockImplementation(async () => createAuthoritativeGroup({
+            generation: 3,
+            members: [createAuthoritativeGroup().members[0]],
+        }));
+        authGroupApiSpies.addConnectedServiceAuthGroupMemberV3.mockImplementation(async () => createAuthoritativeGroup({ generation: 4 }));
+
+        modalSpies.confirm.mockResolvedValue(true);
+        const screen = await renderPoolDetail();
+
+        await editMembership(screen, ['backup', 'extra']);
+
+        // Remove threads the starting generation (2).
+        expect(authGroupApiSpies.removeConnectedServiceAuthGroupMemberV3).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 't' }),
+            {
+                serviceId: 'openai-codex',
+                groupId: 'primary',
+                profileId: 'backup',
+                expectedGeneration: 2,
+            },
+        );
+        // Add threads the generation the remove returned (3), priority = max+step.
+        expect(authGroupApiSpies.addConnectedServiceAuthGroupMemberV3).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 't' }),
+            {
+                serviceId: 'openai-codex',
+                groupId: 'primary',
+                profileId: 'extra',
+                priority: 300,
+                enabled: true,
+                expectedGeneration: 3,
+            },
+        );
+        expect(modalSpies.alert).not.toHaveBeenCalled();
+    });
+
+    it('applies no membership mutation when the draft ends up matching the current members', async () => {
+        const screen = await renderPoolDetail();
+
+        // Toggle off then back on: the net diff is empty, so nothing is committed
+        // and no destructive confirmation is raised.
+        await editMembership(screen, ['backup', 'backup']);
+
+        expect(authGroupApiSpies.addConnectedServiceAuthGroupMemberV3).not.toHaveBeenCalled();
+        expect(authGroupApiSpies.removeConnectedServiceAuthGroupMemberV3).not.toHaveBeenCalled();
+        expect(modalSpies.confirm).not.toHaveBeenCalled();
     });
 
     it('does not render pool-not-found while the first authoritative group load is pending', async () => {
@@ -416,6 +724,178 @@ describe('PoolDetailView', () => {
         expect(blocks.find((block) => block.profileId === 'backup')?.isActive).toBe(false);
 
         expect(screen.findByTestId('connected-services-pool-detail:summary')).toBeTruthy();
+    });
+
+    it('commits manual active-profile switching while every bound daemon is offline', async () => {
+        machineSessionState.machines = [onlineMachine('machine-arbitrary')];
+        machineSessionState.sessions = [
+            connectedServiceGroupSession({ id: 'session-other-group', machineId: 'machine-arbitrary', groupId: 'secondary' }),
+        ];
+        const screen = await renderPoolDetail();
+        const backup = findMemberBlocks(screen).find((block) => block.profileId === 'backup');
+        const setActive = backup?.actions?.find((action) => action.id.endsWith(':set-active'));
+
+        expect(backup?.onSetActive).toBeTypeOf('function');
+        expect(setActive?.disabled).toBe(false);
+        expect(setActive?.subtitle).toBeUndefined();
+
+        await act(async () => {
+            backup?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+
+        expect(authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 't' }),
+            {
+                serviceId: 'openai-codex',
+                groupId: 'primary',
+                profileId: 'backup',
+                expectedGeneration: 2,
+            },
+        );
+    });
+
+    it('shows durable server selection truth without claiming that every daemon has converged', async () => {
+        const screen = await renderPoolDetail();
+
+        const status = screen.findByTestId('connected-services-pool-detail:server-active-status');
+        expect(status).toBeTruthy();
+        expect(screen.getTextContent()).toContain('connectedServices.pools.detail.serverActiveStatusSubtitle');
+    });
+
+    it('does not claim a durable active account before the pool has one', async () => {
+        authoritativeGroupState.groups = [createAuthoritativeGroup({ activeProfileId: null, members: [] })];
+
+        const screen = await renderPoolDetail();
+
+        expect(screen.findByTestId('connected-services-pool-detail:server-active-status')).toBeNull();
+    });
+
+    it('keeps the committed server selection pending when the local target disappears after CAS', async () => {
+        authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3.mockImplementationOnce(async () => {
+            const committed = createAuthoritativeGroup({ activeProfileId: 'backup', generation: 3 });
+            authoritativeGroupState.groups = [committed];
+            machineSessionState.machines = [];
+            machineSessionState.sessions = [];
+            return committed;
+        });
+        const screen = await renderPoolDetail();
+
+        await act(async () => {
+            findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+
+        expect(findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.isActive).toBe(true);
+        expect(screen.findByTestId('connected-services-pool-detail:server-active-status')).toBeTruthy();
+        expect(modalSpies.alert).not.toHaveBeenCalled();
+    });
+
+    it('keeps server truth unchanged when the active-profile CAS conflicts', async () => {
+        authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3.mockRejectedValueOnce(
+            createStructuredConnectedServiceError('connect_group_generation_conflict', { status: 409, generation: 3 }),
+        );
+        const screen = await renderPoolDetail();
+
+        await act(async () => {
+            findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+
+        expect(findMemberBlocks(screen).find((block) => block.profileId === 'work')?.isActive).toBe(true);
+        expect(findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.isActive).toBe(false);
+        expect(modalSpies.alert).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a newer authoritative generation supersede the just-committed selection', async () => {
+        authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3
+            .mockImplementationOnce(async () => {
+                authoritativeGroupState.groups = [createAuthoritativeGroup({ activeProfileId: 'work', generation: 4 })];
+                return createAuthoritativeGroup({ activeProfileId: 'backup', generation: 3 });
+            })
+            .mockImplementationOnce(async (_credentials, params) => {
+                const committed = createAuthoritativeGroup({ activeProfileId: params.profileId, generation: 5 });
+                authoritativeGroupState.groups = [committed];
+                return committed;
+            });
+        const screen = await renderPoolDetail();
+
+        await act(async () => {
+            findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+        expect(findMemberBlocks(screen).find((block) => block.profileId === 'work')?.isActive).toBe(true);
+
+        await act(async () => {
+            findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+        expect(authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3).toHaveBeenNthCalledWith(
+            2,
+            expect.objectContaining({ token: 't' }),
+            expect.objectContaining({ profileId: 'backup', expectedGeneration: 4 }),
+        );
+    });
+
+    it('switches back with a forward CAS against the freshly observed generation', async () => {
+        authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3.mockImplementation(async (_credentials, params) => {
+            const current = authoritativeGroupState.groups[0] ?? createAuthoritativeGroup();
+            const committed = createAuthoritativeGroup({
+                activeProfileId: params.profileId,
+                generation: current.generation + 1,
+            });
+            authoritativeGroupState.groups = [committed];
+            return committed;
+        });
+        const screen = await renderPoolDetail();
+
+        await act(async () => {
+            findMemberBlocks(screen).find((block) => block.profileId === 'backup')?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+        await act(async () => {
+            findMemberBlocks(screen).find((block) => block.profileId === 'work')?.onSetActive?.();
+            await flushAsyncHandlers();
+        });
+
+        expect(authGroupApiSpies.setConnectedServiceAuthGroupActiveProfileV3).toHaveBeenNthCalledWith(
+            2,
+            expect.objectContaining({ token: 't' }),
+            {
+                serviceId: 'openai-codex',
+                groupId: 'primary',
+                profileId: 'work',
+                expectedGeneration: 3,
+            },
+        );
+    });
+
+    it('passes credential health to pool member AccountBlocks with dominance over runtime blockers', async () => {
+        profileState.current = {
+            connectedServicesV2: [
+                {
+                    serviceId: 'openai-codex',
+                    profiles: [
+                        { profileId: 'work', status: 'needs_reauth', providerEmail: 'work@example.com' },
+                        { profileId: 'backup', status: 'connected', providerEmail: 'backup@example.com' },
+                    ],
+                    groups: [
+                        {
+                            groupId: 'primary',
+                            displayName: 'Team pool',
+                            activeProfileId: 'work',
+                            generation: 2,
+                            memberProfileIds: ['work', 'backup'],
+                        },
+                    ],
+                },
+            ],
+        };
+
+        const screen = await renderPoolDetail();
+        const work = findMemberBlocks(screen).find((block) => block.profileId === 'work');
+
+        expect(work).toMatchObject({ status: 'needs_reauth' });
     });
 
     it('keeps stable profile ids visible for labelled pool members with provider email', async () => {

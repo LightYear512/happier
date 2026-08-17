@@ -6,27 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // `tail_reset_latest_page` (wiping paginated history) for off-screen sessions on every
 // reconnect sweep. The fix reads the REAL live-consumption signal at decision time.
 
-// Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
-const kvStore = vi.hoisted(() => new Map<string, string>());
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            return kvStore.get(key);
-        }
-        set(key: string, value: string) {
-            kvStore.set(key, value);
-        }
-        delete(key: string) {
-            kvStore.delete(key);
-        }
-        clearAll() {
-            kvStore.clear();
-        }
-    }
-
-    return { MMKV };
-});
-
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -152,6 +131,28 @@ function messagesRequestPaths(): string[] {
         .filter((path) => path.includes('/messages'));
 }
 
+function expectOnlyMainMessagesRequest(params: {
+    sessionId: string;
+    afterSeq: string;
+    limit: string;
+}): void {
+    const paths = messagesRequestPaths();
+    expect(paths).toHaveLength(1);
+    const path = paths[0];
+    if (!path) {
+        throw new Error(`Expected one message request for ${params.sessionId}`);
+    }
+    expect(path.startsWith(`/v1/sessions/${encodeURIComponent(params.sessionId)}/messages?`)).toBe(true);
+
+    const [, query = ''] = path.split('?');
+    const searchParams = new URLSearchParams(query);
+    expect(searchParams.get('scope')).toBe('main');
+    expect(searchParams.get('afterSeq')).toBe(params.afterSeq);
+    expect(searchParams.get('limit')).toBe(params.limit);
+    expect(searchParams.has('beforeSeq')).toBe(false);
+    expect(searchParams.has('sidechainId')).toBe(false);
+}
+
 function buildApiPlainMessage(id: string, seq: number) {
     return {
         id,
@@ -193,7 +194,6 @@ async function seedLargeGapLoadedSession(): Promise<{ sync: typeof import('./syn
 describe('sync catch-up visibility gate (C6/D1)', () => {
     beforeEach(() => {
         storage.setState(initialStorageState, true);
-        kvStore.clear();
         requestMock.mockReset();
         markSessionHidden(SESSION_ID);
         markSessionHidden(CLAUDE_UNIFIED_SESSION_ID);
@@ -264,9 +264,7 @@ describe('sync catch-up visibility gate (C6/D1)', () => {
             markSessionHidden(CLAUDE_UNIFIED_SESSION_ID);
         }
 
-        expect(messagesRequestPaths()).toEqual([
-            `/v1/sessions/${CLAUDE_UNIFIED_SESSION_ID}/messages?afterSeq=10&limit=150&scope=main`,
-        ]);
+        expectOnlyMainMessagesRequest({ sessionId: CLAUDE_UNIFIED_SESSION_ID, afterSeq: '10', limit: '150' });
         // The deferred new row (seq 11) is materialized and merged on top of the existing
         // history (seq 10) — non-destructively (the record stays loaded; both rows present).
         const record = storage.getState().sessionMessages[CLAUDE_UNIFIED_SESSION_ID];

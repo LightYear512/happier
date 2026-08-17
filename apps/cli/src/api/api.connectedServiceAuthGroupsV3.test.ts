@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import axios from 'axios';
 
@@ -34,6 +34,7 @@ function authGroupResponse(activeProfileId: string, generation: number) {
       policy: { v: 1, autoSwitch: true },
       activeProfileId,
       generation,
+      runtimeStateRevision: 0,
       state: { v: 1 },
       members: [
         {
@@ -63,6 +64,10 @@ describe('ApiClient connected service auth groups v3', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('gets an auth group from the v3 connected services groups endpoint', async () => {
     mockGet.mockResolvedValue({ status: 200, data: authGroupResponse('primary', 1) });
     const api = await ApiClient.create({
@@ -80,6 +85,118 @@ describe('ApiClient connected service auth groups v3', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer happy-token' }),
       }),
     );
+  });
+
+  it('rejects an auth-group response without the required server-owned runtime-state revision', async () => {
+    const response = authGroupResponse('primary', 1);
+    delete (response.group as Partial<typeof response.group>).runtimeStateRevision;
+    mockGet.mockResolvedValue({ status: 200, data: response });
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32) },
+    } as any);
+
+    await expect(api.getConnectedServiceAuthGroup({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+    })).rejects.toThrow('Invalid connected service auth group response');
+  });
+
+  it('lists authoritative auth groups for one service through the v3 endpoint', async () => {
+    mockGet.mockResolvedValue({ status: 200, data: { groups: [authGroupResponse('primary', 1).group] } });
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32) },
+    } as any);
+
+    await expect(api.listConnectedServiceAuthGroups({ serviceId: 'openai-codex' }))
+      .resolves.toEqual([expect.objectContaining({ groupId: 'main', generation: 1 })]);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v3/connect/openai-codex/groups'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer happy-token' }),
+      }),
+    );
+    expect(String((axios.get as any).mock.calls[0]?.[0])).not.toContain('/groups/undefined');
+  });
+
+  it('uses the connected-services server API timeout for auth group reads', async () => {
+    mockGet.mockResolvedValue({ status: 200, data: authGroupResponse('primary', 1) });
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32) },
+    } as any);
+
+    await api.getConnectedServiceAuthGroup({ serviceId: 'openai-codex', groupId: 'main' });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v3/connect/openai-codex/groups/main'),
+      expect.objectContaining({
+        timeout: 30_000,
+      }),
+    );
+  });
+
+  it('honors a bounded connected-services server API timeout override', async () => {
+    vi.stubEnv('HAPPIER_CONNECTED_SERVICES_API_TIMEOUT_MS', '45000');
+    mockGet.mockResolvedValue({ status: 200, data: authGroupResponse('primary', 1) });
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32) },
+    } as any);
+
+    await api.getConnectedServiceAuthGroup({ serviceId: 'openai-codex', groupId: 'main' });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v3/connect/openai-codex/groups/main'),
+      expect.objectContaining({
+        timeout: 45_000,
+      }),
+    );
+  });
+
+  it('returns null only for the server-confirmed deleted auth-group response', async () => {
+    mockGet.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 404,
+        data: { error: 'connect_group_not_found' },
+      },
+    });
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32) },
+    } as any);
+
+    await expect(api.getConnectedServiceAuthGroup({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+    })).resolves.toBeNull();
+  });
+
+  it('throws an indeterminate auth-group error for feature-gated 404 responses', async () => {
+    mockGet.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 404,
+        data: { error: 'not_found' },
+      },
+    });
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32) },
+    } as any);
+
+    let caught: unknown;
+    try {
+      await api.getConnectedServiceAuthGroup({ serviceId: 'openai-codex', groupId: 'main' });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(readHttpStatus(caught)).toBe(404);
+    expect((caught as { code?: string }).code).toBe('connected_service_auth_group_unavailable');
   });
 
   it('commits an auth group active profile through the CAS active-profile contract', async () => {
@@ -144,6 +261,7 @@ describe('ApiClient connected service auth groups v3', () => {
       serviceId: 'openai-codex',
       groupId: 'main',
       expectedGeneration: 1,
+      expectedRuntimeStateRevision: 0,
       memberStates: [
         {
           profileId: 'primary',
@@ -160,6 +278,7 @@ describe('ApiClient connected service auth groups v3', () => {
       expect.stringContaining('/v3/connect/openai-codex/groups/main/runtime-state'),
       {
         expectedGeneration: 1,
+        expectedRuntimeStateRevision: 0,
         memberStates: [
           {
             profileId: 'primary',

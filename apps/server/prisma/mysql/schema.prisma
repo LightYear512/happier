@@ -63,7 +63,7 @@ model Account {
     AccountPetPackage      AccountPetPackage[]
     AccountPetAsset        AccountPetAsset[]
     ServiceAccountToken    ServiceAccountToken[]
-    ServiceAccountQuotaSnapshot ServiceAccountQuotaSnapshot[]
+    ProviderAccountUsageRecord ProviderAccountUsageRecord[]
     ConnectedServiceAuthGroup ConnectedServiceAuthGroup[]
     RelationshipsFrom      UserRelationship[]         @relation("RelationshipsFrom")
     RelationshipsTo        UserRelationship[]         @relation("RelationshipsTo")
@@ -76,11 +76,17 @@ model Account {
     SessionShareAccessLogs SessionShareAccessLog[]    @relation("SessionShareAccessLogs")
     PublicSessionShares    PublicSessionShare[]       @relation("PublicSessionShares")
     PublicShareAccessLogs  PublicShareAccessLog[]     @relation("PublicShareAccessLogs")
-    PublicShareBlockedUsers PublicShareBlockedUser[]  @relation("PublicShareBlockedUsers")
     AccountChanges         AccountChange[]
     AccountSettingsSnapshots AccountSettingsSnapshot[]
     SessionPendingMessage  SessionPendingMessage[]
     SessionFolderAssignment SessionFolderAssignment[]
+    SessionPin             SessionPin[]
+    SessionOrganizationFolder SessionOrganizationFolder[]
+    SessionOrganizationTag SessionOrganizationTag[]
+    SessionTagAssignment   SessionTagAssignment[]
+    SessionOrganizationOrderEntry SessionOrganizationOrderEntry[]
+    SessionOrganizationLabel SessionOrganizationLabel[]
+    SessionOrganizationCheckpoint SessionOrganizationCheckpoint?
     AccountIdentity        AccountIdentity[]
     automations            Automation[]
     automationRuns         AutomationRun[]
@@ -306,6 +312,7 @@ model Session {
     seq               Int                 @default(0)
     pendingVersion    Int                 @default(0)
     pendingCount      Int                 @default(0)
+    pendingBlockedCount Int               @default(0)
     pendingQueueSeq   Int                 @default(0)
     // Server-readable per-session activity projection (minimal, E2EE-safe).
     // These fields exist to support authoritative badge counts for background/closed devices.
@@ -321,10 +328,52 @@ model Session {
     latestTurnStatus String?
     latestTurnStatusObservedAt BigInt?
     lastRuntimeIssue String?
+    runtimeActivityState String @default("unknown")
+    runtimeActivityActiveCount Int @default(0)
+    runtimeActivityObservedAt BigInt?
+    runtimeActivityRevision BigInt @default(0)
     meaningfulActivityAt DateTime?
-    active            Boolean             @default(true)
+    // Materialized unread fact. NULL means the session is read; a timestamp is the instant the
+    // session crossed the read -> unread edge. It is never advanced while a session merely stays
+    // unread, so it doubles as a stable ordering key for the attention page. Maintained by
+    // `sources/app/session/attention/sessionAttentionFacts.ts` at every `seq` /
+    // `lastViewedSessionSeq` writer; it replaces the unindexable `seq > lastViewedSessionSeq`
+    // column comparison.
+    unreadSince       DateTime?
+    // Materialized attention fact: true while the session needs the user, false once it does not.
+    // The reasons are exactly the arms of the attention predicate: unread, a failed latest turn, a
+    // pending permission request, or a pending user-action request. It collapses that 4-way
+    // disjunction (which no index on any engine can serve) into `needsAttention = true`.
+    //
+    // READ-ONLY. It is a **database-generated column**, not a writer-maintained one: every arm is a
+    // column of this same row, so the fact is a pure function of the row and the database computes
+    // it. That is deliberate and load-bearing — a materialized fact maintained by application
+    // writers is only as correct as the version of the writer that last touched the row, so a
+    // rolling deploy or a rollback could give a session a reason while leaving the flag false and
+    // the indexed reader could not see it. Nothing can write this column (the engines reject it), so
+    // that skew class does not exist and needs neither writer wiring nor reader repair. The
+    // per-provider DDL lives in `20260808120000_add_session_needs_attention` (PostgreSQL STORED,
+    // MySQL/SQLite VIRTUAL), which is the single place the expression is written; `dbgenerated()` is
+    // what keeps Prisma Client from putting the column in its INSERTs, and it is deliberately given
+    // NO argument. An argument would be a second copy of the predicate — one per datasource schema,
+    // free to drift from the DDL that actually computes the value, and quoted for one engine's
+    // identifier syntax while three engines read it. It would also never produce this column: from an
+    // expression `prisma migrate dev` emits a plain column with a DEFAULT, evaluated once at INSERT
+    // and stale forever after, which is exactly the failure mode a generated column exists to remove.
+    //
+    // It is a boolean rather than an edge timestamp because the attention read also orders by
+    // `meaningfulActivityAt DESC, id DESC` and takes a limit. A boolean is an *equality* key, so
+    // `[accountId, needsAttention, meaningfulActivityAt desc, id desc]` binds both leading columns
+    // and then walks that ordering in index order — no sort, and the limit stops the scan. A
+    // timestamp fact cannot serve the ordering at all, so the engine sorts every matched row, which
+    // costs more than the filter saves as soon as an account has more attention rows than the limit
+    // (measured on MySQL at ~40% attention selectivity: 0.177 ms here vs 1.94 ms for a timestamp).
+    needsAttention    Boolean             @default(dbgenerated())
+    active            Boolean             @default(false)
     archivedAt        DateTime?
     lastActiveAt      DateTime            @default(now())
+    publisherGeneration             BigInt            @default(0)
+    publisherGenerationLastActiveAt DateTime?
     createdAt         DateTime            @default(now())
     updatedAt         DateTime            @updatedAt
     messages          SessionMessage[]
@@ -338,6 +387,8 @@ model Session {
     publicShare       PublicSessionShare?
     accountChanges    AccountChange[]    @relation("AccountChangeSession")
     sessionFolderAssignments SessionFolderAssignment[]
+    sessionPins       SessionPin[]
+    sessionTagAssignments SessionTagAssignment[]
     producedByAutomationRuns AutomationRun[] @relation("AutomationRunProducedSession")
     issueLinks         SessionIssueLink[]
     issueRuns          SessionRun[]
@@ -346,6 +397,57 @@ model Session {
     @@unique([accountId, tag])
     @@index([accountId, updatedAt])
     @@index([accountId, meaningfulActivityAt, id])
+    // The attention read, exactly: `accountId = ? AND needsAttention = true` (equality on both) then
+    // `ORDER BY meaningfulActivityAt DESC, id DESC LIMIT ?` walked in index order. Both the filter
+    // and the sort are served, so the limit — not the account's attention count — bounds the work.
+    // There is deliberately no `[accountId, unreadSince]` index: nothing can seek it (the attention
+    // predicate no longer names `unreadSince`, and the repair path is primary-key driven), so it was
+    // pure write amplification on this table.
+    //
+    // This index is a deliberate LATENCY trade, not a total-work saving, and the limits below are
+    // part of the deal. Measured on the statements Prisma actually issues — the read fans out over
+    // four visibility/activity arms, and on PostgreSQL/MySQL each carries the `shares` relation join
+    // — against production-median row widths (`metadata` p50 ≈ 9.2 kB, so rows are off-page and a
+    // filtered scan costs real heap I/O). Only one arm, the `accountId` +
+    // `meaningfulActivityAt IS NOT NULL` one, is the arm this index serves.
+    //
+    // What it buys, at the selectivity accounts actually run at (an account normally holds far fewer
+    // than 100 attention sessions): PostgreSQL 17 3.56 ms → 0.19 ms and MySQL 8.0.46 9.62 ms →
+    // 0.099 ms at 0.5% attention; 3.21 → 0.40 ms and 10.3 → 0.24 ms at 2%. The win shrinks as
+    // selectivity rises (at 42% PostgreSQL 0.60 → 0.44 ms) because a dense attention set lets the
+    // baseline plan hit the limit early too.
+    //
+    // What it costs: `meaningfulActivityAt` is a key column here and every meaningful session
+    // message moves it (`updateSessionMessageActivityProjection`), so this index is maintained on
+    // the hottest write in the product. Measured per 2,000-row activity burst: +135 bytes of WAL per
+    // row on PostgreSQL (+6.7% over the same burst without it), +0.9% WAL pages on SQLite, ~+13%
+    // redo on MySQL. Activity writes outnumber session-list opens by roughly three to four orders of
+    // magnitude on a real heavy account, so on total work this index loses; it is kept because the
+    // cost lands on a background write and the saving lands on a user-facing open.
+    //
+    // Optimizer boundary (MySQL): index selection is a cost-model decision, not a guarantee. At the
+    // row widths above, MySQL 8.0.46 chose this index with no sort at every selectivity measured
+    // from 0.5% to 90%. On a slim-row fixture an earlier measurement saw MySQL abandon it between
+    // 60% and 70% in favour of `[accountId, archivedAt]` plus a sort over the whole account. That
+    // degradation is graceful — the fallback is exactly the plan this index does not exist for — and
+    // `FORCE INDEX` recovered ~28x there, so the boundary is a documented limit, not a hazard.
+    //
+    // SQLite statistics: nothing in `apps/server` runs `ANALYZE` or `PRAGMA optimize`, so a shipped
+    // light/self-hosted database has no `sqlite_stat1`. That is not load-bearing: on the real schema
+    // at 50k rows, SQLite 3.51 chose this index at 2–78% selectivity both with and without collected
+    // statistics. (An earlier measurement reported that statistics flip the planner off this index;
+    // that did not reproduce.)
+    //
+    // Partial index (`WHERE needsAttention`, PostgreSQL/SQLite only): measured to read identically
+    // and to be ~13x smaller, and to remove 100% of the write amplification — but only for rows
+    // *outside* the predicate, and the hot path does not produce those. The write that moves
+    // `meaningfulActivityAt` is a session message, and the same write advances `seq` past
+    // `lastViewedSessionSeq`; because `needsAttention` is generated, the engine recomputes it from
+    // that row as part of the very same write, so the row is inside the predicate by the time the
+    // index is maintained. A message that leaves the session read is by construction one that skips
+    // the activity write entirely. So the partial form would skip nothing on the hot path, and MySQL
+    // has no equivalent, so adopting it would also diverge the three datasources.
+    @@index([accountId, needsAttention, meaningfulActivityAt, id])
     @@index([accountId, archivedAt])
     @@index([lastActiveAt, updatedAt])
 }
@@ -362,7 +464,10 @@ model SessionTurn {
     updatedAt               BigInt
     terminalAt              BigInt?
     lastRuntimeIssueJson    String?
-    transcriptAnchorsJson   String?
+    transcriptAnchorsJson                  String?
+    transcriptAnchorProjectionVersion      Int @default(0)
+    transcriptAnchorMinSeq                 Int?
+    transcriptAnchorMaxSeq                 Int?
     rollbackState           String?
     rollbackReason          String?
     providerRollbackOrdinal Int?
@@ -375,6 +480,7 @@ model SessionTurn {
     @@index([sessionId, status])
     @@index([sessionId, rollbackState])
     @@index([sessionId, provider, providerTurnId])
+    @@index([sessionId, transcriptAnchorProjectionVersion, transcriptAnchorMaxSeq, transcriptAnchorMinSeq], map: "SessionTurn_transcript_anchor_range_idx")
 }
 
 model SessionTurnMutationReceipt {
@@ -409,6 +515,128 @@ model SessionFolderAssignment {
     @@index([sessionId])
 }
 
+model SessionPin {
+    id        String   @id @default(cuid())
+    accountId String
+    sessionId String
+    sortKey   String?
+    pinnedAt  DateTime @default(now())
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+    @@unique([accountId, sessionId])
+    @@index([accountId, sortKey])
+    @@index([sessionId])
+}
+
+model SessionOrganizationFolder {
+    id             String   @id @default(cuid())
+    accountId      String
+    folderKey      String @db.LongText
+    folderHash     String @db.VarChar(71)
+    parentKey      String? @db.LongText
+    parentHash     String? @db.VarChar(71)
+    sortKey        String?
+    displayDbValue String? @db.LongText
+    archivedAt     DateTime?
+    createdAt      DateTime @default(now())
+    updatedAt      DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@unique([accountId, folderHash])
+    @@index([accountId, parentHash, sortKey])
+    @@index([accountId, archivedAt])
+}
+
+model SessionOrganizationTag {
+    id             String   @id @default(cuid())
+    accountId      String
+    tagKey         String @db.LongText
+    tagHash        String @db.VarChar(71)
+    sortKey        String?
+    displayDbValue String? @db.LongText
+    archivedAt     DateTime?
+    createdAt      DateTime @default(now())
+    updatedAt      DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    assignments SessionTagAssignment[]
+
+    @@unique([accountId, tagHash])
+    @@index([accountId, sortKey])
+    @@index([accountId, archivedAt])
+}
+
+model SessionTagAssignment {
+    id        String   @id @default(cuid())
+    accountId String
+    sessionId String
+    tagId     String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    tag     SessionOrganizationTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+    @@unique([accountId, sessionId, tagId])
+    @@index([accountId, tagId])
+    @@index([sessionId])
+    @@index([tagId])
+}
+
+model SessionOrganizationOrderEntry {
+    id        String   @id @default(cuid())
+    accountId String
+    scopeKind String @db.VarChar(32)
+    scopeKey  String @db.LongText
+    scopeHash String @db.VarChar(71)
+    itemKind  String @db.VarChar(32)
+    itemKey   String @db.LongText
+    itemHash  String @db.VarChar(71)
+    sortKey   String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@unique([accountId, scopeKind, scopeHash, itemKind, itemHash], map: "SessionOrgOrderEntry_scope_item_key")
+    @@index([accountId, scopeKind, scopeHash, sortKey], map: "SessionOrgOrderEntry_scope_sort_idx")
+}
+
+model SessionOrganizationLabel {
+    id             String   @id @default(cuid())
+    accountId      String
+    labelKind      String @db.VarChar(32)
+    scopeKey       String @db.LongText
+    scopeHash      String @db.VarChar(71)
+    displayDbValue String? @db.LongText
+    archivedAt     DateTime?
+    createdAt      DateTime @default(now())
+    updatedAt      DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@unique([accountId, labelKind, scopeHash])
+    @@index([accountId, labelKind, archivedAt])
+}
+
+model SessionOrganizationCheckpoint {
+    id        String   @id @default(cuid())
+    accountId String   @unique
+    version   Int      @default(0)
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@index([accountId, version])
+}
+
 model SessionMessage {
     id        String   @id @default(cuid())
     sessionId String
@@ -419,6 +647,15 @@ model SessionMessage {
     messageRole String?
     /// [SessionMessageContent]
     content   Json
+    /// Source chronology is provider-observed; createdAt/updatedAt remain server ingestion chronology.
+    sourceCreatedAt DateTime?
+    sourceUpdatedAt DateTime?
+    /// Bounded, versioned [SessionTranscriptObservationProvenanceV1].
+    transcriptObservationProvenance Json?
+    /// Minimal manual pending-delivery resolution retained after the Pending row is deleted.
+    deliveryResolution Json?
+    /// Private row currentness revision; every canonical in-place mutation increments it atomically.
+    rowRevision BigInt @default(0)
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 
@@ -435,6 +672,12 @@ enum SessionPendingMessageStatus {
     discarded
 }
 
+enum PendingProviderAction {
+    send
+    steer
+    interrupt_and_send
+}
+
 model SessionPendingMessage {
     id              String                     @id @default(cuid())
     sessionId        String
@@ -448,7 +691,13 @@ model SessionPendingMessage {
     messageRole      String?
     /// [SessionPendingMessageContent]
     content          Json
-    status           SessionPendingMessageStatus @default(queued)
+    status                SessionPendingMessageStatus @default(queued)
+    deliveryState         String?
+    deliveryBlockedReason String?
+    /// Canonical requested action.
+    requestedAction Json
+    /// Frozen provider operation for a claimed Pending row.
+    providerAction PendingProviderAction?
     position         Int
     discardedAt      DateTime?
     discardedReason  String?
@@ -457,6 +706,7 @@ model SessionPendingMessage {
 
     @@unique([sessionId, localId])
     @@index([sessionId, status, position])
+    @@index([sessionId, status, deliveryState, position], map: "SessionPendingMessage_sid_status_dstate_position_idx")
     @@index([sessionId, authorAccountId])
     @@index([sessionId, status, updatedAt])
 }
@@ -465,8 +715,8 @@ model SessionSystemRecord {
     id        String   @id @default(cuid())
     accountId String
     sessionId String
-    namespace String
-    kind      String
+    namespace String @db.VarChar(32)
+    kind      String @db.VarChar(32)
     localId   String
     content   Json
     createdAt DateTime @default(now())
@@ -475,9 +725,9 @@ model SessionSystemRecord {
     account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
     session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-    @@unique([accountId, sessionId, namespace, localId], map: "SSR_account_session_namespace_local_key")
-    @@index([accountId, sessionId, namespace, kind, updatedAt, id], map: "SSR_account_session_namespace_kind_updated_id_idx")
-    @@index([sessionId, namespace, kind, updatedAt, id], map: "SSR_session_namespace_kind_updated_id_idx")
+    @@unique([accountId, sessionId, namespace, localId])
+    @@index([accountId, sessionId, namespace, kind, updatedAt, id], map: "ssr_account_session_kind_updated_id_idx")
+    @@index([sessionId, namespace, kind, updatedAt, id])
 }
 
 model GithubOrganization {
@@ -1044,6 +1294,7 @@ model ProviderEventReceipt {
 enum AutomationScheduleKind {
     cron
     interval
+    manual
 }
 
 enum AutomationTargetType {
@@ -1111,6 +1362,7 @@ model AutomationRun {
     state              AutomationRunState @default(queued)
     scheduledAt        DateTime
     dueAt              DateTime
+    idempotencyKey     String?
     claimedAt          DateTime?
     startedAt          DateTime?
     finishedAt         DateTime?
@@ -1128,6 +1380,7 @@ model AutomationRun {
     events             AutomationRunEvent[]
 
     @@index([accountId, state, dueAt])
+    @@unique([automationId, idempotencyKey])
     @@index([automationId, dueAt])
     @@index([claimedByMachineId, leaseExpiresAt])
     @@index([state, finishedAt])
@@ -1225,22 +1478,55 @@ model ServiceAccountToken {
     @@index([accountId])
 }
 
-model ServiceAccountQuotaSnapshot {
-    id         String    @id @default(cuid())
-    accountId  String
-    account    Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-    vendor     String
-    profileId  String    @default("default")
-    snapshot   Bytes
-    status     String?
-    fetchedAt  DateTime?
-    staleAfterMs Int?
-    metadata   Json?
-    createdAt  DateTime  @default(now())
-    updatedAt  DateTime  @updatedAt
+model ProviderAccountUsageRecord {
+    id              String   @id @default(cuid())
+    accountId       String
+    account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    providerId      String
+    recordId        String
+    accountSubjectId String
+    subjectKind     String
+    quotaScope      String
+    quotaScopeId    String?
+    quotaScopeIdKey String
+    recordKeyJson   Json
+    payloadMode     String
+    status          String
+    snapshot        Json?
+    sealedPayload   Json?
+    fetchedAt       DateTime?
+    staleAfterMs    Int?
+    refreshRequestedAt DateTime?
+    metadata        Json?
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
 
-    @@unique([accountId, vendor, profileId])
-    @@index([accountId])
+    sources         ConnectedServiceUsageSource[]
+
+    @@unique([accountId, recordId])
+
+    @@index([accountId, providerId])
+    @@index([accountId, status])
+}
+
+model ConnectedServiceUsageSource {
+    id                         String   @id @default(cuid())
+    accountId                  String
+    serviceId                  String
+    profileId                  String
+    sourceKey                  String
+    providerAccountUsageRecordId String
+    bindingKind                String
+    groupId                    String?
+    groupGeneration            Int?
+    createdAt                  DateTime @default(now())
+    updatedAt                  DateTime @updatedAt
+
+    providerAccountUsageRecord ProviderAccountUsageRecord @relation(fields: [accountId, providerAccountUsageRecordId], references: [accountId, recordId], onDelete: Cascade, onUpdate: Cascade, map: "csus_paur_fkey")
+
+    @@unique([accountId, sourceKey])
+    @@index([accountId, serviceId, profileId], map: "csus_account_service_profile_idx")
+    @@index([accountId, providerAccountUsageRecordId], map: "csus_paur_idx")
 }
 
 model ConnectedServiceAuthGroup {
@@ -1252,6 +1538,7 @@ model ConnectedServiceAuthGroup {
     policyJson      String @db.LongText
     activeProfileId String?
     generation      Int      @default(0)
+    runtimeStateRevision Int  @default(0)
     stateJson       String? @db.LongText
     createdAt       DateTime @default(now())
     updatedAt       DateTime @updatedAt
@@ -1279,7 +1566,7 @@ model ConnectedServiceAuthGroupMember {
     group      ConnectedServiceAuthGroup @relation(fields: [groupDbId], references: [id], onDelete: Cascade)
     credential ServiceAccountToken @relation("ConnectedServiceCredentialMembers", fields: [accountId, vendor, profileId], references: [accountId, vendor, profileId], onDelete: Cascade, onUpdate: Cascade)
 
-    @@unique([accountId, vendor, groupId, profileId], map: "CSAuthGroupMember_account_vendor_group_profile_key")
+    @@unique([accountId, vendor, groupId, profileId], map: "csagm_account_vendor_group_profile_key")
     @@index([groupDbId])
     @@index([accountId, vendor, profileId])
 }
@@ -1472,7 +1759,6 @@ model PublicSessionShare {
     createdAt         DateTime                  @default(now())
     updatedAt         DateTime                  @updatedAt
     accessLogs        PublicShareAccessLog[]
-    blockedUsers      PublicShareBlockedUser[]
 
     @@index([tokenHash])
     @@index([sessionId])
@@ -1493,19 +1779,4 @@ model PublicShareAccessLog {
     @@index([publicShareId])
     @@index([userId])
     @@index([accessedAt])
-}
-
-/// Blocked users for public session shares
-model PublicShareBlockedUser {
-    id            String             @id @default(cuid())
-    publicShareId String
-    publicShare   PublicSessionShare @relation(fields: [publicShareId], references: [id], onDelete: Cascade)
-    userId        String
-    user          Account            @relation("PublicShareBlockedUsers", fields: [userId], references: [id])
-    blockedAt     DateTime           @default(now())
-    reason        String?
-
-    @@unique([publicShareId, userId])
-    @@index([publicShareId])
-    @@index([userId])
 }

@@ -62,8 +62,8 @@ vi.mock('@/components/ui/text/Text', () => ({
 }));
 
 vi.mock('@/components/sessions/transcript/messageCopyVisibility', () => ({
-    shouldShowMessageCopyButton: () => copyButtonsVisible,
-    shouldShowMessageSelectButton: () => copyButtonsVisible,
+    shouldShowTranscriptRowActions: () => copyButtonsVisible,
+    shouldShowTranscriptRowPinAction: () => copyButtonsVisible,
 }));
 
 vi.mock('@/components/sessions/transcript/structured/StructuredMessageBlock', () => ({
@@ -75,8 +75,8 @@ vi.mock('@/components/sessions/linkedFiles/extractWorkspaceFileMentions', () => 
     extractWorkspaceFileMentions: () => [],
 }));
 
-vi.mock('@/components/sessions/linkedFiles/LinkedWorkspaceFilesRow', () => ({
-    LinkedWorkspaceFilesRow: () => null,
+vi.mock('@/components/sessions/transcript/references/StructuredReferencesRow', () => ({
+    StructuredReferencesRow: () => null,
 }));
 
 vi.mock('@/components/tools/shell/views/ToolView', () => ({
@@ -186,7 +186,11 @@ describe('MessageView timestamps', () => {
 
         expect(timestamp?.props.children).toBe('May 19, 2026, 4:30 PM');
         expect(row?.props.style).toEqual(expect.arrayContaining([expect.objectContaining({ flexDirection: 'row-reverse' })]));
-        expect(actionContainer?.props.accessibilityElementsHidden).toBe(true);
+        const actionOpacity = (actionContainer?.props.style as unknown[])
+            .flat(Infinity)
+            .map((entry) => (entry as { opacity?: { __getValue?: () => number } } | null)?.opacity)
+            .find((opacity) => typeof opacity?.__getValue === 'function');
+        expect(actionOpacity?.__getValue?.()).toBe(0);
     });
 
     it('does not render message timestamps in never mode even when actions are visible', async () => {
@@ -237,6 +241,7 @@ describe('MessageView timestamps', () => {
             transcriptStreamingMarkdownRenderingEnabled: false,
             transcriptMessageSelectionEnabled: true,
             transcriptMessageSendToSessionEnabled: false,
+            debugInformationEnabled: false,
             workspacePath: null,
         } satisfies TranscriptMessageDisplayCommon;
         const forkCommon = {

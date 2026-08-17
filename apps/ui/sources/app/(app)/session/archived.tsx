@@ -1,6 +1,5 @@
 import React from 'react';
 import { Pressable, View, SectionList, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -11,12 +10,13 @@ import { Avatar } from '@/components/ui/avatar/Avatar';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
-import { useAllSessions, useSessionListViewDataByServerId, useSetting } from '@/sync/domains/state/storage';
+import { useAllSessions, useSessionListViewDataByServerId, useSessionOrganizationPinnedSessionKeys, useSetting } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { getSessionAvatarId, getSessionName, getSessionSubtitle } from '@/utils/sessions/sessionUtils';
 import { sessionUnarchiveWithServerScope } from '@/sync/ops';
 import { sync } from '@/sync/sync';
+import { Icon } from '@/components/ui/icons/Icon';
 
 type ArchivedScreenSession = Session | (SessionListRenderableSession & { serverId?: string });
 
@@ -141,7 +141,7 @@ export default function ArchivedSessionsScreen() {
     const allSessions = useAllSessions();
     const sessionListViewDataByServerId = useSessionListViewDataByServerId();
     const hideInactiveSessions = useSetting('hideInactiveSessions') === true;
-    const pinnedSessionKeysV1 = useSetting('pinnedSessionKeysV1') ?? [];
+    const pinnedSessionKeys = useSessionOrganizationPinnedSessionKeys();
 
     React.useEffect(() => {
         void sync.fetchArchivedSessions().catch(() => undefined);
@@ -156,12 +156,8 @@ export default function ArchivedSessionsScreen() {
     }, [hideInactiveSessions]);
 
     const pinnedSessionKeySet = React.useMemo(() => {
-        return new Set(
-            pinnedSessionKeysV1
-                .map((key) => (typeof key === 'string' ? key.trim() : ''))
-                .filter(Boolean),
-        );
-    }, [pinnedSessionKeysV1]);
+        return new Set(pinnedSessionKeys);
+    }, [pinnedSessionKeys]);
 
     const cachedArchivedSessions = React.useMemo(() => {
         const byKey = new Map<string, ArchivedScreenSession>();
@@ -306,7 +302,7 @@ export default function ArchivedSessionsScreen() {
                             accessibilityLabel={t('sessionInfo.unarchiveSession')}
                             hitSlop={8}
                         >
-                            <Ionicons name="arrow-undo-outline" size={18} color={theme.colors.text.secondary} />
+                            <Icon name="arrow-arc-left" size={16} color={theme.colors.text.secondary} />
                         </Pressable>
                     ) : null}
                 </Pressable>

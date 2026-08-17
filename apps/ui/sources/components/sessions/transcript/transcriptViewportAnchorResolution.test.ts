@@ -5,17 +5,22 @@ import {
     resolveTranscriptViewportAnchorDescriptor,
     resolveTranscriptViewportAnchorFocusOffsetPx,
     resolveTranscriptViewportAnchorIndex,
-} from '@/components/sessions/transcript/transcriptViewportAnchorResolution';
+    type TranscriptViewportAnchorResolvableItem,
+} from '@/components/sessions/transcript/viewport/entryRestore/transcriptViewportAnchorResolution';
 
 describe('transcriptViewportAnchorResolution', () => {
-    it('resolves anchors by message id before falling back to item id', () => {
+    it('recovers through message identity when the recorded item id is no longer rendered', () => {
+        // Item ids are content-derived (`msg:${messageId}`, `toolCalls:linear:${firstToolMessageId}`),
+        // so a recorded id that still resolves always names the same content. Identity recovery is
+        // therefore the answer for a recorded item that is GONE — a re-chunked group, a turn re-split,
+        // a local→server id swap — not a competing preference over one that is still mounted.
         const items = [
-            { kind: 'message', id: 'stale-item', messageId: 'other-message' },
-            { kind: 'tool-calls-group', id: 'new-item', toolMessageIds: ['message-1'] },
+            { kind: 'message', id: 'msg:other-message', messageId: 'other-message' },
+            { kind: 'tool-calls-group', id: 'toolCalls:linear:message-1', toolMessageIds: ['message-1'] },
         ] as const;
 
         expect(resolveTranscriptViewportAnchorIndex({
-            anchor: { messageId: 'message-1', itemId: 'stale-item' },
+            anchor: { messageId: 'message-1', itemId: 'msg:message-1' },
             items,
         })).toBe(1);
     });
@@ -41,6 +46,23 @@ describe('transcriptViewportAnchorResolution', () => {
         })).toBe(0);
     });
 
+    it('falls back to durable seq when hydrated anchor ids are runtime-stale', () => {
+        const items = [
+            { kind: 'message', id: 'new-runtime-m300', messageId: 'new-runtime-m300', seq: 300 },
+            { kind: 'message', id: 'new-runtime-m301', messageId: 'new-runtime-m301', seq: 301 },
+            { kind: 'message', id: 'new-runtime-m302', messageId: 'new-runtime-m302', seq: 302 },
+        ] as const;
+
+        expect(resolveTranscriptViewportAnchorIndex({
+            anchor: {
+                messageId: 'server-m301',
+                itemId: 'old-runtime-m301',
+                seq: 301,
+            },
+            items,
+        })).toBe(1);
+    });
+
     it('creates the finest stable descriptor available for a turn row', () => {
         expect(resolveTranscriptViewportAnchorDescriptor({
             kind: 'turn',
@@ -54,6 +76,18 @@ describe('transcriptViewportAnchorResolution', () => {
             itemId: 'turn-1',
             messageId: 'tool-1',
         });
+    });
+
+    it('never promotes a synthetic window-gap row into restore identity', () => {
+        const gap = {
+            id: 'transcript-window-gap:window-50:older',
+            kind: 'transcript-window-gap',
+        } as const;
+        expect(resolveTranscriptViewportAnchorDescriptor(gap)).toBeNull();
+        expect(resolveTranscriptViewportAnchorIndex({
+            anchor: { messageId: null, itemId: gap.id },
+            items: [gap],
+        })).toBeNull();
     });
 
     describe('tool-group unit rows (N2c)', () => {
@@ -84,6 +118,37 @@ describe('transcriptViewportAnchorResolution', () => {
             groupId,
             toolMessageIds,
         } as const;
+
+        it('resolves every captured anchor back to the item whose offset it measured', () => {
+            // `itemOffsetPx` is an INTRA-ITEM offset: it is only meaningful against the item the
+            // capture walked to, which the anchor records as `itemId`. Cap rows deliberately borrow a
+            // tool message id, so resolving the index by message identity hands that offset to a
+            // sibling row and lands the reader a whole cap-row height away.
+            const items = [
+                headerUnit,
+                toolUnit('tool-1'),
+                toolUnit('tool-2'),
+                toolUnit('tool-3'),
+                footerUnit,
+            ] as const;
+
+            const roundTrip = (rows: readonly TranscriptViewportAnchorResolvableItem[]) => rows.map((item) => {
+                const descriptor = resolveTranscriptViewportAnchorDescriptor(item);
+                return descriptor == null
+                    ? null
+                    : resolveTranscriptViewportAnchorIndex({ anchor: { ...descriptor, seq: null }, items: rows });
+            });
+
+            expect({
+                expanded: roundTrip(items),
+                // Collapsed shape: tool-1 has no row of its own, so the caps' borrowed id resolves by
+                // containment to the header and the expand/footer caps lose their own position too.
+                collapsed: roundTrip([headerUnit, expandUnit, toolUnit('tool-3'), footerUnit]),
+            }).toEqual({
+                expanded: [0, 1, 2, 3, 4],
+                collapsed: [0, 1, 2, 3],
+            });
+        });
 
         it('prefers the exact message-owning tool unit over header containment', () => {
             const items = [headerUnit, expandUnit, toolUnit('tool-2'), toolUnit('tool-3'), footerUnit] as const;
@@ -188,7 +253,7 @@ describe('transcriptViewportAnchorResolution', () => {
             })).toEqual({ status: 'missing', reason: 'fork-boundary' });
 
             expect(resolveTranscriptViewportAnchorLookup({
-                anchor: { messageId: 'server-anchor', itemId: 'msg:server-anchor', seq: 20 },
+                anchor: { messageId: 'server-anchor', itemId: 'msg:server-anchor', seq: 30 },
                 items,
                 materializedSeqRange: { minSeq: 10, maxSeq: 40 },
             })).toEqual({ status: 'missing', reason: 'deleted-missing' });

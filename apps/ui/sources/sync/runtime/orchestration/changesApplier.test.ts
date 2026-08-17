@@ -9,6 +9,7 @@ const credentials: AuthCredentials = { token: 't', secret: 's' };
 function buildPlanned(partial: {
     changes?: ApiChangeEntry[];
     sessionIdsToCatchUp?: string[];
+    sessionTranscriptRepairs?: PlannedChangeActions['sessionTranscriptRepairs'];
     unsupportedChanges?: PlannedChangeActions['unsupportedChanges'];
     invalidate?: Partial<PlannedChangeActions['invalidate']>;
     kv?: PlannedChangeActions['kv'];
@@ -16,6 +17,7 @@ function buildPlanned(partial: {
     return {
         changes: partial.changes ?? [],
         sessionIdsToCatchUp: partial.sessionIdsToCatchUp ?? [],
+        sessionTranscriptRepairs: partial.sessionTranscriptRepairs ?? [],
         unsupportedChanges: partial.unsupportedChanges ?? [],
         invalidate: {
             sessions: false,
@@ -31,6 +33,7 @@ function buildPlanned(partial: {
         },
         kv: partial.kv ?? { type: 'none' },
         sessionFolderAssignments: { mode: 'none' },
+        sessionOrganization: { mode: 'none' },
     };
 }
 
@@ -130,7 +133,7 @@ describe('changesApplier', () => {
         });
     });
 
-    it('does not advance assignment-only changes when assignment refresh fails', async () => {
+    it('does not advance assignment-only changes when organization refresh fails', async () => {
         const result = await applyPlannedChangeActions({
             planned: {
                 ...buildPlanned({
@@ -148,6 +151,16 @@ describe('changesApplier', () => {
                     sessionIds: ['s1'],
                     folderIds: ['folder-a'],
                 },
+                sessionOrganization: {
+                    mode: 'snapshot',
+                    assignmentSessionIds: ['s1'],
+                    folderIds: ['folder-a'],
+                    tagIds: [],
+                    orderScopes: [],
+                    includeFolders: false,
+                    includeTags: false,
+                    includeLabels: false,
+                },
             } as PlannedChangeActions,
             credentials,
             isSessionMessagesLoaded: () => true,
@@ -156,7 +169,137 @@ describe('changesApplier', () => {
             invalidateScmStatusForSession: () => {},
             applyTodoSocketUpdates: async () => {},
             kvBulkGet: async () => ({ values: [] }),
-            refreshSessionFolderAssignments: async () => {
+            refreshSessionFolderAssignments: async () => {},
+            refreshSessionOrganization: async () => {
+                throw new Error('refresh failed');
+            },
+        } as Parameters<typeof applyPlannedChangeActions>[0]);
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
+        });
+    });
+
+    it('refreshes session organization before advancing organization changes', async () => {
+        const refreshSessionOrganization = vi.fn(async () => {});
+        const plan = {
+            mode: 'snapshot' as const,
+            assignmentSessionIds: ['s1'],
+            folderIds: ['folder-a'],
+            tagIds: [],
+            orderScopes: [],
+            includeFolders: false,
+            includeTags: false,
+            includeLabels: false,
+        };
+
+        const result = await applyPlannedChangeActions({
+            planned: {
+                ...buildPlanned({
+                    changes: [
+                        buildChange({
+                            cursor: 1,
+                            kind: 'session',
+                            entityId: 's1',
+                            hint: { sessionFolderAssignment: true, folderId: 'folder-a' },
+                        }),
+                    ],
+                }),
+                sessionOrganization: plan,
+            } as PlannedChangeActions,
+            credentials,
+            isSessionMessagesLoaded: () => true,
+            invalidate: {},
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+            refreshSessionOrganization,
+        } as Parameters<typeof applyPlannedChangeActions>[0]);
+
+        expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+        expect(refreshSessionOrganization).toHaveBeenCalledWith(plan);
+    });
+
+    it('does not advance organization changes when organization refresh fails', async () => {
+        const result = await applyPlannedChangeActions({
+            planned: {
+                ...buildPlanned({
+                    changes: [
+                        buildChange({
+                            cursor: 1,
+                            kind: 'session',
+                            entityId: 's1',
+                            hint: { sessionFolderAssignment: true, folderId: 'folder-a' },
+                        }),
+                    ],
+                }),
+                sessionOrganization: {
+                    mode: 'snapshot',
+                    assignmentSessionIds: ['s1'],
+                    folderIds: ['folder-a'],
+                    tagIds: [],
+                    orderScopes: [],
+                    includeFolders: false,
+                    includeTags: false,
+                    includeLabels: false,
+                },
+            } as PlannedChangeActions,
+            credentials,
+            isSessionMessagesLoaded: () => true,
+            invalidate: {},
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+            refreshSessionOrganization: async () => {
+                throw new Error('refresh failed');
+            },
+        } as Parameters<typeof applyPlannedChangeActions>[0]);
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
+        });
+    });
+
+    it('does not advance account organization changes when organization refresh fails', async () => {
+        const result = await applyPlannedChangeActions({
+            planned: {
+                ...buildPlanned({
+                    changes: [
+                        buildChange({
+                            cursor: 1,
+                            kind: 'account',
+                            entityId: 'session-organization',
+                            hint: { sessionOrganization: true, scope: 'pins', sessionIds: ['s1'] },
+                        }),
+                    ],
+                }),
+                sessionOrganization: {
+                    mode: 'snapshot',
+                    assignmentSessionIds: ['s1'],
+                    folderIds: [],
+                    tagIds: [],
+                    orderScopes: [],
+                    includeFolders: false,
+                    includeTags: false,
+                    includeLabels: false,
+                },
+            } as PlannedChangeActions,
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {},
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+            refreshSessionOrganization: async () => {
                 throw new Error('refresh failed');
             },
         } as Parameters<typeof applyPlannedChangeActions>[0]);
@@ -190,8 +333,9 @@ describe('changesApplier', () => {
         expect(invalidateScmStatusForSession).toHaveBeenCalledWith('s1');
     });
 
-    it('requires session-list hydration only for loaded catch-up sessions', async () => {
+    it('requires session-shell hydration for every changed session while limiting transcript catch-up to loaded sessions', async () => {
         const invalidateSessions = vi.fn(async () => {});
+        const invalidateMessagesForSession = vi.fn(async () => {});
 
         await applyPlannedChangeActions({
             planned: buildPlanned({
@@ -203,15 +347,47 @@ describe('changesApplier', () => {
             invalidate: {
                 sessions: invalidateSessions,
             },
-            invalidateMessagesForSession: async () => {},
+            invalidateMessagesForSession,
             invalidateScmStatusForSession: () => {},
             applyTodoSocketUpdates: async () => {},
             kvBulkGet: async () => ({ values: [] }),
         });
 
         expect(invalidateSessions).toHaveBeenCalledWith({
-            requiredHydrationSessionIds: ['loaded'],
-            prioritizeSessionIds: ['loaded'],
+            requiredHydrationSessionIds: ['loaded', 'unloaded'],
+            prioritizeSessionIds: ['loaded', 'unloaded'],
+        });
+        expect(invalidateMessagesForSession).toHaveBeenCalledTimes(1);
+        expect(invalidateMessagesForSession).toHaveBeenCalledWith('loaded');
+    });
+
+    it('does not checkpoint an unloaded-transcript session change when its session-shell refresh fails', async () => {
+        const result = await applyPlannedChangeActions({
+            planned: buildPlanned({
+                changes: [
+                    buildChange({ cursor: 1, kind: 'session', entityId: 'unloaded' }),
+                ],
+                sessionIdsToCatchUp: ['unloaded'],
+                invalidate: { sessions: true },
+            }),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {
+                sessions: async () => {
+                    throw new Error('session shell unavailable');
+                },
+            },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
         });
     });
 
@@ -646,6 +822,75 @@ describe('changesApplier', () => {
             safeAdvanceCursor: '1',
             processedChanges: 1,
             blockedChanges: 0,
+        });
+    });
+
+    it('repairs durable in-place transcript revisions before advancing their cursor', async () => {
+        const repairSessionTranscriptRevision = vi.fn(async () => {});
+        const change = buildChange({
+            cursor: 1,
+            kind: 'session',
+            entityId: 's1',
+            hint: { updatedMessageSeq: 15, updatedMessageId: 'm15' },
+        });
+
+        const result = await applyPlannedChangeActions({
+            planned: buildPlanned({
+                changes: [change],
+                sessionIdsToCatchUp: ['s1'],
+                sessionTranscriptRepairs: [{ sessionId: 's1', minSeq: 15, messageIds: ['m15'] }],
+            }),
+            credentials,
+            isSessionMessagesLoaded: () => true,
+            getSessionMaterializedMaxSeq: () => 15,
+            invalidate: {},
+            invalidateMessagesForSession: async () => {},
+            repairSessionTranscriptRevision,
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(repairSessionTranscriptRevision).toHaveBeenCalledWith({
+            sessionId: 's1',
+            minSeq: 15,
+            messageIds: ['m15'],
+        });
+        expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+    });
+
+    it('keeps the changes cursor before a durable transcript revision whose repair fails', async () => {
+        const change = buildChange({
+            cursor: 1,
+            kind: 'session',
+            entityId: 's1',
+            hint: { updatedMessageSeq: 15, updatedMessageId: 'm15' },
+        });
+
+        const result = await applyPlannedChangeActions({
+            planned: buildPlanned({
+                changes: [change],
+                sessionIdsToCatchUp: ['s1'],
+                sessionTranscriptRepairs: [{ sessionId: 's1', minSeq: 15, messageIds: ['m15'] }],
+            }),
+            credentials,
+            isSessionMessagesLoaded: () => true,
+            getSessionMaterializedMaxSeq: () => 15,
+            invalidate: {},
+            invalidateMessagesForSession: async () => {},
+            repairSessionTranscriptRevision: async () => {
+                throw new Error('revision fetch failed');
+            },
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
         });
     });
 

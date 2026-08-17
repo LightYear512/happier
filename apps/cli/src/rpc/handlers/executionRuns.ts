@@ -1,7 +1,8 @@
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
+import type { AcpSendFn } from '@/agent/acp/bridge/acpSessionForwarding';
 import type { AgentBackend } from '@/agent/core/AgentBackend';
-import type { BackendTargetRefV1, ExecutionRunPublicState } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, BackendTargetRefV1, ExecutionRunPublicState } from '@happier-dev/protocol';
 
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
@@ -14,11 +15,18 @@ import {
   ExecutionRunEnsureOrStartRequestSchema,
   ExecutionRunActionRequestSchema,
   ExecutionRunTurnStreamStartRequestSchema,
+  ExecutionRunTurnStreamStartV2RequestSchema,
+  ExecutionRunUserTranscriptCommitRequestSchema,
   ExecutionRunTurnStreamReadRequestSchema,
   ExecutionRunTurnStreamCancelRequestSchema,
 } from '@happier-dev/protocol';
 
 import { ExecutionRunManager } from '@/agent/executionRuns/runtime/ExecutionRunManager';
+import type { SessionRuntimeActivityContributionHandle } from '@/session/runtimeActivity/types';
+import {
+  ExecutionRunConnectedServicesUnavailableError,
+  prepareExecutionRunConnectedServices,
+} from '@/agent/executionRuns/runtime/prepareExecutionRunConnectedServices';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
 import {
   isSafePermissionModeForIntent,
@@ -29,6 +37,7 @@ import { VoiceAgentError } from '@/agent/voice/agent/VoiceAgentManager';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { fetchServerFeaturesSnapshot, type CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { resolveExecutionRunRuntimeBackendId } from '@/agent/executionRuns/runtime/backendTargets';
+import { resolveReviewExecutionRunIntentInput } from '@/agent/reviews/resolveReviewExecutionRunIntentInput';
 import { applyExecutionRunListRequest } from '@/session/services/applyExecutionRunListRequest';
 import { preflightCodeRabbitReviewScope } from '@/agent/reviews/engines/coderabbit/preflightCodeRabbitReviewScope';
 import { readCodeRabbitReviewConfigFromEnv } from '@/agent/reviews/engines/coderabbit/readCodeRabbitReviewConfig';
@@ -65,10 +74,13 @@ export function registerExecutionRunHandlers(
       backendTarget?: BackendTargetRefV1;
       permissionMode: string;
       modelId?: string;
+      sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
       accountSettings?: Readonly<Record<string, unknown>> | null;
       start?: any;
+      connectedServicesEnv?: Readonly<Record<string, string>> | null;
+      connectedServicesCleanup?: (() => Promise<void>) | null;
     }) => AgentBackend;
-    sendAcp: (provider: ACPProvider, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => void;
+    sendAcp: AcpSendFn;
     streamedTranscriptSession?: Readonly<{
       sendAgentMessageCommitted: (
         provider: ACPProvider,
@@ -79,7 +91,10 @@ export function registerExecutionRunHandlers(
     transcriptWriter?: Readonly<{
       appendUserText: (text: string, meta: Record<string, unknown>) => void | Promise<void>;
       appendAssistantText: (text: string, meta: Record<string, unknown>) => void | Promise<void>;
-      appendUserTextCommitted?: (text: string, meta: Record<string, unknown>) => Promise<void>;
+      appendUserTextCommitted?: (
+        text: string,
+        options: Readonly<{ localId: string; meta: Record<string, unknown> }>,
+      ) => Promise<void>;
       appendAssistantTextCommitted?: (text: string, meta: Record<string, unknown>) => Promise<void>;
     }>;
     getServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
@@ -91,6 +106,7 @@ export function registerExecutionRunHandlers(
       maxDepth?: number;
     }>;
     budgetRegistry?: ExecutionBudgetRegistry;
+    runtimeActivityContributionHandle?: SessionRuntimeActivityContributionHandle | null;
     onExecutionRunPublicStateUpdated?: (run: ExecutionRunPublicState) => void;
     resolveAccountSettings?: () => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
   }>,
@@ -120,7 +136,19 @@ export function registerExecutionRunHandlers(
     boundedTimeoutMs: policy.boundedTimeoutMs ?? undefined,
     maxTurns: policy.maxTurns ?? undefined,
     budgetRegistry: ctx.budgetRegistry,
+    runtimeActivityContributionHandle: ctx.runtimeActivityContributionHandle,
     resolveAccountSettings: ctx.resolveAccountSettings,
+    // Resume rehydration re-materializes connected services through the SAME canonical CS owner used
+    // at start, driven by the run's persisted selection. Fail-closed: a run with a persisted CS
+    // selection re-materializes the account or does not resume (never falls back to ambient auth).
+    prepareConnectedServices: async (params) =>
+      prepareExecutionRunConnectedServices({
+        backendTarget: params.backendTarget,
+        connectedServices: params.connectedServices,
+        credentials: await readCredentials().catch(() => null),
+        cwd: ctx.cwd,
+        sessionId: params.sessionId,
+      }),
   });
 
   let cachedServerSnapshot: CliServerFeaturesSnapshot | undefined;
@@ -136,6 +164,26 @@ export function registerExecutionRunHandlers(
     if (!isExecutionRunsEnabled()) return executionRunsDisabled();
     const parsed = ExecutionRunStartRequestSchema.safeParse(raw);
     if (!parsed.success) return invalidParams();
+    const backendId = resolveExecutionRunRuntimeBackendId(parsed.data.backendTarget);
+    let normalizedReviewIntentInput: unknown;
+    let hasNormalizedReviewIntentInput = false;
+    if (parsed.data.intent === 'review') {
+      const reviewInput = resolveReviewExecutionRunIntentInput(parsed.data.intentInput, {
+        engineId: backendId,
+        instructions: parsed.data.instructions ?? '',
+      });
+      if (reviewInput.kind === 'invalid') {
+        return {
+          ok: false,
+          error: 'Invalid review intentInput; omit it for a default prompt review or provide a valid review start or follow-up payload',
+          errorCode: 'execution_run_invalid_action_input',
+        };
+      }
+      if (reviewInput.kind === 'review_start') {
+        normalizedReviewIntentInput = reviewInput.input;
+        hasNormalizedReviewIntentInput = true;
+      }
+    }
     if (parsed.data.intent === 'voice_agent') {
       const serverSnapshot = ctx.getServerFeaturesSnapshot?.() ?? cachedServerSnapshot;
       let voiceDecision = resolveCliFeatureDecision({ featureId: 'voice', env: process.env, serverSnapshot });
@@ -162,7 +210,6 @@ export function registerExecutionRunHandlers(
     if (!isSafePermissionModeForIntent(parsed.data.intent, parsed.data.permissionMode)) {
       return { ok: false, error: 'Permission denied', errorCode: 'permission_denied' };
     }
-    const backendId = resolveExecutionRunRuntimeBackendId(parsed.data.backendTarget);
     if (parsed.data.intent === 'review' && backendId === 'coderabbit') {
       const codeRabbitConfig = readCodeRabbitReviewConfigFromEnv(process.env);
       let preflight;
@@ -206,9 +253,54 @@ export function registerExecutionRunHandlers(
         return { ok: false, error: 'Run depth exceeded', errorCode: 'run_depth_exceeded' };
       }
     }
+    let preparedConnectedServicesForFailureRelease:
+      Awaited<ReturnType<typeof prepareExecutionRunConnectedServices>> = null;
     try {
       const accountSettings = await ctx.resolveAccountSettings?.() ?? null;
-      const startParams: any = { ...(parsed.data as any) };
+      const startParams: any = {
+        ...(parsed.data as any),
+        ...(hasNormalizedReviewIntentInput ? { intentInput: normalizedReviewIntentInput } : {}),
+      };
+
+      // ER-CS: resolve the run's connected-services selection (explicit per-target selection, else the
+      // session spawn defaulting owner — the SAME blocking settings bootstrap sessions use, QA2-F02)
+      // and materialize it via the daemon bridge. Fail-closed: a run WITH a selection either starts on
+      // the materialized account or does not start at all.
+      let preparedConnectedServices: Awaited<ReturnType<typeof prepareExecutionRunConnectedServices>> = null;
+      try {
+        preparedConnectedServices = await prepareExecutionRunConnectedServices({
+          backendTarget: parsed.data.backendTarget,
+          connectedServices: (parsed.data as { connectedServices?: unknown }).connectedServices,
+          connectedServicesDefaultServiceIds:
+            (parsed.data as { connectedServicesDefaultServiceIds?: readonly string[] }).connectedServicesDefaultServiceIds,
+          // Unreadable credentials degrade to the native path (logged by prepare), matching how
+          // session spawn defaulting degrades when its settings bootstrap fails.
+          credentials: await (async () => {
+            try {
+              return (await readCredentials()) ?? null;
+            } catch {
+              return null;
+            }
+          })(),
+          cwd: ctx.cwd,
+          sessionId: ctx.sessionId,
+        });
+      } catch (error) {
+        if (error instanceof ExecutionRunConnectedServicesUnavailableError) {
+          return { ok: false, error: error.message, errorCode: error.code };
+        }
+        throw error;
+      }
+      preparedConnectedServicesForFailureRelease = preparedConnectedServices;
+      if (preparedConnectedServices) {
+        startParams.connectedServicesEnv = preparedConnectedServices.env;
+        startParams.connectedServicesCleanup = preparedConnectedServices.cleanup;
+        // Persist the resolved selection into the run's immutable launch record so a later resume can
+        // re-materialize the SAME account/profile (fail-closed) instead of ambient auth.
+        startParams.connectedServicesSelection = preparedConnectedServices.selection;
+        startParams.connectedServicesRegistration = preparedConnectedServices.registration;
+      }
+      delete startParams.connectedServices;
       if (parsed.data.intent === 'voice_agent' && parsed.data.replay?.kind === 'voice_session.v1') {
         const credentials = await readCredentials().catch(() => null);
         if (credentials) {
@@ -263,6 +355,9 @@ export function registerExecutionRunHandlers(
       } as any);
       return { ok: true, ...started };
     } catch (error) {
+      // ER-CS: the run never started; release the daemon-side registration + materialized root now
+      // instead of leaking it until pid death (cleanup is idempotent + best-effort).
+      await preparedConnectedServicesForFailureRelease?.cleanup().catch(() => {});
       const code = (error as any)?.code;
       if (code === 'execution_run_budget_exceeded') {
         return { ok: false, error: 'Execution run budget exceeded', errorCode: 'execution_run_budget_exceeded' };
@@ -355,6 +450,33 @@ export function registerExecutionRunHandlers(
     });
     if (!started.ok) return { ok: false, error: started.error, errorCode: started.errorCode };
     return { streamId: started.streamId };
+  });
+
+  rpc.registerHandler(SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2, async (raw: unknown) => {
+    if (!isExecutionRunsEnabled()) return executionRunsDisabled();
+    const parsed = ExecutionRunTurnStreamStartV2RequestSchema.safeParse(raw);
+    if (!parsed.success) return invalidParams();
+    const started = await manager.startTurnStream(parsed.data.runId, {
+      message: parsed.data.message,
+      ...(typeof parsed.data.displayMessage === 'string' ? { displayMessage: parsed.data.displayMessage } : {}),
+      userTranscript: parsed.data.userTranscript,
+      resume: parsed.data.resume,
+    });
+    if (!started.ok) return { ok: false, error: started.error, errorCode: started.errorCode };
+    return { streamId: started.streamId };
+  });
+
+  rpc.registerHandler(SESSION_RPC_METHODS.EXECUTION_RUN_USER_TRANSCRIPT_COMMIT_V1, async (raw: unknown) => {
+    if (!isExecutionRunsEnabled()) return executionRunsDisabled();
+    const parsed = ExecutionRunUserTranscriptCommitRequestSchema.safeParse(raw);
+    if (!parsed.success) return invalidParams();
+    const committed = await manager.commitUserTranscript(parsed.data.runId, {
+      message: parsed.data.message,
+      ...(typeof parsed.data.displayMessage === 'string' ? { displayMessage: parsed.data.displayMessage } : {}),
+      localId: parsed.data.localId,
+    });
+    if (!committed.ok) return { ok: false, error: committed.error, errorCode: committed.errorCode };
+    return { ok: true };
   });
 
   rpc.registerHandler(SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ, async (raw: unknown) => {

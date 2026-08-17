@@ -7,6 +7,16 @@
 //
 // This is intentionally JS (not YAML) so both scripts and workflows can consume it.
 
+export const releaseTargets = Object.freeze([
+  'ui',
+  'server',
+  'website',
+  'docs',
+  'cli',
+  'stack',
+  'server_runner',
+]);
+
 export const components = Object.freeze({
   ui: {
     id: 'ui',
@@ -42,7 +52,7 @@ export const components = Object.freeze({
   },
   server: {
     id: 'server',
-    changedPrefixes: ['apps/server/', 'packages/relay-server/'],
+    changedPrefixes: ['apps/server/', 'packages/relay-server/', 'packages/privacy-kit/'],
   },
   stack: {
     id: 'stack',

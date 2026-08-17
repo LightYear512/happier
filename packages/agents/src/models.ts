@@ -91,6 +91,22 @@ export type AgentModelConfig = Readonly<{
   staticModels?: readonly AgentModelDescriptor[];
 }>;
 
+/**
+ * The Ultracode toggle as the picker renders it.
+ *
+ * Shared so a model discovered at runtime surfaces the identical control to a curated one; two
+ * copies of this copy would drift.
+ */
+export function buildClaudeUltracodeModelOption(): AgentModelOption {
+  return {
+    id: 'ultracode',
+    name: 'Ultracode',
+    description: 'Maximum reasoning with dynamic workflows (forces XHigh effort). Applies to the current session only.',
+    type: 'boolean',
+    currentValue: 'false',
+  };
+}
+
 function withClaudeEffortModelOptions(model: AgentModelDescriptor): AgentModelDescriptor {
   const levels = resolveClaudeEffortLevelsForModelId(model.id);
   const currentValue = resolveClaudeDefaultEffortLevelForModelId(model.id);
@@ -108,13 +124,7 @@ function withClaudeEffortModelOptions(model: AgentModelDescriptor): AgentModelDe
   // Ultracode is a session-only Claude Code setting (forces xhigh + Dynamic Workflows),
   // orthogonal to the effort axis — surfaced as a boolean toggle, never a 6th effort pill.
   if (isClaudeUltracodeSupportedModelId(model.id)) {
-    modelOptions.push({
-      id: 'ultracode',
-      name: 'Ultracode',
-      description: 'Maximum reasoning with dynamic workflows (forces XHigh effort). Applies to the current session only.',
-      type: 'boolean',
-      currentValue: 'false',
-    });
+    modelOptions.push(buildClaudeUltracodeModelOption());
   }
 
   return { ...model, modelOptions };
@@ -127,6 +137,12 @@ function withClaude1mContextVariant(model: AgentModelDescriptor): AgentModelDesc
 
 const CLAUDE_STATIC_MODELS = Object.freeze(([
   {
+    id: 'claude-opus-5',
+    name: 'Opus 5',
+    description: 'Latest highest-capability Claude model for the hardest coding and reasoning tasks.',
+    contextWindowTokens: 1_000_000,
+  },
+  {
     id: 'claude-fable-5',
     name: 'Fable 5',
     description: 'Newest highest-capability generally available Claude model for the hardest coding and reasoning tasks.',
@@ -135,13 +151,13 @@ const CLAUDE_STATIC_MODELS = Object.freeze(([
   {
     id: 'claude-opus-4-8',
     name: 'Opus 4.8',
-    description: 'Newest highest-capability Claude model for the hardest coding and reasoning tasks.',
+    description: 'Prior highest-capability Claude model for the hardest coding and reasoning tasks.',
     contextWindowTokens: 1_000_000,
   },
   {
     id: 'claude-opus-4-7',
     name: 'Opus 4.7',
-    description: 'Prior highest-capability Claude model for hard coding and reasoning tasks.',
+    description: 'Earlier highest-capability Claude model for hard coding and reasoning tasks.',
     contextWindowTokens: 1_000_000,
   },
   {
@@ -209,55 +225,14 @@ const GEMINI_STATIC_MODELS = Object.freeze([
   },
 ] satisfies readonly AgentModelDescriptor[]);
 
-const CODEX_STATIC_MODELS = Object.freeze([
-  {
-    id: 'gpt-5.4',
-    name: 'GPT 5.4',
-    description: 'Latest frontier agentic coding model.',
-  },
-  {
-    id: 'gpt-5.4-mini',
-    name: 'GPT 5.4 Mini',
-    description: 'Smaller frontier agentic coding model.',
-  },
-  {
-    id: 'gpt-5.3-codex',
-    name: 'GPT 5.3 Codex',
-    description: 'Frontier Codex-optimized agentic coding model.',
-  },
-  {
-    id: 'gpt-5.3-codex-spark',
-    name: 'GPT 5.3 Codex Spark',
-    description: 'Ultra-fast coding model.',
-  },
-  {
-    id: 'gpt-5.2-codex',
-    name: 'GPT 5.2 Codex',
-    description: 'Frontier agentic coding model.',
-  },
-  {
-    id: 'gpt-5.2',
-    name: 'GPT 5.2',
-    description: 'Optimized for professional work and long-running agents.',
-  },
-  {
-    id: 'gpt-5.1-codex-max',
-    name: 'GPT 5.1 Codex Max',
-    description: 'Codex-optimized model for deep and fast reasoning.',
-  },
-  {
-    id: 'gpt-5.1-codex-mini',
-    name: 'GPT 5.1 Codex Mini',
-    description: 'Optimized for codex. Cheaper, faster, but less capable.',
-  },
-] satisfies readonly AgentModelDescriptor[]);
-
 export const AGENT_MODEL_CONFIG: Readonly<Record<AgentId, AgentModelConfig>> = Object.freeze({
   claude: {
     supportsSelection: true,
     supportsFreeform: true,
     nonAcpApplyScope: 'next_prompt',
-    dynamicProbe: 'static-only',
+    // Successful account discovery owns membership and API capability/context facts. These static
+    // rows enrich matching ids and are the cold fallback until the account has a dynamic snapshot.
+    dynamicProbe: 'auto',
     defaultMode: 'default',
     allowedModes: [
       ...CLAUDE_STATIC_MODELS.map((model) => model.id),
@@ -268,11 +243,9 @@ export const AGENT_MODEL_CONFIG: Readonly<Record<AgentId, AgentModelConfig>> = O
     supportsSelection: true,
     nonAcpApplyScope: 'spawn_only',
     acpModelConfigOptionId: 'model',
+    dynamicProbe: 'auto',
     defaultMode: 'default',
-    allowedModes: [
-      ...CODEX_STATIC_MODELS.map((model) => model.id),
-    ],
-    staticModels: CODEX_STATIC_MODELS,
+    allowedModes: ['default'],
   },
   opencode: {
     supportsSelection: true,
@@ -368,6 +341,15 @@ export const AGENT_MODEL_CONFIG: Readonly<Record<AgentId, AgentModelConfig>> = O
     dynamicProbe: 'auto',
     defaultMode: 'default',
     allowedModes: ['default'],
+  },
+  grok: {
+    supportsSelection: true,
+    supportsFreeform: false,
+    nonAcpApplyScope: 'next_prompt',
+    acpApplyBehavior: 'set_model',
+    dynamicProbe: 'auto',
+    defaultMode: 'default',
+    allowedModes: [],
   },
 });
 

@@ -72,6 +72,23 @@ describe('UI testkit mock factories', () => {
         expect(typeof appState.addEventListener).toBe('function');
     });
 
+    it('creates a removable React Native AppState change emitter', async () => {
+        const { createReactNativeAppStateEmitter } = await import('./reactNative');
+        const boundary = createReactNativeAppStateEmitter();
+        const listener = vi.fn();
+        const subscription = boundary.appState.addEventListener('change', listener);
+
+        boundary.emit('inactive');
+        expect(boundary.appState.currentState).toBe('inactive');
+        expect(listener).toHaveBeenCalledExactlyOnceWith('inactive');
+        expect(boundary.getListenerCount()).toBe(1);
+
+        subscription.remove();
+        boundary.emit('background');
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(boundary.getListenerCount()).toBe(0);
+    });
+
     it('preserves nested stub exports when overriding React Native module objects like Animated', async () => {
         const { createReactNativeWebMock } = await import('./reactNative');
 
@@ -557,11 +574,15 @@ describe('UI testkit mock factories', () => {
         expect(useSetting('toolViewTapAction' as any)).toBe('fallback:toolViewTapAction');
     });
 
-    it('installs direct vi.mock factories for react-native, text, and unistyles', async () => {
+    it('installs direct vi.mock factories for modal, react-native, text, and unistyles', async () => {
+        const { installModalModuleMock } = await import('./modal');
         const { installReactNativeWebMock } = await import('./reactNative');
         const { installTextModuleMock } = await import('./text');
         const { installUnistylesMock } = await import('./unistyles');
 
+        const modalModule = installModalModuleMock({
+            confirmResult: true,
+        })();
         const reactNativeModule = await installReactNativeWebMock({
             View: 'View',
             Platform: {
@@ -582,6 +603,7 @@ describe('UI testkit mock factories', () => {
         const installedTheme = installedUnistyles.theme as Record<string, unknown>;
         const installedColors = installedTheme.colors as Record<string, unknown> | undefined;
 
+        expect(await modalModule.Modal.confirm('Confirm')).toBe(true);
         expect(reactNativeModule.View).toBe('View');
         expect(reactNativeModule.Platform.OS).toBe('ios');
         expect(textModule.t('settings.title')).toBe('tx:settings.title');
@@ -795,6 +817,79 @@ describe('UI testkit mock factories', () => {
             Octicons: 'Octicons',
             AntDesign: 'AntDesign',
             MaterialIcons: 'MaterialIcons',
+        });
+    });
+
+    // `react-native-reanimated` is mocked for every suite from `sources/dev/vitestSetup.ts`
+    // and aliased to `sources/dev/reactNativeReanimatedStub.ts`, both built from
+    // `createReanimatedModuleMock()`. When production reaches for an export the factory does
+    // not carry, every suite that renders that path fails at once with
+    // `No "<name>" export is defined on the "react-native-reanimated" mock` — which is exactly
+    // what a single new `useDerivedValue` call site did on 2026-08-01. Derive the required
+    // surface from production source so the factory cannot silently fall behind again.
+    it('creates a reanimated mock carrying every runtime export production imports', async () => {
+        const { createReanimatedModuleMock } = await import('./reanimated');
+        const {
+            collectReanimatedRuntimeImports,
+            readReanimatedStubExportNames,
+        } = await import('./reanimatedProductionSurface');
+        // The vite alias resolves `react-native-reanimated` to a stub that re-exports the factory
+        // through a hand-written named-export list — a second place the surface can drift.
+        const stubExports = readReanimatedStubExportNames();
+
+        const mock = createReanimatedModuleMock() as Record<string, unknown>;
+        const animatedDefault = mock.default as Record<string, unknown>;
+        const usage = collectReanimatedRuntimeImports();
+
+        expect(usage.namedImports.size).toBeGreaterThan(10);
+        expect(usage.files.length).toBeGreaterThan(10);
+
+        const missingNamed = [...usage.namedImports]
+            .filter((name) => mock[name] === undefined)
+            .sort();
+        const missingFromStub = [...usage.namedImports]
+            .filter((name) => !stubExports.has(name))
+            .sort();
+        const missingDefaultMembers = [...usage.defaultMembers]
+            .filter((name) => animatedDefault[name] === undefined)
+            .sort();
+
+        expect({ missingNamed, missingFromStub, missingDefaultMembers }).toEqual({
+            missingNamed: [],
+            missingFromStub: [],
+            missingDefaultMembers: [],
+        });
+
+        // Presence alone does not prove the export is usable: `ShimmerView` hands the same
+        // animated ref to a component's `ref` prop AND to `measure(...)` inside an animated
+        // style. Drive that exact shape through React so a stub that is merely defined — an
+        // object instead of a callback ref, or a `measure` that throws — still fails here.
+        const useAnimatedRef = mock.useAnimatedRef as <T,>() => { current: T | null };
+        const measure = mock.measure as (ref: unknown) => { width: number } | null;
+        const useAnimatedStyle = mock.useAnimatedStyle as <T,>(factory: () => T) => T;
+        const measured: Array<{ width: number } | null> = [];
+
+        const Probe = () => {
+            const containerRef = useAnimatedRef<unknown>();
+            const style = useAnimatedStyle(() => {
+                const box = measure(containerRef);
+                measured.push(box);
+                return { width: box ? box.width : 0 };
+            });
+            return React.createElement(animatedDefault.View as string, { ref: containerRef, style });
+        };
+
+        let probe: ReturnType<typeof renderer.create> | undefined;
+        await act(async () => {
+            probe = renderer.create(React.createElement(Probe));
+        });
+        expect(measured).toEqual([null]);
+        expect(probe?.toJSON()).toMatchObject({
+            type: animatedDefault.View,
+            props: { style: { width: 0 } },
+        });
+        await act(async () => {
+            probe?.unmount();
         });
     });
 });

@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
 import {
   TranscriptRawAgentEventV1Schema,
+  agentEventAttentionImpact,
+  buildAgentEventLocalId,
   type SessionStoredMessageContent,
 } from '@happier-dev/protocol';
 
@@ -32,19 +35,6 @@ function buildStoredContent(params: Readonly<{
   };
 }
 
-function normalizeEventIdPart(value: string | null | undefined): string {
-  const normalized = typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'none';
-  return normalized.replace(/[^a-zA-Z0-9._:-]+/gu, '_');
-}
-
-function normalizeEventIdBooleanPart(value: boolean | null | undefined): string {
-  return typeof value === 'boolean' ? String(value) : 'none';
-}
-
-function normalizeEventIdNumberPart(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value) ? String(Math.trunc(value)) : 'none';
-}
-
 function parseRuntimeAuthRecoveryEvent(
   value: unknown,
 ): ConnectedServiceRuntimeAuthRecoveryTranscriptEventV1 | null {
@@ -56,23 +46,34 @@ function parseRuntimeAuthRecoveryEvent(
 function buildRuntimeAuthRecoveryTranscriptEventId(
   event: ConnectedServiceRuntimeAuthRecoveryTranscriptEventV1,
 ): string {
-  return [
-    'connected-service-runtime-auth-recovery',
-    normalizeEventIdPart(event.serviceId),
-    normalizeEventIdPart(event.groupId),
-    normalizeEventIdPart(event.profileId),
-    normalizeEventIdPart(event.status),
-    normalizeEventIdNumberPart(event.attempt),
-    normalizeEventIdNumberPart(event.nextRetryAtMs),
-    normalizeEventIdBooleanPart(event.terminal),
-    normalizeEventIdPart(event.reason),
-  ].join(':');
+  return buildAgentEventLocalId('connected-service-runtime-auth-recovery', [
+    event.serviceId,
+    event.groupId ?? 'none',
+    event.profileId ?? 'none',
+    event.status,
+    event.attempt ?? 'none',
+    typeof event.terminal === 'boolean' ? String(event.terminal) : 'none',
+    event.reason ?? 'none',
+  ]);
+}
+
+export function buildRuntimeAuthRecoveryAttemptTransitionLocalId(input: Readonly<{
+  attemptId: string;
+  transition: string;
+}>): string {
+  const attemptDigest = createHash('sha256').update(input.attemptId).digest('base64url');
+  return buildAgentEventLocalId('connected-service-runtime-auth-recovery', [
+    attemptDigest,
+    input.transition,
+  ]);
 }
 
 export async function commitConnectedServiceRuntimeAuthRecoverySessionEvent(params: Readonly<{
   credentials: Credentials;
   sessionId: string;
   event: unknown;
+  attemptId?: string;
+  transition?: string;
 }>): Promise<void> {
   const event = parseRuntimeAuthRecoveryEvent(params.event);
   if (!event) return;
@@ -81,15 +82,25 @@ export async function commitConnectedServiceRuntimeAuthRecoverySessionEvent(para
     token: params.credentials.token,
     sessionId: params.sessionId,
   });
-  if (!rawSession) return;
+  if (!rawSession) {
+    const error = new Error('Runtime-auth recovery session not found');
+    (error as { code?: string }).code = 'runtime_auth_recovery_session_not_found';
+    throw error;
+  }
 
-  const eventId = buildRuntimeAuthRecoveryTranscriptEventId(event);
+  const eventId = params.attemptId && params.transition
+    ? buildRuntimeAuthRecoveryAttemptTransitionLocalId({
+        attemptId: params.attemptId,
+        transition: params.transition,
+      })
+    : buildRuntimeAuthRecoveryTranscriptEventId(event);
 
   await commitSessionStoredMessage({
     token: params.credentials.token,
     sessionId: params.sessionId,
     localId: eventId,
     messageRole: 'event',
+    attentionImpact: agentEventAttentionImpact(event),
     content: buildStoredContent({
       credentials: params.credentials,
       rawSession,

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import * as webTranscriptPrependAnchorModule from '@/components/sessions/transcript/webTranscriptPrependAnchor';
+import * as webTranscriptPrependAnchorModule from '@/components/sessions/transcript/viewport/prepend/webTranscriptPrependAnchor';
 import {
     captureWebTranscriptPrependAnchor,
     refreshWebTranscriptPrependAnchor,
     restoreWebTranscriptPrependAnchor,
-} from '@/components/sessions/transcript/webTranscriptPrependAnchor';
+} from '@/components/sessions/transcript/viewport/prepend/webTranscriptPrependAnchor';
 import type { WebTranscriptScrollMetrics } from '@/components/sessions/transcript/webTranscriptScrollMetrics';
 
 type CaptureWebTranscriptViewportAnchor = (params: Readonly<{
@@ -32,6 +32,17 @@ type RestoreWebTranscriptViewportAnchor = (params: Readonly<{
     status: 'restored' | 'already_aligned' | 'not_found' | 'not_applied';
 };
 
+type ResolveWebTranscriptViewportAnchorAlignment = (params: Readonly<{
+    container: HTMLElement;
+    anchor: Readonly<{
+        kind: 'message' | 'toolGroup' | 'item';
+        messageId?: string | null;
+        itemId: string;
+        itemOffsetPx: number;
+    }>;
+    tolerancePx?: number;
+}>) => { status: 'aligned' | 'misaligned'; deltaPx: number } | { status: 'not_found' };
+
 function resolveModuleFunction<TFunction extends (...args: never[]) => unknown>(name: string): TFunction | null {
     const moduleExports = webTranscriptPrependAnchorModule as unknown as Record<string, unknown>;
     const exported = moduleExports[name];
@@ -48,6 +59,8 @@ class FakeElement {
     public isConnected = true;
     public parentElement: FakeElement | null = null;
     public querySelectorAllCount = 0;
+    public querySelectorCount = 0;
+    public querySelectorShouldThrow = false;
 
     private rect: { top: number; bottom: number };
     private readonly nodesBySelector = new Map<string, FakeElement[]>();
@@ -82,6 +95,16 @@ class FakeElement {
         return this.nodesBySelector.get(selector) ?? [];
     }
 
+    querySelector(selector: string) {
+        this.querySelectorCount += 1;
+        if (this.querySelectorShouldThrow) {
+            throw new Error('querySelector unavailable');
+        }
+        const testId = parseDataTestIdAttributeSelector(selector);
+        if (testId == null) return this.nodesBySelector.get(selector)?.[0] ?? null;
+        return this.nodesBySelector.get('[data-testid]')?.find((node) => node.getAttribute('data-testid') === testId) ?? null;
+    }
+
     setQuerySelectorAll(selector: string, nodes: FakeElement[]) {
         this.nodesBySelector.set(selector, nodes);
     }
@@ -89,6 +112,14 @@ class FakeElement {
     setRect(rect: { top: number; bottom: number }) {
         this.rect = rect;
     }
+}
+
+function parseDataTestIdAttributeSelector(selector: string): string | null {
+    const match = selector.match(/^\[data-testid="((?:\\.|[^"\\])*)"\]$/);
+    if (!match) return null;
+    return match[1]
+        .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_value, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+        .replace(/\\(.)/g, '$1');
 }
 
 function createContainer(params: Readonly<{
@@ -111,6 +142,59 @@ function installFakeHTMLElement() {
     globalWithHTMLElement.HTMLElement = FakeElement;
     return () => {
         globalWithHTMLElement.HTMLElement = originalHTMLElement;
+    };
+}
+
+/**
+ * A tool group rendered as separate transcript items (the per-unit renderer): the group header
+ * row carries `transcript-anchor-tool-group-<lastToolMessageId>` inside its own
+ * `…#header` item, while each tool row carries `transcript-anchor-tool-call-<messageId>`
+ * inside its own `…#tool:<id>` item. Both anchors name the SAME message id, so an anchor
+ * identity built from `messageId` alone cannot say which of the two items was measured.
+ */
+function createSplitToolGroupScene(params: Readonly<{ focusedRow: 'header' | 'tool' }>) {
+    const headerTop = params.focusedRow === 'header' ? 78 : -40;
+    const toolTop = headerTop + 116;
+    const headerItem = new FakeElement('transcript-item-toolCalls:g1#header', { top: headerTop, bottom: headerTop + 98 });
+    const headerAnchor = new FakeElement('transcript-anchor-tool-group-t3', { top: headerTop, bottom: headerTop + 98 });
+    const toolItem = new FakeElement('transcript-item-toolCalls:g1#tool:t3', { top: toolTop, bottom: toolTop + 106 });
+    const toolAnchor = new FakeElement('transcript-anchor-tool-call-t3', { top: toolTop, bottom: toolTop + 106 });
+    const container = createContainer({
+        scrollTop: 500,
+        scrollHeight: 4000,
+        clientHeight: 600,
+        anchors: [headerItem, headerAnchor, toolItem, toolAnchor],
+    });
+    headerItem.parentElement = container;
+    headerAnchor.parentElement = headerItem;
+    toolItem.parentElement = container;
+    toolAnchor.parentElement = toolItem;
+    return {
+        container,
+        expectedAnchor: params.focusedRow === 'header'
+            ? { kind: 'toolGroup', messageId: 't3', itemId: 'toolCalls:g1#header', itemOffsetPx: headerTop }
+            : { kind: 'toolGroup', messageId: 't3', itemId: 'toolCalls:g1#tool:t3', itemOffsetPx: toolTop },
+        measuredItem: params.focusedRow === 'header' ? headerItem : toolItem,
+        name: `split tool group, ${params.focusedRow} row at the focus offset`,
+    };
+}
+
+function createMessageScene() {
+    const messageItem = new FakeElement('transcript-item-turn:7', { top: 90, bottom: 300 });
+    const messageAnchor = new FakeElement('transcript-anchor-message-m9', { top: 90, bottom: 300 });
+    const container = createContainer({
+        scrollTop: 500,
+        scrollHeight: 4000,
+        clientHeight: 600,
+        anchors: [messageItem, messageAnchor],
+    });
+    messageItem.parentElement = container;
+    messageAnchor.parentElement = messageItem;
+    return {
+        container,
+        expectedAnchor: { kind: 'message', messageId: 'm9', itemId: 'turn:7', itemOffsetPx: 90 },
+        measuredItem: messageItem,
+        name: 'message row at the focus offset',
     };
 }
 
@@ -288,7 +372,7 @@ describe('webTranscriptPrependAnchor', () => {
         }
     });
 
-    it('falls back to scroll-height growth when virtualized DOM anchors are unavailable', () => {
+    it('does not replace a missing keyed anchor with a scroll-height growth position', () => {
         const restoreHTMLElement = installFakeHTMLElement();
 
         try {
@@ -303,6 +387,7 @@ describe('webTranscriptPrependAnchor', () => {
             });
             itemAnchor.parentElement = container;
 
+            const requestedTargets: number[] = [];
             const result = restoreWebTranscriptPrependAnchor({
                 metrics: {
                     element: container as unknown as HTMLElement,
@@ -317,10 +402,17 @@ describe('webTranscriptPrependAnchor', () => {
                 stabilizeForMs: 1000,
                 userIntentAtMs: 0,
                 expiresAtMs: Date.now() + 1000,
-            }, writeScrollTopFor(container));
+            }, {
+                writeScrollTop: (targetScrollTop) => {
+                    requestedTargets.push(targetScrollTop);
+                    container.scrollTop = targetScrollTop;
+                    return true;
+                },
+            });
 
-            expect(result).toEqual({ didAdjustScroll: true, strategy: 'growth' });
-            expect(container.scrollTop).toBe(700);
+            expect(result).toEqual({ didAdjustScroll: false, status: 'not_found' });
+            expect(requestedTargets).toEqual([]);
+            expect(container.scrollTop).toBe(100);
         } finally {
             restoreHTMLElement();
         }
@@ -364,7 +456,7 @@ describe('webTranscriptPrependAnchor', () => {
         }
     });
 
-    it('leaves scroll position unchanged when the prepend growth fallback writer refuses the write', () => {
+    it('leaves metric-only scroll position unchanged when the prepend growth fallback writer refuses the write', () => {
         const restoreHTMLElement = installFakeHTMLElement();
 
         try {
@@ -387,10 +479,10 @@ describe('webTranscriptPrependAnchor', () => {
                     scrollHeight: 1200,
                     clientHeight: 600,
                 },
-                anchorTestId: 'transcript-anchor-message-m1',
-                anchorTop: 160,
-                itemTestId: 'transcript-item-turn:1',
-                itemTop: 120,
+                anchorTestId: null,
+                anchorTop: null,
+                itemTestId: null,
+                itemTop: null,
                 stabilizeForMs: 1000,
                 userIntentAtMs: 0,
                 expiresAtMs: Date.now() + 1000,
@@ -440,6 +532,164 @@ describe('webTranscriptPrependAnchor', () => {
                 status: 'restored',
             });
             expect(container.scrollTop).toBe(608);
+        } finally {
+            restoreHTMLElement();
+        }
+    });
+
+    it('restores saved viewport anchors with exact DOM lookups instead of scanning every test id descendant', () => {
+        const restoreWebTranscriptViewportAnchor =
+            resolveModuleFunction<RestoreWebTranscriptViewportAnchor>('restoreWebTranscriptViewportAnchor');
+        if (!restoreWebTranscriptViewportAnchor) return;
+        const restoreHTMLElement = installFakeHTMLElement();
+
+        try {
+            const itemId = 'turn:1/[quoted]"\\slash';
+            const messageId = 'm1/[quoted]"\\slash';
+            const itemAnchor = new FakeElement(`transcript-item-${itemId}`, { top: 180, bottom: 640 });
+            const messageAnchor = new FakeElement(`transcript-anchor-message-${messageId}`, { top: 240, bottom: 320 });
+            messageAnchor.parentElement = itemAnchor;
+            const unrelatedAnchors = Array.from(
+                { length: 300 },
+                (_value, index) => new FakeElement(`unrelated-${index}`, { top: 0, bottom: 1 }),
+            );
+            const container = createContainer({
+                scrollTop: 500,
+                scrollHeight: 1600,
+                clientHeight: 600,
+                anchors: [...unrelatedAnchors, itemAnchor, messageAnchor],
+            });
+            itemAnchor.parentElement = container;
+
+            expect(restoreWebTranscriptViewportAnchor({
+                container: container as unknown as HTMLElement,
+                anchor: {
+                    kind: 'message',
+                    messageId,
+                    itemId,
+                    itemOffsetPx: 72,
+                },
+            }, writeScrollTopFor(container))).toEqual({
+                didAdjustScroll: true,
+                status: 'restored',
+            });
+            expect(container.scrollTop).toBe(608);
+            // One exact lookup: the recorded item IS the element whose top was stored, so no
+            // identity re-resolution and no second lookup to read it back.
+            expect(container.querySelectorCount).toBe(1);
+            expect(container.querySelectorAllCount).toBe(0);
+        } finally {
+            restoreHTMLElement();
+        }
+    });
+
+    it('falls back to a test-id scan when exact DOM lookup is unavailable', () => {
+        const restoreWebTranscriptViewportAnchor =
+            resolveModuleFunction<RestoreWebTranscriptViewportAnchor>('restoreWebTranscriptViewportAnchor');
+        if (!restoreWebTranscriptViewportAnchor) return;
+        const restoreHTMLElement = installFakeHTMLElement();
+
+        try {
+            const itemAnchor = new FakeElement('transcript-item-turn:1', { top: 180, bottom: 640 });
+            const messageAnchor = new FakeElement('transcript-anchor-message-m1', { top: 240, bottom: 320 });
+            messageAnchor.parentElement = itemAnchor;
+            const container = createContainer({
+                scrollTop: 500,
+                scrollHeight: 1600,
+                clientHeight: 600,
+                anchors: [itemAnchor, messageAnchor],
+            });
+            container.querySelectorShouldThrow = true;
+            itemAnchor.parentElement = container;
+
+            expect(restoreWebTranscriptViewportAnchor({
+                container: container as unknown as HTMLElement,
+                anchor: {
+                    kind: 'message',
+                    messageId: 'm1',
+                    itemId: 'turn:1',
+                    itemOffsetPx: 72,
+                },
+            }, writeScrollTopFor(container))).toEqual({
+                didAdjustScroll: true,
+                status: 'restored',
+            });
+            expect(container.scrollTop).toBe(608);
+            expect(container.querySelectorCount).toBe(1);
+            expect(container.querySelectorAllCount).toBe(1);
+        } finally {
+            restoreHTMLElement();
+        }
+    });
+
+    it('aligns a captured anchor against the element whose top it stored, for every anchor family', () => {
+        const captureWebTranscriptViewportAnchor =
+            resolveModuleFunction<CaptureWebTranscriptViewportAnchor>('captureWebTranscriptViewportAnchor');
+        const resolveWebTranscriptViewportAnchorAlignment =
+            resolveModuleFunction<ResolveWebTranscriptViewportAnchorAlignment>(
+                'resolveWebTranscriptViewportAnchorAlignment',
+            );
+        if (!captureWebTranscriptViewportAnchor || !resolveWebTranscriptViewportAnchorAlignment) return;
+        const restoreHTMLElement = installFakeHTMLElement();
+
+        try {
+            const scenes = [
+                createSplitToolGroupScene({ focusedRow: 'header' }),
+                createSplitToolGroupScene({ focusedRow: 'tool' }),
+                createMessageScene(),
+            ];
+            for (const scene of scenes) {
+                const container = scene.container as unknown as HTMLElement;
+                const anchor = captureWebTranscriptViewportAnchor({ container });
+                expect({ name: scene.name, anchor }).toEqual({ name: scene.name, anchor: scene.expectedAnchor });
+                if (!anchor) continue;
+
+                // Nothing moved between capture and alignment, so the only honest answer is
+                // zero. A non-zero delta here is the distance between two DIFFERENT elements
+                // and is spent on the reader as a phantom scroll correction.
+                expect({ name: scene.name, alignment: resolveWebTranscriptViewportAnchorAlignment({
+                    container,
+                    anchor,
+                }) }).toEqual({ name: scene.name, alignment: { status: 'aligned', deltaPx: 0 } });
+
+                // ...and it must still be a real measurement of that element, not a constant.
+                scene.measuredItem.setRect({
+                    top: anchor.itemOffsetPx + 37,
+                    bottom: anchor.itemOffsetPx + 37 + 98,
+                });
+                expect({ name: scene.name, alignment: resolveWebTranscriptViewportAnchorAlignment({
+                    container,
+                    anchor,
+                }) }).toEqual({ name: scene.name, alignment: { status: 'misaligned', deltaPx: 37 } });
+            }
+        } finally {
+            restoreHTMLElement();
+        }
+    });
+
+    it('leaves scroll untouched when a captured tool-group header anchor has not moved', () => {
+        const captureWebTranscriptViewportAnchor =
+            resolveModuleFunction<CaptureWebTranscriptViewportAnchor>('captureWebTranscriptViewportAnchor');
+        const restoreWebTranscriptViewportAnchor =
+            resolveModuleFunction<RestoreWebTranscriptViewportAnchor>('restoreWebTranscriptViewportAnchor');
+        if (!captureWebTranscriptViewportAnchor || !restoreWebTranscriptViewportAnchor) return;
+        const restoreHTMLElement = installFakeHTMLElement();
+
+        try {
+            const scene = createSplitToolGroupScene({ focusedRow: 'header' });
+            const container = scene.container as unknown as HTMLElement;
+            const anchor = captureWebTranscriptViewportAnchor({ container });
+            expect(anchor).not.toBeNull();
+            if (!anchor) return;
+
+            expect(restoreWebTranscriptViewportAnchor({
+                container,
+                anchor,
+            }, writeScrollTopFor(scene.container))).toEqual({
+                didAdjustScroll: false,
+                status: 'already_aligned',
+            });
+            expect(scene.container.scrollTop).toBe(500);
         } finally {
             restoreHTMLElement();
         }
@@ -621,7 +871,7 @@ describe('webTranscriptPrependAnchor', () => {
         (globalThis as any).HTMLElement = originalHTMLElement;
     });
 
-    it('keeps the original anchor across a growth fallback so a later remount can restore precisely', () => {
+    it('keeps the original keyed anchor write-free while missing so a later remount can restore precisely', () => {
         const originalHTMLElement = (globalThis as any).HTMLElement;
         (globalThis as any).HTMLElement = FakeElement;
 
@@ -650,10 +900,10 @@ describe('webTranscriptPrependAnchor', () => {
         container.setQuerySelectorAll('[data-testid]', []);
 
         expect(restoreWebTranscriptPrependAnchor(anchor, writeScrollTopFor(container))).toEqual({
-            didAdjustScroll: true,
-            strategy: 'growth',
+            didAdjustScroll: false,
+            status: 'not_found',
         });
-        expect(container.scrollTop).toBe(4100);
+        expect(container.scrollTop).toBe(100);
 
         const pendingAnchor = refreshWebTranscriptPrependAnchor(anchor, {
             element: container as unknown as HTMLElement,
@@ -671,7 +921,7 @@ describe('webTranscriptPrependAnchor', () => {
             didAdjustScroll: true,
             strategy: 'anchor',
         });
-        expect(container.scrollTop).toBe(4280);
+        expect(container.scrollTop).toBe(280);
 
         (globalThis as any).HTMLElement = originalHTMLElement;
     });
@@ -1077,5 +1327,56 @@ describe('webTranscriptPrependAnchor', () => {
         expect(container.scrollTop).toBe(100);
 
         (globalThis as any).HTMLElement = originalHTMLElement;
+    });
+
+    it('recovers browser-clamped scrollTop when scrollHeight recovers to baseline after a transient drop', () => {
+        // Scenario: anchor captured at scrollTop=45000, scrollHeight=50000 with no DOM anchor
+        // (anchor element virtualized out of the render window).
+        // FlashList window reallocation drops sh to 24100 → browser clamps scrollTop to ~23500.
+        // sh then recovers back to 50000 (items remeasure). The growth fallback must still
+        // re-apply scrollTop=45000 because remainingGrowthPx (21500) > 1.
+        //
+        // BUG (before fix): restoreFromScrollHeightGrowth computes growth = 50000-50000 = 0,
+        // then returns null due to `if (growth <= 0) return null`, leaving scrollTop clamped.
+        // FIX: replace the early-exit with Math.max(0, growth) for the additive contribution
+        // only; remainingGrowthPx > 1 becomes the sole no-op guard.
+        const container = createContainer({
+            scrollTop: 45000,
+            scrollHeight: 50000,
+            clientHeight: 600,
+            anchors: [], // anchor element virtualized out — no DOM anchors
+        });
+
+        // Capture baseline: scrollTop=45000, scrollHeight=50000, no visible DOM anchors
+        const anchor = captureWebTranscriptPrependAnchor({
+            metrics: {
+                element: container as unknown as HTMLElement,
+                scrollTop: 45000,
+                scrollHeight: 50000,
+                clientHeight: 600,
+            },
+            stabilizeForMs: 3000,
+            userIntentAtMs: 1,
+        });
+
+        // Simulate: sh dropped and recovered; browser clamped scrollTop during the drop
+        container.scrollTop = 23500;  // browser-clamped value during sh collapse
+        // container.scrollHeight remains 50000 (sh recovered to baseline)
+
+        // Growth = 50000 - 50000 = 0.  Without the fix, returns { didAdjustScroll: false }.
+        // With the fix, targetScrollTop = 45000, remainingGrowthPx = 21500 > 1 → must write.
+        const writes: number[] = [];
+        expect(restoreWebTranscriptPrependAnchor(anchor, {
+            writeScrollTop: (targetScrollTop) => {
+                writes.push(targetScrollTop);
+                container.scrollTop = targetScrollTop;
+                return true;
+            },
+        })).toEqual({
+            didAdjustScroll: true,
+            strategy: 'growth',
+        });
+        expect(writes).toEqual([45000]);
+        expect(container.scrollTop).toBe(45000);
     });
 });

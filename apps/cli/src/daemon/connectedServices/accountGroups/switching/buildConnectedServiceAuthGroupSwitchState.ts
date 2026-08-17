@@ -80,11 +80,30 @@ export function buildConnectedServiceAuthGroupSwitchState(input: Readonly<{
     groupId: input.group.groupId,
     capturedAtMs: input.nowMs,
   });
+  return buildConnectedServiceAuthGroupSwitchStateFromMemberRuntimeStates({
+    group: input.group,
+    runtimeMemberStates,
+  });
+}
+
+export function buildConnectedServiceAuthGroupSwitchStateFromPersistedMemberState(input: Readonly<{
+  group: ConnectedServiceAuthGroupV1;
+}>): ConnectedServiceAuthGroupSwitchState {
+  return buildConnectedServiceAuthGroupSwitchStateFromMemberRuntimeStates({
+    group: input.group,
+    runtimeMemberStates: new Map(),
+  });
+}
+
+function buildConnectedServiceAuthGroupSwitchStateFromMemberRuntimeStates(input: Readonly<{
+  group: ConnectedServiceAuthGroupV1;
+  runtimeMemberStates: ReadonlyMap<string, ConnectedServiceAuthGroupMemberRuntimeState>;
+}>): ConnectedServiceAuthGroupSwitchState {
   const memberStatesByProfileId = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>();
   for (const member of input.group.members) {
     memberStatesByProfileId.set(
       member.profileId,
-      mergePersistedMemberRuntimeState(runtimeMemberStates.get(member.profileId) ?? null, member.state),
+      mergePersistedMemberRuntimeState(input.runtimeMemberStates.get(member.profileId) ?? null, member.state),
     );
   }
 
@@ -93,6 +112,7 @@ export function buildConnectedServiceAuthGroupSwitchState(input: Readonly<{
     groupId: input.group.groupId,
     activeProfileId: input.group.activeProfileId,
     generation: input.group.generation,
+    runtimeStateRevision: input.group.runtimeStateRevision,
     policy: normalizeConnectedServiceAuthGroupPolicy(input.group.policy),
     members: input.group.members.map((member) => ({
       profileId: member.profileId,

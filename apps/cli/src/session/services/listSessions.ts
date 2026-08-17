@@ -28,8 +28,14 @@ export type ListSessionsJsonSession = SessionSummary & Readonly<{
 export type ListSessionsResult = Readonly<{
   sessions: readonly ListSessionsJsonSession[];
   nextCursor: string | null;
+  hasNext: boolean;
   rows?: readonly CliSessionRowModel[];
 }>;
+
+function normalizeResultLimit(limit: number | undefined): number | null {
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return null;
+  return Math.floor(limit);
+}
 
 function toLastMessagePreview(message: SemanticTranscriptItem | undefined): ListSessionsLastMessagePreview | undefined {
   if (!message || !message.text) return undefined;
@@ -94,28 +100,41 @@ export async function listSessions(params: Readonly<{
       }))
     .filter((row) => params.includeSystem || row.isSystem !== true);
 
-  const filteredRows = params.resumableOnly
-    ? rowModels.filter((row) => row.vendorResume.eligible === true && row.archivedAt === null && row.active !== true)
-    : rowModels;
+  const activityAtBySessionId = new Map(page.sessions.map((row) => {
+    const meaningfulActivityAt = (row as { meaningfulActivityAt?: unknown }).meaningfulActivityAt;
+    return [
+      row.id,
+      typeof meaningfulActivityAt === 'number' && Number.isFinite(meaningfulActivityAt)
+        ? meaningfulActivityAt
+        : row.updatedAt,
+    ] as const;
+  }));
 
-  const allowedSessionIds = params.resumableOnly ? new Set(filteredRows.map((row) => row.id)) : null;
-  const rowById = new Map(filteredRows.map((row) => [row.id, row] as const));
-  let sessions = page.sessions
-    .map((row) => summarizeSessionRow({ credentials: params.credentials, row }))
-    .filter((session) => params.includeSystem || session.isSystem !== true)
-    .filter((session) => !allowedSessionIds || allowedSessionIds.has(session.id))
-    .map((session) => {
-      const row = rowById.get(session.id);
-      if (!row) {
-        throw new Error(`Missing CLI row model for session ${session.id}`);
-      }
+  const filteredRows = params.resumableOnly
+    ? rowModels
+        .filter((row) => row.vendorResume.eligible === true && row.archivedAt === null && row.active !== true)
+        .sort((a, b) => {
+          const activityOrder = (activityAtBySessionId.get(b.id) ?? b.updatedAt)
+            - (activityAtBySessionId.get(a.id) ?? a.updatedAt);
+          if (activityOrder !== 0) return activityOrder;
+          return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+        })
+    : rowModels;
+  const resultLimit = normalizeResultLimit(params.limit);
+  const limitedRows = resultLimit === null ? filteredRows : filteredRows.slice(0, resultLimit);
+
+  const rawRowById = new Map(page.sessions.map((row) => [row.id, row] as const));
+  let sessions = limitedRows.map((row) => {
+      const rawRow = rawRowById.get(row.id);
+      if (!rawRow) throw new Error(`Missing raw session row for ${row.id}`);
+      const session = summarizeSessionRow({ credentials: params.credentials, row: rawRow });
       return {
         ...session,
         agentId: row.agentId,
         vendorResumeEligible: row.vendorResume.eligible,
         ...(row.vendorResume.eligible ? {} : { vendorResumeReasonCode: row.vendorResume.reasonCode }),
       };
-    });
+  });
 
   if (params.includeLastMessagePreview === true) {
     const previews = await Promise.all(sessions.map(async (session) => [
@@ -132,6 +151,7 @@ export async function listSessions(params: Readonly<{
   return {
     sessions,
     nextCursor: page.nextCursor,
-    ...(params.includeRows === true ? { rows: filteredRows } : {}),
+    hasNext: page.hasNext,
+    ...(params.includeRows === true ? { rows: limitedRows } : {}),
   };
 }

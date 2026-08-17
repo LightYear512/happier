@@ -3,6 +3,27 @@ import { describe, expect, it } from 'vitest';
 import { classifyCodexConnectedServiceAuthFailure } from './classifyCodexConnectedServiceAuthFailure';
 
 describe('classifyCodexConnectedServiceAuthFailure', () => {
+  it('classifies ChatGPT account model incompatibility as plan-invalid recovery evidence', () => {
+    const result = classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: {
+        error: {
+          type: 'invalid_request_error',
+          message: "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+        },
+      },
+      serviceId: 'openai-codex',
+      profileId: 'free-account',
+      groupId: 'happier',
+    });
+
+    expect(result).toMatchObject({
+      kind: 'permission_denied',
+      limitCategory: 'plan_invalid',
+      source: 'structured_provider_error',
+    });
+  });
+
   it('recognizes structured usage-limit failures and extracts provider metadata', () => {
     const result = classifyCodexConnectedServiceAuthFailure({
       providerErrorPath: true,
@@ -30,6 +51,37 @@ describe('classifyCodexConnectedServiceAuthFailure', () => {
       planType: 'plus',
       rateLimits: { primary: { used_percent: 100 } },
       source: 'structured_provider_error',
+    });
+  });
+
+  it('attaches exact source account identity to usage-limit failures when the runtime supplies it', () => {
+    const result = classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: {
+        error: {
+          message: 'Usage limit reached',
+          codexErrorInfo: 'UsageLimitExceeded',
+        },
+      },
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      groupId: 'pool',
+      sourceAccountIdentity: {
+        providerAccountId: 'acct-source',
+        accountLabel: 'source@example.test',
+        groupGeneration: 42,
+        credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+        credentialFingerprint: 'sha256:abcdef12',
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'usage_limit',
+      sourceProviderAccountId: 'acct-source',
+      sourceAccountLabel: 'source@example.test',
+      groupGeneration: 42,
+      credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+      failingAccessTokenFingerprint: 'sha256:abcdef12',
     });
   });
 
@@ -63,6 +115,29 @@ describe('classifyCodexConnectedServiceAuthFailure', () => {
 
     expect(result?.kind).toBe('usage_limit');
     expect(result?.recoveryAction).toEqual({ kind: 'quota_recovery_required' });
+  });
+
+  it('classifies a stable usage-limit message nested in an app-server terminal error', () => {
+    const result = classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: {
+        turn: {
+          error: {
+            message: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits.",
+          },
+        },
+      },
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      groupId: 'pool',
+    });
+
+    expect(result).toMatchObject({
+      kind: 'usage_limit',
+      limitCategory: 'usage_limit',
+      source: 'stable_provider_message',
+      recoveryAction: { kind: 'quota_recovery_required' },
+    });
   });
 
   it('preserves structured retry-after usage-limit timing when no reset time is present', () => {
@@ -225,6 +300,32 @@ describe('classifyCodexConnectedServiceAuthFailure', () => {
       profileId: 'work',
       groupId: 'pool',
     })).toBeNull();
+  });
+
+  it('classifies the observed model-capacity failure for provider-scoped retry recovery', () => {
+    expect(classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: {
+        turn: {
+          error: {
+            message: 'Selected model is at capacity. Please try a different model.',
+            codexErrorInfo: 'other',
+            additionalDetails: null,
+          },
+        },
+      },
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      groupId: 'pool',
+    })).toMatchObject({
+      kind: 'capacity',
+      limitCategory: 'capacity',
+      quotaScope: 'provider',
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      groupId: 'pool',
+      source: 'structured_provider_error',
+    });
   });
 
   it('recognizes account-changed auth failures', () => {

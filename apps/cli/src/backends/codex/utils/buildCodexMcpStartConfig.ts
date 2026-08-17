@@ -1,3 +1,4 @@
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
 import type { CodexSessionConfig } from '../types';
 
 export function buildCodexMcpStartConfig(opts: Readonly<{
@@ -10,9 +11,13 @@ export function buildCodexMcpStartConfig(opts: Readonly<{
   approvalPolicy?: NonNullable<CodexSessionConfig['approval-policy']> | null;
   mcpServers: unknown;
   model?: string | null;
+  // Reasoning effort for the run's model (Codex `model_reasoning_effort`). Written into the start
+  // config so an execution run applies effort exactly like a spawned session's config option.
+  modelReasoningEffort?: string | null;
   cwd?: string | null;
 }>): CodexSessionConfig {
-  const model = typeof opts.model === 'string' ? opts.model.trim() : '';
+  const model = readNonBlankSessionControlIdentifier(opts.model);
+  const modelReasoningEffort = readNonBlankSessionControlIdentifier(opts.modelReasoningEffort);
   const baseInstructions = typeof opts.baseInstructions === 'string' ? opts.baseInstructions.trim() : '';
   const cwd = typeof opts.cwd === 'string' ? opts.cwd.trim() : '';
 
@@ -21,8 +26,11 @@ export function buildCodexMcpStartConfig(opts: Readonly<{
     ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
     ...(opts.approvalPolicy ? { 'approval-policy': opts.approvalPolicy } : {}),
     ...(baseInstructions ? { 'base-instructions': baseInstructions } : {}),
-    config: { mcp_servers: opts.mcpServers },
-    ...(model ? { model } : {}),
+    config: {
+      mcp_servers: opts.mcpServers,
+      ...(modelReasoningEffort !== null ? { model_reasoning_effort: modelReasoningEffort } : {}),
+    },
+    ...(model !== null ? { model } : {}),
     ...(cwd ? { cwd } : {}),
   };
 }

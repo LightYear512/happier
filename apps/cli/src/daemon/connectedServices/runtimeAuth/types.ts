@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import type { ConnectedServiceLimitCategoryV1 } from '@happier-dev/protocol';
+import type {
+  ConnectedServiceCredentialHealthStatusV1,
+  ConnectedServiceCredentialRevisionV1,
+  ConnectedServiceLimitCategoryV1,
+  ProviderAccountUsageRecordId,
+} from '@happier-dev/protocol';
+import type { ConnectedServiceSharedGenerationMutationCurrentness } from '../credentials/lifecycleTypes';
 import type { ConnectedServiceAccountTransitionVerificationResult } from '../accountTransitions/connectedServiceAccountTransition';
 
 export const ConnectedServiceRuntimeAuthFailureKindSchema = z.enum([
@@ -37,10 +43,20 @@ export type ConnectedServiceRuntimeFailureClassification = Readonly<{
   serviceId: string;
   profileId: string | null;
   groupId: string | null;
+  groupGeneration?: number | null;
+  credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
+  activeProfileId?: string | null;
+  credentialHealthStatus?: ConnectedServiceCredentialHealthStatusV1 | null;
+  identityProofVersion?: number | null;
+  sourceKey?: string | null;
+  providerAccountUsageRecordId?: ProviderAccountUsageRecordId | null;
   resetsAtMs: number | null;
   retryAfterMs?: number | null;
   quotaScope?: ConnectedServiceRuntimeQuotaScope;
   providerLimitId?: string | null;
+  sourceProviderAccountId?: string | null;
+  sourceAccountLabel?: string | null;
+  failingAccessTokenFingerprint?: string | null;
   action?: Readonly<{ kind: 'open_url'; url: string }> | null;
   planType: string | null;
   rateLimits: unknown | null;
@@ -54,6 +70,7 @@ export type ConnectedServiceRuntimeFailureClassification = Readonly<{
 export type ConnectedServiceRuntimeAuthTargetInput = Readonly<{
   target: Readonly<{ agentId: string; targetId?: string | null }>;
   selection: unknown;
+  validateCurrentBeforeMutation?: () => Promise<ConnectedServiceSharedGenerationMutationCurrentness>;
 }>;
 
 export type ConnectedServiceRuntimeFailureInput = Readonly<{

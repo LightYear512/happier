@@ -9,11 +9,19 @@ import { resolveSessionIdOrPrefix } from '@/session/query/resolveSessionId';
 import { resolveSessionEncryptionContextFromCredentials, tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
 import { encodeBase64 } from '@/api/encryption';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
-import type { AccountSettings } from '@happier-dev/protocol';
-import { accountSettingsParse } from '@happier-dev/protocol';
+import type { AccountSettings, ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import {
+  accountSettingsParse,
+  ConnectedServiceBindingsV1Schema,
+} from '@happier-dev/protocol';
 import { canUseInkSelector, runSessionActionSelector } from '@/ui/ink/runSessionActionSelector';
 import { buildCliSessionRowModel } from '@/cli/output/session/buildCliSessionRowModel';
 import { buildResumeSelectionModel, formatResumeSelectionFooter } from '@/cli/commands/resumeInteractiveSelection';
+import { RESUME_COMMAND_USAGE } from '@/cli/commandSurfaceManifest';
+import {
+  overlayDirectConnectedServiceEnvironment,
+  resolveDirectConnectedServiceEnvironment,
+} from '@/cli/connectedServices/resolveDirectConnectedServiceEnvironment';
 
 import type { CommandContext, CommandHandler } from '@/cli/commandRegistry';
 
@@ -42,6 +50,13 @@ async function resolveAgentHandler(agentId: CatalogAgentId): Promise<CommandHand
 async function defaultReadAccountSettings(params: { credentials: Credentials }): Promise<AccountSettings> {
   const ctx = await bootstrapAccountSettingsContext({ credentials: params.credentials, mode: 'fast' });
   return ctx.settings;
+}
+
+function readConnectedServicesFromSessionMetadata(
+  metadata: Record<string, unknown> | null,
+): ConnectedServiceBindingsV1 | null {
+  const parsed = ConnectedServiceBindingsV1Schema.safeParse(metadata?.connectedServices);
+  return parsed.success ? parsed.data : null;
 }
 
 async function selectResumableSessionId(params: Readonly<{
@@ -86,8 +101,7 @@ export async function handleResumeCommand(
     return trimmed === '--help' || trimmed === '-h';
   });
   if (hasHelpFlag) {
-    console.log('happier resume');
-    console.log('happier resume <session-id-or-prefix>');
+    console.log(RESUME_COMMAND_USAGE);
     console.log('');
     console.log('Resumes an inactive session (vendor-resume) from the CLI.');
     return;
@@ -153,12 +167,16 @@ export async function handleResumeCommand(
       if (resolved.code === 'session_id_ambiguous') {
         throw new Error(`Session id is ambiguous (${resolved.candidates?.join(', ') ?? 'multiple matches'})`);
       }
+      if (resolved.code === 'session_lookup_timeout') {
+        throw new Error('Session lookup timed out; try again');
+      }
       throw new Error('Session not found');
     }
     rawSession = await fetchSessionByIdFn({ token: credentials.token, sessionId: resolved.sessionId });
   }
   if (!rawSession) throw new Error(`Session not found: ${sessionIdOrPrefix}`);
 
+  const sessionMetadata = tryDecryptSessionMetadata({ credentials, rawSession });
   const rowModel = buildCliSessionRowModel({ credentials, rawSession, accountSettings });
 
   if (rowModel.archivedAt !== null) {
@@ -170,8 +188,7 @@ export async function handleResumeCommand(
 
   const directory = rowModel.path;
   if (!directory) {
-    const metadata = tryDecryptSessionMetadata({ credentials, rawSession });
-    if (!metadata) {
+    if (!sessionMetadata) {
       throw new Error('Failed to decrypt session metadata. Reconnect your terminal and try again.');
     }
     throw new Error('Session metadata is missing a working directory path.');
@@ -205,9 +222,32 @@ export async function handleResumeCommand(
 
   const prevAttachEnv = process.env.HAPPIER_SESSION_ATTACH_FILE;
   process.env.HAPPIER_SESSION_ATTACH_FILE = attach.filePath;
+  let restoreConnectedServiceEnv: (() => void) | null = null;
+  let connectedServiceEnv: Awaited<
+    ReturnType<typeof resolveDirectConnectedServiceEnvironment>
+  > = null;
+  let handlerCompleted = false;
 
   try {
     chdirFn(directory);
+    const connectedServices = readConnectedServicesFromSessionMetadata(sessionMetadata);
+    connectedServiceEnv = connectedServices
+      ? await resolveDirectConnectedServiceEnvironment({
+          agentId,
+          credentials,
+          accountSettings,
+          directory,
+          sessionId: rawSession.id,
+          vendorResumeId: vendorResume.vendorResumeId,
+          sessionMetadata,
+          connectedServices,
+        })
+      : null;
+    if (connectedServiceEnv) {
+      restoreConnectedServiceEnv = overlayDirectConnectedServiceEnvironment(
+        connectedServiceEnv.env,
+      );
+    }
 
     const handler = await resolveAgentHandlerFn(agentId);
     const context: CommandContext = {
@@ -216,10 +256,18 @@ export async function handleResumeCommand(
       terminalRuntime: deps?.terminalRuntime ?? null,
     };
     await handler(context);
+    handlerCompleted = true;
   } catch (error) {
+    if (!handlerCompleted) {
+      connectedServiceEnv?.cleanupOnFailure?.();
+    }
     await attach.cleanup().catch(() => {});
     throw error;
   } finally {
+    restoreConnectedServiceEnv?.();
+    if (handlerCompleted) {
+      connectedServiceEnv?.cleanupOnExit?.();
+    }
     if (prevAttachEnv === undefined) {
       delete process.env.HAPPIER_SESSION_ATTACH_FILE;
     } else {

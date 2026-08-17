@@ -14,7 +14,8 @@ import {
     resolveNewSessionCapabilityProbeContext,
 } from '@/components/sessions/new/modules/newSessionCapabilityProbeContext';
 import type { Settings } from '@/sync/domains/settings/settings';
-import { computeAcpConfigOptionControlsForProvider } from '@/sync/acp/configOptionsControl';
+import type { ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import { computeSessionConfigOptionControlsForProvider } from '@/sync/domains/sessionControl/configOptionsControl';
 import type {
     SessionConfigOptionControl,
     SessionConfigOptionValueId,
@@ -66,7 +67,9 @@ export type NewSessionFavoriteModelsDetailProps = Readonly<{
     selectedMachineId: string | null;
     capabilityServerId: string;
     cwd?: string | null;
+    profileId?: string | null;
     settings: Settings;
+    connectedServicesByTargetKey?: Readonly<Record<string, ConnectedServiceBindingsV1 | null | undefined>>;
     refreshProbe?: OptionPickerProbeState | null;
     onSelectFavoriteModel: (
         entry: ResolvedBackendCatalogEntry,
@@ -175,7 +178,9 @@ function FavoriteBackendModelsCollector(props: Readonly<{
     selectedMachineId: string | null;
     capabilityServerId: string;
     cwd?: string | null;
+    profileId?: string | null;
     settings: Settings;
+    connectedServices?: ConnectedServiceBindingsV1 | null;
     refreshProbe?: OptionPickerProbeState | null;
     onSnapshot: (targetKey: string, snapshot: FavoriteModelSnapshot) => void;
 }>) {
@@ -191,7 +196,9 @@ function FavoriteBackendModelsCollector(props: Readonly<{
         selectedMachineId: props.selectedMachineId,
         capabilityServerId: props.capabilityServerId,
         cwd: props.cwd ?? null,
+        profileId: props.profileId ?? null,
         probeContext: capabilityProbeContext,
+        connectedServices: props.connectedServices ?? null,
     });
 
     const providerCore = React.useMemo(() => getAgentCore(props.entry.providerAgentId), [props.entry.providerAgentId]);
@@ -303,7 +310,7 @@ function FavoriteBackendModelsCollector(props: Readonly<{
     const selectedOptionControls = React.useMemo(() => {
         const selectedModelOption = modelOptionByValue.get(selectedValue) ?? null;
         if (!selectedModelOption?.modelOptions?.length) return null;
-        return computeAcpConfigOptionControlsForProvider({
+        return computeSessionConfigOptionControlsForProvider({
             providerId:
                 props.entry.target.kind === 'configuredAcpBackend'
                     ? props.entry.target.backendId
@@ -429,7 +436,9 @@ export function NewSessionFavoriteModelsDetail(props: NewSessionFavoriteModelsDe
                     selectedMachineId={props.selectedMachineId}
                     capabilityServerId={props.capabilityServerId}
                     cwd={props.cwd}
+                    profileId={props.profileId}
                     settings={props.settings}
+                    connectedServices={props.connectedServicesByTargetKey?.[entry.targetKey] ?? null}
                     refreshProbe={props.refreshProbe}
                     onSnapshot={handleSnapshot}
                 />

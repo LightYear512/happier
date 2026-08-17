@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AgentTextMessage, Message, ModeSwitchMessage, ToolCallMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 
-import { buildTranscriptTurns, buildTranscriptTurnsCached } from './buildTranscriptTurns';
+import { buildTranscriptTurns, buildTranscriptTurnsCached, isTranscriptTurnsBuildCacheComplete } from './buildTranscriptTurns';
 
 function userMessage(id: string, createdAt: number): UserTextMessage {
     return {
@@ -81,7 +82,51 @@ function toolMessage(opts: {
     };
 }
 
+function pendingMessage(opts: {
+    id: string;
+    localId: string | null;
+    createdAt: number;
+    source: 'local_outbound' | 'server_pending';
+}): PendingMessage {
+    return {
+        id: opts.id,
+        localId: opts.localId,
+        createdAt: opts.createdAt,
+        updatedAt: opts.createdAt,
+        text: `pending:${opts.id}`,
+        source: opts.source,
+        rawRecord: {},
+    };
+}
+
 describe('buildTranscriptTurns', () => {
+    it('hides committed user rows that are still owned by unresolved server pending state', () => {
+        const committedUser = {
+            ...userMessage('m-user', 20),
+            localId: 'pending-1',
+            text: 'committed but not accepted',
+        };
+        const chronological: Message[] = [committedUser];
+        const messagesById = Object.fromEntries(chronological.map((m) => [m.id, m]));
+
+        const turns = buildTranscriptTurns({
+            messageIdsOldestFirst: chronological.map((m) => m.id),
+            messagesById,
+            pendingMessages: [
+                pendingMessage({
+                    id: 'pending-row',
+                    localId: 'pending-1',
+                    createdAt: 10,
+                    source: 'server_pending',
+                }),
+            ],
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+        });
+
+        expect(turns).toEqual([]);
+    });
+
     it('starts a null-user turn before a fork boundary tool message', () => {
         const chronological: Message[] = [
             userMessage('u1', 1),
@@ -497,6 +542,151 @@ describe('buildTranscriptTurns', () => {
 });
 
 describe('buildTranscriptTurnsCached', () => {
+    it('builds a cold suffix window at turn boundaries before deferred backfill reaches full-build equivalence', () => {
+        const chronological: Message[] = [
+            userMessage('u1', 1),
+            agentMessage('a1', 2),
+            agentMessage('a2', 3),
+            toolMessage({ id: 't2', createdAt: 4, state: 'completed' }),
+            userMessage('u3', 5),
+            agentMessage('a3', 6),
+            userMessage('u4', 7),
+            agentMessage('a4', 8),
+        ];
+        const messagesById = Object.fromEntries(chronological.map((m) => [m.id, m]));
+        const messageIdsOldestFirst = chronological.map((m) => m.id);
+        const fullCache = buildTranscriptTurnsCached({
+            cache: null,
+            messageIdsOldestFirst,
+            messagesById,
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+        });
+
+        let cache = buildTranscriptTurnsCached({
+            cache: null,
+            messageIdsOldestFirst,
+            messagesById,
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+            tailWindowMessageCount: 3,
+        });
+
+        expect(isTranscriptTurnsBuildCacheComplete(cache)).toBe(false);
+        expect(cache.messageIdsOldestFirst).toEqual(['u3', 'a3', 'u4', 'a4']);
+        expect(cache.turns.map((turn) => turn.id)).toEqual(['turn:u3', 'turn:u4']);
+
+        while (!isTranscriptTurnsBuildCacheComplete(cache)) {
+            cache = buildTranscriptTurnsCached({
+                cache,
+                messageIdsOldestFirst,
+                messagesById,
+                groupToolCalls: true,
+                toolCallsGroupStrategy: 'consecutive_tools',
+                backfillOlderMessageCount: 2,
+            });
+        }
+
+        expect(cache.turns).toEqual(fullCache.turns);
+        expect(cache.messageIdsOldestFirst).toEqual(fullCache.messageIdsOldestFirst);
+    });
+
+    it('keeps append-only streaming correct while a cold suffix cache is still backfilling', () => {
+        const chronological: Message[] = [
+            userMessage('u1', 1),
+            agentMessage('a1', 2),
+            userMessage('u2', 3),
+            agentMessage('a2', 4),
+            userMessage('u3', 5),
+            agentMessage('a3', 6),
+        ];
+        const appended = agentMessage('a4', 7);
+        const messagesById = Object.fromEntries([...chronological, appended].map((m) => [m.id, m]));
+        const initialIds = chronological.map((m) => m.id);
+        const appendedIds = [...initialIds, appended.id];
+
+        let cache = buildTranscriptTurnsCached({
+            cache: null,
+            messageIdsOldestFirst: initialIds,
+            messagesById,
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+            tailWindowMessageCount: 2,
+        });
+        expect(isTranscriptTurnsBuildCacheComplete(cache)).toBe(false);
+        expect(cache.messageIdsOldestFirst).toEqual(['u3', 'a3']);
+
+        cache = buildTranscriptTurnsCached({
+            cache,
+            messageIdsOldestFirst: appendedIds,
+            messagesById,
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+            tailWindowMessageCount: 2,
+        });
+
+        expect(isTranscriptTurnsBuildCacheComplete(cache)).toBe(false);
+        expect(cache.messageIdsOldestFirst).toEqual(['u3', 'a3', 'a4']);
+        expect(cache.turns[0]?.content.flatMap((content) => content.kind === 'message' ? [content.messageId] : []))
+            .toEqual(['a3', 'a4']);
+
+        while (!isTranscriptTurnsBuildCacheComplete(cache)) {
+            cache = buildTranscriptTurnsCached({
+                cache,
+                messageIdsOldestFirst: appendedIds,
+                messagesById,
+                groupToolCalls: true,
+                toolCallsGroupStrategy: 'consecutive_tools',
+                backfillOlderMessageCount: 2,
+            });
+        }
+
+        const fullCache = buildTranscriptTurnsCached({
+            cache: null,
+            messageIdsOldestFirst: appendedIds,
+            messagesById,
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+        });
+        expect(cache.turns).toEqual(fullCache.turns);
+    });
+
+    it('rebuilds cached turns when unresolved server pending state starts owning a committed localId', () => {
+        const committedUser = {
+            ...userMessage('m-user', 20),
+            localId: 'pending-1',
+            text: 'committed but not accepted',
+        };
+        const chronological: Message[] = [committedUser];
+        const messagesById = Object.fromEntries(chronological.map((m) => [m.id, m]));
+        let cache = buildTranscriptTurnsCached({
+            cache: null,
+            messageIdsOldestFirst: chronological.map((m) => m.id),
+            messagesById,
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+        });
+        expect(cache.turns.map((turn) => turn.userMessageId)).toEqual(['m-user']);
+
+        cache = buildTranscriptTurnsCached({
+            cache,
+            messageIdsOldestFirst: chronological.map((m) => m.id),
+            messagesById,
+            pendingMessages: [
+                pendingMessage({
+                    id: 'pending-row',
+                    localId: 'pending-1',
+                    createdAt: 10,
+                    source: 'server_pending',
+                }),
+            ],
+            groupToolCalls: true,
+            toolCallsGroupStrategy: 'consecutive_tools',
+        });
+
+        expect(cache.turns).toEqual([]);
+    });
+
     it('resets turn grouping state when an appended fork boundary starts with a tool message', () => {
         const chronological: Message[] = [
             userMessage('u1', 1),

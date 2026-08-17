@@ -49,6 +49,7 @@ import {
 import { selectionListTestId } from './_shared';
 import type { SectionRenderPlan } from './SelectionListRenderPlan';
 import type {
+    SelectionListListboxAriaProps,
     SelectionListOption,
     SelectionListStep,
 } from './_types';
@@ -75,8 +76,6 @@ const stylesheet = StyleSheet.create(() => ({
     },
 }));
 
-type ListboxAriaProps = Readonly<{ id: string; role: 'listbox' }>;
-
 export type SelectionListBodyProps = Readonly<{
     step: SelectionListStep;
     rootTestID: string | undefined;
@@ -85,13 +84,21 @@ export type SelectionListBodyProps = Readonly<{
     focusedOptionId: string | null;
     scrollTargetOptionId?: string | null;
     listboxId: string;
+    /**
+     * Accessible name published on the same host that owns `role="listbox"`.
+     * Blank values are ignored so the host never claims an empty name, and the
+     * measure mirror never emits it (see `mode`).
+     */
+    accessibilityLabel?: string;
     onSelect: (id: string, option: SelectionListOption) => void;
     onPushStep: (step: SelectionListStep) => void;
     showsVerticalScrollIndicator?: boolean;
     /**
      * FR3-1 / FR3-8 — when `'measure'`, the body is rendered as an
-     * identity-free mirror used by `SelectionListAnimatedHeight` for height
-     * measurement. In measure mode every host-element id / testID / role /
+     * identity-free mirror, rendered by the orchestrator's single offscreen
+     * measure host so the popover height gate and the step-transition height
+     * animator share ONE measurement of the step body's natural height.
+     * In measure mode every host-element id / testID / role /
      * accessibility prop is suppressed so the live DOM never contains
      * duplicate listbox ids, duplicate option ids, or duplicate aria-labels.
      * The visual LAYOUT is preserved verbatim — height measurement requires
@@ -111,9 +118,18 @@ export function SelectionListBody(props: SelectionListBodyProps): React.ReactEle
     // never duplicates listbox / option ids in the live DOM. We still render
     // identical layout (same components, same heights) so the measure host
     // reports the correct natural height.
-    const listboxAria: ListboxAriaProps | null = isMeasure
+    const accessibilityLabel = props.accessibilityLabel?.trim();
+    const listboxAria: SelectionListListboxAriaProps | null = isMeasure
         ? null
-        : { id: props.listboxId, role: 'listbox' };
+        : {
+            id: props.listboxId,
+            role: 'listbox',
+            // RN-Web does not derive `aria-label` from `accessibilityLabel` on a
+            // plain host View, so both are published for one accessible name.
+            ...(accessibilityLabel
+                ? { accessibilityLabel, 'aria-label': accessibilityLabel }
+                : {}),
+        };
     const bodyTestId = isMeasure
         ? undefined
         : selectionListTestId(props.rootTestID, 'body');
@@ -209,7 +225,7 @@ export function SelectionListBody(props: SelectionListBodyProps): React.ReactEle
                 fadeHostTestId={selectionListTestId(props.rootTestID, 'bodyScroll', 'fadeHost')}
                 fadeTopTestId={selectionListTestId(props.rootTestID, 'bodyScroll', 'fadeTop')}
                 fadeBottomTestId={selectionListTestId(props.rootTestID, 'bodyScroll', 'fadeBottom')}
-                listboxAria={listboxAria as ListboxAriaProps}
+                listboxAria={listboxAria as SelectionListListboxAriaProps}
                 scrollTargetOptionId={props.scrollTargetOptionId ?? null}
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
             >

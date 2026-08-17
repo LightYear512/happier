@@ -2,7 +2,13 @@
 
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { releaseTargets } from './component-registry.mjs';
+
+export const MATERIALIZED_RELEASE_BUMP_ADMISSION_MESSAGE =
+  'Materialize and commit changelog and version updates, then rerun with --bump none.';
 
 function fail(message) {
   console.error(message);
@@ -114,6 +120,7 @@ function main() {
       'versioned-cli-changed': { type: 'string' },
       'versioned-stack-changed': { type: 'string' },
       'versioned-server-changed': { type: 'string' },
+      'require-materialized': { type: 'boolean', default: false },
       'github-output': { type: 'string', default: '' },
     },
     allowPositionals: false,
@@ -129,6 +136,9 @@ function main() {
   if (!bumpPreset) fail('--bump-preset is required');
   if (!['none', 'patch', 'minor', 'major'].includes(bumpPreset)) {
     fail(`--bump-preset must be one of: none, patch, minor, major (got: ${bumpPreset})`);
+  }
+  if (values['require-materialized'] === true && bumpPreset !== 'none') {
+    fail(MATERIALIZED_RELEASE_BUMP_ADMISSION_MESSAGE);
   }
 
   const bumpAppOverride = String(values['bump-app-override'] ?? '').trim() || 'preset';
@@ -147,7 +157,7 @@ function main() {
 
   const deployTargets = parseCsvList(String(values['deploy-targets'] ?? ''));
   for (const t of deployTargets) {
-    if (!['ui', 'server', 'website', 'docs', 'cli', 'stack', 'server_runner'].includes(t)) {
+    if (!releaseTargets.includes(t)) {
       fail(`--deploy-targets contains unsupported entry '${t}'`);
     }
   }
@@ -257,4 +267,7 @@ function main() {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-main();
+const isDirectEntry = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isDirectEntry) {
+  main();
+}

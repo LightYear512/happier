@@ -23,12 +23,16 @@ describe('isAgentStateRequestCoveredByCompletedRequests', () => {
         })).toBe(true);
     });
 
-    it('does not cover same-id requests with different arguments', () => {
+    it('does not cover same-id requests when the completed entry has different tool input', () => {
         expect(isAgentStateRequestCoveredByCompletedRequests({
             requestId: 'req-1',
-            request: { tool: 'Write', arguments: { file: 'new.txt' }, createdAt: 10 },
+            request: { tool: 'Bash', arguments: { command: ['bash', '-lc', 'echo new'] }, createdAt: 10 },
             completedRequests: {
-                'req-1': { tool: 'Write', arguments: { file: 'old.txt' }, completedAt: 20 },
+                'req-1': {
+                    tool: 'Bash',
+                    arguments: { command: ['bash', '-lc', 'echo old'] },
+                    completedAt: 20,
+                },
             },
         })).toBe(false);
     });

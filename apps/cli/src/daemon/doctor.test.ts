@@ -75,12 +75,14 @@ describe('classifyHappyProcess', () => {
       daemonOwnershipEnvironmentVariables: {
         HAPPIER_HOME_DIR: '/tmp/happier-stack/cli',
         HAPPIER_ACTIVE_SERVER_ID: 'stack_current__id_default',
+        HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID: 'stack_repo-current__id_default',
       },
     });
     expect(res).not.toBeNull();
     expect(res!.daemonOwnershipEnvironmentVariables).toEqual({
       HAPPIER_HOME_DIR: '/tmp/happier-stack/cli',
       HAPPIER_ACTIVE_SERVER_ID: 'stack_current__id_default',
+      HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID: 'stack_repo-current__id_default',
     });
   });
 
@@ -109,6 +111,16 @@ describe('classifyHappyProcess', () => {
       pid: 123,
       name: 'node',
       cmd: '/usr/bin/node /repo/.project/tmp/cli-dist-snapshot/src/index.ts claude --happy-starting-mode remote --started-by daemon',
+    });
+    expect(res).not.toBeNull();
+    expect(res!.type).toBe('daemon-spawned-session');
+  });
+
+  it('should detect F4 runner snapshot sessions launched from .runner-snapshots index.mjs', () => {
+    const res = classifyHappyProcess({
+      pid: 67178,
+      name: 'node',
+      cmd: '/managed/node /repo/apps/cli/.runner-snapshots/f4abcd123/index.mjs claude --happy-starting-mode remote --started-by daemon --existing-session sess-live',
     });
     expect(res).not.toBeNull();
     expect(res!.type).toBe('daemon-spawned-session');

@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import Animated, {
     Easing,
     interpolate,
@@ -20,6 +19,7 @@ import { t } from '@/text';
 
 import type { RemoteAuthEntryOptions } from './useRemoteAuthEntryOptions';
 import { useReturningGreeting } from './useReturningGreeting';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 // Premium-feel hover affordances on the welcome buttons. The whole button
 // lifts 1px on hover and its content shifts:
@@ -73,7 +73,7 @@ type DecisionActionRowProps = Readonly<{
     title: string;
     subtitle?: string;
     primary?: boolean;
-    iconName?: keyof typeof Ionicons.glyphMap;
+    iconName?: IconName;
     onPress: () => AuthActionResult;
 }>;
 
@@ -83,8 +83,8 @@ function resolvePrimaryAction(
         RemoteWelcomeDecisionPanelProps,
         'onAnonymousSignup' | 'onKeylessProviderLogin' | 'onMtlsLogin' | 'onProviderSignup'
     >,
-): () => AuthActionResult {
-    switch (options.primarySignupKind) {
+): (() => AuthActionResult) | null {
+    switch (options.primaryAction?.kind) {
         case 'provider-keyed':
             return () => {
                 if (options.providerId) props.onProviderSignup(options.providerId);
@@ -97,6 +97,8 @@ function resolvePrimaryAction(
             };
         case 'anonymous':
             return props.onAnonymousSignup;
+        case undefined:
+            return null;
     }
 }
 
@@ -187,7 +189,7 @@ function DecisionActionRow(props: DecisionActionRowProps): React.ReactElement {
             {props.iconName ? (
                 supportsHoverAnimation ? (
                     <Animated.View style={iconAnimatedStyle}>
-                        <Ionicons
+                        <Icon
                             testID={`${props.testID}-icon`}
                             name={props.iconName}
                             size={20}
@@ -196,7 +198,7 @@ function DecisionActionRow(props: DecisionActionRowProps): React.ReactElement {
                     </Animated.View>
                 ) : (
                     <View>
-                        <Ionicons
+                        <Icon
                             testID={`${props.testID}-icon`}
                             name={props.iconName}
                             size={20}
@@ -295,7 +297,7 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                             ? t('welcome.serverIncompatibleTitle')
                             : t('welcome.serverUnavailableTitle')}
                     </Text>
-                    <Text style={styles.serverUnavailableBody}>
+                    <Text style={styles.serverStatusBody}>
                         {options.serverAvailability === 'incompatible'
                             ? t('welcome.serverIncompatibleBody', { serverUrl: options.serverUrlForCopy })
                             : t('welcome.serverUnavailableBody', { serverUrl: options.serverUrlForCopy })}
@@ -305,13 +307,13 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                     <DecisionActionRow
                         testID="welcome-change-relay"
                         title={t('setupOnboarding.changeRelayAction')}
-                        iconName="git-network-outline"
+                        iconName="graph"
                         onPress={props.onChangeRelay}
                     />
                     <DecisionActionRow
                         testID="welcome-retry-server"
                         title={t('common.retry')}
-                        iconName="refresh"
+                        iconName="arrow-clockwise"
                         onPress={options.retryServerCheck}
                     />
                 </View>
@@ -353,6 +355,11 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                     <Text style={styles.intentBody}>{t('setupOnboarding.resumeIntentBody')}</Text>
                 </View>
             ) : null}
+            {options.showAuthActions && options.primaryAction === null ? (
+                <Text testID="welcome-signup-disabled" style={[styles.serverStatusBody, styles.signupDisabledNotice]}>
+                    {t('errors.signupDisabled')}
+                </Text>
+            ) : null}
             {options.serverAvailability === 'loading' ? (
                 <View style={styles.serverLoadingBlock}>
                     <ActivitySpinner />
@@ -370,37 +377,41 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                         // almost certainly want to sign back into their existing
                         // account, so we give the filled black slot to Login and
                         // demote Start fresh to the bordered card below.
-                        const startFreshButton = options.showAnonymousSignup ? (
+                        // When the server disables every signup method, the
+                        // primary slot stays empty and Login carries the panel.
+                        const startFreshButton = options.primaryAction === null || primarySignupAction === null
+                            ? null
+                            : options.showAnonymousSignup ? (
                             <DecisionActionRow
                                 testID="welcome-primary-start"
                                 primary={!isReturningUser}
                                 title={isReturningUser ? t('welcome.welcomeReturningStartFreshButton') : t('welcome.welcomePrimaryButton')}
                                 subtitle={isReturningUser ? t('welcome.welcomeReturningStartFreshSubtitle') : t('welcome.welcomePrimarySubtitle')}
-                                iconName="arrow-forward"
+                                iconName="arrow-right"
                                 onPress={props.onAnonymousSignup}
                             />
                         ) : (
                             <DecisionActionRow
                                 testID={
-                                    options.primarySignupKind === 'provider-keyed'
+                                    options.primaryAction.kind === 'provider-keyed'
                                         ? 'welcome-signup-provider'
                                         : 'welcome-create-account'
                                 }
                                 primary
-                                title={options.primarySignupTitle}
-                                iconName={options.primarySignupKind === 'mtls' ? 'shield-checkmark-outline' : 'arrow-forward'}
+                                title={options.primaryAction.title}
+                                iconName={options.primaryAction.kind === 'mtls' ? 'shield-check' : 'arrow-right'}
                                 onPress={primarySignupAction}
                             />
                         );
                         const loginButton = (
                             <DecisionActionRow
                                 testID="welcome-secondary-login"
-                                primary={isReturningUser && options.showAnonymousSignup}
+                                primary={(isReturningUser && options.showAnonymousSignup) || options.primaryAction === null}
                                 title={isReturningUser && options.showAnonymousSignup
                                     ? t('welcome.welcomeReturningLoginButton')
                                     : t('welcome.welcomeSecondaryButton')}
                                 subtitle={t('welcome.welcomeSecondarySubtitle')}
-                                iconName="qr-code-outline"
+                                iconName="qr-code"
                                 onPress={props.onRestore}
                             />
                         );
@@ -410,7 +421,7 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                                     <DecisionActionRow
                                         testID="welcome-mtls-login"
                                         title={options.mtlsTitle}
-                                        iconName="shield-checkmark-outline"
+                                        iconName="shield-check"
                                         onPress={props.onMtlsLogin}
                                     />
                                 ) : null}
@@ -418,7 +429,7 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                                     <DecisionActionRow
                                         testID="welcome-signup-provider"
                                         title={options.providerSignupTitle}
-                                        iconName="arrow-forward"
+                                        iconName="arrow-right"
                                         onPress={() => props.onProviderSignup(options.providerId!)}
                                     />
                                 ) : null}
@@ -426,7 +437,7 @@ export function RemoteWelcomeDecisionPanel(props: RemoteWelcomeDecisionPanelProp
                                     <DecisionActionRow
                                         testID="welcome-login-provider"
                                         title={options.providerKeylessTitle}
-                                        iconName="arrow-forward"
+                                        iconName="arrow-right"
                                         onPress={() => props.onKeylessProviderLogin(options.keylessProviderId!)}
                                     />
                                 ) : null}
@@ -538,7 +549,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         textAlign: 'center',
         marginBottom: 8,
     },
-    serverUnavailableBody: {
+    serverStatusBody: {
         ...Typography.default(),
         fontSize: 14,
         color: theme.colors.text.secondary,
@@ -558,6 +569,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.secondary,
         textAlign: 'center',
         marginTop: 10,
+    },
+    signupDisabledNotice: {
+        width: '100%',
+        maxWidth: 520,
+        textAlign: 'left',
     },
     actionStack: {
         width: '100%',

@@ -42,6 +42,21 @@ describe('createSessionMetadata', () => {
         expect((metadata as any).modelOverrideV1).toEqual({ v: 1, updatedAt: 123, modelId: 'gpt-5-codex-high' });
     });
 
+    it('preserves exact nonblank opaque mode and model identifiers', () => {
+        const { metadata } = createSessionMetadata({
+            flavor: 'cursor',
+            machineId: 'machine-1',
+            startedBy: 'daemon',
+            agentModeId: ' plan ',
+            agentModeUpdatedAt: 122,
+            modelId: ' model-a ',
+            modelUpdatedAt: 123,
+        } as any);
+
+        expect((metadata as any).sessionModeOverrideV1.modeId).toBe(' plan ');
+        expect((metadata as any).modelOverrideV1.modelId).toBe(' model-a ');
+    });
+
     it('seeds sessionConfigOptionOverridesV1 from the daemon-provided environment override', () => {
         const previous = process.env.HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON;
         process.env.HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON = JSON.stringify({
@@ -330,6 +345,41 @@ describe('createSessionMetadata', () => {
                 delete process.env.PWD;
             } else {
                 process.env.PWD = previousPwd;
+            }
+        }
+    });
+
+    it('publishes the agent and machine workspace roots as one machine-bound mapping', () => {
+        const previousRequestedDirectory = process.env.HAPPIER_SESSION_REQUESTED_DIRECTORY;
+        const previousMachineDirectory = process.env.HAPPIER_SESSION_MACHINE_WORKSPACE_PATH;
+        process.env.HAPPIER_SESSION_REQUESTED_DIRECTORY = '/home/coder/project';
+        process.env.HAPPIER_SESSION_MACHINE_WORKSPACE_PATH = '/Users/alice/project';
+
+        try {
+            const { metadata } = createSessionMetadata({
+                flavor: 'codex',
+                machineId: 'machine-1',
+                startedBy: 'daemon',
+            });
+
+            expect(metadata.path).toBe('/home/coder/project');
+            expect(metadata.sessionWorkspaceLocationV1).toEqual({
+                v: 1,
+                machineId: 'machine-1',
+                agentPath: '/home/coder/project',
+                machinePath: '/Users/alice/project',
+            });
+            expect(process.env.HAPPIER_SESSION_MACHINE_WORKSPACE_PATH).toBeUndefined();
+        } finally {
+            if (previousRequestedDirectory === undefined) {
+                delete process.env.HAPPIER_SESSION_REQUESTED_DIRECTORY;
+            } else {
+                process.env.HAPPIER_SESSION_REQUESTED_DIRECTORY = previousRequestedDirectory;
+            }
+            if (previousMachineDirectory === undefined) {
+                delete process.env.HAPPIER_SESSION_MACHINE_WORKSPACE_PATH;
+            } else {
+                process.env.HAPPIER_SESSION_MACHINE_WORKSPACE_PATH = previousMachineDirectory;
             }
         }
     });

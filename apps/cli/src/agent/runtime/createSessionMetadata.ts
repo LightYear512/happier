@@ -38,6 +38,8 @@ import {
     HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY,
     parseSessionConnectedServiceMaterializationIdentityJson,
 } from './sessionConnectedServiceMaterializationIdentityEnv';
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
+import { buildSessionWorkspaceLocationFromEnvironment } from './sessionWorkspaceLocation';
 
 /**
  * Backend flavor identifier for session metadata.
@@ -165,14 +167,20 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         consumeSessionEnv(HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY),
     );
     const sessionConfigOptionOverrides = parseSessionConfigOptionOverridesFromEnvironment();
+    const sessionPath = resolveRequestedSessionDirectory({ requestedDirectory: opts.directory });
+    const sessionWorkspaceLocationV1 = buildSessionWorkspaceLocationFromEnvironment({
+        machineId: opts.machineId,
+        agentPath: sessionPath,
+    });
     const metadataBase: Metadata = {
-        path: resolveRequestedSessionDirectory({ requestedDirectory: opts.directory }),
+        path: sessionPath,
         host: os.hostname(),
         version: packageJson.version,
         os: os.platform(),
         ...(opts.terminalRuntime ? { terminal: buildTerminalMetadataFromRuntimeFlags(opts.terminalRuntime) } : {}),
         ...(profileIdEnv !== undefined ? { profileId } : {}),
         machineId: opts.machineId,
+        sessionWorkspaceLocationV1,
         homeDir: os.homedir(),
         happyHomeDir: configuration.happyHomeDir,
         happyLibDir: projectPath(),
@@ -186,11 +194,11 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         flavor: opts.flavor,
         ...(opts.permissionMode && { permissionMode: opts.permissionMode }),
         ...(typeof opts.permissionModeUpdatedAt === 'number' && { permissionModeUpdatedAt: opts.permissionModeUpdatedAt }),
-        ...(typeof opts.agentModeId === 'string' && opts.agentModeId.trim()
+        ...(readNonBlankSessionControlIdentifier(opts.agentModeId)
             ? (() => {
                   const override = buildAcpSessionModeOverrideV1({
                       updatedAt: typeof opts.agentModeUpdatedAt === 'number' ? opts.agentModeUpdatedAt : Date.now(),
-                      modeId: opts.agentModeId.trim(),
+                      modeId: opts.agentModeId!,
                   });
                   return {
                       [SESSION_MODE_OVERRIDE_KEY]: override,
@@ -198,11 +206,11 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
                   };
               })()
             : {}),
-        ...(typeof opts.modelId === 'string' && opts.modelId.trim()
+        ...(readNonBlankSessionControlIdentifier(opts.modelId)
             ? {
                   modelOverrideV1: buildModelOverrideV1({
                       updatedAt: typeof opts.modelUpdatedAt === 'number' ? opts.modelUpdatedAt : Date.now(),
-                      modelId: opts.modelId.trim(),
+                      modelId: opts.modelId!,
                   }),
               }
             : {}),

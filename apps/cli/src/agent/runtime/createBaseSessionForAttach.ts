@@ -33,7 +33,6 @@ export async function createBaseSessionForAttach(opts: Readonly<{
       ? Math.trunc(attach.lastObservedMessageSeq)
       : undefined;
   const wakeDeliveryAfterSeq = initialTranscriptAfterSeq ?? legacyAttachAfterSeq;
-
   if (attach.encryptionMode === 'plain') {
     return {
       id: existingSessionId,

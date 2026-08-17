@@ -1,9 +1,8 @@
 import * as React from 'react';
 import { Platform, View, ViewStyle, StyleProp, TextStyle } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Popover, type PopoverPlacement } from '@/components/ui/popover';
+import { Popover, type PopoverAnchor, type PopoverPlacement } from '@/components/ui/popover';
 import { FloatingOverlay, type FloatingOverlayArrow } from '@/components/ui/overlays/FloatingOverlay';
 import { t } from '@/text';
 import type { SelectableRowVariant } from '@/components/ui/lists/SelectableRow';
@@ -17,6 +16,7 @@ import { TextInput } from '@/components/ui/text/Text';
 import { renderDropdownItemTriggerRightElement } from '@/components/ui/forms/dropdown/renderDropdownItemTriggerRightElement';
 import { KeyHint } from '@/components/ui/keyboard/KeyHint';
 import { useScrollRectIntoViewRegistry } from '@/components/ui/scroll/useScrollRectIntoView';
+import { Icon } from '@/components/ui/icons/Icon';
 
 
 export type DropdownMenuItem = Readonly<{
@@ -147,6 +147,11 @@ export type DropdownMenuProps = Readonly<{
      */
     popoverAnchorRef?: React.RefObject<any> | null;
     /**
+     * Optional measured anchor supplied directly to Popover. Rect anchors are useful for menus
+     * opened from a press inside a much larger or partially clipped trigger.
+     */
+    popoverAnchor?: PopoverAnchor;
+    /**
      * Web-only: controls where the popover portal is mounted.
      * Defaults to Popover's behavior (which prefers the modal portal target when inside a modal).
      * Set to 'body' to allow menus to escape overflow-clipped modals.
@@ -247,7 +252,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
                 right: item.rightElement
                     ? item.rightElement
                     : hasSubmenu
-                        ? <Ionicons name="chevron-forward" size={16} color={theme.colors.text.secondary} />
+                        ? <Icon name="caret-right" size={16} color={theme.colors.text.secondary} />
                         : item.shortcut
                             ? <KeyHint label={item.shortcut} />
                             : null,
@@ -484,6 +489,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
                 <Popover
                     open={props.open}
                     anchorRef={resolvedAnchorRef}
+                    anchor={props.popoverAnchor}
                     placement={props.placement ?? 'auto-vertical'}
                     gap={props.gap ?? 0}
                     maxHeightCap={props.maxHeightCap ?? 320}

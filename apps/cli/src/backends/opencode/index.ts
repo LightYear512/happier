@@ -8,6 +8,7 @@ import { openCodeConnectedServiceStateSharingDescriptor } from '@/backends/openc
 import { openCodeUsageLimitRecoveryControlAdapter } from '@/backends/opencode/connectedServices/openCodeUsageLimitRecoveryControlAdapter';
 import { resolveOpenCodeConnectedServiceSwitchContinuity } from '@/backends/opencode/connectedServices/resolveOpenCodeConnectedServiceSwitchContinuity';
 import { opencodeDaemonSpawnHooks } from '@/backends/opencode/daemon/spawnHooks';
+import { buildOpenCodeRuntimeLocalHandoffMetadata } from '@/backends/opencode/sessionHandoff/runtimeLocalMetadata';
 import type { AgentCatalogEntry } from '../types';
 import type { ConnectedServiceCredentialLifecycleDescriptor } from '@/daemon/connectedServices/credentials/lifecycleTypes';
 
@@ -15,10 +16,24 @@ const openCodeConnectedServiceCredentialLifecycleDescriptor: ConnectedServiceCre
   providerId: 'opencode',
   serviceIds: AGENTS_CORE.opencode.connectedServices.supportedServiceIds,
   spawnPreflightOauthRefresh: { mode: 'expiry_window' },
-  refreshedCredentialApplication: { mode: 'restart_required' },
-  predictiveSoftSwitch: { mode: 'unsupported' },
-  sameAccountFanoutStrategy: 'none',
-  runtimeAuthApply: { directLiveHotAuth: 'unsupported' },
+  refreshedCredentialApplication: {
+    mode: 'restart_required',
+    noRestartRequiredServiceIds: ['openai-codex', 'claude-subscription'],
+  },
+  predictiveSoftSwitch: { mode: 'supported' },
+  sameAccountFanoutStrategy: 'shared_group_auth_surface',
+  generationApplicationScope: 'per_session_runtime',
+  runtimeAuthApply: {
+    directLiveHotAuth: {
+      supportsInTurnApply: false,
+      requiresExactRuntimeIdentity: false,
+      refreshSelectionResync: 'not_applicable',
+      authMode: {
+        kind: 'provider_owned',
+        name: 'broker_selection_indirection',
+      },
+    },
+  },
 };
 
 export const agent = {
@@ -41,6 +56,7 @@ export const agent = {
   getDirectSessionProviderOps: async () => (await import('@/backends/opencode/directSessions/providerOps')).openCodeDirectSessionProviderOps,
   getProviderAttachOps: async () => (await import('@/backends/opencode/attach/providerAttachOps')).openCodeProviderAttachOps,
   vendorResumeSupport: AGENTS_CORE.opencode.resume.vendorResume,
+  buildRuntimeLocalHandoffMetadata: buildOpenCodeRuntimeLocalHandoffMetadata,
   getAcpBackendFactory: async () => {
     const { createOpenCodeBackend } = await import('@/backends/opencode/acp/backend');
     return (opts) => ({ backend: createOpenCodeBackend(opts as any) });

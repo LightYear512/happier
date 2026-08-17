@@ -1,8 +1,13 @@
 import type { AgentEvent, NormalizedMessage } from '../../typesRaw';
+import { isRecoveredHistoryTranscriptObservationProvenance } from '@happier-dev/protocol';
 import type { ReducerState } from '../reducer';
 import { parseMessageAsEvent } from '../messageToEvent';
 import { setThinkingMergeCursor } from '../helpers/mergeCursors';
 import { normalizeTranscriptSeq } from '../../domains/messages/transcriptOrdering';
+import {
+  readAcpToolCallSnapshotRevision,
+  readMessageToolSnapshotRevision,
+} from '../helpers/toolCallSnapshotRevision';
 
 export function runMessageToEventConversion({
   state,
@@ -39,29 +44,41 @@ export function runMessageToEventConversion({
   let readyAt: number | null = null;
 
   for (const msg of nonSidechainMessages) {
+    const isRecoveredHistory = isRecoveredHistoryTranscriptObservationProvenance(
+      msg.transcriptObservationProvenance,
+    );
     // Check if we've already processed this message
-    if (msg.role === 'user' && msg.localId && state.localIds.has(msg.localId)) {
+    if (!isRecoveredHistory && msg.role === 'user' && msg.localId && state.localIds.has(msg.localId)) {
       continue;
     }
     if (state.messageIds.has(msg.id)) {
-      continue;
+      const existingMessageId = state.messageIds.get(msg.id) ?? null;
+      const existingMessage = existingMessageId ? state.messages.get(existingMessageId) ?? null : null;
+      const incomingRevision = readMessageToolSnapshotRevision(msg);
+      const existingRevision = readAcpToolCallSnapshotRevision(existingMessage?.tool?.input);
+      if (incomingRevision === null || existingRevision === null || incomingRevision <= existingRevision) {
+        continue;
+      }
     }
 
     // Filter out ready events completely - they should not create any message
     if (msg.role === 'event' && msg.content.type === 'ready') {
       // Mark as processed to prevent duplication but don't add to messages
       state.messageIds.set(msg.id, msg.id);
-      hasReadyEvent = true;
-      const seq = normalizeTranscriptSeq(msg.seq);
-      if (seq !== null) {
-        latestReadyEventSeq = latestReadyEventSeq === null ? seq : Math.max(latestReadyEventSeq, seq);
+      if (!isRecoveredHistory) {
+        hasReadyEvent = true;
+        const seq = normalizeTranscriptSeq(msg.seq);
+        if (seq !== null) {
+          latestReadyEventSeq = latestReadyEventSeq === null ? seq : Math.max(latestReadyEventSeq, seq);
+        }
+        readyAt = readyAt === null ? msg.createdAt : Math.max(readyAt, msg.createdAt);
       }
-      readyAt = readyAt === null ? msg.createdAt : Math.max(readyAt, msg.createdAt);
       continue;
     }
 
     // Handle context reset events - reset state and let the message be shown
     if (
+      !isRecoveredHistory &&
       msg.role === 'event' &&
       msg.content.type === 'message' &&
       msg.content.message === 'Context was reset'
@@ -87,6 +104,7 @@ export function runMessageToEventConversion({
 
     // Handle compaction completed events - reset context but keep todos
     if (
+      !isRecoveredHistory &&
       msg.role === 'event' &&
       (
         (msg.content.type === 'message' && msg.content.message === 'Compaction completed') ||
@@ -117,7 +135,11 @@ export function runMessageToEventConversion({
       convertedEvents.push({ message: msg, event });
       // Mark as processed to prevent duplication
       state.messageIds.set(msg.id, msg.id);
-      if (msg.role === 'user' && msg.localId) {
+      if (
+        !isRecoveredHistoryTranscriptObservationProvenance(msg.transcriptObservationProvenance)
+        && msg.role === 'user'
+        && msg.localId
+      ) {
         state.localIds.set(msg.localId, msg.id);
       }
     } else {
@@ -140,7 +162,9 @@ export function runMessageToEventConversion({
       text: null,
 	      meta: message.meta,
 	    });
-	    setThinkingMergeCursor(state, null, 'message-to-event');
+	    if (!isRecoveredHistoryTranscriptObservationProvenance(message.transcriptObservationProvenance)) {
+	      setThinkingMergeCursor(state, null, 'message-to-event');
+	    }
 	    changed.add(mid);
 	  }
 

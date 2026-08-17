@@ -3,7 +3,6 @@ import { Image } from 'expo-image';
 import * as React from 'react';
 import { Text } from '@/components/ui/text/Text';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { Typography } from "@/constants/Typography";
@@ -20,7 +19,6 @@ import { useMultiClick } from '@/hooks/ui/useMultiClick';
 import { useUnistyles } from 'react-native-unistyles';
 import { layout } from '@/components/ui/layout/layout';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
-import { disconnectVendorToken } from '@/sync/api/account/apiVendorTokens';
 import { getDisplayName, getAvatarUrl, getBio } from '@/sync/domains/profiles/profile';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { t } from '@/text';
@@ -43,6 +41,7 @@ import { isTauriDesktop } from '@/utils/platform/tauri';
 import { DesktopSettingsSection } from '@/components/settings/desktop/DesktopSettingsSection';
 import { SettingsBelowFoldSections } from '@/components/settings/SettingsBelowFoldSections';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const DEFER_BELOW_FOLD_SETTINGS_SECTIONS_DELAY_MS = 0;
 const DEFER_BELOW_FOLD_SETTINGS_STAGE_DELAY_MS = 16;
@@ -218,37 +217,19 @@ export const SettingsView = React.memo(function SettingsView() {
         }
     });
 
-    // Anthropic disconnection
-      const [disconnectingAnthropic, handleDisconnectAnthropic] = useHappyAction(async () => {
-          const serviceName = anthropicAgentCore.uiConnectedService.label;
-          const confirmed = await Modal.confirm(
-              t('modals.disconnectService', { service: serviceName }),
-            t('modals.disconnectServiceConfirm', { service: serviceName }),
-            { confirmText: t('modals.disconnect'), destructive: true }
-          );
-          if (confirmed) {
-              if (!auth.credentials) {
-                  Modal.alert(t('common.error'), t('errors.unknownError'), [{ text: t('common.ok') }]);
-                  return;
-              }
-              await disconnectVendorToken(auth.credentials, 'anthropic');
-              await sync.refreshProfile();
-          }
-      });
-
     const profileAndAccountSection = React.useMemo(() => (
         <ItemGroup title={t('settings.profileAndAccount')}>
             <Item
                 title={t('settings.account')}
                 subtitle={t('settings.accountSubtitle')}
-                icon={<Ionicons name="person-circle-outline" size={29} color={theme.colors.accent.blue} />}
+                icon={<Icon name="user-circle" size={29} color={theme.colors.accent.blue} />}
                 onPress={() => router.push('/settings/account')}
             />
             {useProfiles && (
                 <Item
                     title={t('settings.secrets')}
                     subtitle={t('settings.secretsSubtitle')}
-                    icon={<Ionicons name="key-outline" size={29} color={theme.colors.accent.purple} />}
+                    icon={<Icon name="key" size={29} color={theme.colors.accent.purple} />}
                     onPress={() => router.push('/settings/secrets')}
                 />
             )}
@@ -256,13 +237,13 @@ export const SettingsView = React.memo(function SettingsView() {
                 <Item
                     title={t('settings.usage')}
                     subtitle={t('settings.usageSubtitle')}
-                    icon={<Ionicons name="analytics-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="chart-line" size={29} color={theme.colors.accent.blue} />}
                     onPress={() => router.push('/settings/usage')}
                 />
             )}
             <Item
                 title={t('settings.machines')}
-                icon={<Ionicons name="desktop-outline" size={29} color={theme.colors.accent.orange} />}
+                icon={<Icon name="desktop" size={29} color={theme.colors.accent.orange} />}
                 onPress={() => pushRoute('/settings/machines')}
             />
         </ItemGroup>
@@ -281,20 +262,20 @@ export const SettingsView = React.memo(function SettingsView() {
             <Item
                 title={t('settings.appearance')}
                 subtitle={t('settings.appearanceSubtitle')}
-                icon={<Ionicons name="color-palette-outline" size={29} color={theme.colors.accent.indigo} />}
+                icon={<Icon name="palette" size={29} color={theme.colors.accent.indigo} />}
                 onPress={() => pushRoute('/settings/appearance')}
             />
             <Item
                 title={t('settings.featuresTitle')}
                 subtitle={t('settings.featuresSubtitle')}
-                icon={<Ionicons name="flask-outline" size={29} color={theme.colors.accent.orange} />}
+                icon={<Icon name="flask" size={29} color={theme.colors.accent.orange} />}
                 onPress={() => pushRoute('/settings/features')}
             />
             <Item
                 testID="settings-keyboard-shortcuts-row"
                 title={t('settingsKeyboard.title')}
                 subtitle={t('settingsKeyboard.entrySubtitle')}
-                icon={<Ionicons name="keypad-outline" size={29} color={theme.colors.accent.blue} />}
+                icon={<Icon name="squares-four" size={29} color={theme.colors.accent.blue} />}
                 onPress={() => pushRoute('/settings/keyboard')}
             />
             {petsCompanionEnabled || petsSyncEnabled ? (
@@ -302,7 +283,7 @@ export const SettingsView = React.memo(function SettingsView() {
                     testID="settings-pets-row"
                     title={t('settings.pets')}
                     subtitle={t('settings.petsSubtitle')}
-                    icon={<Ionicons name="paw-outline" size={29} color={theme.colors.accent.green} />}
+                    icon={<Icon name="paw-print" size={29} color={theme.colors.accent.green} />}
                     onPress={() => pushRoute('/settings/pets')}
                 />
             ) : null}
@@ -363,7 +344,7 @@ export const SettingsView = React.memo(function SettingsView() {
                         testID="settings-add-your-phone-shortcut"
                         title={t('settings.addYourPhone')}
                         subtitle={t('settings.addYourPhoneSubtitle')}
-                        icon={<Ionicons name="phone-portrait-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.blue} />}
                         onPress={() => router.push('/settings/add-phone')}
                     />
                 </ItemGroup>
@@ -377,7 +358,7 @@ export const SettingsView = React.memo(function SettingsView() {
                     <Item
                         testID="settings-connect-terminal-scan"
                         title={t('settingsAccount.linkNewDevice')}
-                        icon={<Ionicons name="qr-code-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="qr-code" size={29} color={theme.colors.accent.blue} />}
                         onPress={connectTerminal}
                         loading={isLoading}
                         showChevron={false}
@@ -385,7 +366,7 @@ export const SettingsView = React.memo(function SettingsView() {
                     <Item
                         testID="settings-connect-terminal-enter-url"
                         title={t('connect.enterUrlManually')}
-                        icon={<Ionicons name="link-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="link" size={29} color={theme.colors.accent.blue} />}
                         onPress={async () => {
                             const url = await Modal.prompt(
                                 t('connect.linkNewDeviceTitle'),
@@ -412,7 +393,7 @@ export const SettingsView = React.memo(function SettingsView() {
                         <Item
                             title={t('settings.supportUs')}
                             subtitle={isPro ? t('settings.supportUsSubtitlePro') : t('settings.supportUsSubtitle')}
-                            icon={<Ionicons name="heart" size={29} color={theme.colors.state.danger.foreground} />}
+                            icon={<Icon name="heart" size={29} color={theme.colors.state.danger.foreground} />}
                             showChevron={false}
                             onPress={handleSupportUs}
                         />
@@ -428,9 +409,13 @@ export const SettingsView = React.memo(function SettingsView() {
                             icon={
                                 <AgentIcon agentId={anthropicAgentId} size={29} />
                             }
-                            onPress={isAnthropicConnected ? handleDisconnectAnthropic : connectAnthropic}
-                            loading={connectingAnthropic || disconnectingAnthropic}
-                            showChevron={false}
+                            onPress={isAnthropicConnected
+                                ? () => pushRoute({
+                                    pathname: '/settings/connected-services/[serviceId]',
+                                    params: { serviceId: 'anthropic' },
+                                })
+                                : connectAnthropic}
+                            loading={connectingAnthropic}
                         />
                     </ItemGroup>
                 </>
@@ -441,7 +426,7 @@ export const SettingsView = React.memo(function SettingsView() {
                 <Item
                     title={t('navigation.friends')}
                     subtitle={t('friends.manageFriends')}
-                    icon={<Ionicons name="people-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="users" size={29} color={theme.colors.accent.blue} />}
                     onPress={() => router.push('/friends')}
                 />
             </ItemGroup> */}

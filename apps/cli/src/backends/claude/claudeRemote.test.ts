@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { SDKMessage } from '@/backends/claude/sdk';
+import type { SDKMessage, SDKUserMessage } from '@/backends/claude/sdk';
 import type { EnhancedMode } from './loop';
 
 const mockQuery = vi.fn();
@@ -49,6 +49,11 @@ vi.mock('./utils/resolveClaudeCliPath', () => ({
 
 type RemoteOptions = Parameters<(typeof import('./claudeRemote'))['claudeRemote']>[0];
 type QueryCall = Readonly<{
+  prompt?: AsyncIterable<SDKUserMessage>;
+  onPromptTransportOutcome?: (
+    message: SDKUserMessage,
+    outcome: 'accepted' | 'rejected_before_effect' | 'effect_may_have_occurred',
+  ) => void;
   options?: Readonly<{
     resume?: string;
     continue?: boolean;
@@ -57,6 +62,7 @@ type QueryCall = Readonly<{
     customSystemPrompt?: string;
     appendSystemPrompt?: string;
     executable?: string;
+    includeHookEvents?: boolean;
   }>;
 }>;
 
@@ -137,6 +143,133 @@ describe('claudeRemote', () => {
     expect(ensureJavaScriptRuntimeExecutableMock).toHaveBeenCalled();
     const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
     expect(call?.options?.executable).toBe('/managed/js-runtime');
+    expect(call?.options?.includeHookEvents).toBe(true);
+  });
+
+  it('arms workflow startup reconciliation after the legacy query observer installs', async () => {
+    const order: string[] = [];
+    mockQuery.mockImplementation(() => {
+      order.push('query-installed');
+      return messageStream(resultMessage());
+    });
+
+    const { claudeRemote } = await import('./claudeRemote');
+
+    await claudeRemote(createBaseOptions({
+      onWorkflowActivityObserverReady: () => { order.push('workflow-armed'); },
+      runtimeActivityAdapter: {
+        activateObservation: vi.fn(async () => { order.push('runtime-offered'); }),
+      } as any,
+    }));
+
+    expect(order).toEqual(['query-installed', 'workflow-armed', 'runtime-offered']);
+  });
+
+  it('reports only failed required-hook responses fenced to the current provider session', async () => {
+    const onProviderActivityObservationLost = vi.fn();
+    const onMessage = vi.fn();
+    const messages = [
+      systemInitMessage('current-session'),
+      {
+        type: 'system', subtype: 'hook_response', session_id: 'current-session',
+        hook_name: 'required-post-tool-use', hook_event: 'PostToolUse', outcome: 'success',
+      },
+      {
+        type: 'system', subtype: 'hook_response', session_id: 'current-session',
+        hook_name: 'permission', hook_event: 'PermissionRequest', outcome: 'error',
+      },
+      {
+        type: 'system', subtype: 'hook_response', session_id: 'current-session',
+        hook_name: 'status', hook_event: 'Stop', outcome: 'error',
+      },
+      {
+        type: 'system', subtype: 'hook_started', session_id: 'current-session',
+        hook_name: 'required-post-tool-use', hook_event: 'PostToolUse',
+      },
+      {
+        type: 'system', subtype: 'hook_progress', session_id: 'current-session',
+        hook_name: 'required-post-tool-use', hook_event: 'PostToolUse',
+      },
+      {
+        type: 'system', subtype: 'hook_response', session_id: 'stale-session',
+        hook_name: 'required-subagent-start', hook_event: 'SubagentStart', outcome: 'error',
+      },
+      {
+        type: 'system', subtype: 'hook_response', session_id: 'current-session',
+        hook_name: 'required-post-tool-use', hook_event: 'PostToolUse', outcome: 'cancelled',
+      },
+      {
+        type: 'system', subtype: 'hook_response', session_id: 'current-session',
+        hook_name: 'required-subagent-stop', hook_event: 'SubagentStop', outcome: 'error',
+      },
+    ] as SDKMessage[];
+    mockQuery.mockImplementation((config: { onMessageReceived?: (message: SDKMessage) => void }) => ({
+      async *[Symbol.asyncIterator]() {
+        for (const message of messages) {
+          config.onMessageReceived?.(message);
+          yield message;
+        }
+      },
+    }));
+    const { claudeRemote } = await import('./claudeRemote');
+
+    await claudeRemote(createBaseOptions({ onProviderActivityObservationLost, onMessage }));
+
+    expect(onProviderActivityObservationLost).toHaveBeenCalledTimes(2);
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith(systemInitMessage('current-session'));
+  });
+
+  it('installs the authenticated hook plugin before legacy provider input', async () => {
+    mockQuery.mockReturnValue(messageStream(resultMessage()));
+    const { claudeRemote } = await import('./claudeRemote');
+
+    await claudeRemote(createBaseOptions({
+      hookPluginDir: '/tmp/happier-hook-plugin',
+    } as Partial<RemoteOptions>));
+
+    const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
+    expect(call?.options?.extraArgs).toEqual([
+      '--plugin-dir',
+      '/tmp/happier-hook-plugin',
+    ]);
+  });
+
+  it('confirms provider acceptance after the legacy SDK reports successful prompt transport', async () => {
+    const onPromptAcceptedByProvider = vi.fn();
+    mockQuery.mockImplementation((config: QueryCall & { prompt: AsyncIterable<SDKUserMessage> }) => ({
+      async *[Symbol.asyncIterator]() {
+        const consumed = await config.prompt[Symbol.asyncIterator]().next();
+        if (!consumed.done) {
+          config.onPromptTransportOutcome?.(consumed.value, 'accepted');
+        }
+        yield resultMessage();
+      },
+    }));
+    let didSendPrompt = false;
+
+    const { claudeRemote } = await import('./claudeRemote');
+
+    await claudeRemote(createBaseOptions({
+      nextMessage: async () => {
+        if (didSendPrompt) return null;
+        didSendPrompt = true;
+        return {
+          message: 'hello',
+          mode: defaultMode(),
+          maxUserMessageSeq: 7,
+          userMessageLocalIds: ['legacy-local-7'],
+        } as any;
+      },
+      onPromptAcceptedByProvider,
+    } as any));
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(onPromptAcceptedByProvider).toHaveBeenCalledTimes(1);
+    expect(onPromptAcceptedByProvider).toHaveBeenCalledWith({
+      maxUserMessageSeq: 7,
+      userMessageLocalIds: ['legacy-local-7'],
+    });
   });
 
   it('passes the resolved Claude CLI path into the remote launcher env so it does not rediscover it', async () => {
@@ -216,7 +349,7 @@ describe('claudeRemote', () => {
     expect(call?.options?.continue).toBe(true);
   });
 
-  it('passes through --mcp-config to the underlying Claude Code CLI (no parsing/merging)', async () => {
+  it('materializes inline --mcp-config JSON before invoking the underlying Claude Code CLI', async () => {
     mockQuery.mockReturnValue(messageStream(resultMessage()));
 
     const { claudeRemote } = await import('./claudeRemote');
@@ -230,10 +363,14 @@ describe('claudeRemote', () => {
 
     expect(mockQuery).toHaveBeenCalledTimes(1);
     const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
-    expect(call?.options?.extraArgs).toEqual(['--mcp-config', mcpRaw]);
+    expect(call?.options?.extraArgs?.[0]).toBe('--mcp-config');
+    const configPath = call?.options?.extraArgs?.[1];
+    expect(configPath).not.toBe(mcpRaw);
+    expect(JSON.stringify(call?.options?.extraArgs)).not.toContain('server.mjs');
+    await expect(stat(configPath!)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('passes through --mcp-config=<json> to the underlying Claude Code CLI (no parsing/merging)', async () => {
+  it('materializes inline --mcp-config=<json> before invoking the underlying Claude Code CLI', async () => {
     mockQuery.mockReturnValue(messageStream(resultMessage()));
 
     const { claudeRemote } = await import('./claudeRemote');
@@ -248,7 +385,36 @@ describe('claudeRemote', () => {
 
     expect(mockQuery).toHaveBeenCalledTimes(1);
     const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
-    expect(call?.options?.extraArgs).toEqual([arg]);
+    const materializedArg = call?.options?.extraArgs?.[0];
+    expect(materializedArg).toMatch(/^--mcp-config=.+/);
+    expect(materializedArg).not.toBe(arg);
+    expect(materializedArg).not.toContain('server.mjs');
+    await expect(stat(materializedArg!.slice('--mcp-config='.length))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('removes materialized MCP config when the remote Claude query is aborted', async () => {
+    let configPath: string | undefined;
+    mockQuery.mockImplementation((call: QueryCall) => {
+      configPath = call.options?.extraArgs?.[1];
+      return {
+        async *[Symbol.asyncIterator]() {
+          const { AbortError } = await import('@/backends/claude/sdk');
+          throw new AbortError('synthetic abort');
+        },
+      };
+    });
+
+    const { claudeRemote } = await import('./claudeRemote');
+    const mcpRaw = JSON.stringify({
+      mcpServers: { fixture: { type: 'stdio', command: 'mcp-server', env: { TOKEN: 'synthetic-abort' } } },
+    });
+
+    await claudeRemote(createBaseOptions({
+      claudeArgs: ['--mcp-config', mcpRaw],
+    }));
+
+    expect(configPath).toBeTruthy();
+    await expect(stat(configPath!)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('injects --effort when the mode specifies a non-default reasoningEffort', async () => {
@@ -412,7 +578,7 @@ describe('claudeRemote', () => {
     expect(call?.options?.extraArgs).toBeUndefined();
   });
 
-  it('appends Happier MCP config when provided, while preserving user --mcp-config passthrough', async () => {
+  it('appends Happier MCP config after user MCP config while keeping both payloads out of argv', async () => {
     mockQuery.mockReturnValue(messageStream(resultMessage()));
 
     const { claudeRemote } = await import('./claudeRemote');
@@ -431,7 +597,15 @@ describe('claudeRemote', () => {
 
     expect(mockQuery).toHaveBeenCalledTimes(1);
     const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
-    expect(call?.options?.extraArgs).toEqual(['--mcp-config', userMcp, '--mcp-config', happierMcp]);
+    expect(call?.options?.extraArgs?.filter((arg) => arg === '--mcp-config')).toHaveLength(2);
+    expect(JSON.stringify(call?.options?.extraArgs)).not.toContain('server.mjs');
+    expect(JSON.stringify(call?.options?.extraArgs)).not.toContain('happier-mcp.mjs');
+    const configPaths = [call?.options?.extraArgs?.[1], call?.options?.extraArgs?.[3]];
+    for (const configPath of configPaths) {
+      expect(configPath).not.toBe(userMcp);
+      expect(configPath).not.toBe(happierMcp);
+      await expect(stat(configPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
   });
 
   it('treats --resume (no id) as resume-last-session in remote mode', async () => {

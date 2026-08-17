@@ -20,32 +20,38 @@ import {
 import type { ScmConnectedAccountCredentialResolver } from '@/scm/types';
 import { encodeBase64, decodeBase64, encrypt, decrypt } from './encryption';
 import { backoff } from '@/utils/time';
-import { RpcHandlerManager } from './rpc/RpcHandlerManager';
-import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { createConnectedServicesProjectionRetryScheduler } from './connectedServices/connectedServicesProjectionRetryScheduler';
+import { isConnectedServiceGenerationReconciliationNotAcknowledgeableError } from '@/daemon/connectedServices/accountGroups/generation/reconcileConnectedServiceAuthGroupGenerations';
+import { RpcHandlerManager, type RpcHandlerRegistrationReadiness } from './rpc/RpcHandlerManager';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
-import type {
-    DirectSessionTranscriptDeltaEphemeral,
-    MachineTransferReceiveEnvelope,
-    MachineTransferSendEnvelope,
-    SessionDevPreviewSocketMachineToServerMessage,
-    SessionDevPreviewSocketServerToMachineMessage,
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import {
+    type DirectSessionTranscriptDeltaEphemeral,
+    type MachineTransferReceiveEnvelope,
+    type MachineTransferSendEnvelope,
+    type ConnectedServiceExecutionAuthorityV1,
+    type ExactSessionTurnEndMutationV1,
+    type SessionDevPreviewSocketMachineToServerMessage,
+    type SessionDevPreviewSocketServerToMachineMessage,
 } from '@happier-dev/protocol';
 import { fetchChanges, fetchChangesAccountId } from './changes';
-import { readLastChangesCursor, writeLastChangesCursor } from '@/persistence';
-import { resolveLoopbackHttpUrl } from './client/loopbackUrl';
+import { readAccountChangesCursor, writeAccountChangesCursor } from '@/persistence';
 import { createAuthenticationHttpStatusError, isAuthenticationError, isAuthenticationStatus } from './client/httpStatusError';
 import { serializeAxiosErrorForLog } from './client/serializeAxiosErrorForLog';
 import { runSupervisedRequest } from '@/api/connection/requestSupervision/runSupervisedRequest';
 import { handleRequestAuthenticationFailure } from '@/api/connection/requestSupervision/reportRequestOutcomeToSupervisor';
-import { emitSocketWithAck } from '@/session/transport/shared/socketAck';
+import { emitSocketWithAck, type EmitWithAckSocket } from '@/session/transport/shared/socketAck';
+import type { SessionMutationSocket } from './session/mutations/createSessionMutationOutbox';
 import {
-    createSessionMutationOutbox,
-    type SessionMutationOutbox,
-    type SessionMutationSocket,
-} from './session/mutations/createSessionMutationOutbox';
-import { createSessionEndMutation, createSessionTurnMutation } from './session/mutations/sessionMutationTypes';
+    createDaemonTerminalSessionMutationJournal,
+    createDaemonTerminalSessionMutationOutbox,
+    type DaemonTerminalSessionMutationOutbox,
+} from './session/mutations/daemonTerminalSessionMutationOutbox';
+import { recoverDaemonTerminalSessionMutationJournals } from './session/mutations/daemonTerminalSessionMutationDiscovery';
 
 import type { DaemonToServerEvents, ServerToDaemonEvents } from './machine/socketTypes';
+import { authorizeMachineRpcRequest } from './machine/machineRpcAuthorization';
+import { projectMachineRpcTransportAcknowledgement } from './machine/projectMachineRpcTransportAcknowledgement';
 import { registerMachineRpcHandlers, type MachineRpcHandlerDeps, type MachineRpcHandlers } from './machine/rpcHandlers';
 import { resolveMachineRpcWorkingDirectory } from './machine/resolveMachineRpcWorkingDirectory';
 import type { Socket } from 'socket.io-client';
@@ -54,13 +60,18 @@ import {
     DEFAULT_MANAGED_CONNECTION_POLICY,
     type ManagedConnectionState,
     type ManagedConnectionSupervisor,
+    type ReadinessProbeResult,
 } from '@happier-dev/connection-supervisor';
 import { createLoopbackReadinessProbe } from '@/api/connection/createLoopbackReadinessProbe';
 import { createMachineSocketTransport } from '@/api/machine/connection/createMachineSocketTransport';
+import { readCliClientUpgradeRequired } from '@/api/clientCompatibility/cliClientCompatibility';
 import { buildInstallationProofForMachine } from '@/daemon/identity/proof';
 import { readInstallationIdentityIfExistsSync } from '@/daemon/identity/store';
 import { readMachineOwnerConflictFromSocketError, type MachineOwnerConflictDetails } from '@/api/machine/machineOwnerConflict';
 import { readAccountSettingsVersionFromHint } from '@/settings/accountSettings/accountSettingsVersion';
+import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
+import { fetchAccountProfile } from '@/api/accountProfile';
+import type { RpcHandlerActiveExecution } from '@/api/rpc/types';
 
 export type ApiMachineClientDeps = Readonly<{
     connectedAccounts?: ScmConnectedAccountCredentialResolver;
@@ -73,22 +84,56 @@ export type AccountSettingsVersionHintNotification = Readonly<{
     source: AccountSettingsVersionHintSource;
 }>;
 
-type MachineSessionEndPayload = Readonly<{
-    sid: string;
-    time: number;
-    exit?: unknown;
+export type PendingSessionActivationHintNotification = Readonly<{
+    sessionId: string;
+    requestId: string;
+    pendingVersion: number;
+    source: 'changes' | 'live';
 }>;
 
-function isMachineSessionEndPayload(value: unknown): value is MachineSessionEndPayload {
-    if (!value || typeof value !== 'object') {
-        return false;
-    }
-    const candidate = value as { sid?: unknown; time?: unknown };
-    return typeof candidate.sid === 'string' && typeof candidate.time === 'number';
-}
+export type ConnectedServicesProjectionChangeSource =
+    | 'startup'
+    | 'reconnect'
+    | 'changes'
+    | 'cursor-gone'
+    | 'page-limit'
+    | 'live';
+
+export type ConnectedServicesProjectionChangeNotification = Readonly<{
+    source: ConnectedServicesProjectionChangeSource;
+    executionAuthority: ConnectedServiceExecutionAuthorityV1;
+    signal: AbortSignal;
+    connectedServicesV2: unknown | null;
+    connectedServiceCredentialRevisionsV1: unknown | null;
+}>;
+
+type RpcLifecycleRegistration = Readonly<{
+    dispose: () => Promise<void>;
+}>;
+
+const REQUIRED_MACHINE_CONTROL_RPC_METHODS = Object.freeze([
+    RPC_METHODS.SPAWN_HAPPY_SESSION,
+    RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE,
+    RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE,
+    RPC_METHODS.STOP_SESSION,
+]);
+const MACHINE_CONTROL_RPC_REGISTRATION_TIMEOUT_MS = 10_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function classifyMachineTransportErrorToProbeResult(
+    error: unknown,
+): Exclude<ReadinessProbeResult, Readonly<{ status: 'ready' }>> | null {
+    if (!readCliClientUpgradeRequired(error)) {
+        return null;
+    }
+    return {
+        status: 'auth_failed',
+        statusCode: 426,
+        errorMessage: 'This Happier daemon must be upgraded before it can sync sessions.',
+    };
 }
 
 function readSocketConnectErrorDiagnostic(error: unknown): Record<string, unknown> {
@@ -130,14 +175,22 @@ export class ApiMachineClient {
     private rpcHandlerManager: RpcHandlerManager;
     private hasConnectedOnce = false;
     private accountIdPromise: Promise<string> | null = null;
-    private changesSyncInFlight: Promise<void> | null = null;
+    private readonly connectedServicesProjectionRetry = createConnectedServicesProjectionRetryScheduler();
+    private projectionSchedulingClosed = false;
     private updateListeners = new Set<(update: Update) => boolean | void>();
     private accountSettingsVersionHintListeners = new Set<(hint: AccountSettingsVersionHintNotification) => void | Promise<void>>();
+    private pendingSessionActivationHintListeners = new Set<(
+        hint: PendingSessionActivationHintNotification,
+    ) => void | Promise<void>>();
+    private connectedServicesProjectionChangeListeners = new Set<(
+        notification: ConnectedServicesProjectionChangeNotification,
+    ) => void | Promise<void>>();
     private machineTransferListeners = new Set<(payload: MachineTransferReceiveEnvelope) => void>();
     private sessionDevPreviewListeners = new Set<(payload: SessionDevPreviewSocketServerToMachineMessage) => void>();
     private connectionStateListeners = new Set<(state: ManagedConnectionState) => void>();
     private connectionSupervisor: ManagedConnectionSupervisor | null = null;
-    private sessionEndMutationOutboxes = new Map<string, SessionMutationOutbox>();
+    private daemonTerminalSessionMutationOutboxes = new Map<string, DaemonTerminalSessionMutationOutbox>();
+    private readonly rpcLifecycleRegistrations: RpcLifecycleRegistration[] = [];
     private readonly machineRpcWorkingDirectory: string;
     private readonly filesystemAccessPolicy: FilesystemAccessPolicy;
     private readonly ownershipMetadata: Readonly<{
@@ -149,6 +202,11 @@ export class ApiMachineClient {
         serviceLabel?: string;
     }>;
     private activeTransportGeneration = 0;
+    private machineControlRunningGeneration: number | null = null;
+    private machineControlReadinessPublication: Readonly<{
+        generation: number;
+        promise: Promise<boolean>;
+    }> | null = null;
     private currentConnectionState: ManagedConnectionState = {
         phase: 'idle',
         reason: null,
@@ -158,7 +216,6 @@ export class ApiMachineClient {
         lastDisconnectedAt: null,
         lastErrorMessage: null,
     };
-
     private teardownActiveSocket(): void {
         if (!this.socket) {
             return;
@@ -190,6 +247,75 @@ export class ApiMachineClient {
         this.teardownActiveSocket();
     }
 
+    private async publishMachineControlRunningWhenReady(params: Readonly<{
+        socket: Socket<ServerToDaemonEvents, DaemonToServerEvents>;
+        transportGeneration: number;
+        timeoutMs: number;
+    }>): Promise<Readonly<{
+        ready: boolean;
+        readiness: RpcHandlerRegistrationReadiness;
+    }>> {
+        const { socket, transportGeneration, timeoutMs } = params;
+        const unregisteredCoreHandlers = REQUIRED_MACHINE_CONTROL_RPC_METHODS.filter(
+            (method) => !this.rpcHandlerManager.hasHandler(method),
+        );
+        if (unregisteredCoreHandlers.length > 0) {
+            return {
+                ready: false,
+                readiness: { status: 'disconnected', missingMethods: unregisteredCoreHandlers },
+            };
+        }
+
+        const readiness = await this.rpcHandlerManager.waitForRegisteredHandlers(
+            REQUIRED_MACHINE_CONTROL_RPC_METHODS,
+            { timeoutMs },
+        );
+        if (
+            readiness.status !== 'ready'
+            || this.socket !== socket
+            || this.activeTransportGeneration !== transportGeneration
+            || socket.connected !== true
+        ) {
+            return { ready: false, readiness };
+        }
+        if (this.machineControlRunningGeneration === transportGeneration) {
+            return { ready: true, readiness };
+        }
+        if (this.machineControlReadinessPublication?.generation === transportGeneration) {
+            const published = await this.machineControlReadinessPublication.promise;
+            return { ready: published, readiness };
+        }
+
+        const promise = this.updateDaemonState((state) => ({
+            ...state,
+            status: 'running',
+            pid: process.pid,
+            httpPort: this.machine.daemonState?.httpPort,
+            startedAt: Date.now(),
+        })).then(() => {
+            if (
+                this.socket === socket
+                && this.activeTransportGeneration === transportGeneration
+                && socket.connected === true
+            ) {
+                this.machineControlRunningGeneration = transportGeneration;
+            }
+            return true;
+        }).catch((error) => {
+            logger.warn('[API MACHINE] Failed to update daemon state after machine-control readiness', {
+                message: error instanceof Error ? error.message : String(error),
+            });
+            return false;
+        }).finally(() => {
+            if (this.machineControlReadinessPublication?.generation === transportGeneration) {
+                this.machineControlReadinessPublication = null;
+            }
+        });
+        this.machineControlReadinessPublication = { generation: transportGeneration, promise };
+        const published = await promise;
+        return { ready: published, readiness };
+    }
+
     constructor(
         private token: string,
         private machine: Machine,
@@ -210,7 +336,26 @@ export class ApiMachineClient {
             encryptionKey: this.machine.encryptionKey,
             encryptionVariant: this.machine.encryptionVariant,
             plaintextMethods: new Set([`${this.machine.id}:${RPC_METHODS.DAEMON_SESSION_DEV_PREVIEW_HTTP}`]),
-            logger: (msg, data) => logger.debug(msg, data)
+            logger: (msg, data) => logger.debug(msg, data),
+            onRegistrationError: (error) => {
+                const probe = classifyMachineTransportErrorToProbeResult(error);
+                if (probe) {
+                    this.connectionSupervisor?.reportProbeResult?.(probe);
+                }
+            },
+            onRegistrationAcknowledged: () => {
+                const socket = this.socket;
+                if (!socket) {
+                    return;
+                }
+                void this.publishMachineControlRunningWhenReady({
+                    socket,
+                    transportGeneration: this.activeTransportGeneration,
+                    timeoutMs: 0,
+                });
+            },
+            authorizeRequest: authorizeMachineRpcRequest,
+            projectTransportAcknowledgement: projectMachineRpcTransportAcknowledgement,
         });
 
         const machineRpcWorkingDirectory = resolveMachineRpcWorkingDirectory();
@@ -219,7 +364,7 @@ export class ApiMachineClient {
         this.filesystemAccessPolicy = filesystemAccessPolicy;
         let additionalAllowedReadDirs: string[] = [];
         let additionalAllowedWriteDirs: string[] = [];
-        registerSessionHandlers(this.rpcHandlerManager, machineRpcWorkingDirectory, {
+        this.rpcLifecycleRegistrations.push(registerSessionHandlers(this.rpcHandlerManager, machineRpcWorkingDirectory, {
             accessPolicy: filesystemAccessPolicy,
             setAdditionalAllowedReadDirs: (dirs) => {
                 additionalAllowedReadDirs = dirs;
@@ -227,12 +372,12 @@ export class ApiMachineClient {
             setAdditionalAllowedWriteDirs: (dirs) => {
                 additionalAllowedWriteDirs = dirs;
             },
-        });
-        registerFileSystemHandlers(this.rpcHandlerManager, machineRpcWorkingDirectory, {
+        }));
+        this.rpcLifecycleRegistrations.push(registerFileSystemHandlers(this.rpcHandlerManager, machineRpcWorkingDirectory, {
             accessPolicy: filesystemAccessPolicy,
             getAdditionalAllowedReadDirs: () => additionalAllowedReadDirs,
             getAdditionalAllowedWriteDirs: () => additionalAllowedWriteDirs,
-        });
+        }));
         registerWorkspaceAnchorHandlers(this.rpcHandlerManager, {
             defaultDirectory: machineRpcWorkingDirectory,
             accessPolicy: filesystemAccessPolicy,
@@ -255,6 +400,7 @@ export class ApiMachineClient {
 
     setRPCHandlers({
         spawnSession,
+        spawnSessionForHandoff,
         resolveSpawnSessionByNonce,
         stopSession,
         isSessionActive,
@@ -267,10 +413,11 @@ export class ApiMachineClient {
         machineTransferChannel,
         directPeerTransfer,
     }: MachineRpcHandlers, deps?: MachineRpcHandlerDeps) {
-        registerMachineRpcHandlers({
+        const machineRpcLifecycleRegistration = registerMachineRpcHandlers({
             rpcHandlerManager: this.rpcHandlerManager,
             handlers: {
                 spawnSession,
+                ...(spawnSessionForHandoff ? { spawnSessionForHandoff } : {}),
                 ...(resolveSpawnSessionByNonce ? { resolveSpawnSessionByNonce } : {}),
                 stopSession,
                 ...(isSessionActive ? { isSessionActive } : {}),
@@ -292,6 +439,7 @@ export class ApiMachineClient {
                     ?? ((payload) => this.emitDirectSessionTranscriptUpdate(payload)),
             },
         });
+        this.rpcLifecycleRegistrations.push(machineRpcLifecycleRegistration);
     }
 
     onUpdate(listener: (update: Update) => boolean | void): () => void {
@@ -308,6 +456,32 @@ export class ApiMachineClient {
         };
     }
 
+    onPendingSessionActivationHint(
+        listener: (hint: PendingSessionActivationHintNotification) => void | Promise<void>,
+    ): () => void {
+        this.pendingSessionActivationHintListeners.add(listener);
+        return () => {
+            this.pendingSessionActivationHintListeners.delete(listener);
+        };
+    }
+
+    private async notifyPendingSessionActivationHint(
+        hint: PendingSessionActivationHintNotification,
+    ): Promise<void> {
+        for (const listener of this.pendingSessionActivationHintListeners) {
+            try {
+                await Promise.resolve(listener(hint));
+            } catch (error) {
+                logger.warn('[API MACHINE] Pending session activation listener failed; Pending custody retained', {
+                    sessionId: hint.sessionId,
+                    requestId: hint.requestId,
+                    source: hint.source,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+    }
+
     private async notifyAccountSettingsVersionHint(hint: AccountSettingsVersionHintNotification): Promise<void> {
         for (const listener of this.accountSettingsVersionHintListeners) {
             try {
@@ -319,6 +493,46 @@ export class ApiMachineClient {
                     message: error instanceof Error ? error.message : String(error),
                 });
             }
+        }
+    }
+
+    onConnectedServicesProjectionChange(listener: (
+        notification: ConnectedServicesProjectionChangeNotification,
+    ) => void | Promise<void>): () => void {
+        this.connectedServicesProjectionChangeListeners.add(listener);
+        return () => {
+            this.connectedServicesProjectionChangeListeners.delete(listener);
+        };
+    }
+
+    private async notifyConnectedServicesProjectionChange(
+        notification: ConnectedServicesProjectionChangeNotification,
+    ): Promise<void> {
+        notification.signal.throwIfAborted();
+        const resolvedNotification = notification.connectedServicesV2 !== null
+            && notification.connectedServiceCredentialRevisionsV1 !== null
+            ? notification
+            : await (async (): Promise<ConnectedServicesProjectionChangeNotification> => {
+                const profile = await fetchAccountProfile({ token: this.token, signal: notification.signal });
+                notification.signal.throwIfAborted();
+                return {
+                    ...notification,
+                    connectedServicesV2: profile.connectedServicesV2,
+                    connectedServiceCredentialRevisionsV1: profile.connectedServiceCredentialRevisionsV1,
+                };
+            })();
+        for (const listener of this.connectedServicesProjectionChangeListeners) {
+            try {
+                await Promise.resolve(listener(resolvedNotification));
+            } catch (error) {
+                if (!isConnectedServiceGenerationReconciliationNotAcknowledgeableError(error)) {
+                    throw error;
+                }
+                logger.debug('[API MACHINE] Connected-services generation reconciliation awaits another domain event', {
+                    source: notification.source,
+                });
+            }
+            notification.signal.throwIfAborted();
         }
     }
 
@@ -451,123 +665,64 @@ export class ApiMachineClient {
         });
     }
 
-    private async confirmSessionEndOverHttp(payload: MachineSessionEndPayload): Promise<'confirmed' | 'unsupported'> {
-        const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
-        const response = await axios.post(
-            `${serverUrl}/v1/sessions/${encodeURIComponent(payload.sid)}/end`,
-            { time: payload.time },
-            {
-                headers: {
-                    Authorization: `Bearer ${this.token}`,
-                    'Content-Type': 'application/json',
-                },
-                timeout: 15_000,
-                validateStatus: () => true,
-            },
-        );
-        if (isAuthenticationStatus(response.status)) {
-            throw createAuthenticationHttpStatusError(
-                response.status,
-                `Authentication failed while confirming session end (${response.status})`,
-            );
-        }
-        if (response.status === 404 || response.status === 405 || response.status === 501) {
-            return 'unsupported';
-        }
-        if (response.status < 200 || response.status >= 300) {
-            throw new Error(`Session-end HTTP confirmation failed with status ${response.status}`);
-        }
-        return 'confirmed';
-    }
-
-    emitSessionEnd(payload: MachineSessionEndPayload) {
-        // Socket fanout is kept for compatibility; HTTP is the durable confirmation path.
-        const emittedLegacySessionEnd = Boolean(this.socket);
-        if (this.socket) {
-            this.socket.emit('session-end', payload);
-        }
-        void this.confirmSessionEndOverHttp(payload).then((result) => {
-            if (result === 'unsupported' && emittedLegacySessionEnd) return;
-            if (result === 'unsupported') {
-                logger.warn('[API MACHINE] Failed to confirm session-end over HTTP', {
-                    error: { message: 'Session-end HTTP confirmation route unsupported' },
-                });
-            }
-        }).catch((error) => {
-            logger.warn('[API MACHINE] Failed to confirm session-end over HTTP', {
-                error: serializeAxiosErrorForLog(error),
-            });
-        });
-    }
-
     private createSessionEndMutationSocket(): SessionMutationSocket {
         return {
             connected: this.socket?.connected === true,
-            emit: (event: string, payload: unknown) => {
-                if (event !== 'session-end' || !this.socket || !isMachineSessionEndPayload(payload)) {
-                    return;
-                }
-                this.socket.emit('session-end', payload);
-            },
+            emit: () => {},
             emitWithAck: async () => {
                 throw new Error('Machine session-end mutation outbox does not support ack-based events');
             },
         };
     }
 
-    private getSessionEndMutationOutbox(sessionId: string): SessionMutationOutbox {
-        const existing = this.sessionEndMutationOutboxes.get(sessionId);
+    private getDaemonTerminalSessionMutationOutbox(sessionId: string): DaemonTerminalSessionMutationOutbox {
+        const existing = this.daemonTerminalSessionMutationOutboxes.get(sessionId);
         if (existing) return existing;
 
-        const outbox = createSessionMutationOutbox({
+        const outbox = createDaemonTerminalSessionMutationOutbox({
             token: this.token,
             sessionId,
             getSocket: () => this.createSessionEndMutationSocket(),
             requestReconnect: () => {},
         });
-        this.sessionEndMutationOutboxes.set(sessionId, outbox);
+        this.daemonTerminalSessionMutationOutboxes.set(sessionId, outbox);
         return outbox;
     }
 
-    enqueueSessionEndMutation(payload: MachineSessionEndPayload): void {
-        const sessionId = payload.sid.trim();
-        if (!sessionId) {
-            return;
-        }
-
-        void this.getSessionEndMutationOutbox(sessionId).enqueueSessionEnd(createSessionEndMutation({
-            sessionId,
-            observedAt: payload.time,
-            ...(payload.exit !== undefined ? { exit: payload.exit } : {}),
-        })).catch((error) => {
-            logger.warn('[API MACHINE] Failed to enqueue durable session-end mutation', {
-                error: serializeAxiosErrorForLog(error),
-            });
-        });
+    async enqueueDaemonTerminalExactTurnEnd(mutation: ExactSessionTurnEndMutationV1): Promise<void> {
+        await this.getDaemonTerminalSessionMutationOutbox(mutation.sessionId).enqueueExactTurnEnd(mutation);
     }
 
-    /**
-     * Durable daemon-side settlement of a dead runner's open canonical turn (Lane N1). Delivered
-     * as an `end_session` turn mutation through the per-session mutation outbox; the machine
-     * socket has no turn-mutation event, so delivery uses the HTTP turn route. The server no-ops
-     * when no turn is open or the open turn began after `time` (a replacement runner's turn).
-     */
-    enqueueSessionTurnSettlementMutation(payload: Readonly<{ sid: string; time: number }>): void {
-        const sessionId = payload.sid.trim();
-        if (!sessionId) {
-            return;
-        }
-
-        void this.getSessionEndMutationOutbox(sessionId).enqueueSessionTurn(createSessionTurnMutation({
-            sessionId,
-            action: 'end_session',
-            mutationId: `daemon-exit-turn-settlement:${sessionId}:${payload.time}`,
-            observedAt: payload.time,
-        })).catch((error) => {
-            logger.warn('[API MACHINE] Failed to enqueue durable session turn settlement mutation', {
-                error: serializeAxiosErrorForLog(error),
+    async recoverDaemonTerminalSessionMutationJournals(): Promise<void> {
+        const recoveredHandles = new Map<string, DaemonTerminalSessionMutationOutbox>();
+        try {
+            await recoverDaemonTerminalSessionMutationJournals({
+                activeServerDir: configuration.activeServerDir,
+                openHandle: (request) => {
+                    const existing = this.daemonTerminalSessionMutationOutboxes.get(request.sessionId);
+                    if (existing) return existing;
+                    const alreadyRecovered = recoveredHandles.get(request.sessionId);
+                    if (alreadyRecovered) return alreadyRecovered;
+                    const handle = createDaemonTerminalSessionMutationJournal({
+                        token: this.token,
+                        sessionId: request.sessionId,
+                        paths: request.paths,
+                        getSocket: () => this.createSessionEndMutationSocket(),
+                        requestReconnect: () => {},
+                    });
+                    recoveredHandles.set(request.sessionId, handle);
+                    this.daemonTerminalSessionMutationOutboxes.set(request.sessionId, handle);
+                    return handle;
+                },
             });
-        });
+        } catch (error) {
+            for (const [sessionId, handle] of recoveredHandles) {
+                if (this.daemonTerminalSessionMutationOutboxes.get(sessionId) === handle) {
+                    this.daemonTerminalSessionMutationOutboxes.delete(sessionId);
+                }
+            }
+            throw error;
+        }
     }
 
     connect(params?: {
@@ -576,14 +731,15 @@ export class ApiMachineClient {
         onOwnershipConflict?: (conflict: { owner: MachineOwnerConflictDetails }) => void;
         onMachineReplaced?: () => void;
     }) {
-        const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
-        logger.debug(`[API MACHINE] Connecting to ${serverUrl}`);
+        logger.debug(`[API MACHINE] Connecting to ${resolveServerHttpBaseUrl()}`);
         let takeoverOnNextConnect = params?.takeover === true;
 
         if (!this.connectionSupervisor) {
             this.connectionSupervisor = createManagedConnectionSupervisor({
                 ...DEFAULT_MANAGED_CONNECTION_POLICY,
+                classifyTransportErrorToProbeResult: classifyMachineTransportErrorToProbeResult,
                 createTransport: () => {
+                    const serverUrl = resolveServerHttpBaseUrl();
                     const transportGeneration = this.activeTransportGeneration + 1;
                     this.activeTransportGeneration = transportGeneration;
                     const installationIdentity = readInstallationIdentityIfExistsSync();
@@ -617,10 +773,10 @@ export class ApiMachineClient {
                     });
                     return transport;
                 },
-                probeReadiness: createLoopbackReadinessProbe({
-                    serverUrl: configuration.apiServerUrl,
+                probeReadiness: async () => await createLoopbackReadinessProbe({
+                    serverUrl: resolveServerHttpBaseUrl(),
                     token: this.token,
-                }),
+                })(),
                 onStateChange: (state) => {
                     this.currentConnectionState = state;
                     for (const listener of this.connectionStateListeners) {
@@ -633,27 +789,35 @@ export class ApiMachineClient {
                     this.hasConnectedOnce = true;
                     takeoverOnNextConnect = false;
 
-                    if (this.socket) {
-                        this.rpcHandlerManager.onSocketConnect(this.socket);
+                    const socket = this.socket;
+                    const transportGeneration = this.activeTransportGeneration;
+                    let controlReady = false;
+                    if (socket) {
+                        this.rpcHandlerManager.onSocketConnect(socket);
+                        const unregisteredCoreHandlers = REQUIRED_MACHINE_CONTROL_RPC_METHODS.filter(
+                            (method) => !this.rpcHandlerManager.hasHandler(method),
+                        );
+                        if (unregisteredCoreHandlers.length > 0) {
+                            logger.warn('[API MACHINE] Required machine-control handlers are not installed; daemon remains offline', {
+                                missingMethods: unregisteredCoreHandlers,
+                            });
+                        } else {
+                            const registrationResult = await this.publishMachineControlRunningWhenReady({
+                                socket,
+                                transportGeneration,
+                                timeoutMs: MACHINE_CONTROL_RPC_REGISTRATION_TIMEOUT_MS,
+                            });
+                            controlReady = registrationResult.ready;
+                            if (registrationResult.readiness.status !== 'ready') {
+                                logger.warn('[API MACHINE] Machine-control registration did not become ready; daemon remains offline', {
+                                    status: registrationResult.readiness.status,
+                                    missingMethods: registrationResult.readiness.missingMethods,
+                                });
+                            }
+                        }
                     }
 
-                    void this.updateDaemonState((state) => ({
-                        ...state,
-                        status: 'running',
-                        pid: process.pid,
-                        httpPort: this.machine.daemonState?.httpPort,
-                        startedAt: Date.now()
-                    })).catch((error) => {
-                        logger.warn('[API MACHINE] Failed to update daemon state on connect', {
-                            message: error instanceof Error ? error.message : String(error),
-                        });
-                    });
-
-                    void this.syncChangesOnConnect({ reason: isReconnect ? 'reconnect' : 'connect' }).catch((error) => {
-                        logger.warn('[API MACHINE] /v2/changes sync failed', {
-                            message: error instanceof Error ? error.message : String(error),
-                        });
-                    });
+                    this.startChangesSyncWithRetry({ reason: isReconnect ? 'reconnect' : 'connect' });
                     this.startKeepAlive();
 
                     if (params?.onConnect) {
@@ -739,6 +903,9 @@ export class ApiMachineClient {
         });
 
         socket.on('update', (data: Update) => {
+            if (this.projectionSchedulingClosed || !this.isActiveTransportGeneration(transportGeneration) || socket !== this.socket) {
+                return;
+            }
             if (data.body.t === 'update-machine' && (data.body as UpdateMachineBody).machineId === this.machine.id) {
                 const update = data.body as UpdateMachineBody;
 
@@ -754,6 +921,27 @@ export class ApiMachineClient {
                     this.machine.daemonStateVersion = update.daemonState.version;
                 }
                 return;
+            }
+
+            if (data.body.t === 'update-account' && 'connectedServicesV2' in data.body) {
+                this.startChangesSyncWithRetry({ reason: 'live' });
+            }
+
+            if (data.body.t === 'pending-changed') {
+                const requestId = typeof data.body.pendingActivationRequestId === 'string'
+                    ? data.body.pendingActivationRequestId.trim()
+                    : '';
+                const sessionId = typeof data.body.sessionId === 'string'
+                    ? data.body.sessionId.trim()
+                    : data.body.sid.trim();
+                if (requestId && sessionId) {
+                    void this.notifyPendingSessionActivationHint({
+                        sessionId,
+                        requestId,
+                        pendingVersion: data.body.pendingVersion,
+                        source: 'live',
+                    });
+                }
             }
 
             const handled = this.dispatchUpdate(data);
@@ -791,18 +979,36 @@ export class ApiMachineClient {
 
     async shutdown() {
         logger.debug('[API MACHINE] Shutting down');
-        this.stopKeepAlive();
-        this.socket = null;
+        this.projectionSchedulingClosed = true;
+        this.activeTransportGeneration += 1;
+        this.teardownActiveSocket();
+        this.connectedServicesProjectionRetry.close();
         if (this.connectionSupervisor) {
             await this.connectionSupervisor.stop();
         }
-        const outboxes = Array.from(this.sessionEndMutationOutboxes.values());
-        this.sessionEndMutationOutboxes.clear();
+        await this.connectedServicesProjectionRetry.waitForIdle();
+        await this.rpcHandlerManager.waitForIdle();
+        await this.disposeRpcLifecycleRegistrations();
+        const outboxes = Array.from(this.daemonTerminalSessionMutationOutboxes.values());
+        this.daemonTerminalSessionMutationOutboxes.clear();
         await Promise.all(outboxes.map(async (outbox) => {
             try {
                 await outbox.close();
             } catch (error) {
-                logger.debug('[API MACHINE] Failed to close session-end mutation outbox', {
+                logger.debug('[API MACHINE] Failed to close daemon terminal mutation outbox', {
+                    error: serializeAxiosErrorForLog(error),
+                });
+            }
+        }));
+    }
+
+    private async disposeRpcLifecycleRegistrations(): Promise<void> {
+        const registrations = this.rpcLifecycleRegistrations.splice(0);
+        await Promise.all(registrations.map(async (registration) => {
+            try {
+                await registration.dispose();
+            } catch (error) {
+                logger.debug('[API MACHINE] Failed to dispose RPC lifecycle registration', {
                     error: serializeAxiosErrorForLog(error),
                 });
             }
@@ -813,7 +1019,11 @@ export class ApiMachineClient {
         await this.rpcHandlerManager.waitForIdle();
     }
 
-    private async getAccountId(): Promise<string | null> {
+    getActiveRpcHandlerExecutions(): readonly RpcHandlerActiveExecution[] {
+        return this.rpcHandlerManager.getActiveHandlerExecutions();
+    }
+
+    private async getAccountId(signal?: AbortSignal): Promise<string | null> {
         if (this.accountIdPromise) {
             return await this.accountIdPromise.catch((error) => {
                 if (isAuthenticationError(error)) {
@@ -826,7 +1036,7 @@ export class ApiMachineClient {
             });
         }
 
-        const request = () => fetchChangesAccountId({ token: this.token });
+        const request = () => fetchChangesAccountId({ token: this.token, ...(signal ? { signal } : {}) });
         const supervisor = this.connectionSupervisor;
         const p = supervisor
             ? runSupervisedRequest({
@@ -852,9 +1062,9 @@ export class ApiMachineClient {
         }
     }
 
-    private async refreshMachineFromServer(): Promise<void> {
+    private async refreshMachineFromServer(signal?: AbortSignal): Promise<void> {
         try {
-            const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
+            const serverUrl = resolveServerHttpBaseUrl();
             const request = async () => {
                 const response = await axios.get(`${serverUrl}/v1/machines/${this.machine.id}`, {
                     headers: {
@@ -862,6 +1072,7 @@ export class ApiMachineClient {
                         'Content-Type': 'application/json',
                     },
                     timeout: 15_000,
+                    ...(signal ? { signal } : {}),
                     validateStatus: () => true,
                 });
                 if (isAuthenticationStatus(response.status)) {
@@ -918,7 +1129,40 @@ export class ApiMachineClient {
         }
     }
 
-    private async syncChangesOnConnect(opts: { reason: 'connect' | 'reconnect' }): Promise<void> {
+    private async syncChangesOnConnect(
+        opts: { reason: 'connect' | 'reconnect' | 'live' },
+        signal: AbortSignal = new AbortController().signal,
+    ): Promise<void> {
+        // A live account update is a committed runtime/user action. Preserve that authority so
+        // every live group-bound runtime consumes the generation. Startup and reconnect catch-up
+        // stay passive and cannot manufacture a restart, continuation, or provider input.
+        const executionAuthority = opts.reason === 'live'
+            ? 'runtime_recovery' as const
+            : 'passive_projection' as const;
+        signal.throwIfAborted();
+        try {
+            await this.notifyConnectedServicesProjectionChange({
+                source: opts.reason === 'connect'
+                    ? 'startup'
+                    : opts.reason === 'live'
+                        ? 'live'
+                        : 'reconnect',
+                executionAuthority,
+                signal,
+                connectedServicesV2: null,
+                connectedServiceCredentialRevisionsV1: null,
+            });
+        } catch (error) {
+            if (handleRequestAuthenticationFailure({
+                supervisor: this.connectionSupervisor,
+                error,
+                hadAuth: true,
+            })) {
+                return;
+            }
+            throw error;
+        }
+
         const enabled = (() => {
             const raw = process.env.HAPPY_ENABLE_V2_CHANGES;
             if (!raw) return true;
@@ -928,22 +1172,38 @@ export class ApiMachineClient {
             return;
         }
 
-        if (this.changesSyncInFlight) {
-            await this.changesSyncInFlight.catch(() => {});
-        }
-
-        const p = (async () => {
-            const accountId = await this.getAccountId();
-            if (!accountId) return;
+        await (async () => {
+            signal.throwIfAborted();
+            const accountId = await this.getAccountId(signal);
+            signal.throwIfAborted();
+            if (!accountId) throw new Error('account_changes_account_id_unavailable');
 
             const CHANGES_PAGE_LIMIT = 200;
-            const after = await readLastChangesCursor(accountId);
-            const result = await fetchChanges({ token: this.token, after, limit: CHANGES_PAGE_LIMIT });
+            const after = await readAccountChangesCursor(accountId);
+            const result = await fetchChanges({
+                token: this.token,
+                after,
+                limit: CHANGES_PAGE_LIMIT,
+                clientKind: 'daemon',
+                signal,
+            });
+            signal.throwIfAborted();
 
             if (result.status === 'cursor-gone') {
-                await this.refreshMachineFromServer();
+                await this.refreshMachineFromServer(signal);
+                signal.throwIfAborted();
                 await this.notifyAccountSettingsVersionHint({ settingsVersion: null, source: 'cursor-gone' });
-                await writeLastChangesCursor(accountId, result.currentCursor);
+                signal.throwIfAborted();
+                await this.notifyConnectedServicesProjectionChange({
+                    source: 'cursor-gone',
+                    executionAuthority,
+                    signal,
+                    connectedServicesV2: null,
+                    connectedServiceCredentialRevisionsV1: null,
+                });
+                signal.throwIfAborted();
+                await writeAccountChangesCursor(accountId, result.currentCursor);
+                signal.throwIfAborted();
                 return;
             }
             if (result.status !== 'ok') {
@@ -957,8 +1217,8 @@ export class ApiMachineClient {
 
                 // Backwards compatibility: old servers may not support /v2/changes yet (e.g. 404).
                 // On reconnect, fall back to a snapshot refresh.
-                if (opts.reason === 'reconnect') {
-                    await this.refreshMachineFromServer();
+                if (opts.reason === 'reconnect' || opts.reason === 'live') {
+                    await this.refreshMachineFromServer(signal);
                 }
                 return;
             }
@@ -976,9 +1236,33 @@ export class ApiMachineClient {
             const highestAccountSettingsVersion = accountSettingsVersions.length > 0
                 ? Math.max(...accountSettingsVersions)
                 : null;
+            const hasConnectedServicesChange = changes.some((change) => {
+                if (change.kind !== 'account' || change.entityId !== 'self') return false;
+                const hint = asRecord(change.hint);
+                return hint?.connectedServices === true;
+            });
+            const pendingActivationHints = changes.flatMap((change): PendingSessionActivationHintNotification[] => {
+                if (change.kind !== 'session') return [];
+                const hint = asRecord(change.hint);
+                if (!hint) return [];
+                const requestId = typeof hint.pendingActivationRequestId === 'string'
+                    ? hint.pendingActivationRequestId.trim()
+                    : '';
+                const sessionId = change.entityId.trim();
+                const pendingVersion = hint.pendingVersion;
+                if (
+                    !requestId
+                    || !sessionId
+                    || typeof pendingVersion !== 'number'
+                    || !Number.isSafeInteger(pendingVersion)
+                    || pendingVersion < 0
+                ) return [];
+                return [{ sessionId, requestId, pendingVersion, source: 'changes' }];
+            });
 
             if (changes.length >= CHANGES_PAGE_LIMIT || hasRelevantMachineChange) {
-                await this.refreshMachineFromServer();
+                await this.refreshMachineFromServer(signal);
+                signal.throwIfAborted();
             }
             if (highestAccountSettingsVersion !== null) {
                 await this.notifyAccountSettingsVersionHint({
@@ -988,15 +1272,40 @@ export class ApiMachineClient {
             } else if (changes.length >= CHANGES_PAGE_LIMIT) {
                 await this.notifyAccountSettingsVersionHint({ settingsVersion: null, source: 'page-limit' });
             }
+            signal.throwIfAborted();
+            if (hasConnectedServicesChange || changes.length >= CHANGES_PAGE_LIMIT) {
+                await this.notifyConnectedServicesProjectionChange({
+                    source: hasConnectedServicesChange ? 'changes' : 'page-limit',
+                    executionAuthority,
+                    signal,
+                    connectedServicesV2: null,
+                    connectedServiceCredentialRevisionsV1: null,
+                });
+            }
+            for (const activationHint of pendingActivationHints) {
+                signal.throwIfAborted();
+                await this.notifyPendingSessionActivationHint(activationHint);
+            }
 
-            await writeLastChangesCursor(accountId, nextCursor);
+            signal.throwIfAborted();
+            await writeAccountChangesCursor(accountId, nextCursor);
+            signal.throwIfAborted();
         })();
+    }
 
-        this.changesSyncInFlight = p;
-        try {
-            await p;
-        } finally {
-            this.changesSyncInFlight = null;
-        }
+    private startChangesSyncWithRetry(opts: { reason: 'connect' | 'reconnect' | 'live' }): void {
+        if (this.projectionSchedulingClosed) return;
+        this.connectedServicesProjectionRetry.schedule(async (signal) => {
+            try {
+                await this.syncChangesOnConnect(opts, signal);
+            } catch (error) {
+                if (!signal.aborted) {
+                    logger.warn('[API MACHINE] /v2/changes sync failed; retry scheduled', {
+                        message: error instanceof Error ? error.message : String(error),
+                    });
+                }
+                throw error;
+            }
+        }, { runImmediately: true });
     }
 }

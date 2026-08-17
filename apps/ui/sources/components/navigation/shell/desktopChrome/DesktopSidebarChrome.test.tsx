@@ -101,7 +101,7 @@ describe('DesktopSidebarChrome', () => {
                     id: 'settings',
                     title: 'settings.title',
                     inlineTestID: 'nav-settings',
-                    icon: 'cog-outline',
+                    icon: 'gear',
                     onPress: vi.fn(),
                 }]}
                 renderHeaderOverflowVisual={() => <View testID="desktop-sidebar-overflow-visual" />}
@@ -200,13 +200,13 @@ describe('DesktopSidebarChrome', () => {
                 onPressHome={vi.fn()}
                 environmentBadge={null}
                 headerActions={[
-                    { id: 'inbox', title: 'Inbox', inlineTestID: 'sidebar-inbox-button', icon: 'mail-outline', onPress: vi.fn() },
-                    { id: 'settings', title: 'Settings', inlineTestID: 'nav-settings', icon: 'cog-outline', onPress: vi.fn() },
-                    { id: 'newSession', title: 'New', inlineTestID: 'nav-new-session', icon: 'add-outline', onPress: vi.fn() },
+                    { id: 'inbox', title: 'Inbox', inlineTestID: 'sidebar-inbox-button', icon: 'envelope', onPress: vi.fn() },
+                    { id: 'settings', title: 'Settings', inlineTestID: 'nav-settings', icon: 'gear', onPress: vi.fn() },
+                    { id: 'newSession', title: 'New', inlineTestID: 'nav-new-session', icon: 'plus', onPress: vi.fn() },
                 ]}
                 topUtilityActions={[
-                    { id: 'inbox', title: 'Inbox', inlineTestID: 'sidebar-inbox-button', icon: 'mail-outline', onPress: vi.fn() },
-                    { id: 'settings', title: 'Settings', inlineTestID: 'nav-settings', icon: 'cog-outline', onPress: vi.fn() },
+                    { id: 'inbox', title: 'Inbox', inlineTestID: 'sidebar-inbox-button', icon: 'envelope', onPress: vi.fn() },
+                    { id: 'settings', title: 'Settings', inlineTestID: 'nav-settings', icon: 'gear', onPress: vi.fn() },
                 ]}
                 renderHeaderOverflowVisual={() => <View testID="desktop-sidebar-overflow-visual" />}
                 popoverBoundaryRef={{ current: null }}
@@ -215,5 +215,71 @@ describe('DesktopSidebarChrome', () => {
         );
 
         expect(itemRowActionsState.lastActionIds).toEqual(['newSession']);
+    });
+
+    // This strip sits beside the traffic lights, which are 12px. Every glyph in it moved to the app's
+    // default 20 during the icon-family migration — a 33-54% jump on controls that had been measured
+    // at 13-18 — and at 20 they exactly filled their 20px buttons, so the row had no air in it at all.
+    it('draws the whole top strip at one compact chrome size', async () => {
+        const { DesktopSidebarChrome } = await import('./DesktopSidebarChrome');
+        const { DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX } = await import('./desktopChromeMetrics');
+        const screen = await renderScreen(
+            <DesktopSidebarChrome
+                sidebarWidthPx={600}
+                headerHeightPx={56}
+                onPressHome={vi.fn()}
+                onPressCollapse={vi.fn()}
+                onPressBack={vi.fn()}
+                onPressForward={vi.fn()}
+                environmentBadge={null}
+                headerActions={[]}
+                topUtilityActions={[{
+                    id: 'settings',
+                    title: 'settings.title',
+                    inlineTestID: 'nav-settings',
+                    icon: 'sliders-horizontal',
+                    onPress: vi.fn(),
+                }]}
+                renderHeaderOverflowVisual={() => <View testID="desktop-sidebar-overflow-visual" />}
+                popoverBoundaryRef={{ current: null }}
+                desktopWindowControls={<View testID="injected-desktop-window-controls" />}
+            />,
+        );
+
+        const utilityRow = requireTestInstance(screen.findByTestId('desktop-sidebar-chrome-utility-row'), 'utility row');
+        const sizes = utilityRow.findAll((node) => node.type === ('Icon' as never)).map((icon) => icon.props.size);
+
+        expect(sizes.length).toBeGreaterThanOrEqual(4);
+        expect(new Set(sizes).size, 'the strip should read as one size').toBe(1);
+        expect(sizes[0]).toBeLessThan(DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX);
+    });
+
+    // The expanded chrome is the sidebar's OPEN state, so its button collapses. It reached that
+    // drawing through a `scaleX: -1` on a wrapper View, which flipped the resolved glyph into the
+    // opposite edge's — the icon seam said one thing and the screen showed another.
+    it('shows the collapse glyph unflipped in the expanded chrome', async () => {
+        const { DesktopSidebarChrome } = await import('./DesktopSidebarChrome');
+        const screen = await renderScreen(
+            <DesktopSidebarChrome
+                sidebarWidthPx={600}
+                headerHeightPx={56}
+                onPressHome={vi.fn()}
+                onPressCollapse={vi.fn()}
+                environmentBadge={null}
+                headerActions={[]}
+                renderHeaderOverflowVisual={() => <View testID="desktop-sidebar-overflow-visual" />}
+                popoverBoundaryRef={{ current: null }}
+                desktopWindowControls={<View testID="injected-desktop-window-controls" />}
+            />,
+        );
+
+        const collapseButton = requireTestInstance(screen.findByTestId('sidebar-collapse-button'), 'collapse button');
+        expect(collapseButton.findByType('Icon' as never).props.name).toBe('sidebar-left-close');
+
+        const flipped = collapseButton.findAll((node) => {
+            const transform = (node.props?.style as { transform?: Array<Record<string, number>> } | undefined)?.transform;
+            return Array.isArray(transform) && transform.some((step) => step.scaleX === -1);
+        });
+        expect(flipped, 'nothing should mirror the glyph the seam already chose').toHaveLength(0);
     });
 });

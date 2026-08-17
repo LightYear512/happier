@@ -23,7 +23,15 @@ import { configuration } from '@/configuration';
 import { isolateClaudeRuntimeAuthEnv } from './spawn/isolateClaudeRuntimeAuthEnv';
 import { logClaudeRuntimeAuthEnvDiagnostic } from './spawn/logClaudeRuntimeAuthEnvDiagnostic';
 import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from '@/daemon/spawn/spawnExplicitEnvKeysMarker';
-import { claudeCliFlagCanConsumeValue } from './cli/flagArity';
+import { claudeCliFlagCanConsumeNextArg } from './cli/flagArity';
+import {
+    buildClaudePermissionModeLaunchSettings,
+    resolveClaudeLaunchSettingsOverlayArg,
+} from './utils/resolveClaudeLaunchSettingsOverlay';
+import {
+    materializeClaudeMcpConfigArgsForSpawn,
+    type MaterializedClaudeMcpConfigArgs,
+} from './utils/materializeClaudeMcpConfigArgsForSpawn';
 
 /**
  * Error thrown when the Claude process exits with a non-zero exit code.
@@ -44,6 +52,33 @@ export const claudeCliPath = resolveCliRuntimeAssetPath('scripts', 'claude_local
 
 const CLAUDE_LOCAL_FETCH_IDLE_CLEAR_DELAY_MS = 500;
 const CLAUDE_LOCAL_UNKNOWN_FETCH_ID = '__happier_unknown_claude_fetch__';
+const REDACTED_MCP_CONFIG_LOG_VALUE = '[redacted-mcp-config]';
+
+function redactClaudeArgsForLog(args: readonly string[]): string[] {
+    const redacted: string[] = [];
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i] ?? '';
+
+        if (arg === '--mcp-config') {
+            redacted.push(arg);
+            if (i + 1 < args.length) {
+                redacted.push(REDACTED_MCP_CONFIG_LOG_VALUE);
+                i += 1;
+            }
+            continue;
+        }
+
+        if (arg.startsWith('--mcp-config=')) {
+            redacted.push(`--mcp-config=${REDACTED_MCP_CONFIG_LOG_VALUE}`);
+            continue;
+        }
+
+        redacted.push(arg);
+    }
+
+    return redacted;
+}
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -243,6 +278,8 @@ export async function claudeLocal(opts: {
         stopThinkingTimeout.unref?.();
     };
 
+    let materializedMcpConfig: MaterializedClaudeMcpConfigArgs | null = null;
+
     // Spawn the process
     try {
         // Start the interactive process
@@ -252,6 +289,13 @@ export async function claudeLocal(opts: {
         const nodeExecutable = shouldUseNodeLauncher
             ? await ensureClaudeJsRuntimeExecutable()
             : null;
+        materializedMcpConfig = await materializeClaudeMcpConfigArgsForSpawn([
+            ...(opts.claudeArgs ?? []),
+            ...(typeof opts.happierMcpConfigJson === 'string' && opts.happierMcpConfigJson.trim().length > 0
+                ? ['--mcp-config', opts.happierMcpConfigJson.trim()]
+                : []),
+        ]);
+        const effectiveClaudeArgs = materializedMcpConfig.args;
         await new Promise<void>((r, reject) => {
             const args: string[] = []
 
@@ -289,15 +333,15 @@ export async function claudeLocal(opts: {
             const positionalArgs: string[] = [];
             let trailingPermissionFlagArgs: string[] = [];
 
-            if (opts.claudeArgs) {
-                for (let i = 0; i < opts.claudeArgs.length; i++) {
-                    const arg = opts.claudeArgs[i];
+            if (effectiveClaudeArgs.length > 0) {
+                for (let i = 0; i < effectiveClaudeArgs.length; i++) {
+                    const arg = effectiveClaudeArgs[i];
                     if (arg === '--dangerously-skip-permissions') {
                         trailingPermissionFlagArgs = ['--permission-mode', 'bypassPermissions'];
                         continue;
                     }
                     if (arg === '--permission-mode') {
-                        const nextArg = i + 1 < opts.claudeArgs.length ? opts.claudeArgs[i + 1] : undefined;
+                        const nextArg = i + 1 < effectiveClaudeArgs.length ? effectiveClaudeArgs[i + 1] : undefined;
                         if (typeof nextArg === 'string' && !nextArg.startsWith('-')) {
                             trailingPermissionFlagArgs = ['--permission-mode', nextArg];
                             i++;
@@ -313,8 +357,9 @@ export async function claudeLocal(opts: {
                     }
                     if (arg.startsWith('-')) {
                         flagArgs.push(arg);
-                        if (claudeCliFlagCanConsumeValue(arg) && i + 1 < opts.claudeArgs.length) {
-                            flagArgs.push(opts.claudeArgs[i + 1]!);
+                        const nextArg = i + 1 < effectiveClaudeArgs.length ? effectiveClaudeArgs[i + 1] : undefined;
+                        if (claudeCliFlagCanConsumeNextArg(arg, nextArg)) {
+                            flagArgs.push(nextArg!);
                             i++;
                         }
                         continue;
@@ -323,7 +368,7 @@ export async function claudeLocal(opts: {
                 }
             }
 
-            // Append Happier-injected flags after any user-provided flags.
+            // Happier-injected flags were appended before parsing so user ordering stays intact.
             //
             // Claude Code merges multiple `--mcp-config` sources additively and uses last-write-wins on collisions.
             // Appending here means we do not need to parse/merge user JSON and Happier wins on collisions.
@@ -338,14 +383,17 @@ export async function claudeLocal(opts: {
                 flagArgs.push('--plugin-dir', opts.hookPluginDir);
                 logger.debug(`[ClaudeLocal] Using hook plugin dir: ${opts.hookPluginDir}`);
             }
-            if (opts.hookSettingsPath) {
-                flagArgs.push('--settings', opts.hookSettingsPath);
-                logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
+            const permissionMode = trailingPermissionFlagArgs[0] === '--permission-mode'
+                ? trailingPermissionFlagArgs[1]
+                : undefined;
+            const settingsOverlay = resolveClaudeLaunchSettingsOverlayArg({
+                settingsPath: opts.hookSettingsPath,
+                launchSettings: buildClaudePermissionModeLaunchSettings(permissionMode),
+            });
+            if (settingsOverlay) {
+                flagArgs.push('--settings', settingsOverlay);
+                logger.debug(`[ClaudeLocal] Using launch settings: ${settingsOverlay}`);
             }
-            if (typeof opts.happierMcpConfigJson === 'string' && opts.happierMcpConfigJson.trim().length > 0) {
-                flagArgs.push('--mcp-config', opts.happierMcpConfigJson.trim());
-            }
-
             // Add flag arguments before positional prompts.
             if (flagArgs.length > 0) {
                 args.push(...flagArgs);
@@ -393,7 +441,7 @@ export async function claudeLocal(opts: {
 
             if (shouldUseNodeLauncher) {
                 if (!claudeCliPath || (!existsSync(claudeCliPath) && !isEmbeddedBunBundlePath(claudeCliPath))) {
-                    throw new Error('Claude local launcher not found. Please ensure HAPPIER_PROJECT_ROOT is set correctly for development.');
+                    throw new Error('Claude local launcher not found. Please ensure CLI runtime assets are present next to the running bundle.');
                 }
 
                 // Avoid re-running auto-discovery inside the node wrapper (saves filesystem work).
@@ -405,7 +453,7 @@ export async function claudeLocal(opts: {
             logger.debug(
                 `[ClaudeLocal] Spawning ${shouldUseNodeLauncher ? 'node launcher' : 'Claude'}: ${shouldUseNodeLauncher ? claudeCliPath : resolvedClaudeCliPath}`,
             );
-            logger.debug(`[ClaudeLocal] Args: ${JSON.stringify(args)}`);
+            logger.debug(`[ClaudeLocal] Args: ${JSON.stringify(redactClaudeArgsForLog(args))}`);
 
             // Fail closed if node launcher is required but no JavaScript runtime is available
             if (shouldUseNodeLauncher && !nodeExecutable) {
@@ -581,6 +629,7 @@ export async function claudeLocal(opts: {
             });
         });
     } finally {
+        await materializedMcpConfig?.cleanup();
         process.stdin.resume();
         clearStopThinkingTimeout();
         activeFetchIds.clear();

@@ -47,6 +47,7 @@ function group(activeProfileId: string, generation: number): ConnectedServiceAut
     },
     activeProfileId,
     generation,
+    runtimeStateRevision: 0,
     state: { v: 1 },
     members: [
       {
@@ -77,7 +78,69 @@ function group(activeProfileId: string, generation: number): ConnectedServiceAut
   };
 }
 
+function completeQuotaProbe(profileIds: ReadonlyArray<string> = []) {
+  return {
+    status: 'complete' as const,
+    requestedProfileCount: profileIds.length,
+    completedProfileCount: profileIds.length,
+    completedProfileIds: [...profileIds],
+  };
+}
+
 describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
+  it('preserves an explicit runtime-failure switch reason for recipient-only committed-generation apply', async () => {
+    const runtimeQuotaSnapshots = new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore();
+    const api = {
+      getConnectedServiceAuthGroup: vi.fn(async () => group('backup', 2)),
+      updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
+    };
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => ({
+      ok: true as const,
+      action: 'hot_applied' as const,
+    }));
+    const coordinator = createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator({
+      api,
+      runtimeQuotaSnapshots,
+      quotaFreshnessMs: 60_000,
+      nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
+      restartSession: vi.fn(async () => {}),
+      applyConnectedServiceAuthGeneration,
+      switchReasonForApplyGeneration: 'automatic_runtime_failure',
+      quotaCoordinator: {
+        probeGroupQuotaSnapshots: vi.fn(async (input) => completeQuotaProbe(input.profileIds)),
+      },
+    });
+
+    await expect(coordinator.applyCommittedGeneration({
+      sessionId: 'sibling-session',
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision: 'csr_testcredentialrevision',
+      reason: 'same_provider_account_exhausted',
+      fromProfileId: 'primary',
+    })).resolves.toMatchObject({
+      status: 'observed_generation',
+      activeProfileId: 'backup',
+      generation: 2,
+    });
+
+    expect(api.updateConnectedServiceAuthGroupActiveProfile).not.toHaveBeenCalled();
+    expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledWith({
+      sessionId: 'sibling-session',
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      activeProfileId: 'backup',
+      generation: 2,
+      credentialRevision: 'csr_testcredentialrevision',
+      reason: 'same_provider_account_exhausted',
+      switchReason: 'automatic_runtime_failure',
+      fromProfileId: 'primary',
+    });
+  });
+
   it('fails closed without restarting when proactive soft-threshold switching has no hot-apply path', async () => {
     const runtimeQuotaSnapshots = new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore();
     runtimeQuotaSnapshots.recordSnapshot({
@@ -87,13 +150,14 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       snapshot: quotaSnapshot('primary', 5),
     });
 
-    const probeGroupQuotaSnapshots = vi.fn(async () => {
+    const probeGroupQuotaSnapshots = vi.fn(async (input: Readonly<{ profileIds: ReadonlyArray<string> }>) => {
       runtimeQuotaSnapshots.recordSnapshot({
         serviceId: 'openai-codex',
         groupId: 'main',
         profileId: 'backup',
         snapshot: quotaSnapshot('backup', 80),
       });
+      return completeQuotaProbe(input.profileIds);
     });
     const api = {
       getConnectedServiceAuthGroup: vi.fn(async () => group('primary', 1)),
@@ -106,9 +170,9 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
       restartSession,
       quotaCoordinator: {
-        hydratePersistedQuotaSnapshotsForGroup: vi.fn(async () => {}),
         probeGroupQuotaSnapshots,
       },
     });
@@ -167,11 +231,11 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
       restartSession,
       applyConnectedServiceAuthGeneration,
       quotaCoordinator: {
-        hydratePersistedQuotaSnapshotsForGroup: vi.fn(async () => {}),
-        probeGroupQuotaSnapshots: vi.fn(async () => {}),
+        probeGroupQuotaSnapshots: vi.fn(async (input) => completeQuotaProbe(input.profileIds)),
       },
     });
 
@@ -193,6 +257,7 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       activeProfileId: 'backup',
       generation: 2,
+      credentialRevision: 'csr_testcredentialrevision',
       reason: 'soft_threshold',
       switchReason: 'pre_turn_group_policy',
       // Pre-switch active member, threaded so the transcript "from" is the real member, not null.
@@ -231,11 +296,11 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
       restartSession,
       applyConnectedServiceAuthGeneration,
       quotaCoordinator: {
-        hydratePersistedQuotaSnapshotsForGroup: vi.fn(async () => {}),
-        probeGroupQuotaSnapshots: vi.fn(async () => {}),
+        probeGroupQuotaSnapshots: vi.fn(async (input) => completeQuotaProbe(input.profileIds)),
       },
     });
 
@@ -244,7 +309,7 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       serviceId: 'openai-codex',
       groupId: 'main',
       reason: 'soft_threshold',
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       status: 'generation_apply_failed',
       activeProfileId: 'backup',
       generation: 2,
@@ -261,6 +326,7 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       groupId: 'main',
       activeProfileId: 'backup',
       generation: 2,
+      credentialRevision: 'csr_testcredentialrevision',
       reason: 'soft_threshold',
       switchReason: 'pre_turn_group_policy',
       fromProfileId: 'primary',
@@ -299,11 +365,11 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       runtimeQuotaSnapshots,
       quotaFreshnessMs: 60_000,
       nowMs: () => 1_000,
+      resolveCurrentCredentialRevision: async () => 'csr_testcredentialrevision',
       restartSession,
       applyConnectedServiceAuthGeneration,
       quotaCoordinator: {
-        hydratePersistedQuotaSnapshotsForGroup: vi.fn(async () => {}),
-        probeGroupQuotaSnapshots: vi.fn(async () => {}),
+        probeGroupQuotaSnapshots: vi.fn(async (input) => completeQuotaProbe(input.profileIds)),
       },
     });
 
@@ -312,7 +378,7 @@ describe('createQuotaDrivenConnectedServiceAuthGroupSwitchCoordinator', () => {
       serviceId: 'openai-codex',
       groupId: 'main',
       reason: 'soft_threshold',
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       status: 'generation_apply_failed',
       activeProfileId: 'backup',
       generation: 2,

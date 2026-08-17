@@ -1,25 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const kvStore = vi.hoisted(() => new Map<string, string>());
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            return kvStore.get(key);
-        }
-        set(key: string, value: string) {
-            kvStore.set(key, value);
-        }
-        delete(key: string) {
-            kvStore.delete(key);
-        }
-        clearAll() {
-            kvStore.clear();
-        }
-    }
-
-    return { MMKV };
-});
-
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -70,6 +50,23 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
 import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
 import type { NormalizedMessage } from './typesRaw/normalize';
+
+function isMainMessagesPageRequest(path: string, params: {
+    sessionId: string;
+    beforeSeq: string;
+    limit: string;
+}): boolean {
+    const prefix = `/v1/sessions/${encodeURIComponent(params.sessionId)}/messages?`;
+    if (!path.startsWith(prefix)) return false;
+
+    const [, query = ''] = path.split('?');
+    const searchParams = new URLSearchParams(query);
+    return searchParams.get('scope') === 'main'
+        && searchParams.get('beforeSeq') === params.beforeSeq
+        && searchParams.get('limit') === params.limit
+        && !searchParams.has('afterSeq')
+        && !searchParams.has('sidechainId');
+}
 
 type SyncForkPagingTestAccess = {
     credentials: { token: string; secret: string } | null;
@@ -146,7 +143,6 @@ function applyChildForkSession(): void {
 describe('sync forked transcript paging', () => {
     beforeEach(async () => {
         storage.setState(initialStorageState, true);
-        kvStore.clear();
         requestMock.mockReset();
 
         const { sync } = await import('./sync');
@@ -228,7 +224,7 @@ describe('sync forked transcript paging', () => {
                 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
             }
 
-            if (path.startsWith('/v1/sessions/parent/messages?beforeSeq=4')) {
+            if (isMainMessagesPageRequest(path, { sessionId: 'parent', beforeSeq: '4', limit: '150' })) {
                 return new Response(JSON.stringify({
                     messages: [
                         {
@@ -257,7 +253,11 @@ describe('sync forked transcript paging', () => {
 
         const requestedPaths = requestMock.mock.calls.map((call) => call[0]);
         expect(requestedPaths[0]).toBe('/v2/sessions/parent');
-        expect(requestedPaths).toContainEqual(expect.stringContaining('/v1/sessions/parent/messages?beforeSeq=4'));
+        expect(requestedPaths.some((path) => isMainMessagesPageRequest(String(path), {
+            sessionId: 'parent',
+            beforeSeq: '4',
+            limit: '150',
+        }))).toBe(true);
         expect(result.loaded).toBe(1);
         expect(storage.getState().sessions.parent).toBeTruthy();
         const parentMessages = storage.getState().sessionMessages.parent?.messagesById ?? {};

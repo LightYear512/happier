@@ -3,6 +3,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import { installNewSessionScreenModelCommonModuleMocks } from '../newSessionScreenModelTestHelpers';
+import type { AccountProfile, ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
 
 import { useNewSessionAgentPickerControls } from './useNewSessionAgentPickerControls';
 
@@ -394,6 +395,132 @@ describe('useNewSessionAgentPickerControls', () => {
         expect(favoriteDetail?.props.selectedModelId).toBe('gpt-5.5');
     });
 
+    it('publishes updated config overrides to an already-open favorite model detail', async () => {
+        const favoriteGpt55 = {
+            backendTargetKey: 'agent:codex',
+            providerAgentId: 'codex',
+            builtInAgentId: 'codex',
+            modelId: 'gpt-5.5',
+            modelLabel: 'GPT 5.5',
+        };
+        const codexEntry = buildAgentPickerHookParams().resolvedBackendEntries[1]!;
+        const initialParams = buildAgentPickerHookParams({
+            selectedBackendEntry: codexEntry,
+            selectedBackendTargetKey: 'agent:codex',
+            modelMode: 'gpt-5.5',
+            favoriteModelSelections: [favoriteGpt55],
+            setFavoriteModelSelections: vi.fn(),
+            sessionConfigOptionOverrides: {
+                v: 1,
+                updatedAt: 10,
+                overrides: {
+                    context: { updatedAt: 10, value: '272k' },
+                },
+            },
+        });
+        const hook = await renderHook((props: Parameters<typeof useNewSessionAgentPickerControls>[0]) => (
+            useNewSessionAgentPickerControls(props)
+        ), { initialProps: initialParams });
+        const firstOptions = hook.getCurrent().agentPickerOptions;
+
+        await hook.rerender({
+            ...initialParams,
+            sessionConfigOptionOverrides: {
+                v: 1,
+                updatedAt: 20,
+                overrides: {
+                    context: { updatedAt: 20, value: '1m' },
+                },
+            },
+        });
+
+        expect(hook.getCurrent().agentPickerOptions).not.toBe(firstOptions);
+        const favoriteDetail = hook.getCurrent().agentPickerOptions?.find((option) => option.id === 'favorite-models')
+            ?.renderDetailContent?.() as React.ReactElement<{
+                selectedConfigOverrides?: Readonly<Record<string, string>>;
+            }> | undefined;
+        expect(favoriteDetail?.props.selectedConfigOverrides).toEqual({ context: '1m' });
+    });
+
+    it('atomically selects a favorite backend, model, and config when editing it from another backend', async () => {
+        const favoriteGpt55 = {
+            backendTargetKey: 'agent:codex',
+            providerAgentId: 'codex',
+            builtInAgentId: 'codex',
+            modelId: 'gpt-5.5',
+            modelLabel: 'GPT 5.5',
+        };
+        const setBackendTarget = vi.fn();
+        const setModelMode = vi.fn();
+        const setAcpSessionModeId = vi.fn();
+        const setSessionConfigOptionOverrides = vi.fn();
+        const onRememberEngineSelection = vi.fn();
+        const codexEntry = buildAgentPickerHookParams().resolvedBackendEntries[1]!;
+        const hook = await renderHook(() => useNewSessionAgentPickerControls(buildAgentPickerHookParams({
+            favoriteModelSelections: [favoriteGpt55],
+            setFavoriteModelSelections: vi.fn(),
+            setBackendTarget,
+            setModelMode: setModelMode as any,
+            acpSessionModeId: 'build',
+            setAcpSessionModeId: setAcpSessionModeId as any,
+            sessionConfigOptionOverrides: {
+                v: 1,
+                updatedAt: 10,
+                overrides: {
+                    context: { updatedAt: 10, value: '272k' },
+                },
+            },
+            setSessionConfigOptionOverrides: setSessionConfigOptionOverrides as any,
+            onRememberEngineSelection,
+        })));
+        const favoriteDetail = hook.getCurrent().agentPickerOptions?.find((option) => option.id === 'favorite-models')
+            ?.renderDetailContent?.() as React.ReactElement<{
+                onSelectFavoriteModelOptionValue?: (
+                    entry: typeof codexEntry,
+                    modelId: string,
+                    configId: string,
+                    valueId: string,
+                ) => void;
+            }> | undefined;
+
+        favoriteDetail?.props.onSelectFavoriteModelOptionValue?.(
+            codexEntry,
+            'gpt-5.5',
+            'context',
+            '1m',
+        );
+
+        expect(setBackendTarget).toHaveBeenCalledTimes(1);
+        expect(setBackendTarget).toHaveBeenCalledWith(codexEntry.target);
+        expect(setModelMode).toHaveBeenCalledTimes(1);
+        expect(setModelMode).toHaveBeenCalledWith('gpt-5.5');
+        expect(setAcpSessionModeId).toHaveBeenCalledTimes(1);
+        expect(setAcpSessionModeId).toHaveBeenCalledWith('default');
+        expect(setSessionConfigOptionOverrides).toHaveBeenCalledWith(expect.objectContaining({
+            overrides: {
+                context: {
+                    updatedAt: expect.any(Number),
+                    value: '1m',
+                },
+            },
+        }));
+        expect(onRememberEngineSelection).toHaveBeenCalledWith(
+            codexEntry.target,
+            expect.objectContaining({
+                modelId: 'gpt-5.5',
+                acpSessionModeId: 'default',
+                sessionConfigOptionOverrides: expect.objectContaining({
+                    overrides: {
+                        context: {
+                            updatedAt: expect.any(Number),
+                            value: '1m',
+                        },
+                    },
+                }),
+            }),
+        );
+    });
+
     it('updates engine detail favorite toggles when favorite model settings change while the picker stays open', async () => {
         const setFavoriteModelSelections = vi.fn();
         const favoriteGpt54 = {
@@ -654,6 +781,83 @@ describe('useNewSessionAgentPickerControls', () => {
                     value: 'fast',
                 },
             },
+        }));
+    });
+
+    it('passes per-entry connected-services bindings to an engine detail even when another engine is selected', async () => {
+        const accountProfileConnectedServicesV2: AccountProfile['connectedServicesV2'] = [
+            {
+                serviceId: 'openai-codex',
+                profiles: [
+                    {
+                        profileId: 'leeroy',
+                        status: 'connected',
+                        kind: 'oauth',
+                        providerEmail: 'leeroy@example.com',
+                        providerAccountId: null,
+                        expiresAt: null,
+                        lastUsedAt: null,
+                        health: null,
+                    },
+                ],
+                groups: [{
+                    groupId: 'happier',
+                    displayName: 'Happier',
+                    activeProfileId: 'leeroy',
+                    generation: 1,
+                    memberProfileIds: ['leeroy'],
+                }],
+            },
+        ];
+        const expectedConnectedServices: ConnectedServiceBindingsV1 = {
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': {
+                    source: 'connected',
+                    selection: 'group',
+                    groupId: 'happier',
+                },
+            },
+        };
+        const hook = await renderHook(() => useNewSessionAgentPickerControls({
+            ...buildAgentPickerHookParams(),
+            selectedBackendEntry: {
+                target: { kind: 'builtInAgent', agentId: 'claude' },
+                targetKey: 'agent:claude',
+                title: 'Claude',
+                subtitle: null,
+                providerAgentId: 'claude',
+                builtInAgentId: 'claude',
+                iconAgentId: 'claude',
+            } as any,
+            selectedBackendTargetKey: 'agent:claude',
+            accountProfileConnectedServicesV2,
+            connectedServicesFeatureEnabled: true,
+            connectedServicesAccountGroupsFeatureEnabled: true,
+            agentNewSessionOptionStateByAgentId: {
+                'agent:codex': {
+                    connectedServicesBindingsByServiceId: {
+                        'openai-codex': {
+                            source: 'connected',
+                            selection: 'group',
+                            groupId: 'happier',
+                        },
+                    },
+                },
+            },
+            settings: {
+                connectedServicesProfileLabelByKey: {},
+                connectedServicesDefaultProfileByServiceId: {},
+                connectedServicesDefaultAuthByAgentIdV1: { v: 1, bindingsByAgentId: {} },
+            } as any,
+        } as Parameters<typeof useNewSessionAgentPickerControls>[0]));
+
+        const codexDetail = hook.getCurrent().agentPickerOptions?.find((option) => option.id === 'agent:codex')
+            ?.renderDetailContent?.() as React.ReactElement<{ connectedServices?: ConnectedServiceBindingsV1 | null }> | undefined;
+
+        expect(codexDetail?.props.connectedServices).toEqual(expect.objectContaining({
+            v: expectedConnectedServices.v,
+            bindingsByServiceId: expect.objectContaining(expectedConnectedServices.bindingsByServiceId),
         }));
     });
 

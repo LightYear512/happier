@@ -5,6 +5,7 @@ import {
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
     SESSION_ACTION_RENAME_ID,
+    SESSION_ACTION_RESUME_ID,
     SESSION_ACTION_STOP_ID,
     SESSION_ACTION_UNARCHIVE_ID,
 } from './sessionActionIds';
@@ -33,7 +34,11 @@ export function listVisibleSessionActionIds(params: Readonly<{
         ids.push(SESSION_ACTION_RENAME_ID);
     }
 
-    if (target.isActive && target.canStop) {
+    if (surface === 'sessionHeader' && target.canResume) {
+        ids.push(SESSION_ACTION_RESUME_ID);
+    }
+
+    if ((target.isActive || target.hasStoppableTerminalHost) && target.canStop) {
         ids.push(SESSION_ACTION_STOP_ID);
     }
 

@@ -31,7 +31,11 @@ installSessionUtilsCommonModuleMocks({
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({
-            translate: (key: string) => key,
+            // Interpolation is rendered, not dropped: the background-active line's whole point is
+            // the integer it carries, and a mock that swallowed params would pass either way.
+            translate: (key: string, params?: Record<string, unknown>) => (
+                params ? `${key}:${JSON.stringify(params)}` : key
+            ),
         });
     },
     storage: async () => {
@@ -101,6 +105,10 @@ function createBaseSession(overrides: Partial<Session> = {}): Session {
         thinking: false,
         thinkingAt: 0,
         presence: 'online',
+        runtimeActivityState: 'idle',
+        runtimeActivityRevision: 0,
+        runtimeActivityActiveCount: 0,
+        runtimeActivityObservedAt: null,
         ...overrides,
     };
 }
@@ -122,6 +130,45 @@ describe('getSessionStatus', () => {
         expect(status.state).toBe('disconnected');
         expect(status.isConnected).toBe(false);
         expect(status.shouldShowStatus).toBe(true);
+    });
+
+    it('surfaces a retained live terminal host whose session control endpoint is unservable', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const session = createBaseSession({
+            active: false,
+            presence: 123,
+            metadata: {
+                path: '/repo',
+                host: 'local',
+                terminal: {
+                    mode: 'tmux',
+                    tmux: { target: 'happy:win-1' },
+                    controlServiceabilityV1: {
+                        v: 1,
+                        state: 'recoverable_unservable',
+                        observedAt: 456,
+                        reason: 'session_rpc_unavailable',
+                    },
+                },
+            },
+        });
+        const status = getSessionStatus(session, 1_000, 0);
+        expect(status.state).toBe('recoverable_unservable');
+        expect(status.isConnected).toBe(false);
+        expect(status.statusText).toBe('status.disconnected');
+        expect(status.shouldShowStatus).toBe(true);
+    });
+
+    it('formats last-seen without throwing when activeAt is missing or invalid', async () => {
+        const { formatLastSeen } = await import('./sessionUtils');
+
+        // Sessions can reach the disconnected status line without a usable
+        // activeAt; the formatter must degrade instead of crashing the row.
+        expect(() => formatLastSeen(undefined as unknown as number)).not.toThrow();
+        expect(() => formatLastSeen(Number.NaN)).not.toThrow();
+        expect(() => formatLastSeen(0)).not.toThrow();
+        expect(typeof formatLastSeen(undefined as unknown as number)).toBe('string');
+        expect(formatLastSeen(undefined as unknown as number).length).toBeGreaterThan(0);
     });
 
     it('returns permission_required when the agent has pending requests', async () => {
@@ -209,6 +256,10 @@ describe('getSessionStatus', () => {
             thinking: false,
             thinkingAt: 0,
             presence: 'online',
+            runtimeActivityState: 'idle',
+            runtimeActivityRevision: 0,
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
             accessLevel: undefined,
             canApprovePermissions: undefined,
             hasPendingPermissionRequests: true,
@@ -256,6 +307,10 @@ describe('getSessionStatus', () => {
             thinking: false,
             thinkingAt: 0,
             presence: 'online',
+            runtimeActivityState: 'idle',
+            runtimeActivityRevision: 0,
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
             accessLevel: undefined,
             canApprovePermissions: undefined,
             hasPendingPermissionRequests: false,
@@ -507,6 +562,98 @@ describe('getSessionStatus', () => {
         expect(status.shouldShowStatus).toBe(false);
     });
 
+    it('does not falsely show resuming for a finished idle session whose heartbeat crept past its last event', async () => {
+        // Regression: previously "resuming" was derived by comparing the creeping presence
+        // heartbeat (activeAt) against frozen event timestamps, so an idle-online session that
+        // had already finished flipped into a false "resuming". With the explicit lifecycle
+        // marker, no resume was initiated -> resumingAt is absent -> never resuming.
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const activeAt = now - 10_000;
+        const session = createBaseSession({
+            active: true,
+            activeAt,
+            presence: 'online',
+            latestTurnStatus: 'failed',
+            latestTurnStatusObservedAt: activeAt - 50_000,
+            meaningfulActivityAt: activeAt - 50_000,
+            latestReadyEventAt: activeAt - 45_000,
+        });
+
+        const status = getSessionStatus(session, now, 0);
+
+        expect(status.state).toBe('waiting');
+    });
+
+    it('shows resuming for the whole resume window from an explicit resume marker', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const session = createBaseSession({
+            active: true,
+            activeAt: now - 10_000,
+            presence: 'online',
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 60_000,
+            resumingAt: now - 5_000,
+        });
+
+        const status = getSessionStatus(session, now, 0);
+
+        expect(status.state).toBe('resuming');
+        expect(status.statusText).toBe('session.resuming');
+        expect(status.shouldShowStatus).toBe(true);
+        expect(status.isPulsing).toBe(true);
+    });
+
+    it('lets a fresh explicit resuming marker take precedence over ordinary offline presence', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const session = createBaseSession({
+            active: false,
+            presence: now - 2_000,
+            resumingAt: now - 1_000,
+        });
+
+        const status = getSessionStatus(session, now, 0);
+
+        expect(status.state).toBe('resuming');
+        expect(status.statusText).toBe('session.resuming');
+        expect(status.isConnected).toBe(true);
+        expect(status.isPulsing).toBe(true);
+    });
+
+    it('keeps ordinary offline precedence once an explicit resuming marker is stale', async () => {
+        const { getSessionStatus, SESSION_RESUMING_PRESENTATION_TIMEOUT_MS } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const session = createBaseSession({
+            active: false,
+            presence: now - 2_000,
+            resumingAt: now - SESSION_RESUMING_PRESENTATION_TIMEOUT_MS - 1,
+        });
+
+        const status = getSessionStatus(session, now, 0);
+
+        expect(status.state).toBe('disconnected');
+        expect(status.isConnected).toBe(false);
+    });
+
+    it('stops showing resuming once the explicit marker has decayed past its bounded lifetime', async () => {
+        const { getSessionStatus, SESSION_RESUMING_PRESENTATION_TIMEOUT_MS } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const session = createBaseSession({
+            active: true,
+            activeAt: now - 10_000,
+            presence: 'online',
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 60_000,
+            resumingAt: now - SESSION_RESUMING_PRESENTATION_TIMEOUT_MS - 1,
+        });
+
+        const status = getSessionStatus(session, now, 0);
+
+        expect(status.state).toBe('waiting');
+    });
+
     it('does not treat inactive post-terminal activity as active work', async () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const session = {
@@ -616,6 +763,10 @@ describe('getSessionStatus', () => {
             thinking: false,
             thinkingAt: 0,
             presence: 'online',
+            runtimeActivityState: 'idle',
+            runtimeActivityRevision: 0,
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
             accessLevel: undefined,
             canApprovePermissions: undefined,
             hasPendingPermissionRequests: true,
@@ -636,6 +787,152 @@ describe('getSessionStatus', () => {
 
         expect(status.state).toBe('thinking');
         expect(status.statusText).toBe('status.working');
+    });
+
+    it('uses the neutral status color token for background-active runtime status', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const status = getSessionStatus(createBaseSession({
+            activeAt: now - 10_000,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 5_000,
+            runtimeActivityState: 'active',
+            runtimeActivityRevision: 1,
+            runtimeActivityActiveCount: 1,
+            runtimeActivityObservedAt: now - 1_000,
+        }), now, {
+            workingTextMode: 'static',
+            statusColors: {
+                connected: 'connected-token',
+                connecting: 'working-token',
+                actionRequired: 'action-token',
+                disconnected: 'disconnected-token',
+                error: 'error-token',
+                default: 'default-token',
+            },
+        });
+
+        expect(status.state).toBe('background_active');
+        expect(status.statusText).toBe('status.backgroundActive:{"count":1}');
+        expect(status.statusColor).toBe('default-token');
+        expect(status.statusDotColor).toBe('default-token');
+        expect(status.isPulsing).toBe(false);
+    });
+
+    it('names how much background work is running instead of one count-free string', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const status = getSessionStatus(createBaseSession({
+            activeAt: now - 10_000,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 5_000,
+            runtimeActivityState: 'active',
+            runtimeActivityRevision: 1,
+            runtimeActivityActiveCount: 3,
+            runtimeActivityObservedAt: now - 1_000,
+        }), now, { workingTextMode: 'static' });
+
+        expect(status.state).toBe('background_active');
+        expect(status.statusText).toBe('status.backgroundActive:{"count":3}');
+    });
+
+    it('keeps projected unknown activity quiet', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const status = getSessionStatus(createBaseSession({
+            active: true,
+            presence: 'online',
+            thinking: false,
+            runtimeActivityState: 'unknown',
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
+            runtimeActivityRevision: 9,
+        }), now, { workingTextMode: 'static' });
+
+        expect(status).toMatchObject({
+            state: 'waiting',
+            statusText: 'status.online',
+            shouldShowStatus: false,
+        });
+    });
+
+    it('keeps an incomplete activity projection quiet', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const status = getSessionStatus(createBaseSession({
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 5_000,
+            runtimeActivityActiveCount: 1,
+            runtimeActivityObservedAt: now - 180_000,
+        }), now, 0);
+
+        expect(status).toMatchObject({
+            state: 'waiting',
+            shouldShowStatus: false,
+        });
+    });
+
+    it('keeps actionable user attention ahead of explicit unknown activity', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const status = getSessionStatus(createBaseSession({
+            active: true,
+            presence: 'online',
+            runtimeActivityState: 'unknown',
+            runtimeActivityActiveCount: 0,
+            runtimeActivityObservedAt: null,
+            runtimeActivityRevision: 9,
+            agentState: {
+                controlledByUser: false,
+                requests: {
+                    req1: {
+                        tool: 'AskUserQuestion',
+                        kind: 'user_action',
+                        arguments: {},
+                        createdAt: now - 1_000,
+                    },
+                },
+                completedRequests: null,
+            },
+        }), now, { workingTextMode: 'static' });
+
+        expect(status.state).toBe('action_required');
+    });
+
+    it('keeps offline precedence over projected background activity', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const status = getSessionStatus(createBaseSession({
+            active: false,
+            presence: 900_000,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: 850_000,
+            runtimeActivityState: 'active',
+            runtimeActivityActiveCount: 1,
+            runtimeActivityObservedAt: 800_000,
+            runtimeActivityRevision: 10,
+        }), 1_000_000, { workingTextMode: 'static' });
+
+        expect(status).toMatchObject({
+            state: 'disconnected',
+            isConnected: false,
+        });
+    });
+
+    it('suppresses background activity status for archived sessions', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+
+        expect(getSessionStatus(createBaseSession({
+            archivedAt: 900_000,
+            resumingAt: 999_000,
+            pendingUserActionRequestCount: 1,
+            pendingRequestObservedAt: 999_000,
+            latestTurnStatus: 'completed',
+            runtimeActivityState: 'active',
+            runtimeActivityActiveCount: 1,
+        }), 1_000_000, { workingTextMode: 'static' })).toMatchObject({
+            state: 'waiting',
+            shouldShowStatus: false,
+        });
     });
 
     it('uses the account setting to disable animated working text in the status hook', async () => {
@@ -676,7 +973,7 @@ describe('getSessionStatus', () => {
         expect(status.state).toBe('waiting');
     });
 
-    it('returns resuming when an inactive session has recent optimistic send activity', async () => {
+    it('keeps offline precedence over recent optimistic send activity', async () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const now = 1_000_000;
         const session = createBaseSession({
@@ -685,11 +982,10 @@ describe('getSessionStatus', () => {
             optimisticThinkingAt: now - 1_000,
         });
         const status = getSessionStatus(session, now, 0);
-        expect(status.state).toBe('resuming');
-        expect(status.isConnected).toBe(true);
-        expect(status.statusText).toBe('session.resuming');
+        expect(status.state).toBe('disconnected');
+        expect(status.isConnected).toBe(false);
         expect(status.shouldShowStatus).toBe(true);
-        expect(status.isPulsing).toBe(true);
+        expect(status.isPulsing).toBeUndefined();
     });
 
     it('does not treat stale optimisticThinkingAt as thinking', async () => {
@@ -1583,6 +1879,11 @@ describe('shouldShowAbortButtonForSessionState', () => {
     it('returns false for resuming sessions before the provider process is attached', async () => {
         const { shouldShowAbortButtonForSessionState } = await import('./sessionUtils');
         expect(shouldShowAbortButtonForSessionState('resuming')).toBe(false);
+    });
+
+    it('returns false for background-only activity', async () => {
+        const { shouldShowAbortButtonForSessionState } = await import('./sessionUtils');
+        expect(shouldShowAbortButtonForSessionState('background_active')).toBe(false);
     });
 });
 

@@ -11,7 +11,7 @@ import {
   type PermissionRequestPushSender,
 } from '@/settings/notifications/permissionRequestPush';
 import { getSessionNotificationTitle } from '@/agent/runtime/readyNotificationContext';
-import { createSessionProviderPendingDrainAdapter } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 
 import { createConfiguredAcpBackend } from './createConfiguredAcpBackend';
 import type { ResolvedConfiguredAcpBackend } from './resolveConfiguredAcpBackendFromAccountSettings';
@@ -31,6 +31,7 @@ type CreateConfiguredAcpRuntimeParams = Readonly<{
   onSessionIdChange?: (nextSessionId: string | null) => void;
   memoryRecallGuidance?: Parameters<typeof createAcpRuntime>[0]['memoryRecallGuidance'];
   pendingQueueDrainMaxPopPerWake?: number;
+  providerInputConsumer: SessionProviderInputConsumer<unknown, unknown>;
 }>;
 
 export function createConfiguredAcpRuntime(params: CreateConfiguredAcpRuntimeParams) {
@@ -60,6 +61,10 @@ export function createConfiguredAcpRuntime(params: CreateConfiguredAcpRuntimePar
     mcpServers: params.mcpServers,
     permissionHandler: params.permissionHandler,
     onThinkingChange: params.onThinkingChange,
+    sessionIdentity: {
+      kind: 'runtime-only',
+      reason: 'vendor-resume-unsupported',
+    },
     memoryRecallGuidance: params.memoryRecallGuidance,
     hooks: {
       onPermissionRequest: (evt) => {
@@ -69,10 +74,7 @@ export function createConfiguredAcpRuntime(params: CreateConfiguredAcpRuntimePar
     pendingQueue: {
       drainAfterStartOrLoad: true,
       maxPopPerWake: params.pendingQueueDrainMaxPopPerWake,
-      waitForMetadataUpdate: (signal) => params.session.waitForMetadataUpdate(signal),
-      inputConsumer: createSessionProviderPendingDrainAdapter(params.session, {
-        maxPopPerWake: params.pendingQueueDrainMaxPopPerWake,
-      }),
+      inputConsumer: params.providerInputConsumer,
     },
     ensureBackend: async () => {
       const permissionMode = params.getPermissionMode?.() ?? undefined;
@@ -96,6 +98,5 @@ export function createConfiguredAcpRuntime(params: CreateConfiguredAcpRuntimePar
         permissionHandler: params.permissionHandler,
       }) as unknown as AgentBackend;
     },
-    onSessionIdChange: params.onSessionIdChange,
   });
 }

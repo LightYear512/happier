@@ -1,5 +1,9 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { readDisplayMachineIdForSession, readDisplayPathForSession } from '@/sync/ops/sessionMachineTarget';
+import {
+    readDisplayMachineIdForSession,
+    readDisplayPathForSession,
+    readMachineControlTargetForSession,
+} from '@/sync/ops/sessionMachineTarget';
 import { resolveCanonicalMachineId } from '@/sync/domains/machines/identity/resolveCanonicalMachineId';
 import { storage } from '@/sync/domains/state/storage';
 import { decodeSessionRecentPathEntry, type SessionRecentPathEntry } from './recentPathEntries';
@@ -11,7 +15,9 @@ export function getRecentPathsForMachine(params: {
 }): string[] {
     const paths: string[] = [];
     const pathSet = new Set<string>();
-    const machines = Object.values(storage.getState().machines ?? {});
+    // Canonicalisation runs once per recent entry and once per session below; the store's id-keyed
+    // record is the index those lookups need, so it is used directly instead of a flattened list.
+    const machines = storage.getState().machines ?? {};
 
     // First, add paths from recentMachinePaths (most recent first by storage order)
     for (const entry of params.recentMachinePaths) {
@@ -34,13 +40,14 @@ export function getRecentPathsForMachine(params: {
             if (typeof item === 'string' && !sessionPathEntry) return;
 
             const session = typeof item === 'string' ? null : item;
-            const sessionMachineId = sessionPathEntry?.machineId ?? (session
+            const machineTarget = session ? readMachineControlTargetForSession(session.id) : null;
+            const sessionMachineId = sessionPathEntry?.machineId ?? machineTarget?.machineId ?? (session
                 ? readDisplayMachineIdForSession({
                     sessionId: session.id,
                     metadata: session.metadata ?? null,
                 })
                 : null);
-            const path = sessionPathEntry?.path ?? (session
+            const path = sessionPathEntry?.path ?? machineTarget?.basePath ?? (session
                 ? readDisplayPathForSession({
                     sessionId: session.id,
                     metadata: session.metadata ?? null,

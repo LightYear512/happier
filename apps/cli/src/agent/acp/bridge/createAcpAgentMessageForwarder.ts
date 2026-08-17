@@ -2,13 +2,12 @@ import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTy
 import type { AgentMessage } from '@/agent/core';
 import { buildTokenCountSessionMessageForForwarding } from '@/agent/acp/runtime/tokenCountForwarding';
 import {
-  forwardAcpToolCall,
-  forwardAcpToolResult,
   namespaceSidechainCallId,
   type AcpSendFn,
 } from '@/agent/acp/bridge/acpSessionForwarding';
 import { normalizePermissionRequestOptionsForAcp } from '@/agent/acp/bridge/acpCommonHandlers';
 import { extractThinkingTextFromThinkToolInput, isThinkingToolName } from '@/agent/acp/bridge/thinkingToolCall';
+import { createAcpToolCallRevisionPublisher } from './AcpToolCallRevisionPublisher';
 
 type SendAcpLike = AcpSendFn;
 
@@ -19,16 +18,23 @@ export function createAcpAgentMessageForwarder(params: {
   makeId: () => string;
 }): {
   forward: (msg: AgentMessage) => void;
+  dispose: () => void;
 } {
   const sidechainId = params.sidechainId;
   const ns = (toolCallId: string): string =>
     sidechainId ? namespaceSidechainCallId({ sidechainId, toolCallId }) : toolCallId;
+  const toolPublisher = createAcpToolCallRevisionPublisher({
+    provider: params.provider,
+    namespace: sidechainId ? { type: 'sidechain', sidechainId } : { type: 'main' },
+    sendAcp: params.sendAcp,
+  });
 
   // `terminal-output` ACP messages are normalized into tool-results in the UI. Emit a synthetic tool-call once so
   // the tool-results are always renderable (no orphan tool results).
   const terminalToolCallId = ns('happier:terminal-output');
   let terminalToolCallSent = false;
   const suppressedThinkToolCallIds = new Set<string>();
+  let disposed = false;
 
   const send = (body: ACPMessageData): void => {
     params.sendAcp(params.provider, body);
@@ -38,21 +44,33 @@ export function createAcpAgentMessageForwarder(params: {
     return sidechainId ? ({ ...body, sidechainId } as any) : body;
   };
 
+  const readToolSnapshotLifecycle = (input: unknown): Readonly<{
+    revision?: number;
+  }> => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+    const acp = (input as { _acp?: unknown })._acp;
+    if (!acp || typeof acp !== 'object' || Array.isArray(acp)) return {};
+    const revision = (acp as { snapshotRevision?: unknown }).snapshotRevision;
+    return {
+      ...(typeof revision === 'number' && Number.isSafeInteger(revision) && revision > 0
+        ? { revision }
+        : {}),
+    };
+  };
+
   const ensureTerminalToolCall = (): void => {
     if (terminalToolCallSent) return;
     terminalToolCallSent = true;
-    forwardAcpToolCall({
-      sendAcp: params.sendAcp,
-      provider: params.provider,
+    toolPublisher.publishCall({
       callId: terminalToolCallId,
       toolName: 'terminal-output',
       input: {},
-      id: params.makeId(),
       ...(sidechainId ? { sidechainId } : {}),
     });
   };
 
   const forward = (msg: AgentMessage): void => {
+    if (disposed) return;
     switch (msg.type) {
       case 'event':
       case 'status':
@@ -70,13 +88,12 @@ export function createAcpAgentMessageForwarder(params: {
           }
           return;
         }
-        forwardAcpToolCall({
-          sendAcp: params.sendAcp,
-          provider: params.provider,
+        const lifecycle = readToolSnapshotLifecycle(msg.args);
+        toolPublisher.publishCall({
           callId: ns(msg.callId),
           toolName: msg.toolName,
           input: msg.args,
-          id: params.makeId(),
+          ...lifecycle,
           ...(sidechainId ? { sidechainId } : {}),
         });
         return;
@@ -86,12 +103,10 @@ export function createAcpAgentMessageForwarder(params: {
           suppressedThinkToolCallIds.delete(ns(msg.callId));
           return;
         }
-        forwardAcpToolResult({
-          sendAcp: params.sendAcp,
-          provider: params.provider,
+        toolPublisher.publishResult({
           callId: ns(msg.callId),
+          toolName: msg.toolName,
           output: msg.result,
-          id: params.makeId(),
           ...(typeof (msg as any).isError === 'boolean' ? { isError: (msg as any).isError } : {}),
           ...(sidechainId ? { sidechainId } : {}),
           ...(msg.meta ? { meta: msg.meta } : {}),
@@ -156,13 +171,10 @@ export function createAcpAgentMessageForwarder(params: {
         const execApprovalMsg = msg as any;
         const callId = ns(String(execApprovalMsg.call_id ?? execApprovalMsg.callId ?? params.makeId()));
         const { call_id, type, ...inputs } = execApprovalMsg;
-        forwardAcpToolCall({
-          sendAcp: params.sendAcp,
-          provider: params.provider,
+        toolPublisher.publishCall({
           callId,
           toolName: 'exec',
           input: inputs,
-          id: params.makeId(),
           ...(sidechainId ? { sidechainId } : {}),
         });
         return;
@@ -171,16 +183,13 @@ export function createAcpAgentMessageForwarder(params: {
       case 'patch-apply-begin': {
         const patchBeginMsg = msg as any;
         const callId = ns(String(patchBeginMsg.call_id ?? patchBeginMsg.callId ?? params.makeId()));
-        forwardAcpToolCall({
-          sendAcp: params.sendAcp,
-          provider: params.provider,
+        toolPublisher.publishCall({
           callId,
           toolName: 'patch',
           input: {
             autoApproved: patchBeginMsg.auto_approved,
             changes: patchBeginMsg.changes,
           },
-          id: params.makeId(),
           ...(sidechainId ? { sidechainId } : {}),
         });
         return;
@@ -189,17 +198,15 @@ export function createAcpAgentMessageForwarder(params: {
       case 'patch-apply-end': {
         const patchEndMsg = msg as any;
         const callId = ns(String(patchEndMsg.call_id ?? patchEndMsg.callId ?? params.makeId()));
-        forwardAcpToolResult({
-          sendAcp: params.sendAcp,
-          provider: params.provider,
+        toolPublisher.publishResult({
           callId,
+          toolName: 'patch',
           output: {
             success: Boolean(patchEndMsg.success),
             stdout: patchEndMsg.stdout,
             stderr: patchEndMsg.stderr,
           },
           isError: patchEndMsg.success === false ? true : undefined,
-          id: params.makeId(),
           ...(sidechainId ? { sidechainId } : {}),
         });
         return;
@@ -210,5 +217,13 @@ export function createAcpAgentMessageForwarder(params: {
     }
   };
 
-  return { forward };
+  return {
+    forward,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      suppressedThinkToolCallIds.clear();
+      toolPublisher.dispose();
+    },
+  };
 }

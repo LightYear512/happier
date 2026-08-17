@@ -1,20 +1,21 @@
 import React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { Ionicons } from '@expo/vector-icons';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Switch } from '@/components/ui/forms/Switch';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import type {
-    AcpConfigOptionControl,
-    AcpConfigOptionValueId,
-} from '@/sync/acp/configOptionsControl';
+    SessionConfigOptionControl,
+    SessionConfigOptionValueId,
+} from '@/sync/domains/sessionControl/configOptionsControl';
 import {
     resolveBooleanConfigOptionNextValue,
     resolveBooleanConfigOptionValue,
     shouldRenderConfigOptionAsBooleanSwitch,
-} from '@/sync/acp/configOptionsControl';
+} from '@/sync/domains/sessionControl/configOptionsControl';
 import { t } from '@/text';
+import { readNonBlankSessionControlIdentifier } from '@/sync/domains/sessionControl/opaqueIdentifiers';
+import { Icon } from '@/components/ui/icons/Icon';
 
 
 export type ModelPickerOption = Readonly<{
@@ -42,8 +43,8 @@ export function ModelPickerOverlay(props: {
     customLabel?: string;
     customDescription?: string;
     searchPlaceholder?: string;
-    selectedOptionControls?: ReadonlyArray<AcpConfigOptionControl>;
-    onSelectOptionControlValue?: (configId: string, valueId: AcpConfigOptionValueId) => void;
+    selectedOptionControls?: ReadonlyArray<SessionConfigOptionControl>;
+    onSelectOptionControlValue?: (configId: string, valueId: SessionConfigOptionValueId) => void;
     onSelect: (value: string) => void;
     onSubmitCustomModel?: (value: string) => void | Promise<void>;
     probe?: ModelPickerProbeState;
@@ -74,7 +75,7 @@ export function ModelPickerOverlay(props: {
     const probe = props.probe;
     const showSearch = props.options.length >= 10;
     const normalizedQuery = query.trim().toLowerCase();
-    const selectedValue = props.selectedValue.trim();
+    const selectedValue = readNonBlankSessionControlIdentifier(props.selectedValue) ?? '';
     const selectedCustomValue = props.canEnterCustomModel && selectedValue.length > 0 && !optionValues.has(selectedValue)
         ? selectedValue
         : '';
@@ -117,7 +118,7 @@ export function ModelPickerOverlay(props: {
             const effectiveValue = control.effectiveValue;
 
             if (shouldRenderConfigOptionAsBooleanSwitch(option)) {
-                const boolValue = resolveBooleanConfigOptionValue(option, String(effectiveValue) as AcpConfigOptionValueId);
+                const boolValue = resolveBooleanConfigOptionValue(option, String(effectiveValue) as SessionConfigOptionValueId);
                 return (
                     <View
                         key={option.id}
@@ -159,7 +160,7 @@ export function ModelPickerOverlay(props: {
                                 <Pressable
                                     key={`${option.id}:${String(choice.value)}`}
                                     testID={`model-picker-overlay-selected-option-control-option:${option.id}:${String(choice.value)}`}
-                                    onPress={() => props.onSelectOptionControlValue?.(option.id, String(choice.value) as AcpConfigOptionValueId)}
+                                    onPress={() => props.onSelectOptionControlValue?.(option.id, String(choice.value) as SessionConfigOptionValueId)}
                                     style={({ pressed }) => [
                                         styles.selectedControlChoice,
                                         isChoiceSelected ? transientStyles.selectedControlChoiceSelected : null,
@@ -189,7 +190,7 @@ export function ModelPickerOverlay(props: {
     }, [props]);
 
     const commitCustomModel = React.useCallback((raw: string) => {
-        const normalized = raw.trim();
+        const normalized = readNonBlankSessionControlIdentifier(raw);
         if (!normalized) return;
         if (lastCommittedCustomModelRef.current === normalized) return;
         lastCommittedCustomModelRef.current = normalized;
@@ -226,7 +227,7 @@ export function ModelPickerOverlay(props: {
                                 hitSlop={6}
                             >
                                 {probe.phase === 'idle' ? (
-                                    <Ionicons name="refresh-outline" size={18} color={theme.colors.text.secondary} />
+                                    <Icon name="arrow-clockwise" size={16} color={theme.colors.text.secondary} />
                                 ) : (
                                     <ActivitySpinner
                                         size="small"
@@ -298,9 +299,9 @@ export function ModelPickerOverlay(props: {
                                                 style={styles.optionCardIndicator}
                                             >
                                                 {isSelected ? (
-                                                    <Ionicons
-                                                        name="checkmark-circle"
-                                                        size={18}
+                                                    <Icon
+                                                        name="check-circle"
+                                                        size={16}
                                                         color={selectedIndicatorColor}
                                                     />
                                                 ) : null}
@@ -349,9 +350,9 @@ export function ModelPickerOverlay(props: {
                                 </View>
                                 <View style={styles.customEntryIconSlot}>
                                     {customEditorVisible ? (
-                                        <Ionicons
-                                            name="checkmark-circle"
-                                            size={18}
+                                        <Icon
+                                            name="check-circle"
+                                            size={16}
                                             color={selectedIndicatorColor}
                                         />
                                     ) : null}

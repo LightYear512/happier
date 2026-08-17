@@ -70,10 +70,58 @@ describe('areStoredSessionsEqual', () => {
         )).toBe(false);
     });
 
+    it('detects resume lifecycle marker changes', () => {
+        expect(areStoredSessionsEqual(
+            session({ resumingAt: null }),
+            session({ resumingAt: 200 }),
+        )).toBe(false);
+    });
+
     it('detects rollback-eligible turn start changes', () => {
         expect(areStoredSessionsEqual(
             session({ rollbackEligibleTurnStarts: [1] }),
             session({ rollbackEligibleTurnStarts: [1, 3] }),
+        )).toBe(false);
+    });
+
+    it('detects runtime activity projection changes so higher revisions are retained', () => {
+        expect(areStoredSessionsEqual(
+            session({
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: 100,
+            }),
+            session({
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: 150,
+            }),
+        )).toBe(false);
+    });
+
+    it('detects runtime activity start and clear transitions', () => {
+        expect(areStoredSessionsEqual(
+            session({
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: null,
+            }),
+            session({
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: 100,
+            }),
+        )).toBe(false);
+    });
+
+    it('detects explicit v2 state and revision changes without lease timestamps', () => {
+        expect(areStoredSessionsEqual(
+            session({
+                runtimeActivityState: 'unknown',
+                runtimeActivityActiveCount: 0,
+                runtimeActivityRevision: 8,
+            }),
+            session({
+                runtimeActivityState: 'idle',
+                runtimeActivityActiveCount: 0,
+                runtimeActivityRevision: 9,
+            }),
         )).toBe(false);
     });
 });

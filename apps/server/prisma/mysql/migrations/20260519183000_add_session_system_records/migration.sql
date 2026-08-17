@@ -2,8 +2,8 @@ CREATE TABLE `SessionSystemRecord` (
     `id` VARCHAR(191) NOT NULL,
     `accountId` VARCHAR(191) NOT NULL,
     `sessionId` VARCHAR(191) NOT NULL,
-    `namespace` VARCHAR(64) NOT NULL,
-    `kind` VARCHAR(64) NOT NULL,
+    `namespace` VARCHAR(32) NOT NULL,
+    `kind` VARCHAR(32) NOT NULL,
     `localId` VARCHAR(191) NOT NULL,
     `content` JSON NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -15,7 +15,7 @@ CREATE TABLE `SessionSystemRecord` (
 CREATE UNIQUE INDEX `SSR_account_session_namespace_local_key`
 ON `SessionSystemRecord`(`accountId`, `sessionId`, `namespace`, `localId`);
 
-CREATE INDEX `SSR_account_session_namespace_kind_updated_id_idx`
+CREATE INDEX `ssr_account_session_kind_updated_id_idx`
 ON `SessionSystemRecord`(`accountId`, `sessionId`, `namespace`, `kind`, `updatedAt`, `id`);
 
 CREATE INDEX `SSR_session_namespace_kind_updated_id_idx`

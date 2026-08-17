@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 
 import { reloadConfiguration } from '@/configuration';
-import { clearDaemonState, writeDaemonState } from '@/persistence';
+import { clearDaemonStateForTests, writeDaemonState } from '@/persistence';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -175,7 +175,7 @@ describe('happier session preview register', () => {
 
   afterEach(async () => {
     resetInMemoryAccountSettingsContextForTests();
-    await clearDaemonState();
+    await clearDaemonStateForTests();
     if (apiServer) {
       await new Promise<void>((resolve, reject) => apiServer!.close((error) => (error ? reject(error) : resolve())));
       apiServer = null;

@@ -1,5 +1,12 @@
 import { randomBytes } from 'node:crypto';
 
+import {
+  CLAUDE_OAUTH_AUTHORIZE_URL,
+  CLAUDE_OAUTH_CALLBACK_URL,
+  CLAUDE_OAUTH_CLIENT_ID,
+  CLAUDE_OAUTH_TOKEN_URL,
+} from '@happier-dev/agents';
+
 import type { CloudConnectAuthenticateOptions } from '@/cloud/connectTypes';
 import { generatePkceCodes } from '@/cloud/pkce';
 import { parseOauthRedirectPaste } from '@/cloud/parseOauthRedirectPaste';
@@ -21,10 +28,6 @@ export type ClaudeSubscriptionOauthTokens = Readonly<{
   };
 }>;
 
-const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
-const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
-const REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 const SCOPE = CLAUDE_SUBSCRIPTION_OAUTH_SCOPE;
 
 function generateState(): string {
@@ -38,7 +41,7 @@ export function buildClaudeSubscriptionAuthorizationUrl(params: Readonly<{
 }>): string {
   const query = new URLSearchParams({
     code: 'true',
-    client_id: CLIENT_ID,
+    client_id: CLAUDE_OAUTH_CLIENT_ID,
     response_type: 'code',
     redirect_uri: params.redirectUri,
     scope: SCOPE,
@@ -46,7 +49,7 @@ export function buildClaudeSubscriptionAuthorizationUrl(params: Readonly<{
     code_challenge_method: 'S256',
     state: params.state,
   });
-  return `${AUTHORIZE_URL}?${query.toString()}`;
+  return `${CLAUDE_OAUTH_AUTHORIZE_URL}?${query.toString()}`;
 }
 
 export async function exchangeClaudeSubscriptionAuthorizationCodeForTokens(params: Readonly<{
@@ -57,14 +60,14 @@ export async function exchangeClaudeSubscriptionAuthorizationCodeForTokens(param
   fetcher?: typeof fetch;
 }>): Promise<ClaudeSubscriptionOauthTokens> {
   const fetcher = params.fetcher ?? fetch;
-  const response = await fetcher(TOKEN_URL, {
+  const response = await fetcher(CLAUDE_OAUTH_TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       grant_type: 'authorization_code',
       code: params.code,
       redirect_uri: params.redirectUri,
-      client_id: CLIENT_ID,
+      client_id: CLAUDE_OAUTH_CLIENT_ID,
       code_verifier: params.verifier,
       state: params.state,
     }),
@@ -94,7 +97,7 @@ export async function authenticateClaudeSubscriptionOauth(
   const pkce = generatePkceCodes();
   const state = generateState();
   const authorizationUrl = buildClaudeSubscriptionAuthorizationUrl({
-    redirectUri: REDIRECT_URI,
+    redirectUri: CLAUDE_OAUTH_CALLBACK_URL,
     state,
     challenge: pkce.challenge,
   });
@@ -132,7 +135,7 @@ export async function authenticateClaudeSubscriptionOauth(
   return await exchangeClaudeSubscriptionAuthorizationCodeForTokens({
     code: parsed.code,
     verifier: pkce.verifier,
-    redirectUri: REDIRECT_URI,
+    redirectUri: CLAUDE_OAUTH_CALLBACK_URL,
     state,
   });
 }

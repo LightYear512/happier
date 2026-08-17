@@ -10,16 +10,49 @@ import {
 } from '@/agents/providers/claude/sessionSubagents/createClaudeSubagentLauncherDetailsTab';
 import { SessionClaudeSubagentLauncherView } from '@/agents/providers/claude/sessionSubagents/SessionClaudeSubagentLauncherView';
 import { resolveClaudeBrowseSourceOptions } from '@/agents/providers/claude/directSessions/resolveClaudeBrowseSourceOptions';
+import { claudeGoalActionCapabilityProfile, claudeSupportsEditableGoals } from '@/agents/providers/claude/workState/claudeEditableGoals';
+import { buildClaudeSessionHandoffProviderPatch } from '@/agents/providers/claude/sessionHandoff';
+import { isClaudeUnifiedAttachedSessionTerminalAvailable } from '@/agents/providers/claude/attachedSessionTerminal';
+import { resolveClaudePendingDeliveryLabelKey } from '@/agents/providers/claude/pendingDeliveryPresentation';
 
 export const CLAUDE_UI_BEHAVIOR_OVERRIDE: AgentUiBehavior = {
+    pendingDelivery: {
+        resolveLabelKey: ({ session, localId, detail }) => resolveClaudePendingDeliveryLabelKey({
+            localId,
+            detail,
+            custodyObservedLocalId: session.agentState?.capabilities?.pendingInputInterruptAndRunLocalId,
+        }),
+        resolveTransientAction: ({ session, localId, wireMode }) => {
+            if (wireMode !== 'pending_input_v1') return null;
+            const capabilities = session.agentState?.capabilities;
+            if (capabilities?.pendingInputInterruptAndRunLocalId !== localId) return null;
+            return {
+                id: 'interrupt_and_run',
+                localId,
+                ...(typeof capabilities.pendingInputInterruptAndRunStateAt === 'number'
+                    ? { stateAtMs: capabilities.pendingInputInterruptAndRunStateAt }
+                    : {}),
+            };
+        },
+    },
+    attachedSessionTerminal: {
+        isAvailable: ({ session }) => isClaudeUnifiedAttachedSessionTerminalAvailable(session),
+    },
     mcpServers: {
         supportsDetectedConfigScan: true,
+    },
+    workState: {
+        supportsEditableGoals: ({ agentId, session }) => claudeSupportsEditableGoals({ agentId, session }),
+        resolveGoalActionCapabilityProfile: ({ agentId, session }) => claudeGoalActionCapabilityProfile({ agentId, session }),
     },
     directSessions: {
         browse: {
             order: 20,
             getSourceOptions: () => resolveClaudeBrowseSourceOptions(),
         },
+    },
+    sessionHandoff: {
+        buildProviderPatch: () => buildClaudeSessionHandoffProviderPatch(),
     },
     sessionComposer: {
         buildNextMessageMetaOverrides: ({ configOptionOverrides, metaOverrides }) =>
@@ -50,7 +83,6 @@ export const CLAUDE_UI_BEHAVIOR_OVERRIDE: AgentUiBehavior = {
                 />,
             ];
         },
-        createTeammateLauncherDetailsTab: ({ teamId }) => createClaudeSubagentLauncherDetailsTab('member', teamId),
         renderDetailsTab: ({ sessionId, tab }) => {
             if (!isClaudeSubagentLauncherResource(tab.resource)) return null;
             return (

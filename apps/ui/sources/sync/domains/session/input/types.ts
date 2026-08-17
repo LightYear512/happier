@@ -7,6 +7,7 @@ import type {
     NonSteerableSendPromptSetting,
     SessionMessageDirectBypassReason,
 } from '@/sync/domains/session/control/submitMode';
+import type { PendingRequestedActionV1 } from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { ResumeSessionOptions, ResumeSessionResult } from '@/sync/ops/sessions';
 
@@ -32,6 +33,7 @@ export type SubmitWakeState =
 export type SubmitSessionUserMessageResult = Readonly<{
     type: SubmitResultType;
     persistence: SubmitPersistence;
+    providerAcceptancePending?: boolean;
     wake: Readonly<{
         attempted: boolean;
         state: SubmitWakeState;
@@ -61,6 +63,11 @@ export type SessionMessageCallerSurface =
     | 'review_findings_apply'
     | 'participant_composer'
     | 'message_option'
+    | 'pending_message_steer_now'
+    | 'pending_message_send_now'
+    | 'subagent_control'
+    | 'voice_turn'
+    | 'voice_spawn_first_turn'
     | 'sync_submit_message';
 
 export type SubmitSessionUserMessageOptions = Readonly<{
@@ -79,6 +86,8 @@ export type SubmitSessionUserMessageOptions = Readonly<{
     providerNonSteerablePayloadReason?: Extract<NonSteerablePayloadReason, 'provider_config_change_refused'> | null;
     explicitMode?: MessageSendMode;
     forceImmediate?: boolean;
+    /** Action already chosen by the caller for an existing durable Pending row. */
+    requestedAction?: PendingRequestedActionV1;
     /** Lane Q: explicit user choice — apply the message's config delta in-turn and steer. */
     applyConfigAndSteer?: boolean;
     /**
@@ -88,6 +97,8 @@ export type SubmitSessionUserMessageOptions = Readonly<{
     steerWithoutConfig?: boolean;
     profileId?: string | null;
     localId?: string | null;
+    existingDurablePendingMessage?: boolean;
+    /** Persist through the canonical pending owner before publishing a runtime wake. */
     resumeCapabilityOptions: ResumeCapabilityOptions;
     resumeTargetOverride?: SessionSubmitWakeTargetOverride | null;
     permissionOverride?: PermissionModeOverrideForSpawn | null;
@@ -100,16 +111,25 @@ export type SubmitSessionUserMessageOptions = Readonly<{
 
 export type PendingMessageSubmitResult = Readonly<{
     localId?: string;
+    accepted?: boolean;
+    /** The row was durably cancelled while its enqueue operation was in flight. */
+    cancelled?: true;
+    /** The server reports that this row was already resolved during the enqueue ACK. */
+    terminal?: true;
 }> | void;
 
 export type DirectMessageSubmitResult = Readonly<{
     localId?: string;
     seq?: number;
+    persistence?: Extract<SubmitPersistence, 'pending' | 'transcript_committed' | 'provider_direct'>;
+    providerAcceptancePending?: boolean;
 }> | void;
 
-export type DirectMessageLocalPendingProjection = Readonly<{
+export type SessionMessageLocalPendingProjection = Readonly<{
     localId: string;
 }>;
+
+export type DirectMessageLocalPendingProjection = SessionMessageLocalPendingProjection;
 
 export type DirectMessageBypassReason = SessionMessageDirectBypassReason;
 
@@ -119,6 +139,11 @@ export interface SessionSubmitPort {
         text: string,
         displayText?: string,
         metaOverrides?: Record<string, unknown>,
+        options?: Readonly<{
+            localId?: string | null;
+            onLocalPendingProjectionCreated?: (event: SessionMessageLocalPendingProjection) => void;
+            requestedAction: PendingRequestedActionV1;
+        }>,
     ): Promise<PendingMessageSubmitResult>;
     sendMessage(
         sessionId: string,
@@ -138,6 +163,12 @@ export interface SessionSubmitPort {
         options?: Readonly<{ serverId?: string | null }>,
     ): Promise<Session | null | undefined>;
     abortSession?(sessionId: string): Promise<void>;
+    /** Change the action on a still-unclaimed durable Pending row. */
+    updatePendingRequestedAction?(
+        sessionId: string,
+        localId: string,
+        requestedAction: PendingRequestedActionV1,
+    ): Promise<void> | void;
     switchSessionControlToRemote?(sessionId: string): Promise<void>;
     canWakeMachineId?(machineId: string): boolean;
 }

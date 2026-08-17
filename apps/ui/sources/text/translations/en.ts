@@ -200,54 +200,6 @@ const newSessionMcpTranslationExtension = {
   mcpReasonNotPortable: 'Not portable to this session',
 } as const;
 
-const providerAuthenticationTranslationExtension = {
-  authentication: {
-    title: 'Authentication',
-    footer: 'Machine-local CLI authentication for this backend.',
-    statusTitle: 'Status',
-    loggedInAsTitle: 'Logged in as',
-    methodTitle: 'Method',
-    sourceTitle: 'Source',
-    reasonTitle: 'Details',
-    lastCheckedTitle: 'Last checked',
-    stateLoggedIn: 'Logged in',
-    stateLoggedOut: 'Not logged in',
-    stateUnknown: 'Status unknown',
-    logInTitle: 'Log in',
-    logInSubtitle: 'Open a terminal to authenticate this CLI on the machine.',
-    reauthenticateTitle: 'Re-authenticate',
-    reauthenticateSubtitle: 'Open a terminal to refresh this CLI login on the machine.',
-    checkNowTitle: 'Check now',
-    checkNowSubtitle: 'Refresh machine-local authentication details.',
-    terminalTitle: 'Provider login terminal',
-    methods: {
-      apiKeyEnv: 'API key from environment',
-      authTokenEnv: 'Auth token from environment',
-      credentialsFile: 'Credentials file',
-      oauthCli: 'CLI login session',
-      configFile: 'Config file',
-      gcloudAdc: 'Google ADC',
-      unknown: 'Unknown method',
-    },
-    reasons: {
-      missingCredentials: 'No credentials were found.',
-      expired: 'Stored credentials have expired.',
-      cliMissing: 'The CLI is not installed on the machine.',
-      probeFailed: 'The CLI status probe failed.',
-      timeout: 'The CLI status probe timed out.',
-      unsupported: 'This backend does not expose local auth status.',
-      interactiveBlocked: 'This backend requires an interactive login flow.',
-      notConfigured: 'This backend is not configured on the machine.',
-    },
-    sources: {
-      environment: 'Environment',
-      file: 'Local file',
-      command: 'CLI command',
-      mixed: 'Multiple sources',
-    },
-  },
-} as const;
-
 const settingsAppearanceTranslationExtension = {
   themeProfiles: {
     title: 'Themes',
@@ -558,6 +510,12 @@ export const en = {
         },
         progress: {
             catchingUp: 'Catching up…',
+        },
+        unsupportedContent: {
+            unparsedUserMessage: 'Unparsed user message',
+            unparsedAgentMessage: 'Unparsed agent message',
+            unsupportedAgentOutput: 'Unsupported output',
+            unsupportedTranscriptRecord: 'Unsupported record',
         },
     },
 
@@ -943,6 +901,8 @@ export const en = {
                 intervalSubtitle: 'Run every N minutes.',
                 cronTitle: 'Cron',
                 cronSubtitle: 'Advanced schedule expression.',
+                manualTitle: 'Manual',
+                manualSubtitle: 'Run only when triggered from the app, API, or CLI.',
                 cronHelpText: 'Standard 5-field cron: minute hour day-of-month month day-of-week.',
             },
             sentence: {
@@ -1208,10 +1168,14 @@ export const en = {
         error: 'error',
         online: 'online',
         working: 'working...',
+        workingRetained: 'working, awaiting updates…',
+        backgroundActive: ({ count }: { count: number }) => `${count} running in background`,
+        activityUnknown: 'activity status unavailable',
         readyForReview: 'ready for review',
         offline: 'offline',
         lastSeen: ({ time }: { time: string }) => `last seen ${time}`,
         actionRequired: 'action required',
+        waitingForYourResponse: 'Waiting for your response',
         permissionRequired: 'permission required',
         activeNow: 'Active now',
         unknown: 'unknown',
@@ -2388,6 +2352,12 @@ export const en = {
                 partialApplication: 'Authentication partly switched',
                 partialApplicationForService: ({ service }: { service: string }) => `${service} authentication not fully switched`,
             },
+            partialApply: {
+                title: 'Authentication partly switched',
+                body: 'The new account was saved but applying it to this running session did not fully succeed. Retry, or revert to keep this session on the previous account.',
+                retry: 'Retry applying to this session',
+                revert: 'Revert to previous account',
+            },
         },
         diagnostics: {
             title: {
@@ -2409,6 +2379,7 @@ export const en = {
                 quota_fetch_disabled: 'Quota checks are disabled',
                 quota_fetch_backoff: 'Quota checks are backed off',
                 auth_surface_weakly_verified: 'Authentication rewrite verified',
+                connected_service_restart_requested: 'Connected account restart requested',
                 connected_service_credential_reconnect_required: 'Connected account needs reconnect',
                 claude_subscription_missing_claude_code_scope: 'Claude Code access needs reconnect',
                 claude_subscription_native_auth_materialization_failed: 'Claude Code credentials could not be prepared',
@@ -2439,6 +2410,7 @@ export const en = {
                 quota_fetch_disabled: 'Quota checks disabled',
                 quota_fetch_backoff: 'Quota checks temporarily backed off',
                 auth_surface_weakly_verified: 'Authentication rewrite weakly verified',
+                connected_service_restart_requested: 'Connected account restart requested',
                 connected_service_credential_reconnect_required: 'Connected account needs reconnect',
                 claude_subscription_missing_claude_code_scope: 'Reconnect Claude subscription for Claude Code',
                 claude_subscription_native_auth_materialization_failed: 'Claude Code native auth could not be prepared',
@@ -2466,6 +2438,7 @@ export const en = {
                 quota_fetch_disabled: 'Quota checks are currently disabled for this provider. Happier will keep using reactive recovery.',
                 quota_fetch_backoff: 'Quota checks are temporarily backed off after a provider or network response. Happier will retry quota refresh later.',
                 auth_surface_weakly_verified: 'Happier verified the selected authentication files were rewritten, but this provider does not expose exact live account identity.',
+                connected_service_restart_requested: 'Happier requested a safe session restart so the selected connected account can take effect.',
                 connected_service_credential_reconnect_required: 'The selected connected account needs to be reconnected before this session can resume. Reconnect the profile, then retry.',
                 claude_subscription_missing_claude_code_scope: 'This Claude profile was connected before Claude Code scopes were granted. Reconnect it, then retry the session or pool switch.',
                 claude_subscription_native_auth_materialization_failed: 'Happier could not create the native Claude Code credential file for this profile. Reconnect the profile or choose another pool member.',
@@ -2480,6 +2453,7 @@ export const en = {
             identityMismatchTitle: 'Replace connected account?',
             identityMismatchBody: 'The new credentials belong to a different provider account. Confirm to keep the same profile id and replace the account linked to it.',
             identityMismatchConfirm: 'Replace account',
+            targetMismatch: 'This reconnect returned credentials for a different connected profile. Start reconnect again from the target profile.',
         },
         defaultAuth: {
             title: 'Default backend configuration',
@@ -2492,6 +2466,11 @@ export const en = {
                 connected_group_unavailable: 'Default connected pool is unavailable; using native auth.',
                 connected_group_disabled: 'Connected pools are disabled here; using native auth.',
                 connected_service_unsupported: 'This backend does not support that connected service; using native auth.',
+            },
+            poolSuggestion: {
+                body: ({ pool }: { pool: string }) => `Use the ${pool} pool so sessions rotate past rate limits.`,
+                accept: 'Use pool',
+                dismiss: 'Dismiss',
             },
         },
         list: {
@@ -2539,12 +2518,14 @@ export const en = {
             recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
             recoveryCreditApplying: 'Applying reset…',
             recoveryCreditMachineUnavailable: 'No active machine is available to apply this reset.',
+            recoveryCreditNothingToReset: 'No exhausted usage window currently needs a reset.',
             recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? '1 reset' : `${count} resets`,
             remaining: ({ percent }: { percent: string }) => `${percent} left`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `${percent} left · resets in ${reset}`,
             usageCount: ({ used, limit }: { used: number; limit: number }) => `${used}/${limit} used`,
             duration: {
                 now: 'now',
+                outdated: 'outdated',
                 daysHours: ({ days, hours }: { days: number; hours: number }) => `${days}d ${hours}h`,
                 hoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }) => `${hours}h ${minutes}m`,
                 hours: ({ hours }: { hours: number }) => `${hours}h`,
@@ -2811,6 +2792,9 @@ export const en = {
                 removeMember: 'Remove member',
                 removeMemberConfirmTitle: 'Remove member',
                 removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `Remove "${profileId}" from this pool?`,
+                removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `Remove ${count === 1 ? "this member" : `these ${count} members`} from this pool?\n\n${members}`,
+                manageMembersTitle: 'Manage members',
+                manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${count} of ${total} accounts`,
                 searchMembersPlaceholder: 'Search profiles',
                 membersTitle: 'Members',
                 membersSubtitle: 'Check profiles to include in this pool.',
@@ -2874,9 +2858,18 @@ export const en = {
                 title: 'No pools yet',
                 subtitle: 'Create a pool to fall back across accounts automatically.',
             },
+            loadError: {
+                title: 'Could not load pools',
+                subtitle: 'The account pools failed to load. Check your connection and try again.',
+                staleTitle: 'Showing the last known pools',
+                staleSubtitle: 'The latest pool list could not be refreshed. Try again to update it.',
+                retry: 'Try again',
+            },
             detail: {
                 summaryTitle: 'Overview',
                 summary: ({ count, strategy }: { count: number; strategy: string }) => `${count} accounts · ${strategy}`,
+                serverActiveStatusTitle: 'Saved on the server',
+                serverActiveStatusSubtitle: 'This is the durable active account. Offline machines apply it when they reconnect; this screen does not claim every machine has converged.',
                 membersTitle: 'Members',
                 moveUp: 'Move up',
                 moveDown: 'Move down',
@@ -2886,6 +2879,15 @@ export const en = {
                 behaviorTitle: 'Behavior',
                 advancedTitle: 'Advanced',
                 advancedSubtitle: 'Fine-tune when and how this pool switches accounts.',
+                manualApplyDivergenceTitle: 'Switched on server, not on running sessions',
+                manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `The active account changed on the server, but applying it to running sessions failed (${detail}). Retry, or revert to keep everything on the previous account.`,
+                manualApplyRetry: 'Retry applying to running sessions',
+                manualApplyRevert: 'Revert to previous account',
+                machineTarget: {
+                    title: 'Cannot apply to a running session',
+                    noBoundSession: 'No running session is using this pool right now, so the switch cannot be applied live. Start a session on this pool, then try again.',
+                    offline: 'The machine running this pool\'s session is offline, so the switch cannot reach it. Bring the machine back online, then try again.',
+                },
             },
             behavior: {
                 autoRestorePrimaryTitle: 'Restore primary on reset',
@@ -3352,6 +3354,16 @@ export const en = {
                 subtitle: 'Notify when a blocked provider can continue again',
             },
         },
+        pushPriming: {
+            title: 'Turn on notifications?',
+            body: 'Happier can let you know when an agent finishes working, needs a permission decision, or is waiting on you. You can change this any time in Settings.',
+            accept: 'Turn on',
+            decline: 'Not now',
+            blockedTitle: 'Notifications are blocked',
+            blockedBody: 'Notifications are turned off for this app in system settings. Open settings to allow them.',
+            openSettings: 'Open settings',
+            openSettingsFailed: 'Could not open system settings.',
+        },
         pushTroubleshooting: {
             status: {
                 title: 'Status',
@@ -3364,6 +3376,9 @@ export const en = {
                 title: 'Permission',
                 loading: 'Loading…',
                 loadingSubtitle: 'Checking notification permissions',
+                runtimeUnavailable: 'Unavailable',
+                runtimeUnavailableSubtitle: 'The notification service could not be reached on this device.',
+                runtimeTimeoutSubtitle: 'The notification service did not respond. Check the development server connection, then retry.',
                 unsupported: 'Unsupported',
                 unsupportedSubtitle: 'Push permissions are not available on web.',
                 allowed: 'Allowed',
@@ -3377,6 +3392,10 @@ export const en = {
                 title: 'This device',
                 subtitle: ({ fingerprint }: { fingerprint: string }) => `Current token: ${fingerprint}`,
                 unavailableSubtitle: 'Unable to read an Expo push token.',
+                checkingSubtitle: 'Reading this device token…',
+                runtimeUnavailableSubtitle: 'The notification service could not be reached on this device.',
+                runtimeTimeoutSubtitle: 'The notification service did not respond in time.',
+                deviceUnavailableSubtitle: 'This build cannot provide a push token. Check that push notifications are enabled for this app build.',
                 registered: 'Registered',
             },
             actions: {
@@ -3494,7 +3513,6 @@ export const en = {
     },
 
     settingsProviders: {
-        ...providerAuthenticationTranslationExtension,
         title: 'AI backends',
         entrySubtitle: 'View capabilities and configure each backend',
         footer: 'Manage backend availability, capabilities, model support, and provider-specific settings.',
@@ -3611,6 +3629,8 @@ export const en = {
             logInSubtitle: 'Open a terminal and run the provider sign-in flow on this machine.',
             reauthenticateTitle: 'Reauthenticate',
             reauthenticateSubtitle: 'Open a terminal and refresh the provider sign-in on this machine.',
+            deviceCodeTitle: 'Use device code',
+            deviceCodeSubtitle: 'Authenticate from a headless or remote machine with a device code.',
             checkNowTitle: 'Check now',
             checkNowSubtitle: 'Refresh the detected local authentication state.',
             statusTitle: 'Status',
@@ -3709,6 +3729,24 @@ export const en = {
                             resume_full_session: {
                                 title: "Resume full session",
                                 subtitle: "Load the full session context when Claude offers the choice."
+                            }
+                        }
+                    },
+                    claudeUnifiedTerminalWorkspaceTrust: {
+                        title: "Workspace trust",
+                        subtitle: "Choose how Happier responds when Claude asks whether to trust a workspace.",
+                        options: {
+                            ask_every_time: {
+                                title: "Ask every time",
+                                subtitle: "Show the exact workspace trust question in the session."
+                            },
+                            always_trust_happier_workspaces: {
+                                title: "Always trust Happier workspaces",
+                                subtitle: "Trust the current recaptured Claude prompt for workspaces opened by Happier."
+                            },
+                            always_reject_happier_workspaces: {
+                                title: "Always reject Happier workspaces",
+                                subtitle: "Reject the current recaptured Claude prompt for workspaces opened by Happier."
                             }
                         }
                     },
@@ -3904,6 +3942,9 @@ export const en = {
             },
             kiro: {
                 title: "Kiro"
+            },
+            grok: {
+                title: "Grok Build"
             },
             pi: {
                 title: "Pi"
@@ -4259,6 +4300,7 @@ export const en = {
         fileNotFound: 'File not found',
         invalidFormat: 'Invalid format',
         operationFailed: 'Operation failed',
+        signupDisabled: 'This server has new account sign-ups disabled. Sign in with an existing account, or ask the server admin to enable sign-ups.',
         failedToForkSession: 'Failed to fork session',
         daemonUnavailableTitle: 'Daemon unavailable',
         daemonUnavailableBody:
@@ -4446,6 +4488,9 @@ export const en = {
         daemonRpcUnavailableTitle: 'Daemon unavailable',
         daemonRpcUnavailableBody:
             'Happier can’t reach the daemon on this machine. It may be offline, still starting, or disconnected from the server.',
+        launchStillPendingTitle: 'Launch still in progress',
+        launchStillPendingBody:
+            'Happier hasn’t confirmed the new session yet. Your launch request is still saved. Retry to continue the same launch without creating a duplicate session.',
         connectedServiceSwitchUnavailable: {
             title: 'Switch unavailable',
             body: ({ reason, agentId }: { reason: string; agentId: string }) =>
@@ -4678,6 +4723,34 @@ export const en = {
 
     session: {
         inputPlaceholder: 'What would you like to work on?',
+        transcriptNavigation: {
+            title: 'Navigate',
+            modeAll: 'All',
+            modePinned: 'Pinned',
+            entryCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+            pinnedCount: ({ count }: { count: number }) => `${count} pinned`,
+            emptyPinnedTitle: 'No pinned messages',
+            emptyPinnedBody: 'Pin messages to keep important turns here.',
+            emptyAllTitle: 'No navigation entries',
+            emptyAllBody: 'User turns and pinned messages will appear here.',
+            entryA11y: ({ label }: { label: string }) => `Jump to ${label}`,
+            entryPinnedA11y: ({ label }: { label: string }) => `Jump to pinned message: ${label}`,
+            fallbackPinnedAssistant: 'Pinned assistant message',
+            fallbackPinnedTool: 'Pinned tool message',
+            fallbackPinnedMessage: 'Pinned message',
+            pinMessageA11y: 'Pin message',
+            unpinMessageA11y: 'Unpin message',
+            pinToolCallA11y: 'Pin tool call',
+            unpinToolCallA11y: 'Unpin tool call',
+            jumpFailed: 'Could not jump to this message.',
+            emptyPinnedHint: 'Hover a message and choose the pin icon to pin it.',
+            emptyPinnedPrivacy: 'Pins are saved on this device only.',
+            awaitingReply: 'Waiting for the reply',
+            replyNotLoaded: 'Reply not loaded yet',
+            loadingBody: 'Building the timeline for this session',
+            railScrollUpA11y: 'Scroll navigation up',
+            railScrollDownA11y: 'Scroll navigation down',
+        },
         usageLimitRecovery: {
             title: 'Usage limit reached',
             readyTitle: 'Usage limit reset',
@@ -4703,19 +4776,23 @@ export const en = {
             statusReady: 'Ready to resume',
             statusWaiting: 'Waiting for limit reset',
             statusWaitingUntil: ({ time }: { time: string }) => `Waiting until ${time}`,
+            statusWaitingResetUntil: ({ time }: { time: string }) => `Waiting for quota reset (resets at ${time})`,
+            statusAccountRotationPending: 'Account rotation pending',
             statusChecking: 'Checking limit',
             statusPaused: 'Waiting paused',
             statusExhausted: 'Group exhausted',
         },
         workState: {
-            accessibilityLabel: 'Session work state',
             commandDescription: 'Set or inspect the session goal',
             unsupportedTitle: 'Goal unavailable',
             unsupportedMessage: 'This backend does not support editable session goals yet.',
+            notReadyTitle: 'Goal controls not ready yet',
+            notReadyMessage: 'This session is still starting up. Try setting the goal again in a moment.',
             noCurrentGoalTitle: 'No goal to update',
             noCurrentGoalMessage: 'Set a goal before pausing or resuming it.',
             dirtyCloseTitle: 'Discard goal edits?',
             dirtyCloseBody: 'Your unsaved goal changes will be lost.',
+            emptyPlaceholder: 'Nothing here yet',
             badge: {
                 goal: ({ title }: { title: string }) => `Goal: ${title}`,
                 goalPaused: 'Goal paused',
@@ -4730,10 +4807,23 @@ export const en = {
                 blockedPaused: 'Blocked or paused',
                 done: 'Complete or cancelled',
             },
+            activity: {
+                sectionTitle: 'Running now',
+                openFullRoster: 'Open all agents',
+            },
+            workflow: {
+                join: ({ left, right }: { left: string; right: string }) => `${left} · ${right}`,
+            },
             goal: {
                 title: 'Goal',
                 placeholder: 'What should this session focus on?',
                 set: 'Set goal',
+                setTitle: 'Set a goal',
+                setSubtitle: 'Give this session a focus so the agent stays on track.',
+                addBudget: '+ Add a budget limit (optional)',
+                removeBudget: 'Remove budget',
+                noUsageYet: 'No usage yet',
+                tokensSuffix: ({ count }: { count: string }) => `${count} tokens`,
                 pause: 'Pause',
                 resume: 'Resume',
                 clear: 'Clear',
@@ -4743,15 +4833,15 @@ export const en = {
                 statusPaused: 'Paused',
                 statusComplete: 'Complete',
                 statusBudgetLimited: 'Limited by budget',
-                timeUsed: 'Time used',
-                tokensUsed: 'Tokens used',
+                statusInterrupted: 'Interrupted',
                 tokenBudget: 'Token budget',
-                noTokenBudget: 'No token budget',
                 budgetProgress: ({ used, budget }: { used: string; budget: string }) => `${used} / ${budget}`,
-                budgetToggle: 'Budget',
+                budgetCaption: ({ budget }: { budget: string }) => `of ${budget} budget`,
                 budgetPlaceholder: 'Token limit',
-                clearBudget: 'No limit',
                 invalidBudget: 'Enter a positive token budget.',
+                pending: 'Setting goal…',
+                stillWaiting: 'Still waiting for confirmation…',
+                accessibilityCurrent: ({ objective }: { objective: string }) => `Current goal: ${objective}`,
                 errorUnsupportedResponse: 'Unsupported response from session RPC',
                 errorUnknown: 'Unknown error',
                 errorCannotResume: 'Session cannot be resumed for native goal update',
@@ -4772,6 +4862,10 @@ export const en = {
             openParentA11y: 'Open parent session',
             forkFromMessageA11y: 'Fork from this message',
         },
+        transcriptGap: {
+            earlierMessages: 'Earlier messages',
+            laterMessages: 'Later messages',
+        },
         rollback: {
             latestTurnA11y: 'Roll back the latest turn',
             beforeUserMessageA11y: 'Roll back to before this message',
@@ -4781,6 +4875,27 @@ export const en = {
         pendingQueuedResumeFailedTitle: 'Message queued',
         pendingQueuedResumeFailedBody:
             'Your message was saved in the pending queue, but Happier couldn’t resume this session. Retry to start it.',
+        composerBanners: {
+            showBannerAction: 'Show banner',
+            hideBannerAction: 'Hide banner',
+        },
+        staleRunner: {
+            title: 'Session is still running on an older CLI',
+            body: 'Restart this session runner to continue on the updated daemon CLI. The Happier session stays the same.',
+            busyBody: 'The session runner is busy. Retry when the current activity finishes.',
+            failureBody: 'Happier could not restart this session runner. Retry after the session refreshes.',
+            identityChangedBody: 'The session runner changed while the restart was requested. Refresh the session and retry.',
+            ineligibleBody: 'This session runner is no longer eligible for a planned restart.',
+            unsupportedBody: 'This daemon does not expose the session-runner restart operation yet.',
+            versionUnknownBody: 'Happier cannot confirm which CLI version this runner is using yet.',
+            restartAction: 'Restart runner',
+            restartPendingAction: 'Restarting...',
+            statusBadge: 'Older CLI',
+            showBannerAction: 'Show older CLI notice',
+            hideBannerAction: 'Hide older CLI notice',
+            errorTitle: 'Runner restart unavailable',
+            errorBody: 'The daemon could not restart this session runner. The session is still available.',
+        },
         invalidLinkTitle: 'Invalid session link',
         invalidLinkDescription: 'The session link is missing or invalid. Please check the URL and try again.',
         resumeSupportNoteChecking: 'Note: Happier is still checking whether this machine can resume the provider session.',
@@ -4804,6 +4919,7 @@ export const en = {
         openRuns: 'Open session runs',
         openAutomations: 'Open session automations',
         openSubagents: ({ count }: { count: number }) => (count > 0 ? `Open agents (${count})` : 'Open agents'),
+        openTranscriptNavigation: 'Open transcript navigation',
         participants: {
             to: 'To',
             lead: 'Lead',
@@ -4812,6 +4928,90 @@ export const en = {
             executionRun: ({ runId }: { runId: string }) => `Run ${runId}`,
             cardTo: ({ label }: { label: string }) => `To: ${label}`,
             unsupportedAttachmentsOrReviewComments: 'Sending to a recipient currently doesn’t support attachments or review comments.',
+        },
+        // Agent-activity row vocabulary. Status is rendered as a translated word, never as a raw
+        // enum, so colour is never the only carrier of an abnormal state.
+        agentActivity: {
+            composer: {
+                workflowsWithAgents: ({ workflows, agents }: { workflows: number; agents: number }) =>
+                    `${workflows} ${workflows === 1 ? 'workflow' : 'workflows'}, ${agents} ${agents === 1 ? 'agent' : 'agents'}`,
+                workflowsRunning: ({ count }: { count: number }) => (count === 1 ? '1 workflow running' : `${count} workflows running`),
+                subagentsWorking: ({ count }: { count: number }) => (count === 1 ? '1 subagent working' : `${count} subagents working`),
+                backgroundTasksRunning: ({ count }: { count: number }) => (count === 1 ? '1 background command running' : `${count} background commands running`),
+            },
+            untitled: 'Unnamed agent',
+            screenTitle: 'Agents',
+            transcriptScreenTitle: 'Agent transcript',
+            menuTitle: 'Agent actions',
+            row: {
+                a11yLabel: ({ title, status }: { title: string; status: string }) => `${title}, ${status}`,
+                expand: ({ title }: { title: string }) => `Show recent activity for ${title}`,
+                collapse: ({ title }: { title: string }) => `Hide recent activity for ${title}`,
+            },
+            staleness: {
+                quiet: 'No recent update',
+                stale: ({ minutes }: { minutes: number }) => `No update for over ${minutes} min`,
+            },
+            // The session fact, stated ONCE beside the work rather than rewritten into every row
+            // (RULING-16). Each line reports what the runtime told us and hedges only the part we
+            // genuinely cannot observe — never "these agents failed", which nothing has said.
+            sessionNotice: {
+                stopped: 'This session stopped — anything still shown may no longer be running.',
+                stoppedAuth: 'This session stopped because its sign-in expired — anything still shown may no longer be running.',
+                unobserved: 'This session is no longer being observed — anything still shown may no longer be running.',
+            },
+            backgroundTask: {
+                title: 'Background command',
+                statusWithDuration: ({ status, duration }: { status: string; duration: string }) => `${status} · ${duration}`,
+                openCommand: 'Open the command in the transcript',
+            },
+            preview: {
+                openDetails: 'Open details',
+                empty: 'Nothing recorded yet',
+            },
+            status: {
+                queued: 'Queued',
+                starting: 'Starting',
+                running: 'Running',
+                waiting: 'Awaiting approval',
+                blocked: 'Blocked',
+                succeeded: 'Succeeded',
+                failed: 'Failed',
+                timedOut: 'Timed out',
+                cancelled: 'Cancelled',
+                unknown: 'Unknown',
+            },
+            time: {
+                staleA11y: ({ duration }: { duration: string }) => `${duration} elapsed, no recent update`,
+                hoursMinutes: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours}h ${minutes}m`,
+                elapsedA11y: ({ duration }: { duration: string }) => `Running for ${duration}`,
+                totalA11y: ({ duration }: { duration: string }) => `Took ${duration}`,
+            },
+            action: {
+                openFull: 'Open full view',
+                openAdvanced: 'Advanced details',
+                send: 'Send message',
+                stop: 'Stop',
+                delete: 'Delete',
+                deleteConfirmTitle: 'Delete this agent?',
+                deleteConfirmMessage: ({ title }: { title: string }) => `${title} will be removed from this session.`,
+                deleteConfirmAction: 'Delete',
+                deleteTeam: 'Delete team',
+                deleteTeamConfirmTitle: 'Delete this team?',
+                deleteTeamConfirmMessage: 'Every teammate in this team will be shut down. This cannot be undone.',
+                deleteTeamConfirmAction: 'Delete team',
+            },
+            section: {
+                working: 'Working',
+                finished: 'Finished',
+            },
+            list: {
+                showAllFinished: ({ count }: { count: number }) => `Show all ${count}`,
+            },
+            empty: {
+                firstUseTitle: 'Your agents will show up here',
+                firstUseSubtitle: 'Launch one and you can follow what it’s doing, how long it has taken, and the moment it needs you.',
+            },
         },
         subagents: {
             messages: {
@@ -4833,6 +5033,7 @@ export const en = {
                 recent: 'Recent',
                 emptyActive: 'No active agents.',
                 emptyRecent: 'No recent agents yet.',
+                tabWithRunningCount: ({ count }: { count: number }) => `Agents, ${count} running`,
                 openFull: 'Open full view',
                 openAdvancedRun: 'Advanced details',
                 send: 'Send message',
@@ -4857,6 +5058,10 @@ export const en = {
                 launchTeammateA11y: 'Launch teammate',
                 launchTeammateAction: 'Launch teammate',
                 typeFact: ({ value }: { value: string }) => `Type: ${value}`,
+                nativeTypeFact: ({ value }: { value: string }) => `Native type: ${value}`,
+                modelFact: ({ value }: { value: string }) => `Model: ${value}`,
+                agentIdFact: ({ value }: { value: string }) => `Agent ID: ${value}`,
+                durationFact: ({ value }: { value: string }) => `Duration: ${value}`,
                 providerFact: ({ value }: { value: string }) => `Provider: ${value}`,
                 backendFact: ({ value }: { value: string }) => `Backend: ${value}`,
                 intentFact: ({ value }: { value: string }) => `Intent: ${value}`,
@@ -4887,6 +5092,7 @@ export const en = {
         detailsPanel: {
             emptyHint: 'Open a file or diff from the right panel.',
             unsupportedTab: 'Unsupported details tab.',
+            transcriptFromOtherSession: 'This transcript belongs to another session.',
             closeA11y: 'Close details',
             openRightSidebarA11y: 'Open right sidebar',
             closeRightSidebarA11y: 'Close right sidebar',
@@ -5023,6 +5229,41 @@ export const en = {
 	            title: 'Pending messages',
 	            indicator: ({ count }: { count: number }) => `Pending (${count})`,
 	            badgeLabel: ({ count }: { count: number }) => (count > 0 ? `Pending (+${count})` : 'Pending'),
+	            deliveryStatus: {
+	                blocked: 'Blocked',
+	                deliveryUncertain: 'Delivery state uncertain',
+	                delivering: 'Delivering',
+	                queuedInClaude: 'Queued in Claude',
+	                queued: 'Queued',
+	                sending: 'Sending…',
+	                sendFailed: 'Not sent',
+	                waitingForTurn: 'Waiting',
+	            },
+	            sendFailedNotice: 'Message not sent. Check your connection, then retry.',
+	            waitingForTurnNotice: ({ minutes }: { minutes: number }) =>
+	                minutes > 0
+	                    ? `Waiting for the current task to finish · running ${minutes}m`
+	                    : 'Waiting for the current task to finish',
+	            waitingForPredecessorNotice: 'Waiting for an earlier pending message',
+	            waitingForRuntimeActivityNotice: 'Waiting for runtime activity to finish',
+	            runtimeActivityUnknownNotice: 'Waiting for runtime activity status',
+	            waitingForRuntimeNotice: 'Waiting for the runtime to reconnect',
+	            deliveryBlockedReasons: {
+	                terminalComposerDraft: 'Terminal draft is blocking delivery',
+	                runtimeConfigBlocked: 'Runtime settings are blocking delivery',
+	                providerUnavailableBeforeAcceptance: 'Provider is temporarily unavailable',
+	                ambiguousTerminalDelivery: 'Delivery state is ambiguous',
+	                terminalHostUnreachable: 'Terminal host is unreachable',
+	                runtimeDisposedBeforeDelivery: 'Runtime closed before delivery',
+	                invalidPromptText: 'Message text cannot be delivered',
+	                manualUserHandled: 'Marked handled',
+	                attemptExpiredBeforeWrite: 'Delivery attempt expired before writing',
+	                providerRejectedBeforeAcceptance: 'Provider rejected the message',
+	                steeringUnavailable: 'The active provider cannot accept steering',
+	                unsupportedAction: 'This message uses an unsupported delivery action',
+	                payloadTooLarge: 'Message is too large',
+	                unknown: 'Delivery status needs review',
+	            },
 	            empty: 'No pending messages.',
 	            decryptFailed: 'Couldn’t decrypt this pending message.',
 	            nonSteerableNotice: 'The current turn can’t accept steering after this mode change. It will run next, or use Send now to interrupt.',
@@ -5041,7 +5282,15 @@ export const en = {
                 viewLess: 'View less',
                 steerNow: 'Steer now',
                 sendNow: 'Send now',
+                sendToAgentNow: 'Send to agent now',
                 sendNowInterrupt: 'Send now (interrupt)',
+                interruptAndRunNow: 'Interrupt and run now',
+                continueWaiting: 'Continue waiting',
+                dismiss: 'Dismiss',
+                sendAsNew: 'Send as new',
+                retryDelivery: 'Retry',
+                retrySend: 'Retry send',
+                markHandled: 'Mark handled',
                 requeue: 'Re-queue',
             },
             editPrompt: {
@@ -5051,10 +5300,29 @@ export const en = {
                 title: 'Remove pending message?',
                 body: 'This will delete the pending message.',
             },
+            discardConfirm: {
+                title: 'Discard pending message?',
+                body: 'This keeps a discarded copy and stops Happier from delivering this pending message.',
+            },
+            markHandledConfirm: {
+                title: 'Mark pending message handled?',
+                body: 'Use this only if the provider already handled the message or you no longer want Happier to deliver it.',
+            },
+            dismissDeliveryConfirm: {
+                title: 'Dismiss uncertain delivery?',
+                body: 'This archives the original message without sending it again. If the provider later confirms delivery, Happier can still add the original message to the transcript.',
+            },
+            sendAsNewConfirm: {
+                title: 'Send this message as new?',
+                body: 'This archives the uncertain delivery and queues a new copy. The provider may still have received the original, so it could be handled twice.',
+            },
             sendConfirm: {
                 title: 'Send now?',
                 interruptTitle: 'Send now (interrupt)?',
+                backgroundTitle: 'Send to agent now?',
                 body: 'This will stop the current turn and send this message immediately.',
+                backgroundBody: 'The agent will receive this now. Background work will continue.',
+                resumeBody: 'This will resume the session and send this message immediately.',
             },
             discarded: {
                 title: 'Discarded messages',
@@ -5069,11 +5337,16 @@ export const en = {
             errors: {
                 updateFailed: 'Failed to update pending message',
                 deleteFailed: 'Failed to delete pending message',
+                discardFailed: 'Failed to discard pending message',
                 sendFailed: 'Failed to send pending message',
                 restoreFailed: 'Failed to restore discarded message',
                 deleteDiscardedFailed: 'Failed to delete discarded message',
                 sendDiscardedFailed: 'Failed to send discarded message',
                 reorderFailed: 'Failed to reorder pending messages',
+                retrySendFailed: 'Failed to retry sending the message',
+                retryDeliveryFailed: 'Failed to retry pending delivery',
+                actionConflict: 'This pending message changed while the action was being applied. Review its current status and try again.',
+                markHandledFailed: 'Failed to mark pending delivery handled',
                 clearTerminalComposerFailed: 'Failed to clear the terminal composer',
                 clearTerminalComposerUnsupported: 'This session does not support clearing the terminal composer from Happier.',
                 clearTerminalComposerUnsafe: 'The terminal composer cannot be cleared safely right now.',
@@ -5098,6 +5371,7 @@ export const en = {
             canManageDescription: 'Can manage sharing settings.',
             manageSharingDenied: 'You don’t have permission to manage sharing settings for this session.',
             stopSharing: 'Stop sharing',
+            stopSharingDescription: 'Revokes this person’s direct access.',
             recipientMissingKeys: 'This user hasn’t registered encryption keys yet.',
             permissionApprovals: 'Can approve permissions',
             allowPermissionApprovals: 'Allow permission approvals',
@@ -5112,7 +5386,7 @@ export const en = {
 
             publicLink: 'Public link',
             publicLinkActive: 'Public link is active',
-            publicLinkDescription: 'Create a link that lets anyone view this session.',
+            publicLinkDescription: 'Anyone with this link can view anonymously. Delete or regenerate it to revoke access for everyone.',
             createPublicLink: 'Create public link',
             regeneratePublicLink: 'Regenerate public link',
             deletePublicLink: 'Delete public link',
@@ -5395,10 +5669,18 @@ export const en = {
             title: 'Retention policy',
             summary: 'Summary',
             keepForever: 'No automatic deletion',
+            automaticDeletionEnabled: 'Automatic deletion is enabled',
+            detailsUnavailable: 'Automatic deletion is enabled, but this client cannot display every active policy',
+            singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
+            relayCleanupSummary: ({ policies }: { policies: string }) => `This relay cleans up ${policies}.`,
+            relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain} after ${count} ${plural({ count, singular: 'day', plural: 'days' })}`,
+            relayCleanupInactiveSessionsAfterDays: ({ count }: { count: number }) => `inactive sessions after ${count} ${plural({ count, singular: 'day', plural: 'days' })}`,
             deleteInactiveSessionsDays: ({ count }: { count: number }) => `Deletes inactive sessions after ${count} ${plural({ count, singular: 'day', plural: 'days' })}.`,
             deleteOlderThanDays: ({ count }: { count: number }) => `Deletes data after ${count} ${plural({ count, singular: 'day', plural: 'days' })}.`,
             sessionNotice: ({ count }: { count: number }) => `This relay deletes inactive sessions after ${count} ${plural({ count, singular: 'day', plural: 'days' })} of inactivity.`,
             sessions: 'Sessions',
+            sessionMessages: 'Session transcripts',
+            sidechainMessages: 'Subagent transcripts',
             accountChanges: 'Account changes',
             voiceSessionLeases: 'Voice session leases',
             feedItems: 'Feed items',
@@ -5570,6 +5852,7 @@ export const en = {
         killSessionConfirm: 'Are you sure you want to terminate this session?',
         stopSession: 'Stop Session',
         stopSessionConfirm: 'Are you sure you want to stop this session?',
+        stopSessionControlUnavailable: 'Happier could not reach the session controls. Make sure the session machine and daemon are online, then try again.',
         archiveSession: 'Archive Session',
         archiveSessionConfirm: 'Are you sure you want to archive this session?',
         workspaceTitle: 'Workspace',
@@ -5608,6 +5891,8 @@ export const en = {
         kiroSessionId: 'Kiro Session ID',
         kiroSessionIdCopied: 'Kiro Session ID copied to clipboard',
         customAcpSessionId: 'Custom ACP Session ID',
+        grokSessionId: "Grok Session ID",
+        grokSessionIdCopied: "Grok Session ID copied to clipboard",
         customAcpSessionIdCopied: 'Custom ACP Session ID copied to clipboard',
         piSessionId: 'Pi Session ID',
         piSessionIdCopied: 'Pi Session ID copied to clipboard',
@@ -5754,6 +6039,15 @@ export const en = {
     },
 
     agentInput: {
+        // Section headers for the composer suggestion picker. One per suggestion
+        // kind; the registry maps kind -> key, mirroring markdown.slash.groups.*.
+        suggestionGroups: {
+            files: 'Files',
+            plugins: 'Plugins',
+            sessions: 'Sessions',
+            skills: 'Skills',
+            commands: 'Commands',
+        },
         nonSteerableSend: {
             title: 'Agent is busy',
             modeChangeMessage: 'Changing the permission mode can\'t be applied to the running turn.',
@@ -5776,6 +6070,7 @@ export const en = {
             usedCount: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} used`,
             duration: {
                 now: 'now',
+                outdated: 'outdated',
                 daysHours: ({ days, hours }: { days: number; hours: number }) => `${days}d ${hours}h`,
                 hoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }) => `${hours}h ${minutes}m`,
                 hours: ({ hours }: { hours: number }) => `${hours}h`,
@@ -5827,6 +6122,7 @@ export const en = {
             pi: 'Pi',
             copilot: 'Copilot',
             cursor: 'Cursor',
+            grok: 'Grok',
         },
         auggieIndexingChip: {
             on: 'Indexing on',
@@ -5836,6 +6132,10 @@ export const en = {
               title: 'MODEL',
               useCliSettings: 'Use CLI settings',
               configureInCli: 'Configure models in CLI settings',
+              running: ({ model }: { model: string }) => `Running: ${model}`,
+              lastUsed: ({ model }: { model: string }) => `Last used: ${model}`,
+              lastReported: ({ model }: { model: string }) => `Last reported: ${model}`,
+              selectedForResume: 'The selected model will be used when this session resumes.',
               extendedContextToggleLabel: '1M context',
               extendedContextToggleDescription: 'Use the extended 1M-token context window for this model.',
               extendedContextLabel: ({ model }: { model: string }) => `${model} (1M)`,
@@ -5955,6 +6255,9 @@ export const en = {
         expand: 'Expand/collapse',
         input: 'Input',
         output: 'Output',
+        payloadTruncated: 'Large payload truncated for performance.',
+        showFullPayload: 'Show full payload',
+        showLessPayload: 'Show less',
     },
 
     tools: {
@@ -5963,12 +6266,26 @@ export const en = {
             elapsedSeconds: ({ seconds }: { seconds: string }) => `${seconds}s`,
             unknownToolTitle: 'Tool',
         },
+        taskOutputView: {
+            waitingForTask: 'Waiting for the background task to finish.',
+        },
+        taskStopView: {
+            stoppedCommandLabel: 'Stopped command',
+        },
         bashView: {
+            backgroundNotice: 'Sent to the background — this step does not wait for it to finish.',
             commandDiffTitle: 'Raw command',
             commandDiffHint: 'The command preview hides a short environment-cleanup prefix to keep it readable. The full raw command is shown below.',
         },
         webFetch: {
             httpStatus: ({ status }: { status: number }) => `HTTP ${status}`,
+        },
+        codeSearch: {
+            aggregateMatchUnavailable: '1 match; details were not provided.',
+            aggregateMatchesUnavailable: ({ count }: { count: number }) => `${count} matches; details were not provided.`,
+            aggregateFilesUnavailable: ({ count }: { count: number }) => `${count} files; details were not provided.`,
+            detailsUnavailable: 'Search completed; details were not provided.',
+            truncated: 'Results may be truncated.',
         },
         fullView: {
             description: 'Description',
@@ -5995,6 +6312,36 @@ export const en = {
             planTitle: 'Plan',
             delegateTitle: 'Delegate',
             reviewDigestTitle: 'Review digest',
+        },
+        workflowActivityView: {
+            untitled: 'Workflow',
+            loading: 'Loading…',
+            unavailable: 'Details unavailable',
+            noDetail: 'No further detail',
+            statusActive: 'Running',
+            statusComplete: 'Complete',
+            statusFailed: 'Failed',
+            statusStopped: 'Stopped',
+            statusInterrupted: 'Interrupted',
+            statusBlocked: 'Blocked',
+            statusCancelled: 'Cancelled',
+            statusUnknown: 'Unknown',
+            phaseUntitled: 'Phase',
+            phaseActivity: 'Activity',
+            phaseComplete: ({ complete, total }: { complete: number; total: number }) => `${complete}/${total} complete`,
+            phaseActive: ({ count }: { count: number }) => `${count} active`,
+            phaseFailed: ({ count }: { count: number }) => `${count} failed`,
+            phaseBlocked: ({ count }: { count: number }) => `${count} blocked`,
+            phasePending: ({ count }: { count: number }) => `${count} pending`,
+            phaseSummary: ({ index, total, complete, agents }: { index: number; total: number; complete: number; agents: number }) =>
+                `Phase ${index} of ${total} · ${complete}/${agents} agents`,
+            agentFraction: ({ complete, total }: { complete: number; total: number }) => `${complete}/${total} agents`,
+            agentsCount: ({ count }: { count: number }) => `${count} agents`,
+            tokens: ({ tokens }: { tokens: string }) => `${tokens} tokens`,
+            toolCalls: ({ count }: { count: number }) => `${count} tools`,
+            showMore: ({ count }: { count: number }) => `Show ${count} more`,
+            detailShowMore: 'Show more',
+            detailShowLess: 'Show less',
         },
         changeTitleView: {
             titleLabel: 'Title',
@@ -6074,18 +6421,33 @@ export const en = {
             turnDiff: 'Turn Diff',
             question: 'Question',
             changeTitle: 'Change Title',
+            switchMode: 'Switch mode',
+            taskOutput: 'Task output',
+            taskStop: 'Stop task',
         },
         geminiExecute: {
             cwd: ({ cwd }: { cwd: string }) => `📁 ${cwd}`,
         },
         askUserQuestion: {
             submit: 'Submit Answer',
+            submissionFailures: {
+                update: 'Update Happier CLI, then try again.',
+                reconnect: 'Reconnect this session, then try again.',
+                retry: 'The answer could not be accepted. Review it and try again.',
+            },
+            claudeDialogNotice: {
+                header: 'Claude dialog',
+                question: 'Claude is showing a dialog. Open the terminal to review it and choose how to continue.',
+                openTerminal: 'Open Claude terminal',
+                description: 'Review and answer the dialog in Claude’s terminal.',
+            },
             multipleQuestions: ({ count }: { count: number }) => `${count} questions`,
             other: 'Other',
             otherDescription: 'Type your own answer',
             otherPlaceholder: 'Type your answer...',
         },
         exitPlanMode: {
+        selectionLimit: ({ count }: { count: number }) => `Select up to ${count} answers. Deselect one to choose another.`,
             approve: 'Approve Plan',
             reject: 'Reject',
             requestChanges: 'Request changes',
@@ -6441,6 +6803,7 @@ export const en = {
                 generatedImageA11y: ({ name }: { name: string }) => `Open generated image ${name}`,
                 attachmentImageA11y: ({ name }: { name: string }) => `Open attached image ${name}`,
                 toolArtifactImageA11y: ({ name }: { name: string }) => `Open tool artifact image ${name}`,
+                imageUnavailable: 'Image unavailable',
             },
             cannotDisplayBinary: 'Cannot display binary file content',
             diff: 'Diff',
@@ -6725,7 +7088,7 @@ export const en = {
         invalidActionSubtitle: 'This action is no longer available in this build.',
         configureActionAccessibilityLabel: 'Configure action',
         approvalHelpTitle: 'Approval modes',
-        approvalHelpBody: '"Ask first" shows a confirmation before this action runs from that surface. "Allowed" lets the action run from that surface without an approval prompt.',
+        approvalHelpBody: '"Ask first" creates an approval request before this action runs from that surface. For AI sessions, that request is queued in the existing approvals surface and does not wait in a modal. "Allowed" lets the action run from that surface without an approval request.',
         toolExposure: {
             title: 'Tool exposure',
             footer: 'Controls whether eligible actions appear as direct tools or stay available through action discovery only.',
@@ -6748,6 +7111,98 @@ export const en = {
                 direct: {
                     title: 'Direct tool',
                     subtitle: 'Register this action as a direct callable tool.',
+                },
+            },
+        },
+        spawnPolicy: {
+            title: 'AI session spawn policy',
+            footer: 'These controls apply only when an assistant inside a Happier session creates another session. Inherited parent settings remain allowed; denied items reject explicit overrides with a clear error.',
+            toggles: {
+                allowCustomDirectory: {
+                    title: 'Custom directory',
+                    subtitle: 'Allow the assistant to choose a different working directory.',
+                },
+                allowCrossMachine: {
+                    title: 'Cross-machine targets',
+                    subtitle: 'Allow creation on another available machine.',
+                },
+                allowBackendTargetOverride: {
+                    title: 'Backend target',
+                    subtitle: 'Allow choosing a different agent or backend target.',
+                },
+                allowModelOverride: {
+                    title: 'Model',
+                    subtitle: 'Allow choosing a model instead of inheriting the parent model.',
+                },
+                allowPermissionModeOverride: {
+                    title: 'Permission mode',
+                    subtitle: 'Allow lower or equal permission overrides. Escalation is still rejected.',
+                },
+                allowAgentModeOverride: {
+                    title: 'Agent mode',
+                    subtitle: 'Allow choosing an agent/session mode.',
+                },
+                allowConfigOptionOverrides: {
+                    title: 'Config options',
+                    subtitle: 'Allow provider options such as thinking effort and workflows.',
+                },
+                allowProfileOverride: {
+                    title: 'Profile',
+                    subtitle: 'Allow selecting a profile by id without exposing profile secrets.',
+                },
+                allowEnvironmentVariables: {
+                    title: 'Environment variables',
+                    subtitle: 'Allow explicit environment variables on new sessions.',
+                },
+                allowConnectedServicesOverride: {
+                    title: 'Connected services',
+                    subtitle: 'Allow selecting connected-service bindings by reference.',
+                },
+                allowMcpSelectionOverride: {
+                    title: 'MCP selection',
+                    subtitle: 'Allow overriding inherited MCP server selection.',
+                },
+                allowTranscriptStorageOverride: {
+                    title: 'Transcript storage',
+                    subtitle: 'Allow choosing a compatible transcript storage mode.',
+                },
+            },
+            permissionCeiling: {
+                title: 'Permission ceiling',
+                subtitle: 'Optional extra ceiling below the caller permission.',
+                options: {
+                    inherit: {
+                        title: 'No extra ceiling',
+                        subtitle: 'Use the caller permission as the only ceiling.',
+                    },
+                    default: {
+                        title: 'Default',
+                        subtitle: 'Require normal approval behavior or lower.',
+                    },
+                    acceptEdits: {
+                        title: 'Accept edits',
+                        subtitle: 'Allow automatic edits but not full bypass.',
+                    },
+                    bypassPermissions: {
+                        title: 'Bypass permissions',
+                        subtitle: 'Allow up to full bypass when the caller also has it.',
+                    },
+                    plan: {
+                        title: 'Plan',
+                        subtitle: 'Limit spawned sessions to planning/read-only behavior.',
+                    },
+                    'read-only': {
+                        title: 'Read-only',
+                        subtitle: 'Limit spawned sessions to read-only behavior.',
+                    },
+                    'safe-yolo': {
+                        title: 'Safe yolo',
+                        subtitle: 'Allow safe automatic workspace writes.',
+                    },
+                    yolo: {
+                        title: 'Yolo',
+                        subtitle: 'Allow up to yolo when the caller also has it.',
+                    },
                 },
             },
         },
@@ -6825,12 +7280,12 @@ export const en = {
                 subtitle: 'Shown inside voice action blocks and affordances.',
             },
             session_agent: {
-                title: 'Session agent',
-                subtitle: 'Available to in-session agents as a callable tool.',
+                title: 'AI session',
+                subtitle: 'Controls tools available to the assistant running inside a Happier session.',
             },
             mcp: {
                 title: 'MCP',
-                subtitle: 'Available through the MCP action catalog.',
+                subtitle: 'Controls external MCP clients using the Happier MCP action catalog.',
             },
             cli: {
                 title: 'Session control CLI',
@@ -6850,6 +7305,9 @@ settingsSession: {
 	              tagsTitle: 'Session tags',
 	              tagsEnabledSubtitle: 'Tag controls visible in the session list',
 	              tagsDisabledSubtitle: 'Tag controls hidden',
+               agentActivityCountTitle: 'Agent count in rows',
+               agentActivityCountEnabledSubtitle: 'Show how many agents are working on each session',
+               agentActivityCountDisabledSubtitle: 'Keep session rows free of agent counts',
 	              workingStatusAnimatedTextTitle: 'Animated working text',
 	              workingStatusAnimatedTextEnabledSubtitle: 'Rotate working verbs while a session is running',
 	              workingStatusAnimatedTextDisabledSubtitle: 'Show a steady working... label while a session is running',
@@ -6891,6 +7349,14 @@ settingsSession: {
 	              identityDisplayAgentLogoSubtitle: 'Show the agent logo for each session.',
 	              identityDisplayNoneTitle: 'None',
 	              identityDisplayNoneSubtitle: 'Hide the identity marker in session rows.',
+	              headerIdentityDisplayTitle: 'In-session header identity',
+	              headerIdentityDisplaySubtitle: 'Choose what appears before the title inside a session.',
+	              headerIdentityDisplayAvatarTitle: 'Avatar',
+	              headerIdentityDisplayAvatarSubtitle: 'Show the session’s generated avatar.',
+	              headerIdentityDisplayAgentLogoTitle: 'Agent logo',
+	              headerIdentityDisplayAgentLogoSubtitle: 'Show the logo of the agent running the session.',
+	              headerIdentityDisplayNoneTitle: 'None',
+	              headerIdentityDisplayNoneSubtitle: 'Start the header with the session title.',
 	              activeColorTitle: 'Active title color',
 	              activeColorSubtitle: 'Choose which sessions use the active title color.',
 	              activeColorActivityAndAttentionTitle: 'Activity and attention',
@@ -6988,6 +7454,14 @@ settingsSession: {
               title: 'Runtime and terminal',
               entrySubtitle: 'Tmux, Windows terminal windows, and Terminal Connect compatibility.',
           },
+          banners: {
+              title: 'Banners',
+              footer: 'Banners above the composer can be collapsed into a status badge. Choose whether that stays remembered.',
+              rememberVisibilityTitle: 'Remember banner visibility',
+              rememberVisibilitySubtitle: 'Banners you close stay closed in every session on this device.',
+              resetHiddenTitle: 'Show all hidden banners',
+              resetHiddenSubtitle: 'Clear the banners hidden on this device.',
+          },
           inputBehavior: {
               title: 'Input behavior',
               footer: 'Configure Enter-to-send and message history behavior.',
@@ -7012,6 +7486,14 @@ settingsSession: {
                   oneAtATimeSubtitle: 'Process only the next pending message each time the agent becomes ready.',
                   drainAllTitle: 'Drain all pending messages',
                   drainAllSubtitle: 'Process all queued messages together at the next ready boundary (legacy behavior).',
+              },
+              pendingDeliveryTimingTitle: 'Pending queue timing',
+              pendingDeliveryTimingFooter: 'Choose whether queued pending messages send after the foreground reply is ready, or wait until tracked background runtime activity is idle.',
+              pendingDeliveryTiming: {
+                  afterForegroundReadyTitle: 'After foreground reply',
+                  afterForegroundReadySubtitle: 'Send queued messages as soon as the agent can accept the next turn.',
+                  afterRuntimeIdleTitle: 'After runtime is idle',
+                  afterRuntimeIdleSubtitle: 'Keep queued messages waiting while tracked background runtime activity is still active.',
               },
               busySteerPolicyTitle: 'When the agent is busy (steer-capable)',
               busySteerPolicyFooter: 'If the agent supports in-flight steering, choose whether messages steer immediately or go to Pending first.',
@@ -7232,16 +7714,6 @@ settingsSession: {
                     thinkingPulseStaleSubtitle: ({ value }: { value: string }) => `Current: ${value}ms`,
                     thinkingPulseStalePromptTitle: 'Thinking stale window (ms)',
                     thinkingPulseStalePromptBody: 'Hide active thinking after this long without updates.',
-                    listImplementationTitle: 'Transcript list implementation',
-                    listImplementationSubtitle: 'Switch between list engines (debug).',
-                    listImplementation: {
-                        flashTitle: 'FlashList v2 (recommended)',
-                        flashSubtitle: 'Best performance for long transcripts.',
-                        flashInvertedTitle: 'FlashList v2 (inverted)',
-                        flashInvertedSubtitle: 'Inverted chat orientation pilot — newest messages anchored at the bottom edge',
-                        legacyTitle: 'Legacy FlatList',
-                        legacySubtitle: 'Fallback for compatibility debugging.',
-                    },
                   toolCallsStrategyTitle: 'Tool calls grouping strategy',
                 toolCallsStrategy: {
                     consecutiveTitle: 'Consecutive tools (default)',
@@ -8926,8 +9398,11 @@ settingsSession: {
     },
 
     message: {
+        sessionReferenceUnavailable: 'Unavailable session',
+        sessionReferenceOpen: ({ name }: { name: string }) => `Open session ${name}`,
         switchedToMode: ({ mode }: { mode: string }) => `Switched to ${mode} mode`,
         discarded: 'Discarded',
+        recoveredHistory: 'Recovered history',
         unknownEvent: 'Unknown event',
         contextCompactionStarted: 'Compacting context...',
         contextCompactionCompleted: 'Context compacted',
@@ -9009,7 +9484,7 @@ settingsSession: {
             yesForTool: "Yes, don't ask again for this tool",
             yesForCommandPrefix: "Yes, don't ask again for this command prefix",
             yesForSubcommand: "Yes, don't ask again for this subcommand",
-            yesForCommandName: "Yes, don't ask again for this command",
+            yesForCommandName: "Yes, allow any matching command this session",
             stop: 'Stop',
             noTellClaude: 'No, and provide feedback',
         }
@@ -9323,6 +9798,8 @@ settingsSession: {
             anthropic: 'Anthropic (Default)',
             deepseek: 'DeepSeek (Reasoner)',
             zai: 'Z.AI (GLM-4.6)',
+            minimax: 'MiniMax (M3)',
+            minimaxCn: 'MiniMax (M3, CN)',
             codex: 'Codex (Default)',
             openai: 'OpenAI (GPT-5)',
             azureOpenai: 'Azure OpenAI',
@@ -9473,6 +9950,7 @@ settingsSession: {
             kiloSubtitleExperimental: 'Kilo CLI (experimental)',
             kiroSubtitleExperimental: 'Kiro CLI (experimental)',
             customAcpSubtitleExperimental: 'Custom ACP CLI (experimental)',
+            grokSubtitleExperimental: "Grok Build CLI (experimental)",
             piSubtitleExperimental: 'Pi CLI (experimental)',
             copilotSubtitleExperimental: 'GitHub Copilot CLI (experimental)',
             cursorSubtitleExperimental: 'Cursor Agent CLI (experimental)',

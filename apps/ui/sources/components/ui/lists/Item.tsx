@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { View, Pressable, StyleProp, ViewStyle, TextStyle, Platform, type AccessibilityRole, type AccessibilityState, type TextProps } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -15,17 +14,25 @@ import {
     WEB_START_ELLIPSIS_CONTENT_TEXT_STYLE,
 } from '@/components/ui/text/webStartEllipsisTextStyles';
 import { useResolvedItemDensity } from '@/components/ui/lists/useResolvedItemDensity';
+import { FocusRing, WEB_FOCUS_OUTLINE_RESET } from '@/components/ui/interaction/FocusRing';
+import { useIsKeyboardModality } from '@/components/ui/interaction/inputModalityStore';
+import { usePressFeedback } from '@/components/ui/interaction/usePressFeedback';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import {
     ITEM_CHEVRON_SIZE,
     ITEM_ICON_BOX_SIZE,
+    ITEM_ICON_GLYPH_SIZE,
+    MENU_ROW_METRICS,
     ITEM_ICON_MARGIN_RIGHT,
+    ITEM_ROW_PADDING_HORIZONTAL,
     ITEM_SUBTITLE_TEXT_METRICS,
     ITEM_TITLE_TEXT_METRICS,
 } from '@/components/ui/lists/itemDensityMetrics';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { Icon } from '@/components/ui/icons/Icon';
+import { ICON_LABEL_OPTICAL_NUDGE_STYLE } from '@/components/ui/icons/iconOpticalAlignment';
 
 function resizeItemIconForDensity(icon: React.ReactNode, iconSize: number): React.ReactNode {
     if (!React.isValidElement(icon) || icon.type === React.Fragment) {
@@ -76,6 +83,14 @@ export interface ItemProps {
      * so the fixed slot doesn't clip its left edge or eat the title gap.
      */
     iconBoxSize?: number;
+    /**
+     * Which surface this row belongs to.
+     *
+     * A menu row is a transient list of choices, not a destination with room to breathe, so it takes
+     * the flat {@link MENU_ROW_METRICS} — a smaller glyph on a shorter row — and ignores the list
+     * density setting entirely. See that constant for why density has no business reaching a menu.
+     */
+    rowRole?: 'item' | 'menu';
     rightElement?: React.ReactNode;
     onPress?: () => void;
     onDoublePress?: () => void;
@@ -123,25 +138,34 @@ export interface ItemProps {
     copy?: boolean | string;
 }
 
+/**
+ * The menu role's row box, applied over whichever density styles the row would otherwise take.
+ *
+ * Plain objects rather than stylesheet entries because they carry no theme and must win the cascade
+ * wherever they are appended; see {@link MENU_ROW_METRICS} for why a menu ignores density at all.
+ */
+const MENU_ROW_HEIGHT_STYLE = { minHeight: MENU_ROW_METRICS.minHeightPx } as const;
+const MENU_ROW_PADDING_STYLE = { paddingVertical: MENU_ROW_METRICS.paddingVerticalPx } as const;
+
 const stylesheet = StyleSheet.create((theme, runtime) => ({
     container: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 16,
+        paddingHorizontal: ITEM_ROW_PADDING_HORIZONTAL.comfortable,
         minHeight: Platform.select({ ios: 44, default: 56 }),
     },
     containerCompact: {
-        paddingHorizontal: 12,
+        paddingHorizontal: ITEM_ROW_PADDING_HORIZONTAL.compact,
         // Compact rows are used heavily in right rails (files/SCM) and should feel editor-like on web/tablet.
         // Keep iOS slightly taller for touch affordance, but reduce desktop web density.
         minHeight: Platform.select({ ios: 38, default: 34 }),
     },
     containerCozy: {
-        paddingHorizontal: 14,
+        paddingHorizontal: ITEM_ROW_PADDING_HORIZONTAL.cozy,
         minHeight: Platform.select({ ios: 42, default: 44 }),
     },
     containerTight: {
-        paddingHorizontal: 10,
+        paddingHorizontal: ITEM_ROW_PADDING_HORIZONTAL.tight,
         // Tight density is reserved for file trees / editor-like lists where users expect high information density.
         // Keep iOS sufficiently tall for touch affordance.
         minHeight: Platform.select({ ios: 36, default: 24 }),
@@ -176,6 +200,8 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
         height: ITEM_ICON_BOX_SIZE.comfortable,
         alignItems: 'center',
         justifyContent: 'center',
+        // Optical, not geometric — see ICON_LABEL_OPTICAL_NUDGE_STYLE.
+        ...ICON_LABEL_OPTICAL_NUDGE_STYLE,
     },
     iconContainerCompact: {
         marginRight: 10,
@@ -273,7 +299,6 @@ export const Item = React.memo<ItemProps>((props) => {
     const isIOS = Platform.OS === 'ios';
     const isAndroid = Platform.OS === 'android';
     const isWeb = Platform.OS === 'web';
-    const hoverBackgroundColor = theme.colors.surface.pressed;
     const copyFeedback = useTemporaryCopyFeedback();
     
     const {
@@ -288,6 +313,7 @@ export const Item = React.memo<ItemProps>((props) => {
         icon,
         leftElement,
         iconBoxSize,
+    rowRole,
         rightElement,
         onPress,
         onDoublePress,
@@ -434,37 +460,62 @@ export const Item = React.memo<ItemProps>((props) => {
     const isCompact = resolvedDensity === 'compact';
     const isTight = resolvedDensity === 'tight';
     const hasSubtitleContent = Boolean(subtitle || subtitleAccessory);
-    const containerPadding = hasSubtitleContent
-        ? (isTight ? styles.containerWithSubtitleTight : isCompact ? styles.containerWithSubtitleCompact : isCozy ? styles.containerWithSubtitleCozy : styles.containerWithSubtitle)
-        : (isTight ? styles.containerWithoutSubtitleTight : isCompact ? styles.containerWithoutSubtitleCompact : isCozy ? styles.containerWithoutSubtitleCozy : styles.containerWithoutSubtitle);
+    const isMenuRow = rowRole === 'menu';
+    const containerPadding = isMenuRow
+        ? MENU_ROW_PADDING_STYLE
+        : hasSubtitleContent
+            ? (isTight ? styles.containerWithSubtitleTight : isCompact ? styles.containerWithSubtitleCompact : isCozy ? styles.containerWithSubtitleCozy : styles.containerWithSubtitle)
+            : (isTight ? styles.containerWithoutSubtitleTight : isCompact ? styles.containerWithoutSubtitleCompact : isCozy ? styles.containerWithoutSubtitleCozy : styles.containerWithoutSubtitle);
     const containerCore = isTight
-        ? [styles.container, styles.containerTight]
+        ? [styles.container, styles.containerTight, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null]
         : isCompact
-            ? [styles.container, styles.containerCompact]
+            ? [styles.container, styles.containerCompact, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null]
             : isCozy
-                ? [styles.container, styles.containerCozy]
-            : styles.container;
+                ? [styles.container, styles.containerCozy, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null]
+            : [styles.container, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null];
     const iconBoxSizeOverride = iconBoxSize != null
         ? { width: iconBoxSize, height: iconBoxSize }
         : null;
-    const iconContainerStyle = isTight
-        ? [styles.iconContainer, styles.iconContainerTight, iconBoxSizeOverride]
-        : isCompact
-            ? [styles.iconContainer, styles.iconContainerCompact, iconBoxSizeOverride]
-            : isCozy
-                ? [styles.iconContainer, styles.iconContainerCozy, iconBoxSizeOverride]
-            : [styles.iconContainer, iconBoxSizeOverride];
     const resolvedIconDensity = isTight ? 'tight' : isCompact ? 'compact' : isCozy ? 'cozy' : 'comfortable';
     const chevronSize = ITEM_CHEVRON_SIZE[resolvedIconDensity];
-    const resolvedIconBoxSize = ITEM_ICON_BOX_SIZE[resolvedIconDensity];
-    const resolvedIconMarginRight = ITEM_ICON_MARGIN_RIGHT[resolvedIconDensity];
-    const sizedIcon = React.useMemo(() => resizeItemIconForDensity(icon, resolvedIconBoxSize), [icon, resolvedIconBoxSize]);
+    // One glyph size for every row in a list, whether or not that row happens to carry a subtitle.
+    // Branching on the subtitle is tempting — it is what makes the icon span exactly two lines — but
+    // a settings list mixes one- and two-line rows freely, and sizing each row to its own content
+    // produces a column of icons that step up and down. Uniform beats locally-perfect here.
+    const resolvedIconGlyphSize = isMenuRow
+        ? MENU_ROW_METRICS.iconGlyphSizePx
+        : ITEM_ICON_GLYPH_SIZE[resolvedIconDensity];
+    // The container must not clip a glyph that is now taller than the nominal box.
+    const resolvedIconBoxSize = isMenuRow
+        ? MENU_ROW_METRICS.iconBoxSizePx
+        : Math.max(ITEM_ICON_BOX_SIZE[resolvedIconDensity], resolvedIconGlyphSize);
+    const menuIconBoxStyle = isMenuRow
+        ? {
+            width: MENU_ROW_METRICS.iconBoxSizePx,
+            height: MENU_ROW_METRICS.iconBoxSizePx,
+            marginRight: MENU_ROW_METRICS.iconMarginRightPx,
+        }
+        : null;
+    // `iconBoxSizeOverride` stays last: a call site that reserved room for an oversized leading
+    // element (a capacity gauge, an avatar) means it whatever surface the row belongs to.
+    const iconContainerStyle = isTight
+        ? [styles.iconContainer, styles.iconContainerTight, menuIconBoxStyle, iconBoxSizeOverride]
+        : isCompact
+            ? [styles.iconContainer, styles.iconContainerCompact, menuIconBoxStyle, iconBoxSizeOverride]
+            : isCozy
+                ? [styles.iconContainer, styles.iconContainerCozy, menuIconBoxStyle, iconBoxSizeOverride]
+            : [styles.iconContainer, menuIconBoxStyle, iconBoxSizeOverride];
+
+    const resolvedIconMarginRight = isMenuRow
+        ? MENU_ROW_METRICS.iconMarginRightPx
+        : ITEM_ICON_MARGIN_RIGHT[resolvedIconDensity];
+    const sizedIcon = React.useMemo(() => resizeItemIconForDensity(icon, resolvedIconGlyphSize), [icon, resolvedIconGlyphSize]);
     const titleSizeStyle = isTight ? styles.titleTight : isCompact ? styles.titleCompact : isCozy ? styles.titleCozy : null;
     const subtitleSizeStyle = isTight ? styles.subtitleTight : isCompact ? styles.subtitleCompact : isCozy ? styles.subtitleCozy : null;
     const detailSizeStyle = isTight ? styles.detailTight : isCompact ? styles.detailCompact : isCozy ? styles.detailCozy : null;
     const resizedLeftElement = React.useMemo(
-        () => resizeAccessoryIconForDensity(leftElement ?? null, resolvedIconBoxSize),
-        [leftElement, resolvedIconBoxSize],
+        () => resizeAccessoryIconForDensity(leftElement ?? null, resolvedIconGlyphSize),
+        [leftElement, resolvedIconGlyphSize],
     );
     const leftAccessory = React.useMemo(() => {
         const candidate = resizedLeftElement ?? sizedIcon ?? null;
@@ -475,8 +526,8 @@ export const Item = React.memo<ItemProps>((props) => {
     const chevronAccessory = React.useMemo(() => {
         if (!showAccessory) return null;
         return normalizeNodeForView(
-            <Ionicons
-                name="chevron-forward"
+            <Icon
+                name="caret-right"
                 size={chevronSize}
                 color={theme.colors.text.secondary}
                 style={{ marginLeft: 4 }}
@@ -489,6 +540,31 @@ export const Item = React.memo<ItemProps>((props) => {
         // Keep hover state coherent with disabled/loading changes.
         if (disabled || loading) setIsHovered(false);
     }, [disabled, loading]);
+
+    // Press/hover/selection fills come from the shared mechanism so a row and a control cannot
+    // drift apart, and so nothing here can reach for `opacity` to signal a press.
+    const pressFeedback = usePressFeedback({
+        tone: 'row',
+        disabled: disabled || loading,
+        selected: showSelectedBackground,
+    });
+
+    // React Native has no `:focus-visible`, so the ring is gated on keyboard modality — otherwise
+    // it would flash on every tap.
+    const [isFocused, setIsFocused] = React.useState(false);
+    const isKeyboardModality = useIsKeyboardModality();
+    const handleFocus = React.useCallback(() => setIsFocused(true), []);
+    const handleBlur = React.useCallback(() => setIsFocused(false), []);
+    const focusRingCornerRadii = React.useMemo(() => getItemGroupRowCornerRadii({
+        hasBackground: true,
+        position: rowPosition,
+        radius: groupCornerRadius,
+    }), [groupCornerRadius, rowPosition]);
+    // `Item` is imported by 165 modules, and `FocusRing` runs a Reanimated animated style — an
+    // always-mounted one would cost a shared value per row app-wide for a ring native can never
+    // show (RN surfaces no keypress, so the modality never leaves `pointer` there). `isFocused`
+    // keeps it mounted while it fades out after the user drops back to the pointer.
+    const isFocusRingMounted = isKeyboardModality || isFocused;
 
     const dividerNode = showDivider ? (
         <View
@@ -683,13 +759,9 @@ export const Item = React.memo<ItemProps>((props) => {
     ]);
 
     const resolveInteractiveRowStyle = React.useCallback((pressed: boolean) => {
-        const backgroundColor = (() => {
-            if (pressed && isIOS && !isWeb) return theme.colors.surface.pressedOverlay;
-            if (showSelectedBackground) return theme.colors.surface.selected;
-            // Web-only hover affordance for interactive rows (no hover when disabled).
-            if (isWeb && isHovered && !disabled && !loading) return hoverBackgroundColor;
-            return 'transparent';
-        })();
+        // `isHovered` is only ever set on web (the hover handlers are wired there only).
+        const backgroundColor = pressFeedback.resolveBackgroundColor({ pressed, hovered: isHovered })
+            ?? 'transparent';
 
         const roundedCornersStyle = getItemGroupRowCornerRadii({
             hasBackground: backgroundColor !== 'transparent',
@@ -698,24 +770,25 @@ export const Item = React.memo<ItemProps>((props) => {
         });
 
         return [
+            // `opacity` here is the DISABLED treatment only. Press never lowers it — a pressed row
+            // keeps its content at full strength and moves the fill behind it instead.
             { backgroundColor, opacity: disabled ? 0.5 : 1 },
             isWeb && (disabled || loading) ? ({ cursor: 'not-allowed' } as any) : null,
+            // The platform's own focus outline is replaced by `FocusRing` below, which is
+            // theme-driven, contrast-verified, and only appears for keyboard traversal.
+            isWeb ? WEB_FOCUS_OUTLINE_RESET : null,
             roundedCornersStyle,
             pressableStyle,
         ];
     }, [
         disabled,
         groupCornerRadius,
-        hoverBackgroundColor,
         isHovered,
-        isIOS,
         isWeb,
         loading,
+        pressFeedback,
         pressableStyle,
         rowPosition,
-        showSelectedBackground,
-        theme.colors.surface.pressedOverlay,
-        theme.colors.surface.selected,
     ]);
 
     if (isInteractive) {
@@ -737,6 +810,8 @@ export const Item = React.memo<ItemProps>((props) => {
                     onDoublePress();
                 } : undefined}
                 onPressIn={handlePressIn}
+                onFocus={handleFocus}
+                onBlur={handleBlur}
                 onHoverIn={isWeb && !disabled && !loading ? () => setIsHovered(true) : undefined}
                 onHoverOut={isWeb ? () => setIsHovered(false) : undefined}
                 onMouseDownCapture={isWeb ? (onMouseDownCapture as any) : undefined}
@@ -761,6 +836,17 @@ export const Item = React.memo<ItemProps>((props) => {
                 } : undefined}
             >
                 {content}
+                {isFocusRingMounted ? (
+                    <FocusRing
+                        testID={testID === undefined ? undefined : `${testID}-focus-ring`}
+                        visible={isFocused && isKeyboardModality && !disabled && !loading}
+                        // Inside the row bounds: a grouped list clips, so an outside ring would be
+                        // cut off at the group edge exactly where the first and last rows need it
+                        // most.
+                        placement="inside"
+                        cornerRadii={focusRingCornerRadii}
+                    />
+                ) : null}
             </Pressable>
         );
     }

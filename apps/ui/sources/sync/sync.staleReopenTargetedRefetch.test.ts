@@ -6,26 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // reset discards all paginated older history (and flips isLoaded:false) to repair a single
 // edited row.
 
-const kvStore = vi.hoisted(() => new Map<string, string>());
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            return kvStore.get(key);
-        }
-        set(key: string, value: string) {
-            kvStore.set(key, value);
-        }
-        delete(key: string) {
-            kvStore.delete(key);
-        }
-        clearAll() {
-            kvStore.clear();
-        }
-    }
-
-    return { MMKV };
-});
-
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -80,6 +60,7 @@ import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
 import type { NormalizedMessage } from './typesRaw';
 import type { DeferredTranscriptMarker } from './domains/session/realtime/deferredTranscriptState';
+import { registerSessionVisibleSurface } from './domains/session/activeViewingSession';
 
 type SyncStaleReopenTestAccess = {
     encryption: { getSessionEncryption: (sessionId: string) => null };
@@ -133,6 +114,28 @@ function emptyMessagesResponse(): Response {
     );
 }
 
+function newerMessageResponse(): Response {
+    return new Response(
+        JSON.stringify({
+            messages: [{
+                id: 'mm21',
+                seq: 21,
+                localId: null,
+                sidechainId: null,
+                content: {
+                    t: 'plain',
+                    v: { role: 'user', content: { type: 'text', text: 'missed reply' } },
+                },
+                createdAt: 21,
+                updatedAt: 21,
+            }],
+            hasMore: false,
+            nextAfterSeq: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+}
+
 function messagesRequestPaths(): string[] {
     return requestMock.mock.calls
         .map((call) => String(call[0]))
@@ -170,7 +173,6 @@ async function seedLoadedHistorySession(): Promise<{ sync: typeof import('./sync
 describe('sync stale-reopen targeted refetch (C6/D2a)', () => {
     beforeEach(() => {
         storage.setState(initialStorageState, true);
-        kvStore.clear();
         requestMock.mockReset();
     });
 
@@ -229,5 +231,24 @@ describe('sync stale-reopen targeted refetch (C6/D2a)', () => {
         expect(storage.getState().sessionMessages[SESSION_ID]?.isLoaded).toBe(true);
         expect(storage.getState().sessionMessages[SESSION_ID]?.messageIdsOldestFirst).toHaveLength(20);
         consoleErrorSpy.mockRestore();
+    });
+
+    it('probes the loaded transcript tail once when reopening with a stale equal sequence hint', async () => {
+        const { sync } = await seedLoadedHistorySession();
+        const releaseVisibleSurface = registerSessionVisibleSurface(SESSION_ID);
+        requestMock.mockImplementation((path: string) => Promise.resolve(
+            String(path).includes('afterSeq=20') ? newerMessageResponse() : emptyMessagesResponse(),
+        ));
+
+        try {
+            sync.onSessionVisible(SESSION_ID);
+            await sync.refreshSessionMessages(SESSION_ID);
+
+            expect(messagesRequestPaths().filter((path) => path.includes('afterSeq=20'))).toHaveLength(1);
+            expect(Object.values(storage.getState().sessionMessages[SESSION_ID]?.messagesById ?? {}))
+                .toContainEqual(expect.objectContaining({ realID: 'mm21', seq: 21 }));
+        } finally {
+            releaseVisibleSurface();
+        }
     });
 });

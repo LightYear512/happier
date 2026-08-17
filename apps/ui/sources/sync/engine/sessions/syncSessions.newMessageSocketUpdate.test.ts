@@ -10,6 +10,13 @@ function buildUpdate(params: {
     sid?: string;
     messageId: string;
     messageSeq: number;
+    attentionImpact?: { affectsUnread: boolean; affectsMeaningfulActivity: boolean };
+    sourceCreatedAt?: number;
+    sourceUpdatedAt?: number;
+    transcriptObservationProvenance?: {
+        kind: 'non_dependent';
+        source: 'background' | 'external' | 'sidechain' | 'history';
+    };
     content?: { t: 'encrypted'; c: string } | { t: 'plain'; v: unknown };
 }): {
     id: string;
@@ -21,7 +28,11 @@ function buildUpdate(params: {
         message: {
             id: string;
             seq: number;
-                content: { t: 'encrypted'; c: string } | { t: 'plain'; v: unknown };
+            attentionImpact?: { affectsUnread: boolean; affectsMeaningfulActivity: boolean };
+            sourceCreatedAt?: number;
+            sourceUpdatedAt?: number;
+            transcriptObservationProvenance?: NonNullable<Parameters<typeof buildUpdate>[0]['transcriptObservationProvenance']>;
+            content: { t: 'encrypted'; c: string } | { t: 'plain'; v: unknown };
             localId: null;
             createdAt: number;
             updatedAt: number;
@@ -38,21 +49,17 @@ function buildUpdate(params: {
             message: {
                 id: params.messageId,
                 seq: params.messageSeq,
+                ...(params.attentionImpact ? { attentionImpact: params.attentionImpact } : {}),
+                ...(params.sourceCreatedAt !== undefined ? { sourceCreatedAt: params.sourceCreatedAt } : {}),
+                ...(params.sourceUpdatedAt !== undefined ? { sourceUpdatedAt: params.sourceUpdatedAt } : {}),
+                ...(params.transcriptObservationProvenance !== undefined
+                    ? { transcriptObservationProvenance: params.transcriptObservationProvenance }
+                    : {}),
                 content: params.content ?? { t: 'encrypted', c: 'x' },
                 localId: null,
                 createdAt: 1_000,
                 updatedAt: 1_000,
             },
-        },
-    };
-}
-
-function buildPlainUserTextContent(text = 'hidden'): { t: 'plain'; v: unknown } {
-    return {
-        t: 'plain',
-        v: {
-            role: 'user',
-            content: { type: 'text', text },
         },
     };
 }
@@ -127,7 +134,12 @@ describe('handleNewMessageSocketUpdate', () => {
 
     it('preserves update message seq on normalized messages', async () => {
         const { params, applyMessages } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
+            }),
             isSessionActivelyViewed: () => false,
             isSessionMessagesLoaded: () => true,
         });
@@ -138,9 +150,43 @@ describe('handleNewMessageSocketUpdate', () => {
         expect(normalized?.seq).toBe(2);
     });
 
+    it('preserves authenticated transcript-observation metadata on normalized socket messages', async () => {
+        const { params, applyMessages } = buildHarness({
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                sourceCreatedAt: 100,
+                sourceUpdatedAt: 200,
+                transcriptObservationProvenance: {
+                    kind: 'non_dependent',
+                    source: 'history',
+                },
+            }),
+        });
+
+        await handleNewMessageSocketUpdate(params);
+
+        expect(applyMessages.mock.calls[0]?.[1]?.[0]).toMatchObject({
+            id: 'm2',
+            seq: 2,
+            sourceCreatedAt: 100,
+            sourceUpdatedAt: 200,
+            transcriptObservationProvenance: {
+                kind: 'non_dependent',
+                source: 'history',
+            },
+        });
+    });
+
     it('does not trigger catch-up when message seq is contiguous', async () => {
         const { params, fetchSessions, applyMessages, onMessageGapDetected, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
+            }),
             getSessionMaterializedMaxSeq: () => 1,
             isSessionMessagesLoaded: () => true,
         });
@@ -161,7 +207,12 @@ describe('handleNewMessageSocketUpdate', () => {
             content: { role: 'user', content: { type: 'text', text: 'hi' } },
         }));
         const { params, fetchSessions, applyMessages, applySessions, onMessageGapDetected, markSessionMaterializedMaxSeq } = buildHarness({
-            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
+            }),
             getSessionEncryption: () => ({ decryptMessage }),
             getSessionMaterializedMaxSeq: () => 2,
             isSessionMessagesLoaded: () => true,
@@ -191,7 +242,7 @@ describe('handleNewMessageSocketUpdate', () => {
                 sid: 's1',
                 messageId: 'm2',
                 messageSeq: 2,
-                content: buildPlainUserTextContent(),
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
             }),
             getSession: () => ({
                 ...buildSession('s1'),
@@ -238,7 +289,7 @@ describe('handleNewMessageSocketUpdate', () => {
                 sid: 's1',
                 messageId: 'm2',
                 messageSeq: 2,
-                content: buildPlainUserTextContent(),
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
             }),
             getSession: () => ({
                 ...buildSession('s1'),
@@ -287,7 +338,7 @@ describe('handleNewMessageSocketUpdate', () => {
                 sid: 's1',
                 messageId: 'm2',
                 messageSeq: 2,
-                content: buildPlainUserTextContent(),
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
             }),
             getSession: () => undefined,
             getSessionProjection: () => ({
@@ -335,7 +386,7 @@ describe('handleNewMessageSocketUpdate', () => {
                 sid: 's1',
                 messageId: 'm2',
                 messageSeq: 2,
-                content: buildPlainUserTextContent('legacy'),
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
             }),
             getSession: () => buildSession('s1'),
             getSessionEncryption: () => ({ decryptMessage }),
@@ -589,6 +640,11 @@ describe('handleNewMessageSocketUpdate', () => {
     it('emits lifecycle callback for turn_aborted socket messages', async () => {
         const onTaskLifecycleEvent = vi.fn();
         const { params } = buildHarness({
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'm2',
+                messageSeq: 2,
+            }),
             getSessionEncryption: () => ({
                 decryptMessage: async () => ({
                     id: 'm2',
@@ -613,6 +669,58 @@ describe('handleNewMessageSocketUpdate', () => {
             type: 'turn_aborted',
             id: 'task_1',
             createdAt: 1_000,
+        });
+    });
+
+    it('materializes recovered lifecycle history without reopening the live turn or activity projection', async () => {
+        const onTaskLifecycleEvent = vi.fn();
+        const { params, applySessions } = buildHarness({
+            updateData: buildUpdate({
+                sid: 's1',
+                messageId: 'history-task-started',
+                messageSeq: 2,
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
+                sourceCreatedAt: 100,
+                sourceUpdatedAt: 200,
+                transcriptObservationProvenance: {
+                    kind: 'non_dependent',
+                    source: 'history',
+                },
+            }),
+            getSession: () => ({
+                ...buildSession('s1'),
+                updatedAt: 500,
+                meaningfulActivityAt: 500,
+                latestTurnStatus: 'completed',
+            }),
+            getSessionEncryption: () => ({
+                decryptMessage: async () => ({
+                    id: 'history-task-started',
+                    localId: null,
+                    createdAt: 1_000,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'acp',
+                            provider: 'codex',
+                            data: { type: 'task_started', id: 'old-task' },
+                        },
+                    },
+                }),
+            }),
+            onTaskLifecycleEvent,
+        });
+
+        await handleNewMessageSocketUpdate(params);
+
+        expect(onTaskLifecycleEvent).not.toHaveBeenCalled();
+        expect(applySessions).toHaveBeenCalledTimes(1);
+        expect(applySessions.mock.calls[0]?.[0]?.[0]).toMatchObject({
+            seq: 2,
+            updatedAt: 500,
+            meaningfulActivityAt: 500,
+            thinking: false,
+            latestTurnStatus: 'completed',
         });
     });
 
@@ -847,6 +955,51 @@ describe('handleNewMessageSocketUpdate', () => {
                 backgroundSessionMessages: 1,
             }),
         }));
+    });
+
+    it('requests a targeted session shell refresh instead of a full session-list refetch for hidden messages without attention metadata', async () => {
+        const requestSessionShellRefresh = vi.fn();
+        const decryptMessage = vi.fn();
+        const { params, fetchSessions, applyMessages, applySessions } = buildHarness({
+            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            getSession: () => ({
+                ...buildSession('s1'),
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: 900,
+            }),
+            getSessionEncryption: () => ({ decryptMessage }),
+            isSessionActivelyViewed: () => false,
+            isSessionFullContentConsumerActive: () => false,
+            realtimeProjectionMode: 'enabled',
+            requestSessionShellRefresh,
+        });
+
+        await handleNewMessageSocketUpdate(params);
+
+        expect(requestSessionShellRefresh).toHaveBeenCalledTimes(1);
+        expect(requestSessionShellRefresh).toHaveBeenCalledWith('s1');
+        expect(fetchSessions).not.toHaveBeenCalled();
+        expect(decryptMessage).not.toHaveBeenCalled();
+        expect(applyMessages).not.toHaveBeenCalled();
+        expect(applySessions).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a full session-list refetch for attention-less hidden messages when no targeted refresh is provided', async () => {
+        const { params, fetchSessions } = buildHarness({
+            updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
+            getSession: () => ({
+                ...buildSession('s1'),
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: 900,
+            }),
+            isSessionActivelyViewed: () => false,
+            isSessionFullContentConsumerActive: () => false,
+            realtimeProjectionMode: 'enabled',
+        });
+
+        await handleNewMessageSocketUpdate(params);
+
+        expect(fetchSessions).toHaveBeenCalledTimes(1);
     });
 
     it('can coalesce socket message applies by passing a coalescer enqueue function', async () => {

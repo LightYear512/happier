@@ -1,7 +1,7 @@
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
 
 export type SessionSubagentKind = 'execution_run' | 'agent_team_member' | 'subagent_sidechain';
-export type SessionSubagentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'terminated' | 'unknown';
+export type SessionSubagentStatus = 'running' | 'succeeded' | 'failed' | 'timedOut' | 'cancelled' | 'terminated' | 'unknown';
 
 export type SessionSubagentRunRef = Readonly<{
     runId: string;
@@ -9,6 +9,15 @@ export type SessionSubagentRunRef = Readonly<{
     intent?: string | null;
     runClass?: string | null;
     ioMode?: string | null;
+}>;
+
+export type SessionSubagentNativeRef = Readonly<{
+    lifecycle: 'completion_only';
+    type?: string;
+    customType?: string;
+    model?: string;
+    agentId?: string;
+    durationMs?: number;
 }>;
 
 export type SessionSubagent = Readonly<{
@@ -28,6 +37,7 @@ export type SessionSubagent = Readonly<{
         toolMessageRouteId?: string;
         toolId?: string;
     }>;
+    nativeRef?: SessionSubagentNativeRef;
     runRef?: SessionSubagentRunRef;
     recipient: ParticipantRecipientV1 | null;
     capabilities: Readonly<{

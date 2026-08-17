@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { useDesktopUpdater } from '@/desktop/updates/useDesktopUpdater';
 import { useChangelog } from '@/hooks/inbox/useChangelog';
 import { useUpdates } from '@/hooks/inbox/useUpdates';
-import { useNativeUpdate } from '@/hooks/ui/useNativeUpdate';
+import { useNativeUpdateStatus } from '@/hooks/ui/useNativeUpdate';
 import {
     useReleaseNotesLauncher,
     useReleaseNotesUnread,
@@ -13,20 +13,26 @@ import {
 import { tLoose } from '@/text';
 
 import { buildAppUpdateStatusModel } from './buildAppUpdateStatusModel';
+import { useWebUiDeploymentFreshness } from './useWebUiDeploymentFreshness';
 
 export function useAppUpdateStatus() {
     const router = useRouter();
-    const nativeUpdateUrl = useNativeUpdate();
+    const nativeUpdateStatus = useNativeUpdateStatus();
+    const nativeUpdateUrl = nativeUpdateStatus?.updateUrl ?? null;
     const desktop = useDesktopUpdater();
     const ota = useUpdates();
     const changelog = useChangelog();
     const releaseNotes = useReleaseNotesUnread();
     const releaseNotesLauncher = useReleaseNotesLauncher();
+    const webUi = useWebUiDeploymentFreshness();
 
     const model = React.useMemo(
         () => buildAppUpdateStatusModel({
             platformOs: Platform.OS,
             nativeUpdateUrl,
+            nativeUpdateRequired: nativeUpdateStatus?.required === true,
+            nativeMinimumAppVersion: nativeUpdateStatus?.minimumAppVersion ?? null,
+            webUi: { updateAvailable: webUi.updateAvailable },
             desktop: {
                 status: desktop.status,
                 availableVersion: desktop.availableVersion,
@@ -49,8 +55,11 @@ export function useAppUpdateStatus() {
             desktop.error,
             desktop.status,
             nativeUpdateUrl,
+            nativeUpdateStatus?.required,
+            nativeUpdateStatus?.minimumAppVersion,
             ota.isUpdatePending,
             releaseNotes.hasUnread,
+            webUi.updateAvailable,
         ],
     );
 
@@ -79,6 +88,11 @@ export function useAppUpdateStatus() {
             return;
         }
 
+        if (model.kind === 'web-ui') {
+            webUi.reload();
+            return;
+        }
+
         if (model.kind === 'ota') {
             await ota.reloadApp();
             return;
@@ -102,6 +116,7 @@ export function useAppUpdateStatus() {
         ota,
         releaseNotesLauncher,
         router,
+        webUi,
     ]);
 
     const dismiss = React.useCallback(() => {

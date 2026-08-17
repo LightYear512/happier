@@ -4,7 +4,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { SERVER_BINARY_TARGETS, resolveCurrentBinaryTarget, resolveExecutableName, type BinaryTarget } from './targets.js';
 import { commandExists, compileBunBinary, ensureFileExists, execOrThrow, resolveBunCommand, type RunCommand } from './commands.js';
-import { resolveRequestedServerDbProviders, resolveServerBinarySidecarEntries, type ServerDbProvider } from './serverSidecars.js';
+import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload.js';
+import { compilePrismaMigrateBinary } from './compilePrismaMigrateBinary.js';
+import { resolveRequestedServerDbProviders, resolveServerBinarySidecarEntries, type ServerComponent } from './serverSidecars.js';
 
 function resolvePrismaEngineFileNameForTarget(target: BinaryTarget): string {
   const key = `${target.os}-${target.arch}`;
@@ -59,6 +61,7 @@ export async function buildServerBinaryArtifactPayload({
   repoRoot,
   payloadDir,
   target = resolveCurrentBinaryTarget({ availableTargets: SERVER_BINARY_TARGETS }),
+  serverComponent = 'happier-server-light',
   entrypoint = join(repoRoot, 'apps', 'server', 'sources', 'main.light.ts'),
   externals = ['redis'],
   buildDbProviders,
@@ -66,11 +69,13 @@ export async function buildServerBinaryArtifactPayload({
   runCommand = execOrThrow,
   commandProbe = commandExists,
   compileBinary = compileBunBinary,
+  compilePrismaBinary = compilePrismaMigrateBinary,
   copyPath = defaultCopyPath,
 }: {
   repoRoot: string;
   payloadDir: string;
   target?: BinaryTarget;
+  serverComponent?: ServerComponent;
   entrypoint?: string;
   externals?: string[];
   buildDbProviders?: string;
@@ -78,17 +83,28 @@ export async function buildServerBinaryArtifactPayload({
   runCommand?: RunCommand;
   commandProbe?: (cmd: string) => boolean;
   compileBinary?: typeof compileBunBinary;
+  compilePrismaBinary?: typeof compilePrismaMigrateBinary;
   copyPath?: (entry: { sourcePath: string; destPath: string; recursive: boolean }, fallbackCopyPath: typeof defaultCopyPath) => Promise<void>;
-}): Promise<{ executableName: string; entrypoint: string }> {
+}): Promise<{ executableName: string; entrypoint: string; migrationEntrypoint?: string }> {
   const bunCommand = resolveBunCommand({ commandProbe, processEnv: env });
   if (!bunCommand) {
     throw new Error('[component-artifacts] bun is required to build server binary artifacts');
   }
 
   await ensureFileExists(entrypoint);
+  const expectedEntrypointName = serverComponent === 'happier-server' ? 'main.ts' : 'main.light.ts';
+  if (entrypoint !== join(repoRoot, 'apps', 'server', 'sources', expectedEntrypointName)) {
+    throw new Error(`[component-artifacts] ${serverComponent} requires apps/server/sources/${expectedEntrypointName}`);
+  }
+  await runCommand(
+    process.execPath,
+    ['apps/server/scripts/buildSharedDeps.mjs', '--quiet'],
+    { cwd: repoRoot, env },
+  );
   const sidecarEntries = await resolveServerBinarySidecarEntries({
     repoRoot,
     target,
+    serverComponent,
     buildDbProviders,
     env,
     runCommand,
@@ -107,7 +123,32 @@ export async function buildServerBinaryArtifactPayload({
     externals,
     bunCommand,
     runCommand,
+    buildRunnerEntrypoint: join(repoRoot, 'packages', 'cli-common', 'scripts', 'buildServerBunBinary.mjs'),
   });
+
+  let migrationEntrypoint: string | undefined;
+  if (serverComponent === 'happier-server') {
+    const migrationSourceEntrypoint = join(repoRoot, 'apps', 'server', 'scripts', 'runtime', 'migrateFullRuntime.ts');
+    await ensureFileExists(migrationSourceEntrypoint);
+    migrationEntrypoint = resolveExecutableName({ baseName: 'happier-server-migrate', target });
+    await compileBinary({
+      entrypoint: migrationSourceEntrypoint,
+      bunTarget: target.bunTarget,
+      outfile: join(payloadDir, migrationEntrypoint),
+      cwd: repoRoot,
+      externals: [],
+      bunCommand,
+      runCommand,
+    });
+    await mkdir(join(payloadDir, 'runtime'), { recursive: true });
+    await compilePrismaBinary({
+      repoRoot,
+      target,
+      outfile: join(payloadDir, 'runtime', resolveExecutableName({ baseName: 'prisma-migrate', target })),
+      bunCommand,
+      runCommand,
+    });
+  }
 
   for (const entry of sidecarEntries) {
     await mkdir(join(payloadDir, entry.targetPath, '..'), { recursive: true });
@@ -122,12 +163,16 @@ export async function buildServerBinaryArtifactPayload({
   await validateServerPrismaEnginesForTarget({
     payloadDir,
     target,
-    buildDbProviders: String(buildDbProviders ?? 'all').trim() || 'all',
+    buildDbProviders: serverComponent === 'happier-server'
+      ? 'mysql'
+      : String(buildDbProviders ?? 'all').trim() || 'all',
   });
+  await finalizeRuntimeArtifactPayload(payloadDir);
 
   return {
     executableName,
     entrypoint: executableName,
+    ...(migrationEntrypoint ? { migrationEntrypoint } : {}),
   };
 }
 

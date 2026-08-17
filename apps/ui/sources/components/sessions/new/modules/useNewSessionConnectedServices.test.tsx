@@ -176,15 +176,58 @@ describe('useNewSessionConnectedServices', () => {
             chipAnchorRef: { current: null },
             popoverAnchorRef: { current: null },
             toggleCollapsedPopover,
-        }) as React.ReactElement<{ onPress?: () => void; testID?: string; 'data-testid'?: string; 'data-auth-source'?: string }>;
+        }) as React.ReactElement<{ onPress?: () => void; testID?: string; dataSet?: { authSource?: string } }>;
         expect(renderedChip.props.testID).toBe('new-session-connected-services-auth-chip');
-        expect(renderedChip.props['data-testid']).toBe('new-session-connected-services-auth-chip');
-        expect(renderedChip.props['data-auth-source']).toBe('native');
+        expect(renderedChip.props.dataSet).toEqual({ authSource: 'native' });
 
         renderedChip.props.onPress?.();
 
         expect(toggleCollapsedPopover).toHaveBeenCalledWith('new-session-connected-services-auth');
         expect(modalShowMock).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('deep-links the picker settings action to the tapped service settings screen (UI-2)', async () => {
+        const { useNewSessionConnectedServices } = await import('./useNewSessionConnectedServices');
+
+        const routerPush = vi.fn();
+        const hook = await renderHook(() =>
+            useNewSessionConnectedServices({
+                agentCore: {
+                    connectedServices: {
+                        supportedServiceIds: ['anthropic'],
+                        supportedKindsByServiceId: { anthropic: ['token'] },
+                    },
+                },
+                agentOptionState: null,
+                settings: {
+                    connectedServicesProfileLabelByKey: { 'anthropic:work': 'Work' },
+                    connectedServicesDefaultProfileByServiceId: {},
+                    connectedServicesDefaultAuthByAgentIdV1: { v: 1, bindingsByAgentId: {} },
+                },
+                targetServerId: null,
+                router: { push: routerPush },
+                setAgentOptionStateForCurrentAgent: vi.fn(),
+            }),
+        );
+
+        const popoverRenderer = requireCollapsedContentPopover(
+            hook.getCurrent().connectedServicesAuthChip,
+        ).renderContent;
+        if (typeof popoverRenderer !== 'function') {
+            throw new Error('Expected connected services popover content renderer');
+        }
+        const content = popoverRenderer({
+            requestClose: vi.fn(),
+            maxHeight: 420,
+        }) as React.ReactElement<{ onOpenSettings: (serviceId: string) => void }>;
+
+        content.props.onOpenSettings('anthropic');
+
+        expect(routerPush).toHaveBeenCalledWith({
+            pathname: '/settings/connected-services/[serviceId]',
+            params: { serviceId: 'anthropic' },
+        });
         await hook.unmount();
     });
 
@@ -510,7 +553,12 @@ describe('useNewSessionConnectedServices', () => {
             }),
         );
 
-        expect(hook.getCurrent().connectedServicesBindingsPayload).toBeNull();
+        expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': { source: 'connected', selection: 'group', groupId: 'primary' },
+            },
+        });
 
         const popoverRenderer = requireCollapsedContentPopover(
             hook.getCurrent().connectedServicesAuthChip,
@@ -594,7 +642,12 @@ describe('useNewSessionConnectedServices', () => {
             }),
         );
 
-        expect(hook.getCurrent().connectedServicesBindingsPayload).toBeNull();
+        expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': { source: 'connected', selection: 'group', groupId: 'missing-group' },
+            },
+        });
         expect(requireCollapsedContentPopover(hook.getCurrent().connectedServicesAuthChip).label)
             .toBe('connectedServices.authChip.nativeLabel');
 

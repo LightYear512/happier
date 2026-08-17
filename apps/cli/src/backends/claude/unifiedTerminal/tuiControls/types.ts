@@ -5,8 +5,10 @@ import type {
 } from '@happier-dev/protocol';
 import type { TerminalControlPort } from '@/integrations/terminalHost/controlTypes';
 
+import type { ClaudeUnifiedIndependentControlSubmissionResolution } from '../acceptedPromptTranscriptDiscovery';
 import type { SettingsGuard } from './settingsGuard';
 import type { ClaudeTuiControlTelemetrySink } from './telemetry';
+import type { ClaudeUnifiedDialogId } from './dialogRegistry';
 
 /**
  * Canonical feature id that gates the Claude Unified TUI runtime-control controller (B15).
@@ -114,6 +116,12 @@ export type ApplyRuntimeConfigInput = Readonly<{
    * probe-proven (Q-A) steer-safe generating window so a config-carrying message can still steer.
    */
   reason?: ApplyRuntimeConfigReason | undefined;
+  /**
+   * Internal integration control for split before-prompt applies: dependent permission/plan deltas
+   * must not merge the controller's pending next-idle model/effort stash back into the prompt gate.
+   * Defaults to true for all existing callers.
+   */
+  includePending?: boolean | undefined;
 }>;
 
 /** Mode-only desired config accepted by the in-flight steer apply path (lane Q). */
@@ -157,6 +165,8 @@ export interface ClaudeUnifiedTuiControlController {
   getLastVerifiedRuntimeConfig(): ClaudeUnifiedVerifiedRuntimeConfig;
   /** True while a control op holds the terminal lock; Lane E must not inject prompts while held. */
   isControlInFlight(): boolean;
+  /** True only while a Happier-initiated slash control owns this registered follow-up dialog. */
+  ownsDialog(dialogId: ClaudeUnifiedDialogId): boolean;
   /** Resolves once no control op holds the lock. Lane E awaits this before prompt injection. */
   whenControlIdle(): Promise<void>;
   dispose(): Promise<void>;
@@ -201,6 +211,16 @@ export type ClaudeTuiControlControllerDeps = Readonly<{
    * rows never surface as UI messages while genuine user-typed commands still do.
    */
   onControlCommandTyped?: ((commandText: string) => void) | undefined;
+  /**
+   * Fired at the verified pre-Enter boundary. Provider transcript ownership must be registered
+   * here: type-time is too early (the command may abort), and post-Enter is too late (the JSONL
+   * command row may already have arrived).
+   */
+  onControlCommandWillSubmit?: ((commandText: string) => string | null) | undefined;
+  /** Resolves the exact pre-Enter registration with the terminal write disposition. */
+  onControlCommandSubmissionResolved?: ((
+    input: ClaudeUnifiedIndependentControlSubmissionResolution,
+  ) => void) | undefined;
   /**
    * Fired the moment a slash command's text is WRITTEN into the composer, before verification or
    * Enter (incident cmq8y3nlx, RESUME2). The integration layer records it in the own-composer-text

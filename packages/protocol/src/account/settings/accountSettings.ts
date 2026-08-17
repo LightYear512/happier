@@ -21,6 +21,7 @@ import {
   type NotificationChannelV1,
   type NotificationChannelsV1,
 } from './notificationChannels.js';
+import { SESSION_PERMISSION_MODES } from '../../sessionMetadata/sessionPermissionModes.js';
 
 function rekeyLegacyBuiltInAgentMap<T>(raw: unknown): Record<string, T> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
@@ -80,34 +81,88 @@ export type NotificationsSettingsV1 = z.infer<typeof NotificationsSettingsV1Sche
 
 export const DEFAULT_NOTIFICATIONS_SETTINGS_V1: NotificationsSettingsV1 = NotificationsSettingsV1Schema.parse({});
 
+const SessionAgentSpawnPermissionCeilingV1Schema = z
+  .enum(SESSION_PERMISSION_MODES)
+  .nullable()
+  .default(null)
+  .catch(null);
+
+export const SessionAgentSpawnPolicyV1Schema = z
+  .object({
+    v: z.literal(1).default(1),
+    allowCustomDirectory: z.boolean().default(true),
+    allowCrossMachine: z.boolean().default(true),
+    allowBackendTargetOverride: z.boolean().default(true),
+    allowModelOverride: z.boolean().default(true),
+    allowPermissionModeOverride: z.boolean().default(true),
+    allowAgentModeOverride: z.boolean().default(true),
+    allowConfigOptionOverrides: z.boolean().default(true),
+    allowProfileOverride: z.boolean().default(true),
+    allowEnvironmentVariables: z.boolean().default(true),
+    allowConnectedServicesOverride: z.boolean().default(true),
+    allowMcpSelectionOverride: z.boolean().default(true),
+    allowTranscriptStorageOverride: z.boolean().default(true),
+    permissionCeiling: SessionAgentSpawnPermissionCeilingV1Schema,
+  })
+  .strict()
+  .catch({
+    v: 1,
+    allowCustomDirectory: true,
+    allowCrossMachine: true,
+    allowBackendTargetOverride: true,
+    allowModelOverride: true,
+    allowPermissionModeOverride: true,
+    allowAgentModeOverride: true,
+    allowConfigOptionOverrides: true,
+    allowProfileOverride: true,
+    allowEnvironmentVariables: true,
+    allowConnectedServicesOverride: true,
+    allowMcpSelectionOverride: true,
+    allowTranscriptStorageOverride: true,
+    permissionCeiling: null,
+  });
+
+export type SessionAgentSpawnPolicyV1 = z.infer<typeof SessionAgentSpawnPolicyV1Schema>;
+
+export const DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1: SessionAgentSpawnPolicyV1 =
+  SessionAgentSpawnPolicyV1Schema.parse({});
+
 export const DEFAULT_ACTIONS_SETTINGS_V1: ActionsSettingsV1 = ActionsSettingsV1Schema.parse({
   v: 1,
   actions: {
-    // Fail-closed: session agents must not control other sessions by default.
-    // Users can explicitly opt in per action via settings.
+    // Product-courtesy defaults: in-session agents may coordinate and inspect by default,
+    // while destructive/accounting/user-approval controls remain explicit opt-ins.
     'session.stop': { disabledSurfaces: ['session_agent'] },
-    'session.permission_mode.set': { disabledSurfaces: ['session_agent'] },
-    'session.model.set': { disabledSurfaces: ['session_agent'] },
     'session.archive': { disabledSurfaces: ['session_agent'] },
     'session.unarchive': { disabledSurfaces: ['session_agent'] },
-    'session.status.get': { disabledSurfaces: ['session_agent'] },
-    'session.history.get': { disabledSurfaces: ['session_agent'] },
-    'session.transcript.get': { disabledSurfaces: ['session_agent'] },
-    'session.events.get': { disabledSurfaces: ['session_agent'] },
-    'session.wait.idle': { disabledSurfaces: ['session_agent'] },
-    'session.message.send': { disabledSurfaces: ['session_agent'] },
     'session.permission.respond': { disabledSurfaces: ['session_agent'] },
     'session.user_action.answer': { disabledSurfaces: ['session_agent'] },
-    'session.mode.set': { disabledSurfaces: ['session_agent'] },
-    'session.list': { disabledSurfaces: ['session_agent'] },
-    'session.activity.get': { disabledSurfaces: ['session_agent'] },
-    'session.messages.recent.get': { disabledSurfaces: ['session_agent'] },
-    'session.usageLimit.waitResume.enable': { disabledSurfaces: ['session_agent'] },
-    'session.usageLimit.waitResume.cancel': { disabledSurfaces: ['session_agent'] },
-    'session.usageLimit.checkNow': { disabledSurfaces: ['session_agent'] },
     'session.usageLimit.consumeResetCredit': { disabledSurfaces: ['session_agent'] },
+    'approval.request.decide': { disabledSurfaces: ['session_agent'] },
+    'session.target.primary.set': { disabledSurfaces: ['session_agent'] },
+    'session.target.tracked.set': { disabledSurfaces: ['session_agent'] },
+    'session.terminalComposer.clear': { disabledSurfaces: ['session_agent'] },
+    'session.pendingInput.interruptAndRun': { disabledSurfaces: ['session_agent'] },
   },
 });
+
+const CURRENT_DEFAULT_SESSION_AGENT_DISABLED_ACTION_IDS_V1 = Object.freeze([
+  'session.stop',
+  'session.archive',
+  'session.unarchive',
+  'session.permission.respond',
+  'session.user_action.answer',
+  'session.usageLimit.consumeResetCredit',
+  'approval.request.decide',
+  'session.target.primary.set',
+  'session.target.tracked.set',
+  'session.terminalComposer.clear',
+  'session.pendingInput.interruptAndRun',
+] as const satisfies readonly string[]);
+
+const CURRENT_DEFAULT_SESSION_AGENT_DISABLED_ACTION_ID_SET_V1 = new Set<string>(
+  CURRENT_DEFAULT_SESSION_AGENT_DISABLED_ACTION_IDS_V1,
+);
 
 const LEGACY_DEFAULT_SESSION_AGENT_DISABLED_ACTION_IDS_V1 = Object.freeze([
   'session.stop',
@@ -127,6 +182,10 @@ const LEGACY_DEFAULT_SESSION_AGENT_DISABLED_ACTION_IDS_V1 = Object.freeze([
   'session.activity.get',
   'session.messages.recent.get',
 ] as const satisfies readonly string[]);
+
+const LEGACY_DEFAULT_SESSION_AGENT_DISABLED_ACTION_ID_SET_V1 = new Set<string>(
+  LEGACY_DEFAULT_SESSION_AGENT_DISABLED_ACTION_IDS_V1,
+);
 
 function isLegacyDefaultSessionAgentActionLockdownV1(settings: ActionsSettingsV1): boolean {
   const known = new Set<string>(LEGACY_DEFAULT_SESSION_AGENT_DISABLED_ACTION_IDS_V1);
@@ -149,11 +208,55 @@ function isLegacyDefaultSessionAgentActionLockdownV1(settings: ActionsSettingsV1
   return true;
 }
 
+function hasOnlyEmptyActionSettingsFieldsV1(override: Readonly<Record<string, unknown>>): boolean {
+  const enabledPlacements = Array.isArray(override.enabledPlacements) ? override.enabledPlacements : [];
+  const disabledSurfaces = Array.isArray(override.disabledSurfaces) ? override.disabledSurfaces : [];
+  const disabledPlacements = Array.isArray(override.disabledPlacements) ? override.disabledPlacements : [];
+  const approvalRequiredSurfaces = Array.isArray(override.approvalRequiredSurfaces) ? override.approvalRequiredSurfaces : [];
+  const toolExposureModes = override.toolExposureModes && typeof override.toolExposureModes === 'object' && !Array.isArray(override.toolExposureModes)
+    ? override.toolExposureModes
+    : {};
+  return (
+    override.enabled !== false &&
+    disabledSurfaces.length === 0 &&
+    enabledPlacements.length === 0 &&
+    disabledPlacements.length === 0 &&
+    approvalRequiredSurfaces.length === 0 &&
+    Object.keys(toolExposureModes).length === 0
+  );
+}
+
 function migrateLegacyDefaultActionsSettingsV1(settings: ActionsSettingsV1): ActionsSettingsV1 {
-  if (!isLegacyDefaultSessionAgentActionLockdownV1(settings)) return settings;
   const actions = { ...(settings.actions as any) } as ActionsSettingsV1['actions'];
-  delete (actions as any)['session.title.set'];
-  return { ...settings, actions };
+  let changed = false;
+
+  const shouldMigrateAllLegacyDefaults = isLegacyDefaultSessionAgentActionLockdownV1(settings);
+  for (const id of Object.keys(actions)) {
+    if (!shouldMigrateAllLegacyDefaults && !LEGACY_DEFAULT_SESSION_AGENT_DISABLED_ACTION_ID_SET_V1.has(id)) continue;
+    if (CURRENT_DEFAULT_SESSION_AGENT_DISABLED_ACTION_ID_SET_V1.has(id)) continue;
+    const existing = (actions as any)[id];
+    if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+      delete (actions as any)[id];
+      changed = true;
+      continue;
+    }
+
+    const disabledSurfaces = Array.isArray(existing.disabledSurfaces)
+      ? existing.disabledSurfaces.filter((surface: unknown) => surface !== 'session_agent')
+      : [];
+    const next = {
+      ...existing,
+      disabledSurfaces,
+    };
+    if (disabledSurfaces.length === existing.disabledSurfaces?.length) continue;
+    changed = true;
+    if (hasOnlyEmptyActionSettingsFieldsV1(next as Record<string, unknown>)) {
+      delete (actions as any)[id];
+    } else {
+      (actions as any)[id] = next;
+    }
+  }
+  return changed ? { ...settings, actions } : settings;
 }
 
 const BackendEnabledByTargetKeySchema = z.record(z.string(), z.boolean()).catch({});
@@ -193,32 +296,19 @@ export type UsageLimitRecoverySettingsV1 = z.infer<typeof UsageLimitRecoverySett
 export const DEFAULT_USAGE_LIMIT_RECOVERY_SETTINGS_V1: UsageLimitRecoverySettingsV1 =
   UsageLimitRecoverySettingsV1Schema.parse({});
 
-export const SessionProviderUsageSettingsV1Schema = z
-  .object({
-    v: z.literal(1).default(1),
-    gaugeMode: z.enum(['auto', 'hidden']).default('auto'),
-    gaugeWindowMode: z
-      .enum(['most_constrained', 'daily', 'weekly', 'primary', 'secondary', 'session'])
-      .default('most_constrained'),
-  })
-  .strict()
-  .catch({
-    v: 1,
-    gaugeMode: 'auto',
-    gaugeWindowMode: 'most_constrained',
-  });
-
-export type SessionProviderUsageSettingsV1 = z.infer<typeof SessionProviderUsageSettingsV1Schema>;
-
-export const DEFAULT_SESSION_PROVIDER_USAGE_SETTINGS_V1: SessionProviderUsageSettingsV1 =
-  SessionProviderUsageSettingsV1Schema.parse({});
-
 export const SESSION_PENDING_QUEUE_DRAIN_MODES = ['one_at_a_time', 'drain_all'] as const;
 export const DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE = 'one_at_a_time' as const;
 export const SessionPendingQueueDrainModeSchema = z
   .enum(SESSION_PENDING_QUEUE_DRAIN_MODES)
   .catch(DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE);
 export type SessionPendingQueueDrainMode = z.infer<typeof SessionPendingQueueDrainModeSchema>;
+
+export const SESSION_PENDING_QUEUE_DELIVERY_TIMINGS = ['after_foreground_ready', 'after_runtime_idle'] as const;
+export const DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING = 'after_foreground_ready' as const;
+export const SessionPendingQueueDeliveryTimingSchema = z
+  .enum(SESSION_PENDING_QUEUE_DELIVERY_TIMINGS)
+  .catch(DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING);
+export type SessionPendingQueueDeliveryTiming = z.infer<typeof SessionPendingQueueDeliveryTimingSchema>;
 
 function backfillLegacyTargetKeyedAccountSettings(raw: Record<string, unknown>): Record<string, unknown> {
   const next = { ...raw };
@@ -279,8 +369,11 @@ export const AccountSettingsSchema = z.preprocess(
       actionsSettingsV1: ActionsSettingsV1Schema.catch(DEFAULT_ACTIONS_SETTINGS_V1).default(DEFAULT_ACTIONS_SETTINGS_V1),
       notificationsSettingsV1: NotificationsSettingsV1Schema.default(DEFAULT_NOTIFICATIONS_SETTINGS_V1),
       usageLimitRecoverySettingsV1: UsageLimitRecoverySettingsV1Schema.default(DEFAULT_USAGE_LIMIT_RECOVERY_SETTINGS_V1),
-      sessionProviderUsageSettingsV1: SessionProviderUsageSettingsV1Schema.default(DEFAULT_SESSION_PROVIDER_USAGE_SETTINGS_V1),
       sessionPendingQueueDrainMode: SessionPendingQueueDrainModeSchema.default(DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE),
+      sessionPendingQueueDeliveryTiming: SessionPendingQueueDeliveryTimingSchema.default(
+        DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
+      ),
+      sessionAgentSpawnPolicyV1: SessionAgentSpawnPolicyV1Schema.default(DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1),
       connectedServicesDefaultAuthByAgentIdV1: ConnectedServicesDefaultAuthByAgentIdV1Schema.default(
         DEFAULT_CONNECTED_SERVICES_DEFAULT_AUTH_BY_AGENT_ID_V1,
       ),
@@ -317,6 +410,19 @@ export function resolveNotificationChannelsV1FromAccountSettings(settingsLike: u
   const explicit = NotificationChannelsV1Schema.parse(rec?.notificationChannelsV1);
   if (rec && Object.prototype.hasOwnProperty.call(rec, 'notificationChannelsV1')) return explicit;
   return [deriveExpoPushNotificationChannelFromLegacySettings(getNotificationsSettingsV1FromAccountSettings(rec))];
+}
+
+/**
+ * Canonical answer to "may this account receive Expo push notifications at all".
+ *
+ * Both the client (token registration and OS permission prompting) and any surface that reports
+ * the account-level push state must consume this, so the reported setting and the behavior it
+ * describes cannot diverge. An enabled webhook channel is a different delivery channel and does
+ * not enable Expo push.
+ */
+export function isExpoPushNotificationChannelEnabled(settingsLike: unknown): boolean {
+  return resolveNotificationChannelsV1FromAccountSettings(settingsLike)
+    .some((channel) => channel.kind === 'expo_push' && channel.enabled === true);
 }
 
 export { BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID };

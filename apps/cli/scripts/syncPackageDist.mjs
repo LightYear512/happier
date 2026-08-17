@@ -5,6 +5,36 @@ import { withOptionalCliSharedDepsBuildLockSync } from './optionalWorkspaceBundl
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WRITE_FS_OPTION_NAMES = ['cpSync', 'mkdirSync', 'renameSync', 'rmSync'];
+const WINDOWS_TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+
+function waitSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
+}
+
+function renameForPublicationSync(from, to, {
+  platform,
+  rename,
+  wait,
+  maxRetries,
+}) {
+  let retry = 0;
+  while (true) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      if (
+        platform !== 'win32'
+        || !WINDOWS_TRANSIENT_RENAME_CODES.has(error?.code)
+        || retry >= maxRetries
+      ) {
+        throw error;
+      }
+      wait(Math.min(25 * (2 ** retry), 400));
+      retry += 1;
+    }
+  }
+}
 
 export function resolveCliPackageRoot(scriptDir = __dirname) {
   return resolve(scriptDir, '..');
@@ -12,6 +42,10 @@ export function resolveCliPackageRoot(scriptDir = __dirname) {
 
 export function syncPackageDist(options = {}) {
   const packageRoot = resolve(String(options.packageRoot ?? resolveCliPackageRoot()));
+  const env = options.env ?? process.env;
+  if (String(env?.HAPPIER_CLI_SKIP_PACKAGE_DIST_SYNC ?? '').trim() === '1') {
+    return { packageRoot, skipped: true };
+  }
   return withOptionalCliSharedDepsBuildLockSync(() => syncPackageDistUnlocked({ ...options, packageRoot }), {
     startDir: packageRoot,
     repoRoot: options.repoRoot,
@@ -20,12 +54,14 @@ export function syncPackageDist(options = {}) {
     lockTimeoutMs: options.lockTimeoutMs,
     lockPollIntervalMs: options.lockPollIntervalMs,
     lockStaleAfterMs: options.lockStaleAfterMs,
+    skipLock: options.skipLock,
   });
 }
 
 function syncPackageDistUnlocked(options = {}) {
   const packageRoot = resolve(String(options.packageRoot ?? resolveCliPackageRoot()));
-  const distDir = resolve(String(options.distDir ?? resolve(packageRoot, 'dist')));
+  const env = options.env ?? process.env;
+  const distDir = resolve(String(options.distDir ?? resolve(packageRoot, env?.HAPPIER_CLI_BUILD_OUTPUT_DIR ?? 'dist')));
   const packageDistDir = resolve(String(options.packageDistDir ?? resolve(packageRoot, 'package-dist')));
   const exists = options.existsSync ?? existsSync;
   const { copy, makeDir, rename, remove } = resolveWriteFs(options);
@@ -43,29 +79,72 @@ function syncPackageDistUnlocked(options = {}) {
   makeDir(dirname(packageDistDir), { recursive: true });
   copy(distDir, stagingDir, { recursive: true });
 
-  let movedExistingDir = false;
-  try {
-    if (exists(packageDistDir)) {
-      rename(packageDistDir, backupDir);
-      movedExistingDir = true;
-    }
-    rename(stagingDir, packageDistDir);
-    if (movedExistingDir) {
-      remove(backupDir, { recursive: true, force: true });
-    }
-  } catch (error) {
-    remove(stagingDir, { recursive: true, force: true });
-    if (movedExistingDir && exists(backupDir) && !exists(packageDistDir)) {
-      rename(backupDir, packageDistDir);
-    }
-    throw error;
-  }
+  atomicPromoteDirectorySync({
+    sourceDir: stagingDir,
+    targetDir: packageDistDir,
+    backupDir,
+    existsSync: exists,
+    mkdirSync: makeDir,
+    renameSync: rename,
+    rmSync: remove,
+    removeSourceOnFailure: true,
+  });
 
   return {
     packageRoot,
     distDir,
     packageDistDir,
   };
+}
+
+export function atomicPromoteDirectorySync(options = {}) {
+  const sourceDir = resolve(String(options.sourceDir ?? ''));
+  const targetDir = resolve(String(options.targetDir ?? ''));
+  const backupDir = resolve(String(options.backupDir ?? `${targetDir}.__backup__.${process.pid}.${Date.now()}`));
+  const exists = options.existsSync ?? existsSync;
+  const makeDir = options.mkdirSync ?? mkdirSync;
+  const rename = options.renameSync ?? renameSync;
+  const remove = options.rmSync ?? rmSync;
+  const removeSourceOnFailure = options.removeSourceOnFailure !== false;
+  const platform = options.platform ?? process.platform;
+  const wait = options.waitSync ?? waitSync;
+  const maxRenameRetries = options.maxRenameRetries ?? 8;
+  const promote = (from, to) => renameForPublicationSync(from, to, {
+    platform,
+    rename,
+    wait,
+    maxRetries: maxRenameRetries,
+  });
+
+  if (!sourceDir || !targetDir || sourceDir === targetDir) {
+    throw new Error('[atomic-promote] source and target directories must be distinct');
+  }
+  if (!exists(sourceDir)) {
+    throw new Error(`[atomic-promote] missing source directory: ${sourceDir}`);
+  }
+
+  remove(backupDir, { recursive: true, force: true });
+  makeDir(dirname(targetDir), { recursive: true });
+
+  let movedExistingDir = false;
+  try {
+    if (exists(targetDir)) {
+      promote(targetDir, backupDir);
+      movedExistingDir = true;
+    }
+    promote(sourceDir, targetDir);
+    if (movedExistingDir) {
+      remove(backupDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (removeSourceOnFailure) {
+      remove(sourceDir, { recursive: true, force: true });
+    }
+    if (movedExistingDir && exists(backupDir) && !exists(targetDir)) {
+      promote(backupDir, targetDir);
+    }
+    throw error;
+  }
 }
 
 function hasOwnOption(options, name) {

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BackendTargetRefV1 } from '@happier-dev/protocol';
+import type { BackendTargetRefV1, ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
 
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
 import { renderScreen } from '@/dev/testkit';
@@ -74,6 +74,11 @@ const probeRefreshSpies = {
     modes: vi.fn(),
     config: vi.fn(),
 };
+const preflightHookCalls = vi.hoisted(() => ({
+    models: [] as Array<Record<string, unknown>>,
+    modes: [] as Array<Record<string, unknown>>,
+    config: [] as Array<Record<string, unknown>>,
+}));
 
 installNewSessionComponentsCommonModuleMocks({
     modal: () => createModalModuleMock({
@@ -166,31 +171,40 @@ vi.mock('@/components/sessions/pickers/OptionPickerOverlay', () => ({
 }));
 
 vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModelsState', () => ({
-    useNewSessionPreflightModelsState: () => ({
-        modelOptions: modelOptionsState.value,
-        preflightModels: preflightModelsState.value,
-        probe: {
-            phase: 'idle',
-            ...(probeEnabledState.models ? { onRefresh: probeRefreshSpies.models } : {}),
-        },
-    }),
+    useNewSessionPreflightModelsState: (params: Record<string, unknown>) => {
+        preflightHookCalls.models.push(params);
+        return {
+            modelOptions: modelOptionsState.value,
+            preflightModels: preflightModelsState.value,
+            probe: {
+                phase: 'idle',
+                ...(probeEnabledState.models ? { onRefresh: probeRefreshSpies.models } : {}),
+            },
+        };
+    },
 }));
 
 vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightSessionModesState', () => ({
-    useNewSessionPreflightSessionModesState: () => ({
-        modeOptions: modeOptionsState.value,
-        probe: { phase: 'idle', onRefresh: probeRefreshSpies.modes },
-    }),
+    useNewSessionPreflightSessionModesState: (params: Record<string, unknown>) => {
+        preflightHookCalls.modes.push(params);
+        return {
+            modeOptions: modeOptionsState.value,
+            probe: { phase: 'idle', onRefresh: probeRefreshSpies.modes },
+        };
+    },
 }));
 
 vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightConfigOptionsState', () => ({
-    useNewSessionPreflightConfigOptionsState: () => ({
-        configOptions: configOptionsState.value,
-        probe: {
-            phase: 'idle',
-            ...(probeEnabledState.config ? { onRefresh: probeRefreshSpies.config } : {}),
-        },
-    }),
+    useNewSessionPreflightConfigOptionsState: (params: Record<string, unknown>) => {
+        preflightHookCalls.config.push(params);
+        return {
+            configOptions: configOptionsState.value,
+            probe: {
+                phase: 'idle',
+                ...(probeEnabledState.config ? { onRefresh: probeRefreshSpies.config } : {}),
+            },
+        };
+    },
 }));
 
 describe('NewSessionEngineOptionDetail', () => {
@@ -219,6 +233,36 @@ describe('NewSessionEngineOptionDetail', () => {
         probeRefreshSpies.models.mockClear();
         probeRefreshSpies.modes.mockClear();
         probeRefreshSpies.config.mockClear();
+        preflightHookCalls.models = [];
+        preflightHookCalls.modes = [];
+        preflightHookCalls.config = [];
+    });
+
+    it('passes connected-services bindings to every preflight hook it owns', async () => {
+        const connectedServices: ConnectedServiceBindingsV1 = {
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': {
+                    source: 'connected',
+                    selection: 'group',
+                    groupId: 'happier',
+                },
+            },
+        };
+        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
+
+        await renderScreen(React.createElement(NewSessionEngineOptionDetail as React.ComponentType<Record<string, unknown>>, {
+            backendTarget,
+            selectedMachineId: 'machine-1',
+            capabilityServerId: 'server-1',
+            connectedServices,
+        }));
+
+        expect(preflightHookCalls.models).toHaveLength(1);
+        expect(preflightHookCalls.models[0]?.connectedServices).toEqual(connectedServices);
+        expect(preflightHookCalls.config).toHaveLength(1);
+        expect(preflightHookCalls.config[0]?.connectedServices).toEqual(connectedServices);
+        expect(preflightHookCalls.modes.every((call) => call.connectedServices === connectedServices)).toBe(true);
     });
 
     it('renders an engine favorite action in the model header and toggles it without refreshing models', async () => {
@@ -500,6 +544,69 @@ describe('NewSessionEngineOptionDetail', () => {
         });
     });
 
+    it('canonicalizes a unique provider-qualified custom model alias and retains its selected option controls', async () => {
+        modelOptionsState.value = [{
+            value: 'openai-codex/gpt-5.6-luna',
+            label: 'GPT-5.6 Luna',
+            description: 'OpenAI Codex',
+            modelOptions: [{
+                id: 'reasoning_effort',
+                name: 'Thinking',
+                type: 'select',
+                currentValue: 'medium',
+                options: [
+                    { value: 'low', name: 'Low' },
+                    { value: 'medium', name: 'Medium' },
+                    { value: 'high', name: 'High' },
+                    { value: 'xhigh', name: 'Max' },
+                ],
+            }],
+        }];
+        preflightModelsState.value = {
+            availableModels: [{ id: 'openai-codex/gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
+            supportsFreeform: true,
+        };
+        let latestSelection: {
+            modelId: string;
+            sessionModeId: string;
+            configOverrides: Readonly<Record<string, string>>;
+        } | null = null;
+
+        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
+        await renderScreen(<NewSessionEngineOptionDetail
+            backendTarget={{ kind: 'builtInAgent', agentId: 'pi' }}
+            selectedMachineId="machine-1"
+            capabilityServerId="server-1"
+            cwd="/repo"
+            selectedModelId="gpt-5.6-luna"
+            selectedSessionModeId="default"
+            selectedConfigOverrides={{}}
+            onSelectionChange={(selection) => {
+                latestSelection = selection;
+            }}
+        />);
+
+        expect(lastModelPickerOverlayProps?.selectedValue).toBe('openai-codex/gpt-5.6-luna');
+        expect(lastModelPickerOverlayProps?.selectedOptionControls).toEqual([
+            expect.objectContaining({
+                option: expect.objectContaining({
+                    id: 'reasoning_effort',
+                    options: expect.arrayContaining([{ value: 'low', name: 'Low' }]),
+                }),
+            }),
+        ]);
+
+        act(() => {
+            lastModelPickerOverlayProps.onSelectOptionControlValue('reasoning_effort', 'low');
+        });
+
+        expect(latestSelection).toEqual({
+            modelId: 'openai-codex/gpt-5.6-luna',
+            sessionModeId: 'default',
+            configOverrides: { reasoning_effort: 'low' },
+        });
+    });
+
     it('does not render a session-mode picker inside the engine popover (mode is configured via the separate chip)', async () => {
         const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
@@ -661,6 +768,42 @@ describe('NewSessionEngineOptionDetail', () => {
             'fast',
             'thinking',
         ]);
+    });
+
+    it('does not collapse distinct opaque model-scoped option identifiers by trimming', async () => {
+        modelOptionsState.value = [{
+            value: 'composer-opaque',
+            label: 'Composer Opaque',
+            description: '',
+            modelOptions: [{
+                id: ' effort ',
+                name: 'Scoped effort',
+                type: 'select',
+                currentValue: ' scoped ',
+                options: [{ value: ' scoped ', name: 'Scoped' }],
+            }],
+        }];
+        configOptionsState.value = [{
+            id: 'effort',
+            name: 'Global effort',
+            type: 'select',
+            currentValue: 'global',
+            options: [{ value: 'global', name: 'Global' }],
+        }];
+
+        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
+        const screen = await renderScreen(<NewSessionEngineOptionDetail
+            backendTarget={backendTarget}
+            selectedMachineId="machine-1"
+            capabilityServerId="server-1"
+            cwd="/repo"
+            selectedModelId="composer-opaque"
+            selectedSessionModeId="default"
+            selectedConfigOverrides={{}}
+        />);
+
+        expect(screen.findByTestId('agent-input-config-option:effort')).toBeTruthy();
+        expect(lastModelPickerOverlayProps?.selectedOptionControls?.map((control: any) => control.option.id)).toEqual([' effort ']);
     });
 
     it('does not render model or mode ACP config options as generic engine controls while model probing is pending', async () => {

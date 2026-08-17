@@ -7,12 +7,31 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
-import { commandExists, execOrThrow, fileSha256, parseArgs } from './lib/binary-release.mjs';
+import { fileSha256 } from './lib/release-files.mjs';
+import { parseArtifactFilename } from './lib/manifests.mjs';
+import { parseArgs } from './lib/release-arguments.mjs';
 import { shouldSmokeTestReleaseArtifact } from './publishing/artifact-smoke-compatibility.mjs';
 import { terminateProcessTreeByPid } from '../../testing/process/processTree.mjs';
 
 const DEFAULT_BINARY_SMOKE_TIMEOUT_MS = 20_000;
 const DEFAULT_SERVER_BINARY_SMOKE_TIMEOUT_MS = 15_000;
+
+function execOrThrow(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    stdio: options.stdio ?? 'inherit',
+    encoding: 'utf-8',
+    input: options.input,
+    ...(Number.isFinite(options.timeoutMs) ? { timeout: options.timeoutMs } : {}),
+  });
+  if (result.error) {
+    throw new Error(`[release] failed to run ${command}: ${result.error.message}`, { cause: result.error });
+  }
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`[release] ${command} exited with status ${result.status ?? 'unknown'}`);
+  }
+}
 
 function parseChecksums(raw) {
   const lines = String(raw ?? '')
@@ -119,6 +138,7 @@ async function runSmokeCommand({ command, args, cwd, env, timeoutMs }) {
 }
 
 async function smokeTestArchive({ archivePath }) {
+  const artifact = parseArtifactFilename(basename(archivePath));
   const scratch = await mkdtemp(join(tmpdir(), 'happier-release-smoke-'));
   try {
     execOrThrow('tar', ['-xzf', archivePath, '-C', scratch], { stdio: 'ignore' });
@@ -159,6 +179,9 @@ async function smokeTestArchive({ archivePath }) {
     const timedOut = result.timedOut === true;
     if (timedOut) {
       const output = formatSmokeOutput(result);
+      if (artifact?.product === 'happier') {
+        throw new Error(`[release] smoke test timed out for ${archivePath}: ${output.trim()}`);
+      }
       if (serverBinary) {
         if (/ERR_MODULE_NOT_FOUND|Cannot find module/i.test(output)) {
           throw new Error(`[release] smoke test failed for ${archivePath}: ${output.trim()}`);
@@ -172,6 +195,14 @@ async function smokeTestArchive({ archivePath }) {
     }
     if ((result.status ?? 1) !== 0) {
       throw new Error(`[release] smoke test failed for ${archivePath}: ${formatSmokeOutput(result)}`);
+    }
+    if (artifact?.product === 'happier') {
+      const actualVersion = String(result.stdout ?? '').trim();
+      if (actualVersion !== artifact.version) {
+        throw new Error(
+          `[release] CLI version mismatch for ${archivePath}: expected ${artifact.version}, got ${actualVersion || '<empty>'}`,
+        );
+      }
     }
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -206,18 +237,19 @@ async function main() {
     if (!pubKeyPath) {
       throw new Error('[release] signature found but no --public-key/MINISIGN_PUBLIC_KEY provided');
     }
-    if (!commandExists('minisign')) {
-      throw new Error('[release] minisign required to verify signatures');
-    }
     execOrThrow('minisign', ['-Vm', checksumsPath, '-p', pubKeyPath], { stdio: 'inherit' });
   }
 
-  if (!flags.has('--skip-smoke')) {
-    for (const entry of entries) {
-      if (!entry.name.endsWith('.tar.gz')) continue;
-      if (!shouldSmokeTestReleaseArtifact({ archiveName: entry.name })) continue;
-      await smokeTestArchive({ archivePath: join(artifactsDir, entry.name) });
-    }
+  const skipOptionalSmoke = flags.has('--skip-smoke');
+  const cliVersionAttestations = [];
+  for (const entry of entries) {
+    if (!entry.name.endsWith('.tar.gz')) continue;
+    if (!shouldSmokeTestReleaseArtifact({ archiveName: entry.name })) continue;
+    const artifact = parseArtifactFilename(entry.name);
+    const requiresCliVersionAttestation = artifact?.product === 'happier';
+    if (skipOptionalSmoke && !requiresCliVersionAttestation) continue;
+    await smokeTestArchive({ archivePath: join(artifactsDir, entry.name) });
+    if (requiresCliVersionAttestation) cliVersionAttestations.push(entry.name);
   }
 
   console.log(JSON.stringify({
@@ -225,7 +257,8 @@ async function main() {
     artifactsDir,
     checksumsPath,
     verified: entries.map((entry) => entry.name),
-    smoke: !flags.has('--skip-smoke'),
+    smoke: !skipOptionalSmoke,
+    cliVersionAttestations,
   }, null, 2));
 }
 

@@ -8,22 +8,24 @@ import type {
 import type { NormalizedMessage } from '../../typesRaw';
 import type { SessionListViewItem } from '../../domains/session/listing/sessionListViewData';
 import { readStoredSessionMessagesFromStateLike } from '../../domains/messages/readStoredSessionMessages';
+import { isTranscriptRenderableAggregate } from '../../domains/messages/transcriptRenderableAggregate';
 import {
     areSessionListRenderablesEqual,
     buildSessionListRenderableFromSession,
-    didSessionListRenderableAttentionPromotionFieldsChange,
     didSessionListRenderableEmbeddedListRowFieldsChange,
     didSessionListRenderableProjectGroupingFieldsChange,
     didSessionListRenderableReachabilityPeerFieldsChange,
-    isSessionListRenderableWarmCacheProgressOnlyChange,
     preserveSessionListRenderableTransientState,
     type SessionListRenderableSession,
 } from '../../domains/session/listing/sessionListRenderable';
+import { assessSessionListRenderableChange } from './sessionListRenderableStoreUpdate';
+import { createKeyedTimeoutScheduler } from '@/utils/time/keyedTimeoutScheduler';
 import {
     type SessionListAttentionPromotionMode,
     type SessionListWorkingPlacementMode,
 } from '../../domains/session/listing/attentionPromotion/sessionListAttentionPromotionTypes';
 import { nowServerMs } from '../../runtime/time';
+import { clearSessionTranscriptDerivedCachesForSession } from '../../runtime/sessionTranscriptDerivedCaches';
 import {
     loadSessionDrafts,
     loadSessionLastViewed,
@@ -47,13 +49,13 @@ import {
 } from '../../domains/state/persistence';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import {
+    readPersistedSessionListWarmCacheEntries,
     resolveWarmCacheAccountScope,
-    type SessionListCacheEntryV1,
     saveSessionListWarmCacheEntries,
 } from '../../domains/state/warmCachePersistence';
 import {
+    buildPersistedSessionListCacheEntriesFromRenderables,
     buildSessionListCacheEntryFromRenderable,
-    buildSessionListCacheEntriesFromRenderables,
 } from '../../domains/state/warmCacheAdapters';
 import { projectManager } from '../../runtime/orchestration/projectManager';
 import { syncPerformanceTelemetry } from '../../runtime/syncPerformanceTelemetry';
@@ -67,6 +69,7 @@ import {
 import {
     isTerminalPrimaryTurnStatus,
     resolveSessionRuntimePresenceFields,
+    SESSION_RESUMING_PRESENTATION_TIMEOUT_MS,
 } from '../../domains/session/attention/deriveSessionRuntimePresentationState';
 import { setActiveServerSessionListCache } from '../sessionListCache';
 import { getActiveServerSnapshot } from '../../domains/server/serverRuntime';
@@ -76,7 +79,7 @@ import type { SessionActionDraft } from '@/sync/domains/sessionActions/sessionAc
 import type { SessionActionDraftStatus } from '@/sync/domains/sessionActions/sessionActionDraftTypes';
 
 import type { StoreGet, StoreSet } from './_shared';
-import { areStoredSessionsEqual } from './areStoredSessionsEqual';
+import { areSessionValuesDeepEqual, areStoredSessionsEqual } from './areStoredSessionsEqual';
 import { applyAgentStateUpdateToSessionMessages } from './messages';
 import type { SessionMessages } from './messages';
 import { persistSessionModelData } from './sessionModelPersistence';
@@ -84,6 +87,7 @@ import { persistSessionPermissionData } from './sessionPermissionPersistence';
 import { resolveMergedSessionPermissionMode } from './resolveMergedSessionPermissionMode';
 import {
     applySessionListRenderableCommitPlan,
+    buildNextSessionListRenderableDelta,
     buildSessionListViewDataForRenderableState,
     didSessionListRenderableListViewFieldsChangeForSettings,
     planSessionListRenderableMergeCommit,
@@ -94,6 +98,10 @@ import {
 } from './sessionListRenderableCommit';
 import { clearAgentInputLocalUiStateForSession } from '@/sync/domains/input/draftValues/agentInputLocalUiStateStore';
 import { clearSessionDraftValues } from '@/sync/domains/input/draftValues/sessionDraftValueStore';
+import {
+    createWarmCacheSaveScheduler,
+    WARM_CACHE_PROGRESS_SAVE_DEBOUNCE_MS,
+} from './warmCacheSaveScheduler';
 
 type SessionModelMode = NonNullable<Session['modelMode']>;
 type ScmOperationLogEntry = import('../../runtime/orchestration/projectManager').ScmProjectOperationLogEntry;
@@ -120,6 +128,27 @@ function applyReachableSessionListRenderablesForState(input: Readonly<{
 export type SessionsDomain = {
     sessions: Record<string, Session>;
     sessionListRenderables: Record<string, SessionListRenderableSession>;
+    /**
+     * Sessions this viewer has positive evidence are gone, keyed by id.
+     *
+     * Neither `sessions` nor `sessionListRenderables` can answer "does this session exist": both
+     * are list-scoped caches. `sessionListRenderables` is evicted for every row a replace-mode
+     * `/v2/sessions` page omits inside its removal window — and that endpoint filters
+     * `archivedAt: null` server-side, so archiving alone empties it. `sessions` holds only the
+     * records this run actually hydrated, and is in practice a *subset* of the renderables
+     * (measured live: `sessions \ renderables` = 0, `renderables \ sessions` = 97), so it cannot
+     * cover an evicted row either.
+     *
+     * `deleteSession` is the one signal that does mean gone. Every caller reaches it through
+     * `handleDeleteSessionSocketUpdate`, on exactly three pieces of server evidence: the socket
+     * `delete-session` update, the socket `session-share-revoked` update (the session survives for
+     * its owner but not for this viewer), and an exact session fetch answering `not_found`. Those
+     * are the same grounds the session route states as "deleted, or you may no longer have
+     * access". Anything that must distinguish gone from not-cached — a durable pointer such as a
+     * transcript session reference — reads this map rather than inferring absence.
+     */
+    deletedSessionIds: Record<string, true>;
+    sessionListRenderableDelta: import('./sessionListRenderableCommit').SessionListRenderableDelta;
     sessionsData: (string | Session)[] | null;
     sessionListViewData: SessionListViewItem[] | null;
     sessionListViewDataByServerId: Record<string, SessionListViewItem[] | null>;
@@ -154,6 +183,8 @@ export type SessionsDomain = {
     updateSessionDraft: (sessionId: string, draft: string | null) => void;
     markSessionOptimisticThinking: (sessionId: string) => void;
     clearSessionOptimisticThinking: (sessionId: string) => void;
+    markSessionResuming: (sessionId: string) => void;
+    clearSessionResuming: (sessionId: string) => void;
     clearSessionThinkingGrace: (sessionId: string) => void;
     markSessionViewed: (sessionId: string) => void;
     updateSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void;
@@ -189,6 +220,13 @@ export type SessionsDomain = {
     getSessionProjectScmSnapshotError: (sessionId: string) => ProjectScmSnapshotError | null;
     updateSessionProjectScmSnapshot: (sessionId: string, snapshot: ScmWorkingSnapshot | null) => void;
     updateSessionProjectScmSnapshotError: (sessionId: string, error: ProjectScmSnapshotError | null) => void;
+    publishSessionProjectScmSnapshots: (
+        publishes: ReadonlyArray<Readonly<{
+            sessionId: string;
+            snapshot: ScmWorkingSnapshot;
+            status: ScmStatus | null;
+        }>>,
+    ) => void;
     getSessionProjectScmTouchedPaths: (sessionId: string) => string[];
     markSessionProjectScmTouchedPaths: (sessionId: string, paths: string[]) => void;
     pruneSessionProjectScmTouchedPaths: (sessionId: string, activePaths: Set<string>) => void;
@@ -237,14 +275,18 @@ type SessionsDomainDependencies = {
 // UI-only "optimistic processing" marker.
 // Cleared via timers so components don't need to poll time.
 const OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS = 15_000;
-const optimisticThinkingTimeoutBySessionId = new Map<string, ReturnType<typeof setTimeout>>();
+const optimisticThinkingTimeouts = createKeyedTimeoutScheduler();
 
 // UI-only "thinking debounce" marker.
 // Kept for a short grace period after the session stops streaming, so the UI doesn't flicker
 // between "working" and "online" between output chunks.
 const SESSION_THINKING_GRACE_TIMEOUT_MS = 3_000;
-const thinkingGraceTimeoutBySessionId = new Map<string, ReturnType<typeof setTimeout>>();
-const SESSION_LIST_WARM_CACHE_PROGRESS_SAVE_DEBOUNCE_MS = 1_000;
+const thinkingGraceTimeouts = createKeyedTimeoutScheduler();
+
+// UI-only "resuming" lifecycle marker (single owner). Set at resume initiation and cleared on the
+// first post-attach activity; a bounded decay timer guarantees a crashed/never-settling resume
+// cannot latch the indicator forever.
+const resumingTimeouts = createKeyedTimeoutScheduler();
 
 let actionDraftIdCounter = 0;
 function createActionDraftId(nowMs: number): string {
@@ -413,14 +455,18 @@ function resolveSessionOnlineState(session: { active: boolean; activeAt: number 
     return session.active ? "online" : session.activeAt;
 }
 
-function saveWarmSessionCacheForState(
-    state: SessionsDomain & SessionsDomainDependencies,
-    previousEntries?: Record<string, SessionListCacheEntryV1>,
-): void {
+/**
+ * Diffs against what the warm-cache key is known to hold rather than against a
+ * reconstruction of the previous renderables. Boot hydration therefore produces the
+ * record that is already on disk and writes nothing, and steady-state saves skip both
+ * the serialization and the storage write when nothing the cache keeps has changed.
+ */
+function saveWarmSessionCacheForState(state: SessionsDomain & SessionsDomainDependencies): void {
     const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
     const accountId = resolveWarmCacheAccountScope(state.profile?.id);
     if (!activeServerId || !accountId) return;
-    const nextEntries = buildSessionListCacheEntriesFromRenderables(state.sessionListRenderables ?? {}, previousEntries);
+    const previousEntries = readPersistedSessionListWarmCacheEntries(activeServerId, accountId);
+    const nextEntries = buildPersistedSessionListCacheEntriesFromRenderables(state.sessionListRenderables ?? {}, previousEntries);
     if (previousEntries && nextEntries === previousEntries) return;
     saveSessionListWarmCacheEntries(
         activeServerId,
@@ -452,28 +498,49 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
     let sessionRepositoryTreeExpandedPathsBySessionId: Record<string, string[]> = {};
     const emptySessionRepositoryTreeExpandedPaths: string[] = [];
     let actionDraftsBySessionId: Record<string, SessionActionDraft[]> = loadSessionActionDrafts();
-    let deferredWarmCacheSaveTimeout: ReturnType<typeof setTimeout> | null = null;
+    let warmCacheSaveScheduler: ReturnType<typeof createWarmCacheSaveScheduler<
+        SessionsDomain & SessionsDomainDependencies
+    >> | null = null;
+    const getWarmCacheSaveScheduler = () => {
+        if (!warmCacheSaveScheduler) {
+            warmCacheSaveScheduler = createWarmCacheSaveScheduler<
+                SessionsDomain & SessionsDomainDependencies
+            >({
+                get,
+                save: saveWarmSessionCacheForState,
+                delayMs: WARM_CACHE_PROGRESS_SAVE_DEBOUNCE_MS,
+                onSchedule: ({ state, coalesced }) => {
+                    syncPerformanceTelemetry.countLazy('sync.store.sessions.warmCache.schedule', () => ({
+                        coalesced: coalesced ? 1 : 0,
+                        renderables: Object.keys(state.sessionListRenderables ?? {}).length,
+                        scheduled: coalesced ? 0 : 1,
+                    }));
+                },
+                onFlush: (currentState, flush) => {
+                    measureSessionApplyPhase(
+                        'sync.store.sessions.warmCache.flush',
+                        () => ({ renderables: Object.keys(currentState.sessionListRenderables ?? {}).length }),
+                        flush,
+                    );
+                },
+            });
+        }
+        return warmCacheSaveScheduler;
+    };
 
     const clearDeferredWarmCacheSave = (): void => {
-        if (!deferredWarmCacheSaveTimeout) return;
-        clearTimeout(deferredWarmCacheSaveTimeout);
-        deferredWarmCacheSaveTimeout = null;
+        warmCacheSaveScheduler?.clear();
     };
 
     const saveWarmSessionCacheImmediately = (
         state: SessionsDomain & SessionsDomainDependencies,
-        previousEntries?: Record<string, SessionListCacheEntryV1>,
     ): void => {
-        clearDeferredWarmCacheSave();
-        saveWarmSessionCacheForState(state, previousEntries);
+        getWarmCacheSaveScheduler().saveImmediately(state);
     };
-
-    const scheduleWarmSessionCacheSave = (): void => {
-        if (deferredWarmCacheSaveTimeout) return;
-        deferredWarmCacheSaveTimeout = setTimeout(() => {
-            deferredWarmCacheSaveTimeout = null;
-            saveWarmSessionCacheForState(get());
-        }, SESSION_LIST_WARM_CACHE_PROGRESS_SAVE_DEBOUNCE_MS);
+    const scheduleWarmSessionCacheSave = (
+        state?: SessionsDomain & SessionsDomainDependencies,
+    ): void => {
+        getWarmCacheSaveScheduler().schedule(state);
     };
 
     const stripLocalSessionFields = (session: Session): Session => ({
@@ -539,6 +606,13 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
     return {
         sessions: {},
         sessionListRenderables: {},
+        deletedSessionIds: {},
+        sessionListRenderableDelta: {
+            revision: 0,
+            changedSessionIds: [],
+            removedSessionIds: [],
+            rebuiltSessionListViewData: false,
+        },
         sessionsData: null,  // Legacy - to be removed
         sessionListViewData: null,
         sessionListViewDataByServerId: {},
@@ -639,6 +713,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             let needsProjectManagerUpdate = Object.keys(state.sessions).length === 0;
             let changedSessionCount = 0;
             let changedRenderableCount = 0;
+            const changedConsumerSessionIds = new Set<string>();
             let reconciledSessionMessageCount = 0;
             let needsReachablePeerReevaluation = false;
             let didReachablePeerReevaluation = false;
@@ -674,6 +749,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 const existingModelModeUpdatedAt = previousSession?.modelModeUpdatedAt;
                 const savedModelModeUpdatedAt = savedModelModeUpdatedAts[session.id];
                 const existingOptimisticThinkingAt = previousSession?.optimisticThinkingAt ?? null;
+                const existingResumingAt = previousSession?.resumingAt ?? null;
                 const existingThinkingGraceUntil = previousSession?.thinkingGraceUntil ?? null;
                 const runtimePresence = resolveSessionRuntimePresenceFields({
                     thinking: session.thinking,
@@ -760,37 +836,19 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 let mergedThinkingGraceUntil = existingThinkingGraceUntil;
                 if (presence !== 'online') {
                     mergedThinkingGraceUntil = null;
-                    const graceTimeout = thinkingGraceTimeoutBySessionId.get(session.id);
-                    if (graceTimeout) {
-                        clearTimeout(graceTimeout);
-                        thinkingGraceTimeoutBySessionId.delete(session.id);
-                    }
+                    thinkingGraceTimeouts.cancel(session.id);
                 } else if (runtimePresence.thinking === true) {
                     mergedThinkingGraceUntil = null;
-                    const graceTimeout = thinkingGraceTimeoutBySessionId.get(session.id);
-                    if (graceTimeout) {
-                        clearTimeout(graceTimeout);
-                        thinkingGraceTimeoutBySessionId.delete(session.id);
-                    }
+                    thinkingGraceTimeouts.cancel(session.id);
                 } else if (hasTerminalTurnProjection) {
                     mergedThinkingGraceUntil = null;
-                    const graceTimeout = thinkingGraceTimeoutBySessionId.get(session.id);
-                    if (graceTimeout) {
-                        clearTimeout(graceTimeout);
-                        thinkingGraceTimeoutBySessionId.delete(session.id);
-                    }
+                    thinkingGraceTimeouts.cancel(session.id);
                 } else if (wasThinking) {
                     mergedThinkingGraceUntil = localNowMs + SESSION_THINKING_GRACE_TIMEOUT_MS;
 
-                    const existingTimeout = thinkingGraceTimeoutBySessionId.get(session.id);
-                    if (existingTimeout) {
-                        clearTimeout(existingTimeout);
-                    }
-
                     const sessionId = session.id;
                     const expectedThinkingGraceUntil = mergedThinkingGraceUntil;
-                    const timeout = setTimeout(() => {
-                        thinkingGraceTimeoutBySessionId.delete(sessionId);
+                    thinkingGraceTimeouts.schedule(sessionId, SESSION_THINKING_GRACE_TIMEOUT_MS, () => {
                         set((s) => {
                             const current = s.sessions[sessionId];
                             if (!current) return s;
@@ -828,14 +886,36 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                                     : s.sessionListViewData,
                             };
                         });
-                    }, SESSION_THINKING_GRACE_TIMEOUT_MS);
-                    thinkingGraceTimeoutBySessionId.set(session.id, timeout);
+                    });
                 } else if (typeof mergedThinkingGraceUntil === 'number' && mergedThinkingGraceUntil <= localNowMs) {
                     mergedThinkingGraceUntil = null;
-                    const graceTimeout = thinkingGraceTimeoutBySessionId.get(session.id);
-                    if (graceTimeout) {
-                        clearTimeout(graceTimeout);
-                        thinkingGraceTimeoutBySessionId.delete(session.id);
+                    thinkingGraceTimeouts.cancel(session.id);
+                }
+
+                const mergedOptimisticThinkingAt = runtimePresence.thinking ? null : existingOptimisticThinkingAt;
+
+                // Resuming lifecycle (single owner): preserve the explicit marker until the first
+                // post-attach activity settles it. Settle only on genuine NEW activity — real
+                // thinking, an advanced turn boundary / ready / meaningful event relative to the
+                // previous snapshot, or a live-and-idle reconnect with no pending optimistic work.
+                // A mere presence heartbeat (which creeps activeAt without advancing frozen event
+                // timestamps) never settles or resurrects the marker.
+                let mergedResumingAt = existingResumingAt;
+                if (existingResumingAt !== null) {
+                    const isLiveOwner = presence === 'online' && session.active === true;
+                    const activityAdvanced =
+                        (session.latestTurnStatusObservedAt ?? 0) > (previousSession?.latestTurnStatusObservedAt ?? 0)
+                        || (session.meaningfulActivityAt ?? 0) > (previousSession?.meaningfulActivityAt ?? 0)
+                        || (session.latestReadyEventAt ?? 0) > (previousSession?.latestReadyEventAt ?? 0);
+                    const connectedIdleWithoutPendingWork =
+                        isLiveOwner && hasTerminalTurnProjection && mergedOptimisticThinkingAt === null;
+                    const shouldSettleResuming =
+                        runtimePresence.thinking === true
+                        || (isLiveOwner && activityAdvanced)
+                        || connectedIdleWithoutPendingWork;
+                    if (shouldSettleResuming) {
+                        mergedResumingAt = null;
+                        resumingTimeouts.cancel(session.id);
                     }
                 }
 
@@ -851,7 +931,8 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     draft: hasLoadedSession
                         ? (existingDraft ?? null)
                         : (savedDraft ?? session.draft ?? null),
-                    optimisticThinkingAt: runtimePresence.thinking ? null : existingOptimisticThinkingAt,
+                    optimisticThinkingAt: mergedOptimisticThinkingAt,
+                    resumingAt: mergedResumingAt,
                     thinkingGraceUntil: mergedThinkingGraceUntil,
                     permissionMode: mergedPermissionMode,
                     // Preserve local coordination timestamp (not synced to server)
@@ -864,6 +945,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     : nextSession;
                 if (mergedSession !== previousSession) {
                     changedSessionCount += 1;
+                    changedConsumerSessionIds.add(session.id);
                     if (mergedSessions === state.sessions) {
                         mergedSessions = { ...state.sessions };
                     }
@@ -871,7 +953,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 }
 
                 const existingSessionMessages = updatedSessionMessages[session.id];
-                let renderableMessages = existingSessionMessages
+                let renderableMessages = existingSessionMessages?.isLoaded === true
                     ? readStoredSessionMessagesFromStateLike(existingSessionMessages)
                     : undefined;
 
@@ -893,9 +975,17 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                             ...updated.sessionMessages,
                             isLoaded: existingSessionMessages.isLoaded,
                         };
-                        renderableMessages = readStoredSessionMessagesFromStateLike(updatedSessionMessages[session.id]);
+                        renderableMessages = updatedSessionMessages[session.id]?.isLoaded === true
+                            ? readStoredSessionMessagesFromStateLike(updatedSessionMessages[session.id])
+                            : undefined;
                     }
-                    if (updated.sessionLatestUsage !== undefined) {
+                    // Guard with value equality: the reconcile surfaces usage
+                    // and todos on every snapshot, and unconditional writes
+                    // would churn the Session identity for identical values.
+                    if (
+                        updated.sessionLatestUsage !== undefined
+                        && !areSessionValuesDeepEqual(mergedSessions[session.id]!.latestUsage ?? null, updated.sessionLatestUsage)
+                    ) {
                         if (mergedSessions === state.sessions) {
                             mergedSessions = { ...state.sessions };
                         }
@@ -904,7 +994,10 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                             latestUsage: updated.sessionLatestUsage,
                         };
                     }
-                    if (updated.sessionTodos !== undefined) {
+                    if (
+                        updated.sessionTodos !== undefined
+                        && !areSessionValuesDeepEqual(mergedSessions[session.id]!.todos ?? null, updated.sessionTodos)
+                    ) {
                         if (mergedSessions === state.sessions) {
                             mergedSessions = { ...state.sessions };
                         }
@@ -915,38 +1008,52 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     }
                 }
 
+                // Reuse the incrementally-maintained transcript aggregate when
+                // it is still valid; the builder self-checks completedRequests
+                // identity and falls back to the messages walk otherwise.
+                const sessionMessagesForRenderable = updatedSessionMessages[session.id];
                 const nextRenderableBase = buildSessionListRenderableFromSession(
                     mergedSessions[session.id]!,
                     renderableMessages,
+                    sessionMessagesForRenderable?.isLoaded === true
+                    && isTranscriptRenderableAggregate(sessionMessagesForRenderable.renderableAggregate)
+                        ? sessionMessagesForRenderable.renderableAggregate
+                        : undefined,
                 );
                 const previousRenderable = state.sessionListRenderables?.[session.id];
-                const nextRenderable = previousRenderable
-                    ? preserveSessionListRenderableTransientState(previousRenderable, nextRenderableBase)
-                    : nextRenderableBase;
+                // Unconditional, exactly like the renderable-replacement path: the
+                // merge owner is what stamps the unread entry fact, and it handles
+                // the no-previous case itself. Skipping it for a first ingest would
+                // leave a freshly-arrived unread row keyed on moving activity — and
+                // persist that missing entry fact into the warm cache.
+                const nextRenderable = preserveSessionListRenderableTransientState(
+                    previousRenderable,
+                    nextRenderableBase,
+                );
                 const mergedRenderable = areSessionListRenderablesEqual(previousRenderable, nextRenderable)
                     ? previousRenderable
                     : nextRenderable;
-                const didListViewFieldsChange = didSessionListRenderableListViewFieldsChangeForSettings(
-                    previousRenderable,
-                    mergedRenderable,
-                    state.settings,
-                );
-                const didAttentionPromotionFieldsChange = didSessionListRenderableAttentionPromotionFieldsChange(
-                    previousRenderable,
-                    mergedRenderable,
-                );
+                // One decision owner for renderable changes across ingestion
+                // paths: applySessions must reach the same rebuild/row-refresh/
+                // warm-cache verdicts as the canonical plan functions.
+                const assessment = assessSessionListRenderableChange({
+                    previous: previousRenderable,
+                    next: mergedRenderable,
+                    rebuildOnAttentionPromotionFieldsChange,
+                    didListViewFieldsChange: (previous, next) =>
+                        didSessionListRenderableListViewFieldsChangeForSettings(previous, next, state.settings),
+                    didListViewRowFieldsChange: didSessionListRenderableEmbeddedListRowFieldsChange,
+                });
                 if (mergedRenderable !== previousRenderable) {
                     changedRenderableCount += 1;
-                    if (didListViewFieldsChange) {
+                    changedConsumerSessionIds.add(session.id);
+                    if (assessment.didListViewFieldsChange) {
                         listViewFieldChangeCount += 1;
                     }
-                    if (
-                        !didListViewFieldsChange
-                        && didSessionListRenderableEmbeddedListRowFieldsChange(previousRenderable, mergedRenderable)
-                    ) {
+                    if (assessment.shouldRefreshListViewRow) {
                         listViewRowRefreshSessionIds.push(session.id);
                     }
-                    if (didAttentionPromotionFieldsChange) {
+                    if (assessment.didAttentionPromotionFieldsChange) {
                         attentionPromotionFieldChangeCount += 1;
                     }
                     if (!didImmediateWarmCacheRelevantRenderableChange) {
@@ -958,11 +1065,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                             previousWarmCacheEntry,
                         );
                         if (nextWarmCacheEntry !== previousWarmCacheEntry) {
-                            if (
-                                !didListViewFieldsChange
-                                && !didAttentionPromotionFieldsChange
-                                && isSessionListRenderableWarmCacheProgressOnlyChange(previousRenderable, mergedRenderable)
-                            ) {
+                            if (assessment.warmCacheChange === 'deferred') {
                                 didDeferredWarmCacheRelevantRenderableChange = true;
                             } else {
                                 didImmediateWarmCacheRelevantRenderableChange = true;
@@ -975,10 +1078,8 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     mergedRenderables[session.id] = mergedRenderable;
                 }
 
-                if (!needsSessionListViewDataRebuild) {
-                    if (didListViewFieldsChange || (rebuildOnAttentionPromotionFieldsChange && didAttentionPromotionFieldsChange)) {
-                        needsSessionListViewDataRebuild = true;
-                    }
+                if (!needsSessionListViewDataRebuild && assessment.needsSessionListViewDataRebuild) {
+                    needsSessionListViewDataRebuild = true;
                 }
 
                 if (!needsProjectManagerUpdate) {
@@ -1077,6 +1178,12 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 ...state,
                 sessions: mergedSessions,
                 sessionListRenderables: mergedRenderables,
+                sessionListRenderableDelta: buildNextSessionListRenderableDelta({
+                    previous: state.sessionListRenderableDelta,
+                    changedSessionIds: Array.from(changedConsumerSessionIds),
+                    removedSessionIds: [],
+                    rebuiltSessionListViewData: needsSessionListViewDataRebuild,
+                }),
                 sessionMessages: updatedSessionMessages,
             };
 
@@ -1145,13 +1252,13 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                         renderables: Object.keys(nextState.sessionListRenderables ?? {}).length,
                         immediate: 1,
                     });
-                    scheduleWarmSessionCacheSave();
+                    scheduleWarmSessionCacheSave(nextState as SessionsDomain & SessionsDomainDependencies);
                 }
             } else if (didDeferredWarmCacheRelevantRenderableChange) {
                 syncPerformanceTelemetry.count('sync.store.sessions.apply.warmCache.deferred', {
                     renderables: Object.keys(nextState.sessionListRenderables ?? {}).length,
                 });
-                scheduleWarmSessionCacheSave();
+                scheduleWarmSessionCacheSave(nextState as SessionsDomain & SessionsDomainDependencies);
             }
                 return nextState;
             }),
@@ -1204,10 +1311,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                         changed: plan.changedCount,
                         removed: plan.removedCount,
                     }),
-                    () => {
-                        const previousEntries = buildSessionListCacheEntriesFromRenderables(state.sessionListRenderables ?? {});
-                        saveWarmSessionCacheImmediately(next as SessionsDomain & SessionsDomainDependencies, previousEntries);
-                    },
+                    () => saveWarmSessionCacheImmediately(next as SessionsDomain & SessionsDomainDependencies),
                 );
             } else if (plan.didDeferredWarmCacheRelevantRenderableChange) {
                 syncPerformanceTelemetry.count('sync.store.sessions.renderables.replace.warmCache.deferred', {
@@ -1216,7 +1320,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     changed: plan.changedCount,
                     removed: plan.removedCount,
                 });
-                scheduleWarmSessionCacheSave();
+                scheduleWarmSessionCacheSave(next as SessionsDomain & SessionsDomainDependencies);
             }
             return next;
         }),
@@ -1269,10 +1373,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                         incoming: sessions.length,
                         changed: plan.changedCount,
                     }),
-                    () => {
-                        const previousEntries = buildSessionListCacheEntriesFromRenderables(state.sessionListRenderables ?? {});
-                        saveWarmSessionCacheImmediately(next as SessionsDomain & SessionsDomainDependencies, previousEntries);
-                    },
+                    () => saveWarmSessionCacheImmediately(next as SessionsDomain & SessionsDomainDependencies),
                 );
             } else if (plan.didDeferredWarmCacheRelevantRenderableChange) {
                 syncPerformanceTelemetry.count('sync.store.sessions.renderables.merge.warmCache.deferred', {
@@ -1280,7 +1381,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     incoming: sessions.length,
                     changed: plan.changedCount,
                 });
-                scheduleWarmSessionCacheSave();
+                scheduleWarmSessionCacheSave(next as SessionsDomain & SessionsDomainDependencies);
             }
             return next;
         }),
@@ -1333,7 +1434,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     missing: plan.missingCount,
                     immediate: 1,
                 });
-                scheduleWarmSessionCacheSave();
+                scheduleWarmSessionCacheSave(nextState as SessionsDomain & SessionsDomainDependencies);
             } else if (plan.didDeferredWarmCacheRelevantRenderableChange) {
                 syncPerformanceTelemetry.count('sync.store.sessions.renderables.patch.warmCache.deferred', {
                     renderables: Object.keys(nextState.sessionListRenderables ?? {}).length,
@@ -1341,7 +1442,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                     changed: plan.changedCount,
                     missing: plan.missingCount,
                 });
-                scheduleWarmSessionCacheSave();
+                scheduleWarmSessionCacheSave(nextState as SessionsDomain & SessionsDomainDependencies);
             }
             return nextState;
         }),
@@ -1581,12 +1682,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 },
             };
 
-            const existingTimeout = optimisticThinkingTimeoutBySessionId.get(sessionId);
-            if (existingTimeout) {
-                clearTimeout(existingTimeout);
-            }
-            const timeout = setTimeout(() => {
-                optimisticThinkingTimeoutBySessionId.delete(sessionId);
+            optimisticThinkingTimeouts.schedule(sessionId, OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS, () => {
                 set((s) => {
                     const current = s.sessions[sessionId];
                     if (!current) return s;
@@ -1604,8 +1700,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                         sessions: next,
                     };
                 });
-            }, OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS);
-            optimisticThinkingTimeoutBySessionId.set(sessionId, timeout);
+            });
 
             return {
                 ...state,
@@ -1617,11 +1712,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             if (!session) return state;
             if (!session.optimisticThinkingAt) return state;
 
-            const existingTimeout = optimisticThinkingTimeoutBySessionId.get(sessionId);
-            if (existingTimeout) {
-                clearTimeout(existingTimeout);
-                optimisticThinkingTimeoutBySessionId.delete(sessionId);
-            }
+            optimisticThinkingTimeouts.cancel(sessionId);
 
             const nextSessions = {
                 ...state.sessions,
@@ -1636,16 +1727,125 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 sessions: nextSessions,
             };
         }),
+        markSessionResuming: (sessionId: string) => set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) return state;
+            const resumingAt = Date.now();
+
+            const nextSessions = {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    resumingAt,
+                },
+            };
+
+            resumingTimeouts.schedule(sessionId, SESSION_RESUMING_PRESENTATION_TIMEOUT_MS, () => {
+                set((s) => {
+                    const current = s.sessions[sessionId];
+                    if (!current) return s;
+                    if (current.resumingAt !== resumingAt) return s;
+                    const currentRenderable = s.sessionListRenderables[sessionId];
+                    const nextRenderables = currentRenderable?.resumingAt === resumingAt
+                        ? {
+                            ...s.sessionListRenderables,
+                            [sessionId]: {
+                                ...currentRenderable,
+                                resumingAt: null,
+                            },
+                        }
+                        : s.sessionListRenderables;
+                    const nextStateBase = {
+                        ...s,
+                        sessions: {
+                            ...s.sessions,
+                            [sessionId]: {
+                                ...current,
+                                resumingAt: null,
+                            },
+                        },
+                        sessionListRenderables: nextRenderables,
+                    };
+                    const shouldRebuildSessionListViewData = nextRenderables !== s.sessionListRenderables
+                        && shouldRebuildOnSessionPlacementFieldsChange(s.settings);
+                    return {
+                        ...nextStateBase,
+                        sessionListViewData: shouldRebuildSessionListViewData
+                            ? buildSessionListViewDataForState(nextStateBase)
+                            : s.sessionListViewData,
+                    };
+                });
+            });
+
+            const renderable = state.sessionListRenderables[sessionId];
+            const nextRenderables = renderable && (renderable.resumingAt ?? null) !== resumingAt
+                ? {
+                    ...state.sessionListRenderables,
+                    [sessionId]: {
+                        ...renderable,
+                        resumingAt,
+                    },
+                }
+                : state.sessionListRenderables;
+            const nextStateBase = {
+                ...state,
+                sessions: nextSessions,
+                sessionListRenderables: nextRenderables,
+            };
+            const shouldRebuildSessionListViewData = nextRenderables !== state.sessionListRenderables
+                && shouldRebuildOnSessionPlacementFieldsChange(state.settings);
+
+            return {
+                ...nextStateBase,
+                sessionListViewData: shouldRebuildSessionListViewData
+                    ? buildSessionListViewDataForState(nextStateBase)
+                    : state.sessionListViewData,
+            };
+        }),
+        clearSessionResuming: (sessionId: string) => set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) return state;
+            if (!session.resumingAt) return state;
+
+            resumingTimeouts.cancel(sessionId);
+
+            const renderable = state.sessionListRenderables[sessionId];
+            const nextRenderables = renderable && (renderable.resumingAt ?? null) !== null
+                ? {
+                    ...state.sessionListRenderables,
+                    [sessionId]: {
+                        ...renderable,
+                        resumingAt: null,
+                    },
+                }
+                : state.sessionListRenderables;
+            const nextStateBase = {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        resumingAt: null,
+                    },
+                },
+                sessionListRenderables: nextRenderables,
+            };
+            const shouldRebuildSessionListViewData = nextRenderables !== state.sessionListRenderables
+                && shouldRebuildOnSessionPlacementFieldsChange(state.settings);
+
+            return {
+                ...nextStateBase,
+                sessionListViewData: shouldRebuildSessionListViewData
+                    ? buildSessionListViewDataForState(nextStateBase)
+                    : state.sessionListViewData,
+            };
+        }),
         clearSessionThinkingGrace: (sessionId: string) => set((state) => {
             const session = state.sessions[sessionId];
             if (!session) return state;
             if ((session.thinkingGraceUntil ?? null) === null) return state;
 
-            const existingTimeout = thinkingGraceTimeoutBySessionId.get(sessionId);
-            if (existingTimeout) {
-                clearTimeout(existingTimeout);
-                thinkingGraceTimeoutBySessionId.delete(sessionId);
-            }
+            thinkingGraceTimeouts.cancel(sessionId);
 
             const nextSessions = {
                 ...state.sessions,
@@ -1808,6 +2008,38 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             projectManager.updateSessionProjectScmSnapshotError(sessionId, error);
             set((state) => ({ ...state }));
         },
+        publishSessionProjectScmSnapshots: (publishes) => {
+            // A project SCM refresh publishes to every session sharing the repo. Doing that
+            // through the individual snapshot/status/prune actions costs up to six store
+            // notifications per session; every notification re-runs all store subscribers,
+            // which starves the JS thread on large accounts. All project-manager mutations
+            // happen here first, then a single notification covers the whole batch.
+            if (publishes.length === 0) return;
+            const statusUpdates: Record<string, ScmStatus | null> = {};
+            for (const { sessionId, snapshot, status } of publishes) {
+                ensureProjectManagerSession(sessionId);
+                const previousSnapshot = projectManager.getSessionProjectScmSnapshot(sessionId);
+                if (!areScmWorkingSnapshotsEquivalentIgnoringFetchedAt(previousSnapshot, snapshot)) {
+                    projectManager.updateSessionProjectScmSnapshot(sessionId, snapshot);
+                }
+                if (projectManager.getSessionProjectScmSnapshotError(sessionId)) {
+                    projectManager.updateSessionProjectScmSnapshotError(sessionId, null);
+                }
+                projectManager.updateSessionProjectScmStatus(sessionId, status);
+                const activePaths = new Set(snapshot.entries.map((entry) => entry.path));
+                projectManager.pruneSessionProjectScmTouchedPaths(sessionId, activePaths);
+                projectManager.pruneSessionProjectScmCommitSelectionPaths(sessionId, activePaths);
+                projectManager.pruneSessionProjectScmCommitSelectionPatches(sessionId, activePaths);
+                statusUpdates[sessionId] = status;
+            }
+            set((state) => ({
+                ...state,
+                sessionScmStatus: {
+                    ...state.sessionScmStatus,
+                    ...statusUpdates,
+                },
+            }));
+        },
         getSessionProjectScmTouchedPaths: (sessionId: string) => {
             ensureProjectManagerSession(sessionId);
             return projectManager.getSessionProjectScmTouchedPaths(sessionId);
@@ -1906,25 +2138,19 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             return finished;
         },
         deleteSession: (sessionId: string) => set((state) => {
-			            const optimisticTimeout = optimisticThinkingTimeoutBySessionId.get(sessionId);
-			            if (optimisticTimeout) {
-			                clearTimeout(optimisticTimeout);
-	                optimisticThinkingTimeoutBySessionId.delete(sessionId);
-	            }
-
-                const graceTimeout = thinkingGraceTimeoutBySessionId.get(sessionId);
-                if (graceTimeout) {
-                    clearTimeout(graceTimeout);
-                    thinkingGraceTimeoutBySessionId.delete(sessionId);
-                }
+            optimisticThinkingTimeouts.cancel(sessionId);
+            resumingTimeouts.cancel(sessionId);
+            thinkingGraceTimeouts.cancel(sessionId);
 
 	            // Remove session from sessions
 	            const { [sessionId]: deletedSession, ...remainingSessions } = state.sessions;
             const { [sessionId]: _deletedRenderable, ...remainingRenderables } = state.sessionListRenderables;
             
-            // Remove session messages if they exist
+            // Remove session messages if they exist, along with the module-scoped
+            // derived caches that root the transcript outside the store.
             const { [sessionId]: deletedMessages, ...remainingSessionMessages } = state.sessionMessages;
-            
+            clearSessionTranscriptDerivedCachesForSession(sessionId);
+
             // Remove session source-control status if it exists
             const { [sessionId]: _deletedScmStatus, ...remainingScmStatus } = state.sessionScmStatus;
             const { [sessionId]: _deletedTreeState, ...remainingTreeState } = state.sessionRepositoryTreeExpandedPathsBySessionId;
@@ -1979,6 +2205,8 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 ...state,
                 sessions: remainingSessions,
                 sessionListRenderables: remainingRenderables,
+                // The only durable record that this id is gone rather than merely uncached.
+                deletedSessionIds: { ...state.deletedSessionIds, [sessionId]: true as const },
                 sessionMessages: remainingSessionMessages,
                 sessionScmStatus: remainingScmStatus,
                 sessionRepositoryTreeExpandedPathsBySessionId: remainingTreeState,

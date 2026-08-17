@@ -196,6 +196,24 @@ function shouldDropScrollY(
     return Math.abs(options.textLength - state.textLength) / state.textLength > AGENT_INPUT_SCROLL_TEXT_LENGTH_DRIFT_RATIO;
 }
 
+/**
+ * Whether the persisted state's text basis matches the live text closely
+ * enough for its transient payload (scroll/selection) to be applied. On
+ * session open the composer mounts before the draft text is adopted (live
+ * textLength 0 vs persisted textLength N), so the payload is withheld or
+ * clamped; restore consumers use this predicate to know when the basis has
+ * been adopted. Uses the same drift tolerance as the scrollY guard above.
+ */
+export function isAgentInputLocalUiStateTextBasisApplicable(
+    state: AgentInputLocalUiStateV1 | null,
+    textLength: number | undefined,
+): boolean {
+    if (!state) return true;
+    if (typeof textLength !== 'number' || typeof state.textLength !== 'number') return true;
+    if (state.textLength === 0) return textLength === 0;
+    return Math.abs(textLength - state.textLength) / state.textLength <= AGENT_INPUT_SCROLL_TEXT_LENGTH_DRIFT_RATIO;
+}
+
 export function readAgentInputLocalUiState(
     scope: ServerAccountScope | null | undefined,
     owner: AgentInputDraftOwner,
@@ -207,10 +225,19 @@ export function readAgentInputLocalUiState(
     const state = cache.values[ownerKey];
     if (!state) return null;
 
+    // The transient payload (scroll + selection) only means anything against the text it
+    // was captured for. On session open the composer mounts empty and adopts the draft a
+    // commit later, so this is read with textLength 0 first. Returning a CLAMPED selection
+    // there produced a truthy {0,0} that consumers restored as "caret at start" — and that
+    // programmatic apply echoed back through onSelectionChangePersist, overwriting the
+    // stored basis with textLength 0 and destroying the real scroll/selection before the
+    // draft ever loaded. Withhold the selection on a non-applicable basis, exactly as
+    // scrollY already is, so the payload survives until the basis is adopted.
+    const basisApplies = isAgentInputLocalUiStateTextBasisApplicable(state, options?.textLength);
     const nextState: AgentInputLocalUiStateV1 = {
         ...state,
         ...(shouldDropScrollY(state, options) ? { scrollY: undefined } : {}),
-        selection: clampSelection(state.selection, options?.textLength),
+        selection: basisApplies ? clampSelection(state.selection, options?.textLength) : undefined,
     };
     if (typeof nextState.scrollY === 'undefined') {
         const { scrollY: _scrollY, ...withoutScroll } = nextState;

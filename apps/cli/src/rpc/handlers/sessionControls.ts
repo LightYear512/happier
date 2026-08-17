@@ -29,8 +29,15 @@ import {
   readDisplayableSessionWorkStateV1,
   type SessionTerminalComposerClearRequestV1,
   type SessionTerminalComposerClearResultV1,
+  SessionPendingInputInterruptAndRunRequestV1Schema,
+  SessionPendingInputInterruptAndRunResultV1Schema,
+  buildUnsupportedSessionPendingInputInterruptAndRunResult,
+  type SessionPendingInputInterruptAndRunRequestV1,
+  type SessionPendingInputInterruptAndRunResultV1,
 } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { mergeUsageLimitRecoveryFieldIntoMetadata } from '@/session/usageLimitRecoveryControls/persistUsageLimitRecoveryFieldDurably';
+import { hasSameUsageLimitRecoveryIdentity } from '@/session/usageLimitRecoveryControls/mergeUsageLimitRecoveryIntent';
 import {
   resolveUsageLimitRecoveryFeatureEnabled,
   usageLimitRecoveryFeatureDisabledResult,
@@ -59,6 +66,8 @@ export type SessionRuntimeControls = {
   readConnectedServiceRuntimeIdentity?: (
     request: Readonly<SessionConnectedServiceAuthReadRuntimeIdentityRequestV1>,
   ) => Promise<unknown> | unknown;
+  wakePendingMaterialization?: () => void;
+  isPendingMaterializationAvailable?: () => boolean;
   enableUsageLimitWaitResume?: (request: Readonly<{
     sessionId: string;
     issueFingerprint?: string;
@@ -67,7 +76,8 @@ export type SessionRuntimeControls = {
   }>) => Promise<unknown> | unknown;
   cancelUsageLimitWaitResume?: (request: Readonly<{
     sessionId: string;
-    issueFingerprint?: string | null;
+    issueFingerprint: string;
+    armedAtMs: number;
   }>) => Promise<unknown> | unknown;
   checkUsageLimitRecoveryNow?: (request: Readonly<{
     sessionId: string;
@@ -78,15 +88,19 @@ export type SessionRuntimeControls = {
   clearTerminalComposer?: (
     request: Readonly<SessionTerminalComposerClearRequestV1>,
   ) => Promise<SessionTerminalComposerClearResultV1 | unknown> | SessionTerminalComposerClearResultV1 | unknown;
+  interruptPendingInputAndRun?: (
+    request: Readonly<SessionPendingInputInterruptAndRunRequestV1>,
+  ) => Promise<SessionPendingInputInterruptAndRunResultV1 | unknown> | SessionPendingInputInterruptAndRunResultV1 | unknown;
   handleUserMessage?: (
     request: Readonly<{
       text: string;
       localId?: string;
       meta: Record<string, unknown>;
     }>,
-  ) => Promise<Readonly<{ handled: false }> | Readonly<{ handled: true; result: unknown }>>
+  ) => Promise<Readonly<{ handled: false }> | Readonly<{ handled: true; result: unknown }> | void>
     | Readonly<{ handled: false }>
-    | Readonly<{ handled: true; result: unknown }>;
+    | Readonly<{ handled: true; result: unknown }>
+    | void;
 };
 
 function unsupported(method: string): Readonly<{ ok: false; errorCode: string; error: string }> {
@@ -213,11 +227,37 @@ function normalizeTerminalComposerClearResult(
   });
 }
 
+function normalizePendingInputInterruptAndRunResult(
+  result: unknown,
+  request: SessionPendingInputInterruptAndRunRequestV1,
+): SessionPendingInputInterruptAndRunResultV1 {
+  const parsed = SessionPendingInputInterruptAndRunResultV1Schema.safeParse(result);
+  if (parsed.success) {
+    return SessionPendingInputInterruptAndRunResultV1Schema.parse({
+      ...parsed.data,
+      sessionId: parsed.data.sessionId ?? request.sessionId,
+      localId: parsed.data.localId ?? request.localId,
+    });
+  }
+  return SessionPendingInputInterruptAndRunResultV1Schema.parse({
+    ok: false,
+    status: 'interrupt_failed',
+    sessionId: request.sessionId,
+    localId: request.localId,
+    errorCode: 'invalid_runtime_control_result',
+    error: 'invalid_runtime_control_result',
+  });
+}
+
 export function registerSessionControlHandlers(
   rpc: RpcHandlerRegistrar,
   opts: Readonly<{
     getSessionMetadata?: (() => Metadata | null) | null;
     updateSessionMetadata?: ((handler: (metadata: Metadata) => Metadata) => Promise<void> | void) | null;
+    updateSessionMetadataWithResult?: (<TResult>(handler: (metadata: Metadata) => Readonly<{
+      metadata: Metadata;
+      result: TResult;
+    }>) => Promise<TResult> | TResult) | null;
     sessionRuntimeControls?: SessionRuntimeControls | null;
     /**
      * QAE-1: propagates a SUCCESSFUL user wait-resume cancel to the daemon-side
@@ -227,7 +267,10 @@ export function registerSessionControlHandlers(
      * intent stays armed and resumes the session involuntarily at reset time.
      * Best-effort: notifier failures never fail the cancel itself.
      */
-    notifyUsageLimitWaitResumeCancelled?: ((request: Readonly<{ sessionId: string }>) => Promise<unknown> | unknown) | null;
+    notifyUsageLimitWaitResumeCancelled?: ((request: Readonly<{
+      sessionId: string;
+      attemptId: string;
+    }>) => Promise<unknown> | unknown) | null;
   }>,
 ): void {
   let usageLimitRecoveryFeatureEnabledPromise: Promise<boolean> | null = null;
@@ -293,6 +336,22 @@ export function registerSessionControlHandlers(
     return normalizeTerminalComposerClearResult(
       await opts.sessionRuntimeControls.clearTerminalComposer(parsed.data),
       parsed.data.sessionId,
+    );
+  });
+
+  rpc.registerHandler(SESSION_RPC_METHODS.SESSION_PENDING_INPUT_INTERRUPT_AND_RUN, async (raw: unknown) => {
+    const parsed = SessionPendingInputInterruptAndRunRequestV1Schema.safeParse(raw);
+    if (!parsed.success) return invalidInput();
+    if (typeof opts.sessionRuntimeControls?.interruptPendingInputAndRun !== 'function') {
+      return buildUnsupportedSessionPendingInputInterruptAndRunResult(
+        parsed.data.sessionId,
+        parsed.data.localId,
+        SESSION_RPC_METHODS.SESSION_PENDING_INPUT_INTERRUPT_AND_RUN,
+      );
+    }
+    return normalizePendingInputInterruptAndRunResult(
+      await opts.sessionRuntimeControls.interruptPendingInputAndRun(parsed.data),
+      parsed.data,
     );
   });
 
@@ -376,10 +435,29 @@ export function registerSessionControlHandlers(
       ...(Object.prototype.hasOwnProperty.call(parsed.data, 'issueFingerprint')
         ? { issueFingerprint: parsed.data.issueFingerprint }
         : {}),
+      ...(typeof parsed.data.armedAtMs === 'number' ? { armedAtMs: parsed.data.armedAtMs } : {}),
+      ...(typeof parsed.data.runtimeAuthRecoveryAttemptId === 'string'
+        ? { runtimeAuthRecoveryAttemptId: parsed.data.runtimeAuthRecoveryAttemptId }
+        : {}),
     };
     if (!await usageLimitRecoveryFeatureEnabled()) {
       return usageLimitRecoveryFeatureDisabledResult({ sessionId: request.sessionId });
     }
+    if (typeof request.issueFingerprint !== 'string' || typeof request.armedAtMs !== 'number') {
+      return normalizeUsageLimitRecoveryOperationResult({
+        ok: false,
+        errorCode: 'usage_limit_recovery_attempt_identity_required',
+        error: 'usage_limit_recovery_attempt_identity_required',
+      }, request.sessionId);
+    }
+    const exactRequest = {
+      sessionId: request.sessionId,
+      issueFingerprint: request.issueFingerprint,
+      armedAtMs: request.armedAtMs,
+      ...(request.runtimeAuthRecoveryAttemptId
+        ? { runtimeAuthRecoveryAttemptId: request.runtimeAuthRecoveryAttemptId }
+        : {}),
+    };
     // QAE-1: every SUCCESSFUL cancel must also reach the daemon recovery owners,
     // regardless of which path (provider runtime control or metadata fallback)
     // handled it — otherwise the daemon's durable waiting intent stays armed and
@@ -387,43 +465,87 @@ export function registerSessionControlHandlers(
     const propagateCancelToDaemon = async (
       result: SessionUsageLimitRecoveryOperationResultV1,
     ): Promise<SessionUsageLimitRecoveryOperationResultV1> => {
-      if (result.ok !== true || typeof opts.notifyUsageLimitWaitResumeCancelled !== 'function') {
+      if (
+        result.ok !== true
+        || typeof opts.notifyUsageLimitWaitResumeCancelled !== 'function'
+        || typeof exactRequest.runtimeAuthRecoveryAttemptId !== 'string'
+      ) {
         return result;
       }
       try {
-        await opts.notifyUsageLimitWaitResumeCancelled({ sessionId: request.sessionId });
+        await opts.notifyUsageLimitWaitResumeCancelled({
+          sessionId: exactRequest.sessionId,
+          attemptId: exactRequest.runtimeAuthRecoveryAttemptId,
+        });
       } catch {
         // Best-effort: daemon-side cancel propagation must not fail the user cancel.
       }
       return result;
     };
     if (typeof opts.sessionRuntimeControls?.cancelUsageLimitWaitResume !== 'function') {
-      if (typeof opts.updateSessionMetadata !== 'function') {
+      if (typeof opts.updateSessionMetadataWithResult !== 'function') {
         return normalizeUsageLimitRecoveryOperationResult(
           unsupported(SESSION_RPC_METHODS.SESSION_USAGE_LIMIT_WAIT_RESUME_CANCEL),
           request.sessionId,
         );
       }
-      let cancelledIssueFingerprint: string | undefined;
-      await opts.updateSessionMetadata((metadata) => {
-        const parsed = SessionUsageLimitRecoveryV1Schema.safeParse(readCurrentUsageLimitRecoveryIntent(metadata));
-        const current = parsed.success
-          ? parsed.data
-          : buildUsageLimitRecoveryIntent({ nowMs: Date.now() });
-        cancelledIssueFingerprint = current.issueFingerprint;
-        return writeUsageLimitRecoveryIntent(metadata, {
-          ...current,
-          status: 'cancelled',
-        });
-      });
+      const currentMetadata = opts.getSessionMetadata?.() ?? null;
+      const current = SessionUsageLimitRecoveryV1Schema.safeParse(
+        readCurrentUsageLimitRecoveryIntent(currentMetadata),
+      );
+      if (
+        !current.success
+        || !hasSameUsageLimitRecoveryIdentity(current.data, exactRequest)
+      ) {
+        return normalizeUsageLimitRecoveryOperationResult({
+          ok: false,
+          errorCode: 'usage_limit_recovery_attempt_superseded',
+          error: 'usage_limit_recovery_attempt_superseded',
+        }, request.sessionId);
+      }
+      const settlement = await Promise.resolve(opts.updateSessionMetadataWithResult((metadata) => {
+          const latest = SessionUsageLimitRecoveryV1Schema.safeParse(readCurrentUsageLimitRecoveryIntent(metadata));
+          if (
+            !latest.success
+            || !hasSameUsageLimitRecoveryIdentity(latest.data, exactRequest)
+          ) return { metadata, result: 'superseded' as const };
+          const merged = mergeUsageLimitRecoveryFieldIntoMetadata({
+            latestMetadata: metadata,
+            baseMetadata: currentMetadata ?? {},
+            candidateMetadata: writeUsageLimitRecoveryIntent(metadata, {
+              ...latest.data,
+              status: 'cancelled',
+            }),
+            mode: 'cancel',
+          }) as Metadata;
+          const settled = SessionUsageLimitRecoveryV1Schema.safeParse(readCurrentUsageLimitRecoveryIntent(merged));
+          const cancelledExactAttempt = settled.success
+            && settled.data.status === 'cancelled'
+            && hasSameUsageLimitRecoveryIdentity(settled.data, exactRequest);
+          return {
+            metadata: merged,
+            result: cancelledExactAttempt ? 'cancelled' as const : 'superseded' as const,
+          };
+        })).catch(() => 'failed' as const);
+      if (settlement !== 'cancelled') {
+        return normalizeUsageLimitRecoveryOperationResult({
+          ok: false,
+          errorCode: settlement === 'superseded'
+            ? 'usage_limit_recovery_attempt_superseded'
+            : 'usage_limit_recovery_cancel_persistence_failed',
+          error: settlement === 'superseded'
+            ? 'usage_limit_recovery_attempt_superseded'
+            : 'usage_limit_recovery_cancel_persistence_failed',
+        }, request.sessionId);
+      }
       return await propagateCancelToDaemon(normalizeUsageLimitRecoveryOperationResult({
         ok: true,
         status: 'cancelled',
-        ...(cancelledIssueFingerprint ? { issueFingerprint: cancelledIssueFingerprint } : {}),
+        issueFingerprint: exactRequest.issueFingerprint,
       }, request.sessionId));
     }
     return await propagateCancelToDaemon(normalizeUsageLimitRecoveryOperationResult(
-      await opts.sessionRuntimeControls.cancelUsageLimitWaitResume(request),
+      await opts.sessionRuntimeControls.cancelUsageLimitWaitResume(exactRequest),
       request.sessionId,
     ));
   });

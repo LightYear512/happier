@@ -1,14 +1,12 @@
 import {
-  ConnectedServiceCredentialRecordV1Schema,
-  openConnectedServiceCredentialCiphertext,
-  sealConnectedServiceCredentialCiphertext,
+  ConnectedServiceCredentialRevisionV1Schema,
   type AccountSettings,
-  type ConnectedServiceCredentialHealthV1,
   type ConnectedServiceCredentialRecordV1,
+  type ConnectedServiceCredentialRevisionV1,
+  type ConnectedServiceExecutionAuthorityV1,
   type ConnectedServiceId,
-  type ConnectedServiceMaterializationIdentityV1,
 } from '@happier-dev/protocol';
-import { randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { ApiClient } from '@/api/api';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
@@ -16,132 +14,124 @@ import type { CatalogAgentId } from '@/backends/types';
 import type { Credentials } from '@/persistence';
 import { logger } from '@/ui/logger';
 import {
-  resolveCodexChatGptAuthTokensRefreshProfileId,
   type CodexChatGptAuthTokensRefreshResponse,
   type CodexChatGptAuthTokensRefreshSelection,
 } from '@/backends/codex/connectedServices/codexChatGptAuthTokensRefreshBridgeContract';
-import { materializeCodexChatGptRefreshBridgeSelection } from '@/backends/codex/connectedServices/materializeCodexChatGptRefreshBridgeSelection';
-
-import { parseConnectedServicesBindings } from '../parseConnectedServicesBindings';
-import { resolveConnectedServiceAccountMode } from '@/cloud/connectedServices/resolveConnectedServiceAccountMode';
+import { createCodexChatGptBridgeRefreshHooks } from '@/backends/codex/connectedServices/createCodexChatGptBridgeRefreshHooks';
+import {
+  type ClaudeSubscriptionAuthTokensRefreshResponse,
+  type ClaudeSubscriptionAuthTokensRefreshSelection,
+} from '@/backends/claude/connectedServices/claudeSubscriptionAuthTokensRefreshBridgeContract';
+import { createClaudeSubscriptionBridgeRefreshHooks } from '@/backends/claude/connectedServices/createClaudeSubscriptionBridgeRefreshHooks';
+import type {
+  ConnectedServiceBridgeRefreshCapabilities,
+  ConnectedServiceBridgeRefreshProfileHooks,
+} from './bridgeRefreshHooks';
+import { computeConnectedServiceAccessTokenFingerprint } from './credentialFreshness/tokenFingerprint';
 import { resolveConnectedServiceCredentials } from '@/cloud/connectedServices/resolveConnectedServiceCredentials';
-import {
-  materializeConnectedServicesForSpawn,
-  type ConnectedServiceResolvedSelection,
-} from '../materialize/materializeConnectedServicesForSpawn';
-import {
-  collectBlockingConnectedServicesMaterializationDiagnostics,
-  type ConnectedServicesMaterializationDiagnostic,
-} from '../materialize/providerMaterializerTypes';
-import { resolveConnectedAccountPostRefreshCredentialHealth } from '../descriptors/connectedAccountDescriptors';
+import { materializeConnectedServicesForSpawn } from '../materialize/materializeConnectedServicesForSpawn';
+import { collectBlockingConnectedServicesMaterializationDiagnostics } from '../materialize/providerMaterializerTypes';
 import { refreshConnectedAccountOauthTokens } from './serviceRefreshers';
 import { ConnectedServiceOauthRefreshError } from './serviceRefreshers';
+import { resolveForcedRefreshFreshnessDecision } from './credentialFreshness/adoptFreshFirst';
+import { resolveConnectedServiceCredentialLifecycleDescriptor } from '@/backends/catalog';
 import type {
-  ConnectedServiceRefreshFailureCategory,
+  ConnectedServiceCredentialLifecycleDescriptor,
   ConnectedServiceRefreshReason,
 } from '@/daemon/connectedServices/credentials/lifecycleTypes';
-import {
-  readConnectedServiceChildSelectionsFromEnv,
-  type ConnectedServiceChildSelection,
-} from '../connectedServiceChildEnvironment';
 import { readConnectedServiceMaterializationIdentityV1 } from '../materialize/createConnectedServiceMaterializationIdentity';
+import {
+  ConnectedServiceRuntimeRegistry,
+} from '../runtimeRegistry/registry';
+import {
+  ConnectedServiceBridgeSelectionAuthorizationError,
+  resolveCurrentBridgeSelectionForTarget,
+} from './bridgeAuthorization';
+import type { ConnectedServiceChildSelection } from '../connectedServiceChildEnvironment';
+import {
+  buildMaterializationFailureRefreshResult,
+  buildMissingRuntimeAuthTargetRefreshResult,
+  buildRefreshDiagnostic,
+  isReauthRequiredFailure,
+  persistCredentialHealthForMaterializationFailure,
+  persistCredentialHealthForRefreshResult,
+} from './refreshDiagnostics';
+import {
+  canReprobeCredentialHealth,
+  credentialHealthReprobeDelayMs,
+  isReconnectRequiredProfileStatus,
+  readCredentialHealthStatusForRefresh,
+  shouldBlockRefreshForCredentialHealth,
+  type CredentialHealthReprobeState,
+} from './credentialHealthReprobe';
+import {
+  buildUpdatedOauthRecord,
+  isChangedUsableOauthCredentialRevision,
+} from './oauthCredentialRecords';
+import {
+  persistRefreshedCredential,
+  readCredentialForRefresh,
+} from './credentialStore';
+import {
+  clearRegisteredGroupMemberRuntimeStateWithPositiveEvidence,
+} from './memberRuntimeStateEvidence';
+import type {
+  ConnectedServiceProjectedCredentialBoundary,
+} from '../accountGroups/generation/connectedServiceProjectionSnapshot';
+import {
+  buildResolvedSelectionsForTarget,
+  canonicalizeTargetSelectionsForRematerialization,
+  resolveSpawnTargetMaterializationIdentity,
+} from './rematerialization';
+import type {
+  BoundProfile,
+  ConnectedServiceCredentialHealthNotificationStatus,
+  ConnectedServiceCredentialHealthNotificationTarget,
+  ConnectedServiceCredentialRefreshDiagnostic,
+  ConnectedServiceCredentialRefreshResult,
+  ConnectedServiceRuntimeAuthCredentialRefreshResult,
+  ConnectedServiceCredentialSource,
+  ConnectedServiceQuotaCredentialRefreshOutcome,
+  RematerializedTargetsResult,
+  RematerializedTargetFailure,
+  SpawnTarget,
+} from './refreshTypes';
 
-type BoundProfile = Readonly<{ serviceId: ConnectedServiceId; profileId: string }>;
-type ConnectedServiceCredentialSource =
-  | Readonly<{ mode: 'plain'; record: ConnectedServiceCredentialRecordV1 }>
-  | Readonly<{
-    mode: 'sealed';
-    record: ConnectedServiceCredentialRecordV1;
-    metadata: { kind: 'oauth' | 'token'; expiresAt?: number | null };
-  }>;
-
-export type ConnectedServiceCredentialRefreshStatus =
-  | 'refreshed'
-  | 'not_needed'
-  | 'not_oauth'
-  | 'lease_not_acquired'
-  | 'credential_missing'
-  | 'refresh_failed';
-
-export type ConnectedServiceCredentialRefreshDiagnostic = Readonly<{
-  serviceId: ConnectedServiceId;
-  profileId: string;
-  reason: ConnectedServiceRefreshReason;
-  status: ConnectedServiceCredentialRefreshStatus;
-  category?: ConnectedServiceRefreshFailureCategory;
-  providerStatus?: number | null;
-  providerErrorCode?: string | null;
-  expiresAt?: number | null;
-  expiryAgeMs?: number | null;
-  refreshWindowMs: number;
-}>;
-
-export type ConnectedServiceCredentialRefreshResult = Readonly<{
-  status: ConnectedServiceCredentialRefreshStatus;
-  credential: ConnectedServiceCredentialRecordV1 | null;
-  diagnostic: ConnectedServiceCredentialRefreshDiagnostic;
-}>;
-
-export type ConnectedServiceCredentialHealthNotificationStatus =
-  | 'reconnect_required'
-  | 'refresh_failed_retryable';
-
-export type ConnectedServiceCredentialHealthNotificationTarget = Readonly<{
-  pid: number;
-  agentId: CatalogAgentId;
-  sessionId: string;
-}>;
-
-type SpawnTarget = Readonly<{
-  pid: number;
-  agentId: CatalogAgentId;
-  sessionId: string | null;
-  materializationKey: string;
-  connectedServiceMaterializationIdentityV1: ConnectedServiceMaterializationIdentityV1 | null;
-  sessionDirectory: string | null;
-  bindings: ReadonlyArray<BoundProfile>;
-  selectionsByServiceId: ReadonlyMap<ConnectedServiceId, ConnectedServiceChildSelection>;
-}>;
-
-type RematerializedTargetFailure = Readonly<{
-  target: SpawnTarget;
-  binding: BoundProfile;
-  diagnostic: ConnectedServicesMaterializationDiagnostic;
-}>;
-
-type RematerializedTargetsResult = Readonly<{
-  affectedTargets: ReadonlyArray<SpawnTarget>;
-  rematerializedTargets: ReadonlyArray<SpawnTarget>;
-  failedTargets: ReadonlyArray<RematerializedTargetFailure>;
-}>;
-
-/**
- * Resolve the materialization identity a refresh-driven rematerialization must target.
- *
- * The spawn registers `materializationKey = identity.id` (`csm_*`) and the session reads
- * `<baseDir>/<identity.id>/<agentId>`. `materializeConnectedServicesForSpawn` falls back to
- * `sha256(key)` when no identity object is supplied, so a rematerialization that drops the identity
- * writes fresh credentials into an ORPHAN root no session ever reads (RD-MAT-6). When the caller
- * did not register the typed identity, reconstruct it from a canonical `csm_*` key — only the `id`
- * drives root resolution; the timestamp is a sentinel for the schema and is never persisted.
- */
-function resolveSpawnTargetMaterializationIdentity(
-  target: SpawnTarget,
-): ConnectedServiceMaterializationIdentityV1 | null {
-  if (target.connectedServiceMaterializationIdentityV1) {
-    return target.connectedServiceMaterializationIdentityV1;
-  }
-  if (!target.materializationKey.startsWith('csm_')) return null;
-  return readConnectedServiceMaterializationIdentityV1({
-    v: 1,
-    id: target.materializationKey,
-    createdAtMs: 0,
-  });
-}
+export type {
+  ConnectedServiceCredentialHealthNotificationStatus,
+  ConnectedServiceCredentialHealthNotificationTarget,
+  ConnectedServiceCredentialRefreshDiagnostic,
+  ConnectedServiceCredentialRefreshResult,
+  ConnectedServiceRuntimeAuthCredentialRefreshResult,
+  ConnectedServiceCredentialRefreshStatus,
+} from './refreshTypes';
+export {
+  CONNECTED_SERVICE_BRIDGE_SELECTION_NOT_AUTHORIZED,
+  ConnectedServiceBridgeSelectionAuthorizationError,
+  isConnectedServiceBridgeSelectionAuthorizationError,
+} from './bridgeAuthorization';
+export type {
+  ConnectedServiceMaterializationCredentialRefreshClassification,
+} from './refreshDiagnostics';
+export {
+  classifyConnectedServiceMaterializationDiagnosticForCredentialRefresh,
+} from './refreshDiagnostics';
 
 function bindingKey(binding: BoundProfile): string {
   return `${binding.serviceId}/${binding.profileId}`;
 }
+
+export type ConnectedServiceAuthUpdatedApplicationResult = Readonly<{
+  /** Runtime identities whose exact refreshed credential was accepted by the live application owner. */
+  appliedRuntimeIdentityKeys: ReadonlySet<string>;
+}>;
+
+type RefreshedBindingDistributionResult = RematerializedTargetsResult &
+  ConnectedServiceAuthUpdatedApplicationResult;
+
+const EMPTY_AUTH_UPDATED_APPLICATION_RESULT: ConnectedServiceAuthUpdatedApplicationResult = Object.freeze({
+  appliedRuntimeIdentityKeys: new Set<string>(),
+});
 
 /**
  * A forced caller may adopt an already-in-flight refresh only when that refresh actually
@@ -157,119 +147,11 @@ function inFlightResultSatisfiesCaller(
   return result.status !== 'not_needed';
 }
 
-function isReauthRequiredFailure(category: ConnectedServiceRefreshFailureCategory): boolean {
-  return category === 'invalid_grant'
-    || category === 'invalid_client'
-    || category === 'provider_401'
-    || category === 'provider_403'
-    || category === 'missing_refresh_token';
-}
-
-function isReconnectRequiredProfileStatus(status: unknown): boolean {
-  return status === 'needs_reauth';
-}
-
-function shouldBlockRefreshForCredentialHealth(reason: ConnectedServiceRefreshReason): boolean {
-  return reason === 'scheduled'
-    || reason === 'spawn_preflight'
-    || reason === 'runtime_auth_failure'
-    || reason === 'quota_bridge';
-}
-
-function providerHttpStatusForHealth(status: number | null | undefined): number | undefined {
-  if (typeof status !== 'number' || !Number.isInteger(status)) return undefined;
-  return status >= 100 && status <= 599 ? status : undefined;
-}
-
-function providerErrorCodeForHealth(code: string | null | undefined): string | undefined {
-  const trimmed = typeof code === 'string' ? code.trim() : '';
-  return trimmed.length > 0 ? trimmed.slice(0, 128) : undefined;
-}
-
-function readConnectedServiceRefreshFailureCategory(
-  value: unknown,
-): ConnectedServiceRefreshFailureCategory | null {
-  switch (value) {
-    case 'invalid_grant':
-    case 'invalid_client':
-    case 'provider_401':
-    case 'provider_403':
-    case 'network_error':
-    case 'malformed_response':
-    case 'missing_access_token':
-    case 'missing_refresh_token':
-    case 'unknown':
-      return value;
-    default:
-      return null;
-  }
-}
-
-export type ConnectedServiceMaterializationCredentialRefreshClassification = Readonly<{
-  category: ConnectedServiceRefreshFailureCategory;
-  providerStatus?: number;
-  providerErrorCode?: string;
-}>;
-
-export function classifyConnectedServiceMaterializationDiagnosticForCredentialRefresh(
-  diagnostic: ConnectedServicesMaterializationDiagnostic,
-): ConnectedServiceMaterializationCredentialRefreshClassification {
-  const refreshFailure = diagnostic.credentialRefreshFailure;
-  const category = readConnectedServiceRefreshFailureCategory(refreshFailure?.category) ?? 'unknown';
-  const providerStatus = providerHttpStatusForHealth(refreshFailure?.providerStatus);
-  const providerErrorCode = providerErrorCodeForHealth(refreshFailure?.providerErrorCode)
-    ?? providerErrorCodeForHealth(diagnostic.code);
-
-  return {
-    category,
-    ...(providerStatus !== undefined ? { providerStatus } : {}),
-    ...(providerErrorCode !== undefined ? { providerErrorCode } : {}),
-  };
-}
-
 async function defaultSleepMs(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(resolve, Math.max(0, Math.trunc(ms)));
     (timeout as unknown as { unref?: () => void }).unref?.();
   });
-}
-
-function selectionToBoundProfile(selection: ConnectedServiceChildSelection): BoundProfile {
-  return {
-    serviceId: selection.serviceId,
-    profileId: selection.kind === 'group' ? selection.activeProfileId : selection.profileId,
-  };
-}
-
-function buildSelectionsByServiceId(env: Pick<NodeJS.ProcessEnv, string> | undefined): ReadonlyMap<ConnectedServiceId, ConnectedServiceChildSelection> {
-  const selections = readConnectedServiceChildSelectionsFromEnv(env ?? {});
-  return new Map(selections.map((selection) => [selection.serviceId, selection]));
-}
-
-function buildRefreshDiagnostic(params: Readonly<{
-  binding: BoundProfile;
-  reason: ConnectedServiceRefreshReason;
-  status: ConnectedServiceCredentialRefreshStatus;
-  category?: ConnectedServiceRefreshFailureCategory;
-  providerStatus?: number | null;
-  providerErrorCode?: string | null;
-  expiresAt?: number | null;
-  now: number;
-  refreshWindowMs: number;
-}>): ConnectedServiceCredentialRefreshDiagnostic {
-  const expiresAt = params.expiresAt ?? null;
-  return {
-    serviceId: params.binding.serviceId,
-    profileId: params.binding.profileId,
-    reason: params.reason,
-    status: params.status,
-    ...(params.category ? { category: params.category } : {}),
-    ...(params.providerStatus !== undefined ? { providerStatus: params.providerStatus } : {}),
-    ...(params.providerErrorCode !== undefined ? { providerErrorCode: params.providerErrorCode } : {}),
-    expiresAt,
-    expiryAgeMs: typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? params.now - expiresAt : null,
-    refreshWindowMs: params.refreshWindowMs,
-  };
 }
 
 function resolveRuntimeAuthRematerializationFailures(input: Readonly<{
@@ -295,6 +177,19 @@ function wasRuntimeAuthSessionRematerialized(input: Readonly<{
   return input.result.rematerializedTargets.some((target) => target.sessionId === input.sessionId);
 }
 
+function didRuntimeAuthSessionAdoptAnotherGroupMember(input: Readonly<{
+  result: RematerializedTargetsResult;
+  sessionId: string | null;
+  binding: BoundProfile;
+}>): boolean {
+  if (!input.sessionId) return false;
+  const target = input.result.rematerializedTargets.find((candidate) => candidate.sessionId === input.sessionId);
+  if (!target) return false;
+  const selection = target.selectionsByServiceId.get(input.binding.serviceId);
+  return selection?.kind === 'group'
+    && selection.activeProfileId !== input.binding.profileId;
+}
+
 export class ConnectedServiceCredentialRefreshError extends Error {
   readonly diagnostic: ConnectedServiceCredentialRefreshDiagnostic;
 
@@ -305,101 +200,23 @@ export class ConnectedServiceCredentialRefreshError extends Error {
   }
 }
 
-function buildResolvedSelectionsForTarget(
-  target: SpawnTarget,
-  recordsByServiceId: ReadonlyMap<ConnectedServiceId, ConnectedServiceCredentialRecordV1>,
-): ReadonlyMap<ConnectedServiceId, ConnectedServiceResolvedSelection> {
-  const selectionsByServiceId = new Map<ConnectedServiceId, ConnectedServiceResolvedSelection>();
-  for (const selection of target.selectionsByServiceId.values()) {
-    const record = recordsByServiceId.get(selection.serviceId);
-    if (!record) continue;
-    if (selection.kind === 'group') {
-      selectionsByServiceId.set(selection.serviceId, {
-        kind: 'group',
-        serviceId: selection.serviceId,
-        groupId: selection.groupId,
-        activeProfileId: selection.activeProfileId,
-        fallbackProfileId: selection.fallbackProfileId,
-        generation: selection.generation,
-        record,
-        policy: null,
-      });
-      continue;
-    }
-    selectionsByServiceId.set(selection.serviceId, {
-      kind: 'profile',
-      serviceId: selection.serviceId,
-      profileId: selection.profileId,
-      record,
-    });
-  }
-  return selectionsByServiceId;
-}
-
-function openConnectedServiceRecord(params: Readonly<{
-  credentials: Credentials;
-  ciphertext: string;
-}>): ConnectedServiceCredentialRecordV1 {
-  const opened = openConnectedServiceCredentialCiphertext({
-    material:
-      params.credentials.encryption.type === 'legacy'
-        ? { type: 'legacy', secret: params.credentials.encryption.secret }
-        : { type: 'dataKey', machineKey: params.credentials.encryption.machineKey },
-    ciphertext: params.ciphertext,
-  });
-  if (!opened || !opened.value) {
-    throw new Error('Failed to decrypt connected service credential');
-  }
-  return ConnectedServiceCredentialRecordV1Schema.parse(opened.value);
-}
-
-function buildUpdatedOauthRecord(params: Readonly<{
-  now: number;
-  record: ConnectedServiceCredentialRecordV1 & { kind: 'oauth' };
-  next: Readonly<{
-    accessToken: string;
-    refreshToken: string;
-    idToken: string | null;
-    scope?: string | null;
-    tokenType?: string | null;
-    providerAccountId?: string | null;
-    providerEmail?: string | null;
-    expiresAt: number | null;
-  }>;
-}>): ConnectedServiceCredentialRecordV1 {
-  return ConnectedServiceCredentialRecordV1Schema.parse({
-    ...params.record,
-    updatedAt: params.now,
-    expiresAt: params.next.expiresAt,
-    oauth: {
-      ...params.record.oauth,
-      accessToken: params.next.accessToken,
-      refreshToken: params.next.refreshToken,
-      idToken: params.next.idToken,
-      scope: params.next.scope ?? params.record.oauth.scope,
-      tokenType: params.next.tokenType ?? params.record.oauth.tokenType,
-      providerAccountId: params.next.providerAccountId ?? params.record.oauth.providerAccountId,
-      providerEmail: params.next.providerEmail ?? params.record.oauth.providerEmail,
-    },
-  });
-}
-
-function hasObservedOauthCredentialChanged(
-  before: ConnectedServiceCredentialRecordV1 & { kind: 'oauth' },
-  after: ConnectedServiceCredentialRecordV1 & { kind: 'oauth' },
-): boolean {
-  return before.updatedAt !== after.updatedAt
-    || before.expiresAt !== after.expiresAt
-    || before.oauth.accessToken !== after.oauth.accessToken
-    || before.oauth.refreshToken !== after.oauth.refreshToken
-    || before.oauth.idToken !== after.oauth.idToken
-    || before.oauth.scope !== after.oauth.scope
-    || before.oauth.tokenType !== after.oauth.tokenType;
-}
-
 export class ConnectedServiceRefreshCoordinator {
-  private readonly targetsByPid = new Map<number, SpawnTarget>();
+  private readonly runtimeRegistry: ConnectedServiceRuntimeRegistry;
   private readonly inFlightRefreshes = new Map<string, Promise<ConnectedServiceCredentialRefreshResult>>();
+  private readonly inFlightRefreshRematerializations = new Map<string, Promise<RematerializedTargetsResult>>();
+  private readonly inFlightRefreshAuthUpdatedNotifications = new Map<
+    string,
+    Promise<ConnectedServiceAuthUpdatedApplicationResult>
+  >();
+  /** RR-1 reentrancy guard: bindings currently mid-distribution on the 'refreshed' completion path. */
+  private readonly distributingRefreshedBindings = new Set<string>();
+  /** Last by-construction distribution; runtime recovery consumes it instead of materializing twice. */
+  private readonly lastRefreshedDistributionByKey = new Map<string, RematerializedTargetsResult>();
+  private readonly canonicalGroupStateCache = new Map<string, Readonly<{
+    atMs: number;
+    group: Readonly<{ activeProfileId: string | null; generation: number }> | null;
+  }>>();
+  private readonly credentialHealthReprobeState = new Map<string, CredentialHealthReprobeState>();
 
   constructor(private readonly params: Readonly<{
     api: ApiClient;
@@ -418,20 +235,35 @@ export class ConnectedServiceRefreshCoordinator {
     onAuthUpdated?: (event: Readonly<{
       binding: BoundProfile;
       affectedTargets: ReadonlyArray<SpawnTarget>;
+      credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
+      mutation?: 'replaced' | 'deleted';
       trigger: 'refresh_triggered_restart' | 'reconnect_propagation';
-    }>) => void | Promise<void>;
+    }>) => void | ConnectedServiceAuthUpdatedApplicationResult
+      | Promise<void | ConnectedServiceAuthUpdatedApplicationResult>;
     onCredentialHealthNotification?: (event: Readonly<{
       diagnostic: ConnectedServiceCredentialRefreshDiagnostic;
       healthStatus: ConnectedServiceCredentialHealthNotificationStatus;
       affectedTargets: ReadonlyArray<ConnectedServiceCredentialHealthNotificationTarget>;
     }>) => void | Promise<void>;
     logRefreshDiagnostic?: (diagnostic: ConnectedServiceCredentialRefreshDiagnostic) => void;
-  }>) {}
+    runtimeRegistry?: ConnectedServiceRuntimeRegistry;
+    /**
+     * Resolves a provider's credential lifecycle descriptor (RR-9). The coordinator consumes the
+     * descriptor's `materializedHomeMaintenance` hook rather than importing provider-specific
+     * freshness logic. Defaults to the canonical catalog resolver.
+     */
+    resolveLifecycleDescriptor?: (
+      agentId: CatalogAgentId,
+    ) => Promise<ConnectedServiceCredentialLifecycleDescriptor>;
+  }>) {
+    this.runtimeRegistry = params.runtimeRegistry ?? new ConnectedServiceRuntimeRegistry();
+  }
 
   registerSpawnTarget(params: Readonly<{
     pid: number;
     agentId: CatalogAgentId;
     sessionId?: string | null;
+    brokerSelectionIdentity?: string | null;
     materializationKey: string;
     /** Tracked session materialization identity; keeps rematerialization on the live `csm_*` root. */
     connectedServiceMaterializationIdentityV1?: unknown;
@@ -440,17 +272,15 @@ export class ConnectedServiceRefreshCoordinator {
     connectedServicesBindingsRaw: unknown;
     connectedServiceSelectionsEnv?: Pick<NodeJS.ProcessEnv, string>;
   }>): void {
-    const selectionsByServiceId = buildSelectionsByServiceId(params.connectedServiceSelectionsEnv);
-    const bindings = selectionsByServiceId.size > 0
-      ? Array.from(selectionsByServiceId.values()).map(selectionToBoundProfile)
-      : parseConnectedServicesBindings(params.connectedServicesBindingsRaw);
-    if (bindings.length === 0) return;
-    this.targetsByPid.set(params.pid, {
+    this.runtimeRegistry.registerTarget({
       pid: params.pid,
       agentId: params.agentId,
       sessionId: typeof params.sessionId === 'string' && params.sessionId.trim().length > 0
         ? params.sessionId.trim()
         : null,
+      ...(typeof params.brokerSelectionIdentity === 'string' && params.brokerSelectionIdentity.trim().length > 0
+        ? { brokerSelectionIdentity: params.brokerSelectionIdentity.trim() }
+        : {}),
       materializationKey: params.materializationKey,
       connectedServiceMaterializationIdentityV1: readConnectedServiceMaterializationIdentityV1(
         params.connectedServiceMaterializationIdentityV1,
@@ -458,23 +288,17 @@ export class ConnectedServiceRefreshCoordinator {
       sessionDirectory: typeof params.sessionDirectory === 'string' && params.sessionDirectory.trim().length > 0
         ? params.sessionDirectory.trim()
         : null,
-      bindings,
-      selectionsByServiceId,
+      connectedServicesBindingsRaw: params.connectedServicesBindingsRaw,
+      ...(params.connectedServiceSelectionsEnv ? { connectedServiceSelectionsEnv: params.connectedServiceSelectionsEnv } : {}),
     });
   }
 
   unregisterPid(pid: number): void {
-    this.targetsByPid.delete(pid);
+    this.runtimeRegistry.unregisterPid(pid);
   }
 
   transferPid(fromPid: number, toPid: number): void {
-    const target = this.targetsByPid.get(fromPid);
-    if (!target) return;
-    this.targetsByPid.delete(fromPid);
-    this.targetsByPid.set(toPid, {
-      ...target,
-      pid: toPid,
-    });
+    this.runtimeRegistry.transferPid(fromPid, toPid);
   }
 
   async tickOnce(): Promise<void> {
@@ -482,7 +306,7 @@ export class ConnectedServiceRefreshCoordinator {
     const unique = new Map<string, BoundProfile>();
     const errors: unknown[] = [];
 
-    for (const target of this.targetsByPid.values()) {
+    for (const target of this.runtimeRegistry.listRefreshTargets()) {
       for (const binding of target.bindings) {
         unique.set(bindingKey(binding), binding);
       }
@@ -502,52 +326,275 @@ export class ConnectedServiceRefreshCoordinator {
   }
 
   async refreshOpenAiCodexChatGptTokensForBridge(input: Readonly<{
-    selection: CodexChatGptAuthTokensRefreshSelection;
+    sessionId?: string | null;
+    /** Broker selection identity for shared-server providers (R3-6). Wire `selection` is IGNORED. */
+    brokerSelectionIdentity?: string | null;
+    selection?: CodexChatGptAuthTokensRefreshSelection;
     chatgptPlanType: string | null;
+    forceRefresh?: boolean;
+    failingAccessTokenFingerprint?: string | null;
   }>): Promise<CodexChatGptAuthTokensRefreshResponse> {
-    const profileId = resolveCodexChatGptAuthTokensRefreshProfileId(input.selection);
+    return await this.refreshServiceTokensForBridge({
+      serviceId: 'openai-codex',
+      sessionId: input.sessionId,
+      brokerSelectionIdentity: input.brokerSelectionIdentity,
+      forceRefresh: input.forceRefresh,
+      failingAccessTokenFingerprint: input.failingAccessTokenFingerprint,
+      hooks: createCodexChatGptBridgeRefreshHooks({
+        chatgptPlanType: input.chatgptPlanType,
+        capabilities: this.bridgeRefreshCapabilities(),
+      }),
+    });
+  }
+
+  /**
+   * Daemon-side handler for the OpenCode Claude broker bridge: deliver a fresh Anthropic ACCESS
+   * token (never the refresh token). Reuses the canonical per-binding refresh (single-flight,
+   * rotation-aware, persists the rotated refresh token) for subscription OAuth; setup-tokens are
+   * long-lived access tokens and are returned as-is (nothing to refresh).
+   */
+  async refreshClaudeSubscriptionTokensForBridge(input: Readonly<{
+    sessionId?: string | null;
+    /**
+     * Broker selection identity for shared-server providers (R3-6). Retained
+     * `selection` on the wire is IGNORED for identity — the daemon re-resolves the current binding.
+     */
+    brokerSelectionIdentity?: string | null;
+    selection?: ClaudeSubscriptionAuthTokensRefreshSelection;
+    forceRefresh?: boolean;
+    failingAccessTokenFingerprint?: string | null;
+  }>): Promise<ClaudeSubscriptionAuthTokensRefreshResponse> {
+    return await this.refreshServiceTokensForBridge({
+      serviceId: 'claude-subscription',
+      sessionId: input.sessionId,
+      brokerSelectionIdentity: input.brokerSelectionIdentity,
+      forceRefresh: input.forceRefresh,
+      failingAccessTokenFingerprint: input.failingAccessTokenFingerprint,
+      hooks: createClaudeSubscriptionBridgeRefreshHooks({
+        capabilities: this.bridgeRefreshCapabilities(),
+      }),
+    });
+  }
+
+  /**
+   * CS-FIX-1: the ONE generic access-token bridge-refresh skeleton. It owns the SHARED orchestration
+   * every provider bridge needs — the single authz choke point (R3-3/R3-6), the F6
+   * adopt-current-if-valid freshness decision, the positive-evidence runtime-state clear, forced
+   * distribution, and the single `refreshOauthBinding` rotation owner — and delegates ONLY the
+   * provider-specific steps (profile resolution, current-token probe incl. setup-token short-circuit,
+   * refreshed-response shaping incl. any post-rotation materialization) to the provider's bridge hook.
+   * A new provider adds a hook module and a thin typed adapter above; the skeleton never changes.
+   */
+  private async refreshServiceTokensForBridge<TResponse>(input: Readonly<{
+    serviceId: ConnectedServiceId;
+    sessionId?: string | null;
+    brokerSelectionIdentity?: string | null;
+    forceRefresh?: boolean;
+    failingAccessTokenFingerprint?: string | null;
+    hooks: ConnectedServiceBridgeRefreshProfileHooks<TResponse>;
+  }>): Promise<TResponse> {
+    const selection = this.resolveAuthorizedBridgeSelectionForBridge({
+      sessionId: input.sessionId,
+      brokerSelectionIdentity: input.brokerSelectionIdentity,
+      serviceId: input.serviceId,
+    });
+    const profileId = input.hooks.resolveProfileId(selection);
+    const binding = { serviceId: input.serviceId, profileId };
+
+    const probe = await input.hooks.probeCurrentToken(binding);
+    if (probe.kind === 'non_refreshable') {
+      this.logBridgeCurrentTokenAdoptionDiagnostic({
+        serviceId: input.serviceId,
+        profileId,
+        reason: 'setup_token',
+        accessToken: probe.accessToken,
+      });
+      return probe.response;
+    }
+    // F6: return the CURRENT access token if still valid + not forced (avoid rotating on every cold
+    // broker cache-miss). The broker forces a rotation ONLY on its 401-retry path.
+    if (probe.kind === 'adoptable') {
+      const credentialHealthAllowsAdoption = !isReconnectRequiredProfileStatus(
+        await readCredentialHealthStatusForRefresh({
+          api: this.params.api,
+          binding,
+        }),
+      );
+      const forceDecision = resolveForcedRefreshFreshnessDecision({
+        force: input.forceRefresh === true,
+        currentAccessToken: probe.accessToken,
+        currentTokenAdoptable: true,
+        failingAccessTokenFingerprint: input.failingAccessTokenFingerprint,
+      });
+      if (
+        (input.forceRefresh === true && forceDecision.kind === 'adopt_current')
+        || (credentialHealthAllowsAdoption && input.forceRefresh !== true)
+      ) {
+        if (input.forceRefresh === true) {
+          await this.distributeRefreshedBinding(binding);
+        }
+        this.logBridgeCurrentTokenAdoptionDiagnostic({
+          serviceId: input.serviceId,
+          profileId,
+          reason: input.forceRefresh === true ? 'adopted_current' : 'not_needed',
+          accessToken: probe.accessToken,
+        });
+        return probe.buildResponse();
+      }
+    }
+
     const updated = await this.refreshOauthBinding(
-      { serviceId: 'openai-codex', profileId },
+      binding,
       this.params.now(),
       { force: true, reason: 'provider_auth_bridge' },
     );
     if (updated.status !== 'refreshed' || updated.credential?.kind !== 'oauth') {
-      throw new Error('connected_service_chatgpt_refresh_unavailable');
+      throw new ConnectedServiceCredentialRefreshError(updated.diagnostic);
     }
-
-    const rematerializedTargets = await this.rematerializeTargetsForBinding({
-      serviceId: 'openai-codex',
-      profileId,
+    if (!updated.credentialRevision) {
+      throw new ConnectedServiceCredentialRefreshError(updated.diagnostic);
+    }
+    return await input.hooks.finalizeRefreshedResponse({
+      binding,
+      selection,
+      credential: updated.credential,
+      credentialRevision: updated.credentialRevision,
     });
-    if (rematerializedTargets.length === 0) {
-      await materializeCodexChatGptRefreshBridgeSelection({
-        selection: input.selection,
-        record: updated.credential,
-        activeServerDir: this.params.activeServerDir,
-        baseDir: this.params.baseDir,
-        accountSettings: this.params.accountSettingsProvider?.() ?? null,
-        processEnv: this.params.processEnv ?? process.env,
-      });
-    }
+  }
 
+  /**
+   * Coordinator-owned runtime capabilities exposed to provider bridge hooks (CS-FIX-1). Provider
+   * hooks reach daemon internals ONLY through this context, so they never re-implement the shared
+   * skeleton and the coordinator stays the single owner of credential reads, freshness, and
+   * rematerialization.
+   */
+  private bridgeRefreshCapabilities(): ConnectedServiceBridgeRefreshCapabilities {
     return {
-      accessToken: updated.credential.oauth.accessToken,
-      chatgptAccountId: updated.credential.oauth.providerAccountId,
-      chatgptPlanType: input.chatgptPlanType,
+      now: () => this.params.now(),
+      readCredentialSource: (binding) => readCredentialForRefresh({
+        api: this.params.api,
+        credentials: this.params.credentials,
+        binding,
+      }),
+      isOauthSourceStillValid: (source) => this.isOauthSourceStillValidForBridge(source),
+      resolveSourceExpiresAt: (source) => this.resolveExpiresAtForSource(source),
+      rematerializeTargets: (binding) => this.rematerializeTargetsForBinding(binding),
+      activeServerDir: this.params.activeServerDir,
+      baseDir: this.params.baseDir,
+      accountSettings: this.params.accountSettingsProvider?.() ?? null,
+      processEnv: this.params.processEnv ?? process.env,
     };
+  }
+
+  /** Resolve the authoritative expiry for a credential source (sealed metadata wins over the record). */
+  private resolveExpiresAtForSource(source: ConnectedServiceCredentialSource): number | null {
+    if (source.mode === 'plain') return source.record.expiresAt ?? null;
+    return source.metadata.expiresAt ?? source.record.expiresAt ?? null;
+  }
+
+  /**
+   * True when the source is an OAuth credential whose access token is NOT within the refresh window of
+   * expiry. Mirrors the `force:false` not-needed gate in `refreshOauthBindingUnserialized` so the
+   * bridge's "return current" path matches the proactive refresher's notion of "still valid".
+   */
+  private isOauthSourceStillValidForBridge(source: ConnectedServiceCredentialSource): boolean {
+    if (source.record.kind !== 'oauth') return false;
+    if (!source.record.oauth.accessToken.trim()) return false;
+    const expiresAt = this.resolveExpiresAtForSource(source);
+    if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) return false;
+    return expiresAt - this.params.now() > this.params.refreshWindowMs;
+  }
+
+  /**
+   * The single bridge-authz choke point (R3-3 / R3-6). An access-token bridge is authorized iff the
+   * caller's PROVEN identity maps to a live runtime target bound to `serviceId` right now — and the
+   * returned selection is that target's CURRENT binding (current active profile + current group
+   * generation), NEVER the caller's captured snapshot. Caller-supplied selection/generation is not
+   * trusted for identity: it cannot authorize a refresh nor decide which credential is rotated.
+   *
+   * Two identity kinds are accepted, resolved against the SAME registry owner:
+   * - `sessionId`: a per-session provider process (e.g. the Claude SDK callback). A no-restart pool
+   *   swap bumps the registry generation; the daemon resolves the current one, so a callback captured
+   *   at an older generation still authorizes and refreshes the current profile (R3-3).
+   * - `brokerSelectionIdentity`: a provider whose managed server is SHARED across sessions (OpenCode /
+   *   Pi). The broker cannot present a per-session id, so it presents its stable selection identity;
+   *   the daemon matches a live target carrying that identity (R3-6).
+   */
+  private resolveAuthorizedBridgeSelectionForBridge(input: Readonly<{
+    sessionId?: string | null;
+    brokerSelectionIdentity?: string | null;
+    serviceId: ConnectedServiceId;
+  }>): ConnectedServiceChildSelection {
+    const target = this.resolveBridgeRuntimeTargetForIdentity(input);
+    const selection = target
+      ? resolveCurrentBridgeSelectionForTarget(target, input.serviceId)
+      : null;
+    if (!selection) {
+      throw new ConnectedServiceBridgeSelectionAuthorizationError();
+    }
+    return selection;
+  }
+
+  /**
+   * SEC-F1: resolve the runtime target for a bridge caller by its DISCRIMINATED principal, never by
+   * first-success precedence across two identities. The presence of a `brokerSelectionIdentity` is the
+   * caller-mode discriminator: a shared broker (OpenCode/Pi) always presents one alongside a synthetic
+   * sessionId; a per-session callback presents only a real sessionId.
+   *
+   * Broker mode (identity present): authorize EXCLUSIVELY through the broker selection identity. The
+   * supplied sessionId is a synthetic broker tag and is NEVER used as a target key — otherwise a broker
+   * naming a live VICTIM session would be handed that session's current selection + access token
+   * (cross-account bypass inside a multi-account pool). Fail-closed defense-in-depth: if the supplied
+   * sessionId DOES resolve to a live session target that differs from the broker's own target, the
+   * caller conflated two principals — reject the mixed/mismatched pair with the typed authz error.
+   *
+   * Session mode (no identity): resolve by the real sessionId only (per-session callback, unchanged).
+   */
+  private resolveBridgeRuntimeTargetForIdentity(input: Readonly<{
+    sessionId?: string | null;
+    brokerSelectionIdentity?: string | null;
+  }>): ReturnType<ConnectedServiceRuntimeRegistry['getBySessionId']> {
+    const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+    const brokerSelectionIdentity = typeof input.brokerSelectionIdentity === 'string'
+      ? input.brokerSelectionIdentity.trim()
+      : '';
+    if (brokerSelectionIdentity) {
+      const brokerTarget = this.runtimeRegistry.getByBrokerSelectionIdentity(brokerSelectionIdentity);
+      if (sessionId) {
+        const sessionTarget = this.runtimeRegistry.getBySessionId(sessionId);
+        if (sessionTarget && sessionTarget !== brokerTarget) {
+          throw new ConnectedServiceBridgeSelectionAuthorizationError();
+        }
+      }
+      return brokerTarget;
+    }
+    return sessionId ? this.runtimeRegistry.getBySessionId(sessionId) : null;
   }
 
   async refreshConnectedServiceCredentialForQuota(input: Readonly<{
     serviceId: ConnectedServiceId;
     profileId: string;
     force: boolean;
-  }>): Promise<ConnectedServiceCredentialRecordV1 | null> {
+  }>): Promise<ConnectedServiceQuotaCredentialRefreshOutcome> {
     const result = await this.refreshOauthBinding(
       { serviceId: input.serviceId, profileId: input.profileId },
       this.params.now(),
       { force: input.force, reason: 'quota_bridge' },
     );
-    return result.status === 'refreshed' ? result.credential : null;
+    // Carry the reconnect-required verdict across the quota boundary: a refresh that failed
+    // permanently (or was blocked by an existing needs_reauth latch) must not be reported as an
+    // opaque `null` — the quota coordinator would otherwise overwrite the just-persisted
+    // needs_reauth health with a retryable status and keep probing a dead account forever
+    // (codex4 refresh_token_invalidated retry storm, 2026-07-09).
+    const reauthRequired = result.status === 'blocked_by_credential_health'
+      || (
+        result.status === 'refresh_failed'
+        && isReauthRequiredFailure(result.diagnostic.category ?? 'unknown')
+      );
+    return {
+      record: result.status === 'refreshed' ? result.credential : null,
+      reauthRequired,
+    };
   }
 
   async refreshConnectedServiceCredentialForSpawnPreflight(input: Readonly<{
@@ -566,7 +613,7 @@ export class ConnectedServiceRefreshCoordinator {
     serviceId: ConnectedServiceId;
     profileId: string;
     sessionId?: string | null;
-  }>): Promise<ConnectedServiceCredentialRefreshResult> {
+  }>): Promise<ConnectedServiceRuntimeAuthCredentialRefreshResult> {
     const binding = { serviceId: input.serviceId, profileId: input.profileId } satisfies BoundProfile;
     const result = await this.refreshOauthBinding(
       binding,
@@ -575,49 +622,122 @@ export class ConnectedServiceRefreshCoordinator {
     );
     if (result.status !== 'refreshed') return result;
 
-    const rematerialization = await this.rematerializeTargetsForBindingDetailed(binding);
+    const rematerialization = this.lastRefreshedDistributionByKey.get(bindingKey(binding))
+      ?? await this.rematerializeTargetsForBindingAfterRefresh(binding);
     const targetFailures = resolveRuntimeAuthRematerializationFailures({
       result: rematerialization,
       sessionId: input.sessionId ?? null,
     });
     if (targetFailures.length > 0) {
-      return this.buildMaterializationFailureRefreshResult({
-        binding,
+      return buildMaterializationFailureRefreshResult({
         sourceResult: result,
         failure: targetFailures[0]!,
+        now: this.params.now(),
+        refreshWindowMs: this.params.refreshWindowMs,
       });
     }
 
-    const affectedTargets = rematerialization.rematerializedTargets;
+    if (didRuntimeAuthSessionAdoptAnotherGroupMember({
+      result: rematerialization,
+      sessionId: input.sessionId ?? null,
+      binding,
+    }) || await this.didRegisteredRuntimeAuthSessionAdvanceToAnotherGroupMember({
+      sessionId: input.sessionId ?? null,
+      binding,
+    })) {
+      return {
+        ...result,
+        runtimeAuthDisposition: 'superseded_by_current_group',
+      };
+    }
     if (!wasRuntimeAuthSessionRematerialized({ result: rematerialization, sessionId: input.sessionId ?? null })) {
-      return await this.finalizeRefreshResult(this.buildMissingRuntimeAuthTargetRefreshResult({
+      return await this.finalizeRefreshResult(binding, buildMissingRuntimeAuthTargetRefreshResult({
         binding,
         sourceResult: result,
+        now: this.params.now(),
+        refreshWindowMs: this.params.refreshWindowMs,
       }));
     }
-    if (affectedTargets.length === 0) return result;
-    await this.params.onAuthUpdated?.({
-      binding,
-      affectedTargets,
-      trigger: 'refresh_triggered_restart',
-    });
+    if (rematerialization.rematerializedTargets.length > 0) {
+      const refreshedRevision = ConnectedServiceCredentialRevisionV1Schema.safeParse(result.credentialRevision);
+      await this.notifyAuthUpdatedForRefreshedBinding(
+        binding,
+        refreshedRevision.success ? refreshedRevision.data : null,
+        rematerialization.rematerializedTargets,
+      );
+    }
     return result;
+  }
+
+  private async didRegisteredRuntimeAuthSessionAdvanceToAnotherGroupMember(input: Readonly<{
+    sessionId: string | null;
+    binding: BoundProfile;
+  }>): Promise<boolean> {
+    if (!input.sessionId) return false;
+    const target = this.runtimeRegistry.getBySessionId(input.sessionId);
+    const selection = target?.connectedServiceSelections.find((candidate) => (
+      candidate.serviceId === input.binding.serviceId
+      && candidate.kind === 'group'
+    ));
+    if (!selection || selection.kind !== 'group') return false;
+    const canonical = await this.refreshCanonicalGroupStateForRefresh({
+      serviceId: selection.serviceId,
+      groupId: selection.groupId,
+    }, this.params.now());
+    return canonical?.activeProfileId != null
+      && canonical.activeProfileId !== input.binding.profileId;
   }
 
   async handleExternalCredentialUpdate(input: Readonly<{
     serviceId: ConnectedServiceId;
     profileId: string;
+    credentialBoundary: ConnectedServiceProjectedCredentialBoundary;
+    executionAuthority: ConnectedServiceExecutionAuthorityV1;
   }>): Promise<void> {
     const profileId = String(input.profileId ?? '').trim();
     if (!profileId) return;
     const binding = { serviceId: input.serviceId, profileId } satisfies BoundProfile;
+    if (input.credentialBoundary.status === 'absent') {
+      const affectedTargets = this.runtimeRegistry.listRefreshTargets().filter((target) =>
+        target.bindings.some((candidate) => (
+          candidate.serviceId === binding.serviceId
+          && candidate.profileId === binding.profileId
+        )),
+      );
+      if (affectedTargets.length === 0) return;
+      await this.params.onAuthUpdated?.({
+        binding,
+        affectedTargets,
+        credentialRevision: null,
+        mutation: 'deleted',
+        trigger: 'reconnect_propagation',
+      });
+      return;
+    }
     const affectedTargets = await this.rematerializeTargetsForBinding(binding);
     if (affectedTargets.length === 0) return;
     await this.params.onAuthUpdated?.({
       binding,
       affectedTargets,
+      credentialRevision: input.credentialBoundary.credentialRevision,
+      mutation: 'replaced',
       trigger: 'reconnect_propagation',
     });
+  }
+
+  private async distributeRefreshedBinding(
+    binding: BoundProfile,
+    credentialRevision: ConnectedServiceCredentialRevisionV1 | null = null,
+  ): Promise<RefreshedBindingDistributionResult> {
+    const rematerialization = await this.rematerializeTargetsForBindingAfterRefresh(binding);
+    const application = rematerialization.rematerializedTargets.length > 0
+      ? await this.notifyAuthUpdatedForRefreshedBinding(
+        binding,
+        credentialRevision,
+        rematerialization.rematerializedTargets,
+      )
+      : EMPTY_AUTH_UPDATED_APPLICATION_RESULT;
+    return { ...rematerialization, ...application };
   }
 
   private async maybeRefreshBinding(binding: BoundProfile, now: number): Promise<void> {
@@ -625,97 +745,138 @@ export class ConnectedServiceRefreshCoordinator {
     if (result.status === 'refresh_failed') {
       throw new ConnectedServiceCredentialRefreshError(result.diagnostic);
     }
-    if (result.status !== 'refreshed') return;
-
-    const affectedTargets = await this.rematerializeTargetsForBinding(binding);
-    if (affectedTargets.length === 0) return;
-    await this.params.onAuthUpdated?.({
-      binding,
-      affectedTargets,
-      trigger: 'refresh_triggered_restart',
-    });
-  }
-
-  private async isRefreshBlockedByCredentialHealth(binding: BoundProfile): Promise<boolean> {
-    const listProfiles = this.params.api.listConnectedServiceProfiles;
-    if (typeof listProfiles !== 'function') return false;
-    try {
-      const result = await listProfiles.call(this.params.api, { serviceId: binding.serviceId });
-      const profile = result.profiles.find((candidate) => candidate.profileId === binding.profileId);
-      return isReconnectRequiredProfileStatus(profile?.status);
-    } catch (error) {
-      logger.warn('[DAEMON RUN] Failed to read connected-service profile health before refresh', {
-        serviceId: binding.serviceId,
-        profileId: binding.profileId,
-        error: serializeAxiosErrorForLog(error),
-      });
-      return false;
+    if (result.status === 'not_needed' && await this.hasStaleMaterializedHomeForBinding(binding, result, now)) {
+      await this.distributeRefreshedBinding(binding);
     }
+    // A 'refreshed' result already distributed BY CONSTRUCTION on the completion path (RR-1).
   }
 
-  private async readCredentialForRefresh(binding: BoundProfile): Promise<ConnectedServiceCredentialSource | null> {
-    const accountMode = await resolveConnectedServiceAccountMode(this.params.api);
-    if (accountMode !== 'e2ee' && typeof this.params.api.getConnectedServiceCredentialPlain === 'function') {
-      const plain = accountMode === 'unknown'
-        ? await this.params.api.getConnectedServiceCredentialPlain({
-            serviceId: binding.serviceId,
-            profileId: binding.profileId,
-          }).catch(() => null)
-        : await this.params.api.getConnectedServiceCredentialPlain({
-            serviceId: binding.serviceId,
-            profileId: binding.profileId,
-          });
-      if (plain) {
-        return { mode: 'plain', record: ConnectedServiceCredentialRecordV1Schema.parse(plain.content.v) };
-      }
-      if (accountMode === 'plain') return null;
-    }
-
-    const sealed = await this.params.api.getConnectedServiceCredentialSealed({
-      serviceId: binding.serviceId,
-      profileId: binding.profileId,
-    });
-    if (!sealed) return null;
-    const record = openConnectedServiceRecord({
-      credentials: this.params.credentials,
-      ciphertext: sealed.sealed.ciphertext,
-    });
-    return { mode: 'sealed', record, metadata: sealed.metadata };
-  }
-
-  private async persistRefreshedCredential(
+  private async hasStaleMaterializedHomeForBinding(
     binding: BoundProfile,
-    source: ConnectedServiceCredentialSource,
-    updated: ConnectedServiceCredentialRecordV1,
-  ): Promise<void> {
-    if (source.mode === 'plain') {
-      await this.params.api.registerConnectedServiceCredentialPlain({
-        serviceId: binding.serviceId,
-        profileId: binding.profileId,
-        content: { t: 'plain', v: updated },
-      });
-      return;
-    }
+    result: ConnectedServiceCredentialRefreshResult,
+    now: number,
+  ): Promise<boolean> {
+    const targets = this.runtimeRegistry.listRefreshTargets();
+    const agentIds = new Set(targets.map((target) => target.agentId));
+    if (agentIds.size === 0) return false;
 
-    const sealedCiphertext = sealConnectedServiceCredentialCiphertext({
-      material:
-        this.params.credentials.encryption.type === 'legacy'
-          ? { type: 'legacy', secret: this.params.credentials.encryption.secret }
-          : { type: 'dataKey', machineKey: this.params.credentials.encryption.machineKey },
-      payload: updated,
-      randomBytes: (length) => randomBytes(length),
-    });
-
-    await this.params.api.registerConnectedServiceCredentialSealed({
-      serviceId: binding.serviceId,
-      profileId: binding.profileId,
-      sealed: { format: 'account_scoped_v1', ciphertext: sealedCiphertext },
-      metadata: {
-        kind: updated.kind,
-        providerEmail: updated.kind === 'oauth' ? updated.oauth.providerEmail : null,
-        providerAccountId: updated.kind === 'oauth' ? updated.oauth.providerAccountId : null,
-        expiresAt: updated.expiresAt,
+    const fingerprintCache = new Map<string, string | null>();
+    fingerprintCache.set(
+      binding.profileId,
+      result.credential?.kind === 'oauth'
+        ? computeConnectedServiceAccessTokenFingerprint(result.credential.oauth.accessToken)
+        : null,
+    );
+    const stalenessInput = {
+      binding,
+      targets,
+      activeServerDir: this.params.activeServerDir,
+      processEnv: this.params.processEnv ?? process.env,
+      now,
+      refreshWindowMs: this.params.refreshWindowMs,
+      resolveCanonicalGroupActiveProfileId: async (input: Readonly<{ serviceId: ConnectedServiceId; groupId: string }>) =>
+        (await this.resolveCanonicalGroupStateForRefresh(input, now))?.activeProfileId ?? null,
+      resolveStoreAccessTokenFingerprintForProfile: async (profileId: string) => {
+        if (fingerprintCache.has(profileId)) return fingerprintCache.get(profileId) ?? null;
+        let fingerprint: string | null = null;
+        try {
+          const source = await readCredentialForRefresh({
+            api: this.params.api,
+            credentials: this.params.credentials,
+            binding: { serviceId: binding.serviceId, profileId },
+          });
+          fingerprint = source?.record.kind === 'oauth'
+            ? computeConnectedServiceAccessTokenFingerprint(source.record.oauth.accessToken)
+            : null;
+        } catch {
+          fingerprint = null;
+        }
+        fingerprintCache.set(profileId, fingerprint);
+        return fingerprint;
       },
+    };
+
+    // RR-9: ask each live provider (via its lifecycle descriptor) whether its materialized home is
+    // stale for this binding — no provider-specific import in the shared coordinator.
+    const resolveDescriptor = this.params.resolveLifecycleDescriptor
+      ?? resolveConnectedServiceCredentialLifecycleDescriptor;
+    for (const agentId of agentIds) {
+      const descriptor = await resolveDescriptor(agentId);
+      const hasStale = descriptor.materializedHomeMaintenance?.hasStaleMaterializedHomeForBinding;
+      if (!hasStale) continue;
+      if (!(descriptor.serviceIds as readonly string[]).includes(binding.serviceId)) continue;
+      if (await hasStale(stalenessInput)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Reads the CANONICAL current state of an auth group (server truth). The refresh corridor must
+   * never trust a target's spawn-time selection snapshot for SHARED group-home identity: sessions
+   * spawned at different generations carry divergent snapshots, and snapshot-based freshness checks
+   * or rewrites make them fight over the one shared home (live incident 2026-07-08: alternating
+   * cross-account clobbers of the pool home plus a per-refresh-cycle restart loop).
+   */
+  private async resolveCanonicalGroupStateForRefresh(
+    input: Readonly<{ serviceId: ConnectedServiceId; groupId: string }>,
+    now: number,
+  ): Promise<Readonly<{ activeProfileId: string | null; generation: number }> | null> {
+    const key = `${input.serviceId}::${input.groupId}`;
+    const cached = this.canonicalGroupStateCache.get(key);
+    if (cached && now - cached.atMs < 15_000) return cached.group;
+    return await this.refreshCanonicalGroupStateForRefresh(input, now);
+  }
+
+  private async refreshCanonicalGroupStateForRefresh(
+    input: Readonly<{ serviceId: ConnectedServiceId; groupId: string }>,
+    now: number,
+  ): Promise<Readonly<{ activeProfileId: string | null; generation: number }> | null> {
+    const key = `${input.serviceId}::${input.groupId}`;
+    let group: Readonly<{ activeProfileId: string | null; generation: number }> | null = null;
+    const reader = this.params.api.getConnectedServiceAuthGroup;
+    if (typeof reader === 'function') {
+      try {
+        const value = await reader.call(this.params.api, {
+          serviceId: input.serviceId,
+          groupId: input.groupId,
+        });
+        group = value
+          ? {
+              activeProfileId: typeof value.activeProfileId === 'string' && value.activeProfileId.trim().length > 0
+                ? value.activeProfileId
+                : null,
+              generation: value.generation,
+            }
+          : null;
+      } catch {
+        group = null;
+      }
+    }
+    this.canonicalGroupStateCache.set(key, { atMs: now, group });
+    return group;
+  }
+
+  private shouldDeferCredentialHealthReprobe(
+    binding: BoundProfile,
+    now: number,
+    options: Readonly<{ force: boolean; reason: ConnectedServiceRefreshReason }>,
+  ): boolean {
+    if (!canReprobeCredentialHealth(options.reason, options)) return true;
+    const state = this.credentialHealthReprobeState.get(bindingKey(binding));
+    return Boolean(state && now < state.nextProbeAt);
+  }
+
+  private resetCredentialHealthReprobe(binding: BoundProfile): void {
+    this.credentialHealthReprobeState.delete(bindingKey(binding));
+  }
+
+  private armCredentialHealthReprobeBackoff(binding: BoundProfile, now: number): void {
+    const key = bindingKey(binding);
+    const previous = this.credentialHealthReprobeState.get(key);
+    const failureCount = (previous?.failureCount ?? 0) + 1;
+    this.credentialHealthReprobeState.set(key, {
+      failureCount,
+      nextProbeAt: now + credentialHealthReprobeDelayMs(failureCount - 1),
     });
   }
 
@@ -750,6 +911,7 @@ export class ConnectedServiceRefreshCoordinator {
         await previous.catch(() => undefined);
       }
       return await this.finalizeRefreshResult(
+        binding,
         await this.refreshOauthBindingUnserialized(binding, now, options),
       );
     })();
@@ -764,12 +926,69 @@ export class ConnectedServiceRefreshCoordinator {
   }
 
   private async finalizeRefreshResult(
+    binding: BoundProfile,
     result: ConnectedServiceCredentialRefreshResult,
   ): Promise<ConnectedServiceCredentialRefreshResult> {
-    this.logRefreshDiagnostic(result.diagnostic);
-    await this.persistCredentialHealthForRefreshResult(result);
-    await this.notifyCredentialHealthForRefreshResult(result);
-    return result;
+    let finalizedResult = result;
+    if (result.status === 'refreshed') {
+      const credentialRevision = ConnectedServiceCredentialRevisionV1Schema.parse(result.credentialRevision);
+      this.resetCredentialHealthReprobe({
+        serviceId: result.diagnostic.serviceId,
+        profileId: result.diagnostic.profileId,
+      });
+      // RR-1: every rotation funnels through this single distribution completion path (the OAuth
+      // leaf has exactly one caller). Registry truth advances only for represented targets whose
+      // provider materialization and auth-update callback completed; partial failures stay at their
+      // previous revision and preserve the existing typed non-success result.
+      // Reentrancy guard: a distribution-triggered nested refresh (the rematerialization preflight
+      // callback) must not recurse into another distribution.
+      const distributionKey = bindingKey(binding);
+      if (!this.distributingRefreshedBindings.has(distributionKey)) {
+        this.distributingRefreshedBindings.add(distributionKey);
+        try {
+          const distribution = await this.distributeRefreshedBinding(binding, credentialRevision);
+          this.lastRefreshedDistributionByKey.set(distributionKey, distribution);
+          const appliedRuntimeIdentityKeys = distribution.appliedRuntimeIdentityKeys;
+          if (appliedRuntimeIdentityKeys.size > 0) {
+            this.runtimeRegistry.adoptCredentialRevisionForProfile({
+              serviceId: binding.serviceId,
+              profileId: binding.profileId,
+              credentialRevision,
+              runtimeIdentityKeys: appliedRuntimeIdentityKeys,
+            });
+          }
+          const failedTarget = distribution.failedTargets[0] ?? null;
+          if (failedTarget) {
+            finalizedResult = buildMaterializationFailureRefreshResult({
+              sourceResult: result,
+              failure: failedTarget,
+              now: this.params.now(),
+              refreshWindowMs: this.params.refreshWindowMs,
+            });
+          }
+        } finally {
+          this.distributingRefreshedBindings.delete(distributionKey);
+        }
+      }
+    } else if (
+      result.status === 'refresh_failed'
+      && isReauthRequiredFailure(result.diagnostic.category ?? 'unknown')
+    ) {
+      this.armCredentialHealthReprobeBackoff({
+        serviceId: result.diagnostic.serviceId,
+        profileId: result.diagnostic.profileId,
+      }, this.params.now());
+    }
+    this.logRefreshDiagnostic(finalizedResult.diagnostic);
+    const healthSettled = await persistCredentialHealthForRefreshResult({
+      api: this.params.api,
+      result: finalizedResult,
+      now: this.params.now(),
+    });
+    if (healthSettled) {
+      await this.notifyCredentialHealthForRefreshResult(finalizedResult);
+    }
+    return finalizedResult;
   }
 
   private logRefreshDiagnostic(diagnostic: ConnectedServiceCredentialRefreshDiagnostic): void {
@@ -780,34 +999,24 @@ export class ConnectedServiceRefreshCoordinator {
     logger.debug('[DAEMON RUN] Connected-service credential refresh diagnostic', diagnostic);
   }
 
-  private async persistCredentialHealthForRefreshResult(
-    result: ConnectedServiceCredentialRefreshResult,
-  ): Promise<void> {
-    if (result.status !== 'refreshed' && result.status !== 'refresh_failed') return;
-    const updateHealth = this.params.api.updateConnectedServiceCredentialHealth;
-    if (typeof updateHealth !== 'function') return;
-
-    const diagnostic = result.diagnostic;
-    const now = this.params.now();
-    const health = result.status === 'refreshed'
-      ? this.buildSuccessCredentialHealth(result, now)
-      : this.buildFailureCredentialHealth(diagnostic, now);
-
-    try {
-      await updateHealth.call(this.params.api, {
-        serviceId: diagnostic.serviceId,
-        profileId: diagnostic.profileId,
-        health,
-      });
-    } catch (error) {
-      logger.warn('[DAEMON RUN] Failed to update connected-service credential health after refresh', {
-        serviceId: diagnostic.serviceId,
-        profileId: diagnostic.profileId,
-        status: diagnostic.status,
-        category: diagnostic.category ?? null,
-        error: serializeAxiosErrorForLog(error),
-      });
-    }
+  /**
+   * R3-M1: the bridge's adopt/return-current (non-rotating) short-circuits used to be INVISIBLE —
+   * the "invisible refresh" visibility gap. Emit one structured diagnostic so an operator can see
+   * that a bridge served the current token without rotating. Names/fingerprints ONLY — a token value
+   * is never logged (only a safe salted fingerprint of the served access token).
+   */
+  private logBridgeCurrentTokenAdoptionDiagnostic(input: Readonly<{
+    serviceId: ConnectedServiceId;
+    profileId: string;
+    reason: 'setup_token' | 'adopted_current' | 'not_needed';
+    accessToken: string;
+  }>): void {
+    logger.debug('[DAEMON RUN] Connected-service bridge served current access token (no rotation)', {
+      serviceId: input.serviceId,
+      profileId: input.profileId,
+      reason: input.reason,
+      accessTokenFingerprint: computeConnectedServiceAccessTokenFingerprint(input.accessToken),
+    });
   }
 
   private async notifyCredentialHealthForRefreshResult(
@@ -848,7 +1057,7 @@ export class ConnectedServiceRefreshCoordinator {
   private resolveNotificationTargetsForBinding(
     binding: BoundProfile,
   ): ReadonlyArray<ConnectedServiceCredentialHealthNotificationTarget> {
-    return Array.from(this.targetsByPid.values())
+    return this.runtimeRegistry.listRefreshTargets()
       .filter((target) => target.bindings.some((b) => b.serviceId === binding.serviceId && b.profileId === binding.profileId))
       .map((target) => ({
         pid: target.pid,
@@ -857,133 +1066,16 @@ export class ConnectedServiceRefreshCoordinator {
       }));
   }
 
-  private buildFailureCredentialHealth(
-    diagnostic: ConnectedServiceCredentialRefreshDiagnostic,
-    now: number,
-  ): ConnectedServiceCredentialHealthV1 {
-    const category = diagnostic.category ?? 'unknown';
-    return {
-      v: 1,
-      status: isReauthRequiredFailure(category) ? 'needs_reauth' : 'refresh_failed_retryable',
-      reconnectRequired: isReauthRequiredFailure(category),
-      lastRefreshAttemptAt: now,
-      lastRefreshFailureAt: now,
-      lastRefreshFailureKind: category,
-      ...(providerHttpStatusForHealth(diagnostic.providerStatus) !== undefined
-        ? { providerHttpStatus: providerHttpStatusForHealth(diagnostic.providerStatus) }
-        : {}),
-      ...(providerErrorCodeForHealth(diagnostic.providerErrorCode) !== undefined
-        ? { providerErrorCode: providerErrorCodeForHealth(diagnostic.providerErrorCode) }
-        : {}),
-    };
-  }
-
-  private async persistCredentialHealthForMaterializationFailure(
-    binding: BoundProfile,
-    diagnostic: ConnectedServicesMaterializationDiagnostic,
-  ): Promise<void> {
-    const updateHealth = this.params.api.updateConnectedServiceCredentialHealth;
-    if (typeof updateHealth !== 'function') return;
-
-    const now = this.params.now();
-    const classification = classifyConnectedServiceMaterializationDiagnosticForCredentialRefresh(diagnostic);
-    const health: ConnectedServiceCredentialHealthV1 = {
-      v: 1,
-      status: isReauthRequiredFailure(classification.category) ? 'needs_reauth' : 'refresh_failed_retryable',
-      reconnectRequired: isReauthRequiredFailure(classification.category),
-      lastRefreshAttemptAt: now,
-      lastRefreshFailureAt: now,
-      lastRefreshFailureKind: classification.category,
-      ...(providerHttpStatusForHealth(classification.providerStatus) !== undefined
-        ? { providerHttpStatus: providerHttpStatusForHealth(classification.providerStatus) }
-        : {}),
-      ...(classification.providerErrorCode ? { providerErrorCode: classification.providerErrorCode } : {}),
-    };
-
-    try {
-      await updateHealth.call(this.params.api, {
-        serviceId: binding.serviceId,
-        profileId: binding.profileId,
-        health,
-      });
-    } catch (error) {
-      logger.warn('[DAEMON RUN] Failed to update connected-service credential health after materialization failure', {
-        serviceId: binding.serviceId,
-        profileId: binding.profileId,
-        materializationCode: diagnostic.code,
-        reason: diagnostic.reason ?? null,
-        error: serializeAxiosErrorForLog(error),
-      });
-    }
-  }
-
-  private buildMaterializationFailureRefreshResult(input: Readonly<{
-    binding: BoundProfile;
-    sourceResult: ConnectedServiceCredentialRefreshResult;
-    failure: RematerializedTargetFailure;
-  }>): ConnectedServiceCredentialRefreshResult {
-    const classification = classifyConnectedServiceMaterializationDiagnosticForCredentialRefresh(input.failure.diagnostic);
-    return {
-      status: 'refresh_failed',
-      credential: input.sourceResult.credential,
-      diagnostic: buildRefreshDiagnostic({
-        binding: input.failure.binding,
-        reason: 'runtime_auth_failure',
-        status: 'refresh_failed',
-        category: classification.category,
-        providerStatus: classification.providerStatus,
-        providerErrorCode: classification.providerErrorCode ?? 'materialization_failed',
-        expiresAt: input.sourceResult.diagnostic.expiresAt ?? input.sourceResult.credential?.expiresAt ?? null,
-        now: this.params.now(),
-        refreshWindowMs: this.params.refreshWindowMs,
-      }),
-    };
-  }
-
-  private buildMissingRuntimeAuthTargetRefreshResult(input: Readonly<{
-    binding: BoundProfile;
-    sourceResult: ConnectedServiceCredentialRefreshResult;
-  }>): ConnectedServiceCredentialRefreshResult {
-    return {
-      status: 'refresh_failed',
-      credential: input.sourceResult.credential,
-      diagnostic: buildRefreshDiagnostic({
-        binding: input.binding,
-        reason: 'runtime_auth_failure',
-        status: 'refresh_failed',
-        category: 'unknown',
-        providerErrorCode: 'runtime_auth_target_not_registered',
-        expiresAt: input.sourceResult.diagnostic.expiresAt ?? input.sourceResult.credential?.expiresAt ?? null,
-        now: this.params.now(),
-        refreshWindowMs: this.params.refreshWindowMs,
-      }),
-    };
-  }
-
-  private buildSuccessCredentialHealth(
-    result: ConnectedServiceCredentialRefreshResult,
-    now: number,
-  ): ConnectedServiceCredentialHealthV1 {
-    const providerHealth = result.credential
-      ? resolveConnectedAccountPostRefreshCredentialHealth({ credential: result.credential, now })
-      : null;
-    if (providerHealth) return providerHealth;
-
-    return {
-      v: 1,
-      status: 'connected',
-      reconnectRequired: false,
-      lastRefreshAttemptAt: now,
-      lastRefreshSuccessAt: now,
-    };
-  }
-
   private async refreshOauthBindingUnserialized(
     binding: BoundProfile,
     now: number,
     options: Readonly<{ force: boolean; reason: ConnectedServiceRefreshReason }>,
   ): Promise<ConnectedServiceCredentialRefreshResult> {
-    const source = await this.readCredentialForRefresh(binding);
+    const source = await readCredentialForRefresh({
+      api: this.params.api,
+      credentials: this.params.credentials,
+      binding,
+    });
     if (!source) {
       return {
         status: 'credential_missing',
@@ -1015,35 +1107,35 @@ export class ConnectedServiceRefreshCoordinator {
     }
 
     const expiresAt = source.mode === 'plain' ? record.expiresAt : source.metadata.expiresAt ?? record.expiresAt;
+    let isCredentialHealthReprobe = false;
     if (
       shouldBlockRefreshForCredentialHealth(options.reason)
-      && await this.isRefreshBlockedByCredentialHealth(binding)
+      && isReconnectRequiredProfileStatus(await readCredentialHealthStatusForRefresh({
+        api: this.params.api,
+        binding,
+      }))
     ) {
-      return {
-        status: options.reason === 'spawn_preflight' || options.reason === 'runtime_auth_failure'
-          ? 'refresh_failed'
-          : 'not_needed',
-        credential: null,
-        diagnostic: buildRefreshDiagnostic({
-          binding,
-          reason: options.reason,
-          status: options.reason === 'spawn_preflight' || options.reason === 'runtime_auth_failure'
-            ? 'refresh_failed'
-            : 'not_needed',
-          ...(options.reason === 'spawn_preflight' || options.reason === 'runtime_auth_failure'
-            ? { category: 'invalid_grant' as const }
-            : {}),
-          expiresAt,
-          now,
-          refreshWindowMs: this.params.refreshWindowMs,
-        }),
-      };
+      if (this.shouldDeferCredentialHealthReprobe(binding, now, options)) {
+        return {
+          status: 'blocked_by_credential_health',
+          credential: null,
+          diagnostic: buildRefreshDiagnostic({
+            binding,
+            reason: options.reason,
+            status: 'blocked_by_credential_health',
+            expiresAt,
+            now,
+            refreshWindowMs: this.params.refreshWindowMs,
+          }),
+        };
+      }
+      isCredentialHealthReprobe = true;
     }
-    if (!options.force) {
+    if (!options.force && !isCredentialHealthReprobe) {
       if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) {
         return {
           status: 'not_needed',
-          credential: null,
+          credential: record,
           diagnostic: buildRefreshDiagnostic({
             binding,
             reason: options.reason,
@@ -1057,7 +1149,7 @@ export class ConnectedServiceRefreshCoordinator {
       if (expiresAt - now > this.params.refreshWindowMs) {
         return {
           status: 'not_needed',
-          credential: null,
+          credential: record,
           diagnostic: buildRefreshDiagnostic({
             binding,
             reason: options.reason,
@@ -1068,6 +1160,21 @@ export class ConnectedServiceRefreshCoordinator {
           }),
         };
       }
+    }
+
+    if (source.revisionSemantics !== 'revisioned') {
+      return {
+        status: 'lease_not_acquired',
+        credential: null,
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'lease_not_acquired',
+          expiresAt,
+          now,
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
     }
 
     const machineId = this.params.machineIdProvider();
@@ -1093,6 +1200,7 @@ export class ConnectedServiceRefreshCoordinator {
       machineId,
       ...(ownerId ? { ownerId } : {}),
       leaseMs: this.params.refreshLeaseMs,
+      ...(source.credentialRevision ? { expectedCredentialRevision: source.credentialRevision } : {}),
     });
     if (!lease.acquired) {
       const observed = await this.waitForContendedRefresh(binding, source, lease.leaseUntil, now, options);
@@ -1111,10 +1219,89 @@ export class ConnectedServiceRefreshCoordinator {
       };
     }
 
-    if (!record.oauth.refreshToken.trim()) {
+    // The lease serializes provider rotation across daemons, but the credential read above happened
+    // before acquisition. Another daemon may therefore have rotated and persisted this binding while
+    // we waited. Re-read under the acquired lease so provider I/O, persistence, and health evidence
+    // are all based on the same canonical credential revision.
+    const leasedSource = await readCredentialForRefresh({
+      api: this.params.api,
+      credentials: this.params.credentials,
+      binding,
+    });
+    if (!leasedSource) {
+      return {
+        status: 'credential_missing',
+        credential: null,
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'credential_missing',
+          now,
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
+    }
+    if (leasedSource.revisionSemantics !== 'revisioned') {
+      return {
+        status: 'lease_not_acquired',
+        credential: null,
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'lease_not_acquired',
+          expiresAt: this.resolveExpiresAtForSource(leasedSource),
+          now: this.params.now(),
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
+    }
+    if (leasedSource.record.kind !== 'oauth') {
+      return {
+        status: 'not_oauth',
+        credential: null,
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'not_oauth',
+          expiresAt: this.resolveExpiresAtForSource(leasedSource),
+          now,
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
+    }
+
+    const leasedExpiresAt = this.resolveExpiresAtForSource(leasedSource);
+    const leasedObservedAtMs = this.params.now();
+    if (
+      isChangedUsableOauthCredentialRevision({
+        before: record,
+        after: leasedSource.record,
+        authoritativeExpiresAt: leasedExpiresAt,
+        now: leasedObservedAtMs,
+      })
+    ) {
+      return {
+        status: 'refreshed',
+        credential: leasedSource.record,
+        credentialRevision: leasedSource.credentialRevision,
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'refreshed',
+          expiresAt: leasedExpiresAt,
+          now: leasedObservedAtMs,
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
+    }
+
+    const refreshRecord = leasedSource.record;
+
+    if (!refreshRecord.oauth.refreshToken.trim()) {
       return {
         status: 'refresh_failed',
         credential: null,
+        credentialRevision: leasedSource.credentialRevision,
         diagnostic: buildRefreshDiagnostic({
           binding,
           reason: options.reason,
@@ -1128,10 +1315,35 @@ export class ConnectedServiceRefreshCoordinator {
     }
 
     let refreshed;
+    let leaseAuthority = true;
+    let renewalInFlight: Promise<void> = Promise.resolve();
+    const renewalEveryMs = Math.max(1_000, Math.trunc(this.params.refreshLeaseMs / 2));
+    const renewalTimer = setInterval(() => {
+      renewalInFlight = renewalInFlight.then(async () => {
+        const renewed = await this.params.api.acquireConnectedServiceRefreshLease({
+          serviceId: binding.serviceId,
+          profileId: binding.profileId,
+          machineId,
+          ownerId: lease.ownerId ?? ownerId ?? machineId,
+          leaseMs: this.params.refreshLeaseMs,
+          expectedCredentialRevision: leasedSource.credentialRevision,
+        });
+        if (
+          !renewed.acquired
+          || renewed.credentialRevision !== leasedSource.credentialRevision
+          || renewed.ownerId !== (lease.ownerId ?? ownerId ?? machineId)
+        ) {
+          leaseAuthority = false;
+        }
+      }).catch(() => {
+        leaseAuthority = false;
+      });
+    }, renewalEveryMs);
+    (renewalTimer as unknown as { unref?: () => void }).unref?.();
     try {
       refreshed = await refreshConnectedAccountOauthTokens({
         serviceId: binding.serviceId,
-        refreshToken: record.oauth.refreshToken,
+        refreshToken: refreshRecord.oauth.refreshToken,
         now,
       });
     } catch (error) {
@@ -1139,6 +1351,7 @@ export class ConnectedServiceRefreshCoordinator {
       return {
         status: 'refresh_failed',
         credential: null,
+        credentialRevision: leasedSource.credentialRevision,
         diagnostic: buildRefreshDiagnostic({
           binding,
           reason: options.reason,
@@ -1151,6 +1364,24 @@ export class ConnectedServiceRefreshCoordinator {
           refreshWindowMs: this.params.refreshWindowMs,
         }),
       };
+    } finally {
+      clearInterval(renewalTimer);
+      await renewalInFlight;
+    }
+    if (!leaseAuthority) {
+      return {
+        status: 'lease_not_acquired',
+        credential: null,
+        credentialRevision: leasedSource.credentialRevision,
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'lease_not_acquired',
+          expiresAt: leasedExpiresAt,
+          now: this.params.now(),
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
     }
     const next = {
       accessToken: refreshed.accessToken,
@@ -1160,19 +1391,83 @@ export class ConnectedServiceRefreshCoordinator {
       tokenType: refreshed.tokenType,
       providerAccountId: refreshed.providerAccountId,
       providerEmail: refreshed.providerEmail,
+      raw: refreshed.raw,
       expiresAt: refreshed.expiresAt,
     };
 
     const updated = buildUpdatedOauthRecord({
       now,
-      record,
+      record: refreshRecord,
       next,
     });
 
-    await this.persistRefreshedCredential(binding, source, updated);
+    const persisted = await persistRefreshedCredential({
+      api: this.params.api,
+      credentials: this.params.credentials,
+      binding,
+      source: leasedSource,
+      updated,
+      refreshLeaseOwnerId: lease.ownerId ?? ownerId ?? machineId,
+    });
+    if (persisted && 'error' in persisted) {
+      const current = await readCredentialForRefresh({
+        api: this.params.api,
+        credentials: this.params.credentials,
+        binding,
+      });
+      return {
+        status: 'lease_not_acquired',
+        credential: current?.record ?? null,
+        ...(current?.revisionSemantics === 'revisioned'
+          ? { credentialRevision: current.credentialRevision }
+          : {}),
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'lease_not_acquired',
+          expiresAt: current ? this.resolveExpiresAtForSource(current) : null,
+          now: this.params.now(),
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
+    }
+    const settledSource = await readCredentialForRefresh({
+      api: this.params.api,
+      credentials: this.params.credentials,
+      binding,
+    });
+    if (
+      !persisted
+      || !settledSource
+      || settledSource.credentialRevision !== persisted.credentialRevision
+      || !isDeepStrictEqual(settledSource.record, updated)
+    ) {
+      return {
+        status: 'lease_not_acquired',
+        credential: settledSource?.record ?? null,
+        ...(settledSource?.revisionSemantics === 'revisioned'
+          ? { credentialRevision: settledSource.credentialRevision }
+          : {}),
+        diagnostic: buildRefreshDiagnostic({
+          binding,
+          reason: options.reason,
+          status: 'lease_not_acquired',
+          expiresAt: settledSource ? this.resolveExpiresAtForSource(settledSource) : null,
+          now: this.params.now(),
+          refreshWindowMs: this.params.refreshWindowMs,
+        }),
+      };
+    }
+    await clearRegisteredGroupMemberRuntimeStateWithPositiveEvidence({
+      api: this.params.api,
+      runtimeRegistry: this.runtimeRegistry,
+      binding,
+      evidence: { kind: 'credential_refresh', observedAtMs: now },
+    });
     return {
       status: 'refreshed',
-      credential: updated,
+      credential: settledSource.record,
+      credentialRevision: settledSource.credentialRevision,
       diagnostic: buildRefreshDiagnostic({
         binding,
         reason: options.reason,
@@ -1205,16 +1500,29 @@ export class ConnectedServiceRefreshCoordinator {
       await (this.params.sleepMs ?? defaultSleepMs)(waitMs);
     }
 
-    const observedSource = await this.readCredentialForRefresh(binding);
-    if (!observedSource || observedSource.record.kind !== 'oauth') return null;
-    if (!hasObservedOauthCredentialChanged(source.record, observedSource.record)) return null;
-
+    const observedSource = await readCredentialForRefresh({
+      api: this.params.api,
+      credentials: this.params.credentials,
+      binding,
+    });
+    if (
+      !observedSource
+      || observedSource.revisionSemantics !== 'revisioned'
+      || observedSource.record.kind !== 'oauth'
+    ) return null;
     const observedExpiresAt = observedSource.mode === 'plain'
       ? observedSource.record.expiresAt
       : observedSource.metadata.expiresAt ?? observedSource.record.expiresAt;
+    if (!isChangedUsableOauthCredentialRevision({
+      before: source.record,
+      after: observedSource.record,
+      authoritativeExpiresAt: observedExpiresAt,
+      now: this.params.now(),
+    })) return null;
     return {
       status: 'refreshed',
       credential: observedSource.record,
+      credentialRevision: observedSource.credentialRevision,
       diagnostic: buildRefreshDiagnostic({
         binding,
         reason: options.reason,
@@ -1230,13 +1538,105 @@ export class ConnectedServiceRefreshCoordinator {
     return (await this.rematerializeTargetsForBindingDetailed(binding)).rematerializedTargets;
   }
 
+  private async rematerializeTargetsForBindingAfterRefresh(binding: BoundProfile): Promise<RematerializedTargetsResult> {
+    const key = bindingKey(binding);
+    const existing = this.inFlightRefreshRematerializations.get(key);
+    if (existing) return await existing;
+
+    const promise = this.rematerializeTargetsForBindingDetailed(binding);
+    this.inFlightRefreshRematerializations.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.inFlightRefreshRematerializations.get(key) === promise) {
+        this.inFlightRefreshRematerializations.delete(key);
+      }
+    }
+  }
+
+  private async notifyAuthUpdatedForRefreshedBinding(
+    binding: BoundProfile,
+    credentialRevision: ConnectedServiceCredentialRevisionV1 | null,
+    affectedTargets: ReadonlyArray<SpawnTarget>,
+  ): Promise<ConnectedServiceAuthUpdatedApplicationResult> {
+    if (affectedTargets.length === 0 || !this.params.onAuthUpdated) {
+      return EMPTY_AUTH_UPDATED_APPLICATION_RESULT;
+    }
+    const key = bindingKey(binding);
+    const existing = this.inFlightRefreshAuthUpdatedNotifications.get(key);
+    if (existing) {
+      return await existing;
+    }
+
+    const promise = Promise.resolve(this.params.onAuthUpdated({
+      binding,
+      affectedTargets,
+      credentialRevision,
+      trigger: 'refresh_triggered_restart',
+    })).then((result) => result ?? EMPTY_AUTH_UPDATED_APPLICATION_RESULT);
+    this.inFlightRefreshAuthUpdatedNotifications.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      queueMicrotask(() => {
+        if (this.inFlightRefreshAuthUpdatedNotifications.get(key) === promise) {
+          this.inFlightRefreshAuthUpdatedNotifications.delete(key);
+        }
+      });
+    }
+  }
+
   private async rematerializeTargetsForBindingDetailed(binding: BoundProfile): Promise<RematerializedTargetsResult> {
-    const affected = Array.from(this.targetsByPid.values()).filter((target) =>
+    const affected = this.runtimeRegistry.listRefreshTargets().filter((target) =>
       target.bindings.some((b) => b.serviceId === binding.serviceId && b.profileId === binding.profileId),
     );
     const rematerialized: SpawnTarget[] = [];
     const failed: RematerializedTargetFailure[] = [];
-    for (const target of affected) {
+    const canonicalGroupStateReads = new Map<
+      string,
+      Promise<Readonly<{ activeProfileId: string | null; generation: number }> | null>
+    >();
+    for (const rawTarget of affected) {
+      // SHARED group homes are owned by the group's CURRENT canonical active profile. Rewrite them
+      // from canonical state only — a spawn-time selection snapshot may be stale (deferred switch,
+      // respawn with old env), and snapshot-based rewrites make concurrent sessions clobber each
+      // other's account token in the shared home. Fail closed when canonical state is unreadable.
+      const target = await canonicalizeTargetSelectionsForRematerialization({
+        target: rawTarget,
+        resolveCanonicalGroupState: async (input) => {
+          const key = `${input.serviceId}::${input.groupId}`;
+          let read = canonicalGroupStateReads.get(key);
+          if (!read) {
+            read = this.refreshCanonicalGroupStateForRefresh(input, this.params.now());
+            canonicalGroupStateReads.set(key, read);
+          }
+          return await read;
+        },
+      });
+      if (!target) {
+        failed.push({
+          target: rawTarget,
+          binding,
+          diagnostic: {
+            code: 'canonical_group_state_unavailable',
+            providerId: rawTarget.agentId,
+            severity: 'blocking',
+            serviceId: binding.serviceId,
+            reason: 'Canonical connected-service group state was unavailable during credential distribution.',
+            credentialRefreshFailure: {
+              category: 'unknown',
+              providerErrorCode: 'canonical_group_state_unavailable',
+            },
+          },
+        });
+        logger.warn('[DAEMON RUN] Skipping connected-service rematerialization; canonical group state unavailable', {
+          serviceId: binding.serviceId,
+          profileId: binding.profileId,
+          agentId: rawTarget.agentId,
+          pid: rawTarget.pid,
+        });
+        continue;
+      }
       const records = await resolveConnectedServiceCredentials({
         credentials: this.params.credentials,
         api: this.params.api,
@@ -1267,7 +1667,12 @@ export class ConnectedServiceRefreshCoordinator {
         const affectedBinding = target.bindings.find((candidate) => candidate.serviceId === primaryDiagnostic.serviceId)
           ?? target.bindings.find((candidate) => candidate.serviceId === binding.serviceId)
           ?? binding;
-        await this.persistCredentialHealthForMaterializationFailure(affectedBinding, primaryDiagnostic);
+        await persistCredentialHealthForMaterializationFailure({
+          api: this.params.api,
+          binding: affectedBinding,
+          diagnostic: primaryDiagnostic,
+          now: this.params.now(),
+        });
         failed.push({
           target,
           binding: affectedBinding,

@@ -9,6 +9,7 @@ import {
     DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1,
     stringifyConnectedServiceAuthGroupPolicy,
 } from "../connect/connectedServicesV3/authGroupPolicy";
+import { resolveConnectedServiceCredentialRevision } from "../connect/credentials/credentialRevision";
 
 describe("Account profile (integration)", () => {
     let harness: LightSqliteHarness;
@@ -102,7 +103,13 @@ describe("Account profile (integration)", () => {
                         vendor: "openai-codex",
                         profileId: "work",
                         token: Buffer.from("c2VhbGVk", "utf8"),
-                        metadata: { v: 2, format: "account_scoped_v1", kind: "oauth", providerEmail: "user@example.com" } as any,
+                        metadata: {
+                            v: 2,
+                            format: "account_scoped_v1",
+                            kind: "oauth",
+                            providerEmail: "user@example.com",
+                            credentialRevision: "csr_1123456789ABCDEFGHJKMNPQRS",
+                        } as any,
                         expiresAt: new Date(Date.now() + 3600_000),
                     },
                 });
@@ -127,7 +134,7 @@ describe("Account profile (integration)", () => {
                         priority: 10,
                     },
                 });
-                await db.serviceAccountToken.create({
+                const legacyUnfencedBackup = await db.serviceAccountToken.create({
                     data: {
                         accountId: account.id,
                         vendor: "openai-codex",
@@ -192,6 +199,18 @@ describe("Account profile (integration)", () => {
                 expect(res.statusCode).toBe(200);
                 const body = res.json() as any;
                 expect(Array.isArray(body.connectedServicesV2)).toBe(true);
+                expect(body.connectedServiceCredentialRevisionsV1).toEqual(expect.arrayContaining([{
+                    serviceId: "openai-codex",
+                    profileId: "work",
+                    credentialRevision: "csr_1123456789ABCDEFGHJKMNPQRS",
+                }, {
+                    serviceId: "openai-codex",
+                    profileId: "disabled-backup",
+                    credentialRevision: resolveConnectedServiceCredentialRevision({
+                        rowId: legacyUnfencedBackup.id,
+                        metadata: legacyUnfencedBackup.metadata,
+                    }),
+                }]));
                 expect(body.connectedServicesV2).toEqual(expect.arrayContaining([
                     expect.objectContaining({
                         serviceId: "openai-codex",

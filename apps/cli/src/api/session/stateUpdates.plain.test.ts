@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { updateSessionAgentStateWithAck, updateSessionMetadataWithAck } from './stateUpdates';
+import {
+  updateSessionAgentStateWithAck,
+  updateSessionMetadataWithAck,
+} from './stateUpdates';
 import { logger } from '@/ui/logger';
 
 describe('stateUpdates (plaintext sessions)', () => {

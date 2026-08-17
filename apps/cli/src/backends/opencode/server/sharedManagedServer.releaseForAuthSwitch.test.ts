@@ -45,7 +45,29 @@ describe('releaseForAuthSwitchFromState', () => {
       readProcessStartTimeMs: async () => 2501,
       killPid,
       currentActiveServerDir: '/tmp/happy/servers/cloud',
-      currentDaemonInstanceId: 'cloud',
+      expectedOwnerToken: 'owner-token-a',
+      drainMs: 9_000,
+    });
+
+    expect(result).toEqual({ released: true, reason: 'released' });
+    expect(killPid).toHaveBeenCalledWith(777, 9_000);
+    expect(removeState).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases an exactly validated prior managed server after daemon replacement', async () => {
+    const state = buildState({ daemonInstanceId: 'old-daemon' });
+    const killPid = vi.fn(async () => true);
+    const removeState = vi.fn(async () => {});
+
+    const result = await releaseForAuthSwitchFromState({
+      withLock: async <T>(fn: () => Promise<T>) => await fn(),
+      readState: async () => state,
+      removeState,
+      isPidAlive: () => true,
+      getProcessInfo: async () => ({ name: 'opencode', cmd: 'opencode serve --hostname=127.0.0.1 --port=43111' }),
+      readProcessStartTimeMs: async () => 2501,
+      killPid,
+      currentActiveServerDir: '/tmp/happy/servers/cloud',
       expectedOwnerToken: 'owner-token-a',
       drainMs: 9_000,
     });
@@ -69,7 +91,6 @@ describe('releaseForAuthSwitchFromState', () => {
       readProcessStartTimeMs: async () => 2500,
       killPid,
       currentActiveServerDir: '/tmp/happy/servers/cloud',
-      currentDaemonInstanceId: 'cloud',
       expectedOwnerToken: 'another-owner-token',
       drainMs: 9_000,
     });
@@ -93,7 +114,6 @@ describe('releaseForAuthSwitchFromState', () => {
       readProcessStartTimeMs: async () => 2500,
       killPid,
       currentActiveServerDir: '/tmp/happy/servers/cloud',
-      currentDaemonInstanceId: 'cloud',
       expectedOwnerToken: 'owner-token-a',
       drainMs: 9_000,
     });
@@ -117,7 +137,6 @@ describe('releaseForAuthSwitchFromState', () => {
       readProcessStartTimeMs: async () => 2500,
       killPid,
       currentActiveServerDir: '/tmp/happy/servers/cloud',
-      currentDaemonInstanceId: 'cloud',
       expectedOwnerToken: 'owner-token-a',
       drainMs: 9_000,
     });
@@ -141,7 +160,6 @@ describe('releaseForAuthSwitchFromState', () => {
       readProcessStartTimeMs: async () => 2500,
       killPid,
       currentActiveServerDir: '/tmp/happy/servers/cloud',
-      currentDaemonInstanceId: 'cloud',
       expectedOwnerToken: 'owner-token-a',
       drainMs: 9_000,
       trackedClaimCountForLaunchFingerprint: async () => 2,
@@ -167,7 +185,6 @@ describe('releaseForAuthSwitchFromState', () => {
       readProcessStartTimeMs: async () => 2500,
       killPid,
       currentActiveServerDir: '/tmp/happy/servers/cloud',
-      currentDaemonInstanceId: 'cloud',
       expectedOwnerToken: 'owner-token-a',
       drainMs: 9_000,
       trackedClaimCountForLaunchFingerprint: async () => 1,
@@ -178,14 +195,110 @@ describe('releaseForAuthSwitchFromState', () => {
     expect(killPid).toHaveBeenCalledWith(777, 9_000);
     expect(removeState).toHaveBeenCalledTimes(1);
   });
+
+  it('does NOT kill a sole-claimant server whose switching session still has an in-flight turn', async () => {
+    // Lane F prevention: with allowCurrentSessionClaim the only claim (the switching session) is
+    // subtracted to 0 and would otherwise fall through to killPid. The in-flight-turn guard must
+    // refuse the kill and leave BOTH the process and the state file intact so the turn finishes.
+    const state = buildState();
+    const killPid = vi.fn(async () => true);
+    const removeState = vi.fn(async () => {});
+
+    const result = await releaseForAuthSwitchFromState({
+      withLock: async <T>(fn: () => Promise<T>) => await fn(),
+      readState: async () => state,
+      removeState,
+      isPidAlive: () => true,
+      getProcessInfo: async () => ({ name: 'opencode', cmd: 'opencode serve --hostname=127.0.0.1 --port=43111' }),
+      readProcessStartTimeMs: async () => 2500,
+      killPid,
+      currentActiveServerDir: '/tmp/happy/servers/cloud',
+      expectedOwnerToken: 'owner-token-a',
+      drainMs: 9_000,
+      trackedClaimCountForLaunchFingerprint: async () => 1,
+      allowCurrentSessionClaim: true,
+      hasInFlightTurnForLaunchFingerprint: async () => true,
+    });
+
+    expect(result).toEqual({ released: false, reason: 'in_flight_turn' });
+    expect(killPid).not.toHaveBeenCalled();
+    expect(removeState).not.toHaveBeenCalled();
+  });
+
+  it('releases the sole-claimant server once its in-flight turn has quiesced', async () => {
+    const state = buildState();
+    const killPid = vi.fn(async () => true);
+    const removeState = vi.fn(async () => {});
+
+    const result = await releaseForAuthSwitchFromState({
+      withLock: async <T>(fn: () => Promise<T>) => await fn(),
+      readState: async () => state,
+      removeState,
+      isPidAlive: () => true,
+      getProcessInfo: async () => ({ name: 'opencode', cmd: 'opencode serve --hostname=127.0.0.1 --port=43111' }),
+      readProcessStartTimeMs: async () => 2500,
+      killPid,
+      currentActiveServerDir: '/tmp/happy/servers/cloud',
+      expectedOwnerToken: 'owner-token-a',
+      drainMs: 9_000,
+      trackedClaimCountForLaunchFingerprint: async () => 1,
+      allowCurrentSessionClaim: true,
+      hasInFlightTurnForLaunchFingerprint: async () => false,
+    });
+
+    expect(result).toEqual({ released: true, reason: 'released' });
+    expect(killPid).toHaveBeenCalledWith(777, 9_000);
+    expect(removeState).toHaveBeenCalledTimes(1);
+  });
+
+  it('still short-circuits on remaining tracked claims before consulting the in-flight-turn guard', async () => {
+    // A second tracked claim already protects the server (tracked_session_claimed); the in-flight
+    // probe must not even be consulted, so a false probe cannot release a multi-claimant server.
+    const state = buildState();
+    const killPid = vi.fn(async () => true);
+    const removeState = vi.fn(async () => {});
+    const hasInFlightTurnForLaunchFingerprint = vi.fn(async () => false);
+
+    const result = await releaseForAuthSwitchFromState({
+      withLock: async <T>(fn: () => Promise<T>) => await fn(),
+      readState: async () => state,
+      removeState,
+      isPidAlive: () => true,
+      getProcessInfo: async () => ({ name: 'opencode', cmd: 'opencode serve --hostname=127.0.0.1 --port=43111' }),
+      readProcessStartTimeMs: async () => 2500,
+      killPid,
+      currentActiveServerDir: '/tmp/happy/servers/cloud',
+      expectedOwnerToken: 'owner-token-a',
+      drainMs: 9_000,
+      trackedClaimCountForLaunchFingerprint: async () => 2,
+      allowCurrentSessionClaim: true,
+      hasInFlightTurnForLaunchFingerprint,
+    });
+
+    expect(result).toEqual({ released: false, reason: 'tracked_session_claimed' });
+    expect(hasInFlightTurnForLaunchFingerprint).not.toHaveBeenCalled();
+    expect(killPid).not.toHaveBeenCalled();
+  });
 });
 
 describe('decideManagedOpenCodeStartupScanStateAction', () => {
+  it('keeps exact live state created by a prior daemon instance', () => {
+    const state = buildState({ daemonInstanceId: 'old-daemon' });
+    const decision = decideManagedOpenCodeStartupScanStateAction({
+      state,
+      currentActiveServerDir: '/tmp/happy/servers/cloud',
+      isPidAlive: true,
+      processInfo: { name: 'opencode', cmd: 'opencode serve --hostname=127.0.0.1 --port=43111' },
+      observedStartTimeMs: 2501,
+    });
+
+    expect(decision).toEqual({ action: 'keep', reason: 'verified_live_state' });
+  });
+
   it('drops trusted state when live process identity no longer matches (PID reuse safety)', () => {
     const state = buildState();
     const decision = decideManagedOpenCodeStartupScanStateAction({
       state,
-      currentDaemonInstanceId: 'cloud',
       currentActiveServerDir: '/tmp/happy/servers/cloud',
       isPidAlive: true,
       processInfo: { name: 'python', cmd: 'python unrelated-worker.py' },

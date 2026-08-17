@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collectUnexpectedRawTextNodes, invokeTestInstanceHandler, renderScreen, standardCleanup } from '@/dev/testkit';
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -188,10 +189,6 @@ vi.mock('@/components/model/ModelPickerOverlay', () => ({
     ModelPickerOverlay: () => null,
 }));
 
-vi.mock('@/components/autocomplete/useActiveWord', () => ({
-    useActiveWord: () => ({ word: '', start: 0, end: 0 }),
-}));
-
 vi.mock('@/components/autocomplete/useActiveSuggestions', () => ({
     useActiveSuggestions: () => [[], 0, () => {}, () => {}],
 }));
@@ -209,12 +206,12 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
     useKeyboardHeight: () => 0,
 }));
 
-vi.mock('@/sync/acp/sessionModeControl', () => ({
+vi.mock('@/sync/domains/sessionControl/sessionModeControl', () => ({
     computeSessionModePickerControl: () => null,
 }));
 
-vi.mock('@/sync/acp/configOptionsControl', () => ({
-    computeAcpConfigOptionControls: () => null,
+vi.mock('@/sync/domains/sessionControl/configOptionsControl', () => ({
+    computeSessionConfigOptionControls: () => null,
 }));
 
 vi.mock('@/sync/domains/state/storageStore', () => ({
@@ -244,7 +241,7 @@ vi.mock('@/sync/domains/models/modelOptions', () => ({
 }));
 
 vi.mock('@/sync/domains/models/describeEffectiveModelMode', () => ({
-    describeEffectiveModelMode: () => ({ effectiveModelId: 'default' }),
+    describeEffectiveModelMode: () => ({ selectedModelId: 'default', appliedModelId: null, effectiveModelId: 'default' }),
 }));
 
 vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
@@ -326,12 +323,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionTopPadding={20}
                 newSessionSidePadding={16}
                 newSessionBottomPadding={8}
-                sessionPrompt="hello"
+                promptStore={createNewSessionPromptStore('hello')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -376,12 +373,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={123}
                 newSessionBottomPadding={8}
                 containerStyle={{ flex: 1 }}
-                sessionPrompt="hello"
+                promptStore={createNewSessionPromptStore('hello')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -425,12 +422,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={16}
                 newSessionBottomPadding={8}
                 containerStyle={{}}
-                sessionPrompt="hello"
+                promptStore={createNewSessionPromptStore('hello')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -476,12 +473,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={0}
                 newSessionBottomPadding={0}
                 containerStyle={{}}
-                sessionPrompt=""
+                promptStore={createNewSessionPromptStore('')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -521,12 +518,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={0}
                 newSessionBottomPadding={0}
                 containerStyle={{}}
-                sessionPrompt=""
+                promptStore={createNewSessionPromptStore('')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -564,12 +561,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={0}
                 newSessionBottomPadding={0}
                 containerStyle={{}}
-                sessionPrompt=""
+                promptStore={createNewSessionPromptStore('')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -607,12 +604,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={0}
                 newSessionBottomPadding={0}
                 containerStyle={{}}
-                sessionPrompt=""
+                promptStore={createNewSessionPromptStore('')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={() => {}}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -657,12 +654,12 @@ describe('NewSessionSimplePanel', () => {
                 newSessionSidePadding={0}
                 newSessionBottomPadding={0}
                 containerStyle={{}}
-                sessionPrompt="hello"
+                promptStore={createNewSessionPromptStore('hello')}
                 setSessionPrompt={() => {}}
                 handleCreateSession={handleCreateSession}
                 canCreate={true}
                 isCreating={false}
-                emptyAutocompletePrefixes={[]}
+                emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}
                 agentInputExtraActionChips={[]}
@@ -715,12 +712,12 @@ describe('NewSessionSimplePanel', () => {
                     newSessionSidePadding={0}
                     newSessionBottomPadding={0}
                     containerStyle={{}}
-                    sessionPrompt="hello"
+                    promptStore={createNewSessionPromptStore('hello')}
                     setSessionPrompt={() => {}}
                     handleCreateSession={handleCreateSession}
                     canCreate={true}
                     isCreating={false}
-                    emptyAutocompletePrefixes={[]}
+                    emptyAutocompleteKinds={[]}
                     emptyAutocompleteSuggestions={async () => []}
                     sessionPromptInputMaxHeight={200}
                     agentInputExtraActionChips={[]}

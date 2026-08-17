@@ -3,7 +3,30 @@ import renderer from 'react-test-renderer';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
+const DELETED_LEGACY_CHAT_LIST_HARNESS_EXPORTS = [
+    ['legacy', 'ChatListHarnessState'].join(''),
+    ['render', 'LegacyChatList'].join(''),
+    ['reset', 'LegacyChatListHarness'].join(''),
+    ['trigger', 'LegacyChatListScroll'].join(''),
+    ['trigger', 'LegacyChatListInitialFill'].join(''),
+    ['trigger', 'LegacyChatListEndReached'].join(''),
+    ['get', 'CapturedFlatListProps'].join(''),
+    ['require', 'CapturedFlatListProps'].join(''),
+    ['build', 'LegacyChatListItems'].join(''),
+    ['create', 'LegacyChatListItemsModuleMock'].join(''),
+    ['create', 'LegacyChatListReactNativeMock'].join(''),
+    ['create', 'LegacyChatListStorageMock'].join(''),
+];
+
 describe('chatListHarness', () => {
+    it('does not export deleted legacy ChatList harness compatibility aliases', async () => {
+        const harnessModule = await import('./chatListHarness');
+
+        for (const deletedExport of DELETED_LEGACY_CHAT_LIST_HARNESS_EXPORTS) {
+            expect(harnessModule).not.toHaveProperty(deletedExport);
+        }
+    });
+
     it('captures FlashList props and drives initial fill for FlashList ChatList tests', async () => {
         const harnessModule = await import('./chatListHarness');
 
@@ -271,6 +294,46 @@ describe('chatListHarness', () => {
         );
 
         expect((globalThis as any).HTMLElement).toBe(previousHTMLElement);
+    });
+
+    it('provides the document event and focus boundary used by web transcript keyboard ownership', async () => {
+        const harnessModule = await import('./chatListHarness');
+        const withFlashListChatListWebScrollerDom = Reflect.get(harnessModule, 'withFlashListChatListWebScrollerDom');
+        const createFlashListChatListWebElement = Reflect.get(harnessModule, 'createFlashListChatListWebElement');
+        const FlashListChatListWebElement = Reflect.get(harnessModule, 'FlashListChatListWebElement');
+
+        expect(typeof withFlashListChatListWebScrollerDom).toBe('function');
+        expect(typeof createFlashListChatListWebElement).toBe('function');
+        expect(typeof FlashListChatListWebElement).toBe('function');
+        if (
+            typeof withFlashListChatListWebScrollerDom !== 'function'
+            || typeof createFlashListChatListWebElement !== 'function'
+            || typeof FlashListChatListWebElement !== 'function'
+        ) {
+            return;
+        }
+
+        const scroller = createFlashListChatListWebElement(null, { top: 0, bottom: 300 });
+        await withFlashListChatListWebScrollerDom(
+            scroller,
+            async () => {
+                const installedDocument = globalThis.document;
+                const onKeyDown = vi.fn();
+
+                expect(installedDocument.activeElement).toBe(installedDocument.body);
+                installedDocument.addEventListener('keydown', onKeyDown, true);
+                installedDocument.dispatchEvent(new Event('keydown'));
+                expect(onKeyDown).toHaveBeenCalledTimes(1);
+
+                scroller.focus({ preventScroll: true });
+                expect(installedDocument.activeElement).toBe(scroller);
+
+                installedDocument.removeEventListener('keydown', onKeyDown, true);
+                installedDocument.dispatchEvent(new Event('keydown'));
+                expect(onKeyDown).toHaveBeenCalledTimes(1);
+            },
+            { HTMLElement: FlashListChatListWebElement },
+        );
     });
 
     it('renders a FlashList chat list inside the installed web scroller DOM and returns the harness', async () => {

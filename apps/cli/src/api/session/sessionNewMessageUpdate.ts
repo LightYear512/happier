@@ -7,6 +7,12 @@ import type { ProviderOwnedUserMessageEchoClassifier } from './providerOwnedUser
 import { SessionMessageContentSchema, UserMessageSchema } from '../types';
 import { coerceSessionUserPromptV1 } from '@happier-dev/protocol';
 import { summarizeValueShapeForLog } from '@/diagnostics/eventShapeForLog';
+import { readSessionHistoryReplayProvenance } from './sessionMessageCatchUp';
+
+type ReceivedMessageIdSet = Readonly<{
+    add: (value: string) => unknown;
+    has: (value: string) => boolean;
+}>;
 
 function readNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;
@@ -26,7 +32,7 @@ export function handleSessionNewMessageUpdate(params: {
     sessionId: string;
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
-    receivedMessageIds: Set<string>;
+    receivedMessageIds: ReceivedMessageIdSet;
     /**
      * Owed-delivery replay authorization: an explicit catch-up may re-process a message id that
      * was already observed (its live broadcast was received but the row was never handed to the
@@ -34,6 +40,7 @@ export function handleSessionNewMessageUpdate(params: {
      * double delivery; without this flag an observed-but-undelivered row can never be recovered.
      */
     allowReprocessReceivedMessageIds?: boolean;
+    replayPreviouslyObservedMessageIdsForObservation?: boolean;
     lastObservedMessageSeq: number;
     lastObservedUserMessageSeq: number;
     hasSelfEchoSuppressedLocalId: (localId: string) => boolean;
@@ -126,6 +133,7 @@ export function handleSessionNewMessageUpdate(params: {
         if (
             params.receivedMessageIds.has(messageId)
             && params.allowReprocessReceivedMessageIds !== true
+            && params.replayPreviouslyObservedMessageIdsForObservation !== true
             && !isPendingQueueMaterializedLocalId
         ) {
             return {
@@ -179,23 +187,33 @@ export function handleSessionNewMessageUpdate(params: {
                 localId: params.update.body.message.localId,
             };
     const transportCreatedAt =
-        typeof params.update.createdAt === 'number' && Number.isFinite(params.update.createdAt)
-            ? params.update.createdAt
-            : undefined;
+        typeof params.update.body.message.createdAt === 'number' && Number.isFinite(params.update.body.message.createdAt)
+            ? params.update.body.message.createdAt
+            : typeof params.update.createdAt === 'number' && Number.isFinite(params.update.createdAt)
+                ? params.update.createdAt
+                : undefined;
+    const historyReplayProvenance = readSessionHistoryReplayProvenance(params.update);
     const bodyWithTransportFields = {
         ...(bodyWithLocalId as any),
         // Attach server timestamps so downstream consumers can make clock-safe decisions.
-        ...(transportCreatedAt === undefined ? {} : { createdAt: transportCreatedAt }),
+        ...(transportCreatedAt === undefined ? {} : {
+            createdAt: historyReplayProvenance?.sourceCreatedAt ?? transportCreatedAt,
+        }),
+        ...(transportCreatedAt === undefined ? {} : { serverCreatedAt: transportCreatedAt }),
     };
 
     params.debugLargeJson('[SOCKET] [UPDATE] Received update:', bodyWithTransportFields);
-    params.onObservedMessage?.({
-        body: bodyWithTransportFields,
-        seq: typeof msgSeq === 'number' && Number.isFinite(msgSeq) ? msgSeq : null,
-        localId,
-        sidechainId: typeof params.update.body.message.sidechainId === 'string' ? params.update.body.message.sidechainId : null,
-        createdAt: transportCreatedAt ?? null,
-    });
+    // Catch-up rows remain transcript observations but cannot feed current-turn/progress inference.
+    // Their provenance is process-local and cannot be forged by a remote row.
+    if (historyReplayProvenance === null) {
+        params.onObservedMessage?.({
+            body: bodyWithTransportFields,
+            seq: typeof msgSeq === 'number' && Number.isFinite(msgSeq) ? msgSeq : null,
+            localId,
+            sidechainId: typeof params.update.body.message.sidechainId === 'string' ? params.update.body.message.sidechainId : null,
+            createdAt: transportCreatedAt ?? null,
+        });
+    }
 
     // Try to parse as user message first.
     const userResult = UserMessageSchema.safeParse(bodyWithTransportFields);

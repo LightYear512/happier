@@ -16,6 +16,26 @@ function buildDesktopMessage(params: Readonly<{
 }
 
 export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParams): AppUpdateStatusModel {
+    if (params.nativeUpdateRequired === true) {
+        const storeActionLabel = params.platformOs === 'ios'
+            ? params.t('updateBanner.tapToUpdateAppStore')
+            : params.t('updateBanner.tapToUpdatePlayStore');
+        return {
+            visible: true,
+            kind: 'native-store',
+            tone: 'warning',
+            iconName: 'download',
+            label: params.t('updateBanner.nativeUpdateAvailable'),
+            message: params.nativeUpdateUrl
+                ? storeActionLabel
+                : params.t('updateBanner.nativeUpdateAvailable'),
+            actionLabel: params.nativeUpdateUrl
+                ? storeActionLabel
+                : params.t('common.loading'),
+            actionDisabled: !params.nativeUpdateUrl,
+        };
+    }
+
     if (params.nativeUpdateUrl) {
         const storeActionLabel = params.platformOs === 'ios'
             ? params.t('updateBanner.tapToUpdateAppStore')
@@ -25,11 +45,19 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
             visible: true,
             kind: 'native-store',
             tone: 'success',
-            iconName: 'download-outline',
+            iconName: 'download',
             label: params.t('updateBanner.nativeUpdateAvailable'),
             message: storeActionLabel,
             actionLabel: storeActionLabel,
             actionDisabled: false,
+        };
+    }
+
+    if (params.platformOs === 'web' && params.webUi?.updateAvailable) {
+        return {
+            visible: true, kind: 'web-ui', tone: 'success', iconName: 'arrow-clockwise',
+            label: params.t('updateBanner.updateAvailable'), message: params.t('updateBanner.pressToApply'),
+            actionLabel: params.t('updateBanner.pressToApply'), actionDisabled: false,
         };
     }
 
@@ -42,7 +70,7 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
             visible: true,
             kind: 'desktop',
             tone: params.desktop.status === 'error' ? 'warning' : 'success',
-            iconName: params.desktop.status === 'error' ? 'refresh-outline' : 'download-outline',
+            iconName: params.desktop.status === 'error' ? 'arrow-clockwise' : 'download',
             label: params.t('updateBanner.updateAvailable'),
             message: buildDesktopMessage({
                 availableVersion: params.desktop.availableVersion,
@@ -64,7 +92,7 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
             visible: true,
             kind: 'ota',
             tone: 'success',
-            iconName: 'download-outline',
+            iconName: 'download',
             label: params.t('updateBanner.updateAvailable'),
             message: params.t('updateBanner.pressToApply'),
             actionLabel: params.t('updateBanner.pressToApply'),
@@ -77,7 +105,7 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
             visible: true,
             kind: 'release-notes',
             tone: 'accent',
-            iconName: 'sparkles-outline',
+            iconName: 'sparkle',
             label: params.t('navigation.whatsNew'),
             message: params.t('updateBanner.seeLatest'),
             actionLabel: params.t('updateBanner.seeLatest'),
@@ -90,7 +118,7 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
             visible: true,
             kind: 'changelog',
             tone: 'accent',
-            iconName: 'sparkles-outline',
+            iconName: 'sparkle',
             label: params.t('navigation.whatsNew'),
             message: params.t('updateBanner.seeLatest'),
             actionLabel: params.t('updateBanner.seeLatest'),

@@ -3,8 +3,12 @@ import { afterAll, afterEach, beforeEach, vi } from 'vitest';
 
 import { installVitestRnShim } from './vitestRnShim';
 import { resetRuntimeFetch } from '@/utils/system/runtimeFetch';
+import { SHADOW_LEVELS } from '@/shadowElevation';
+import { buildLightStateColors, LIGHT_STATE_INFO_FOREGROUND } from '@/theme/tokens/stateColors';
+import { lightSurfaceColors, lightTextColors } from '@/theme/tokens/surfaceAndTextColors';
 import { standardCleanup } from './testkit/cleanup/standardCleanup';
 import { createReanimatedModuleMock } from './testkit/mocks/reanimated';
+import { resetReactNativeMmkvStub } from './reactNativeMmkvStub';
 
 // UI tests should not inherit embedded build-policy gating (set in CI).
 // Clear it by default so feature tests can opt-in explicitly per case.
@@ -271,7 +275,6 @@ vi.mock('react-native', async () => await import('./reactNativeStub'));
 
 // Vitest runs in Node; `react-native-mmkv` depends on React Native internals and can fail to parse.
 // Provide a minimal in-memory implementation for tests.
-const store = new Map<string, unknown>();
 const localStorageBacking = new Map<string, string>();
 const sessionStorageBacking = new Map<string, string>();
 
@@ -287,7 +290,7 @@ beforeEach(() => {
     // shape before each test so server seeding/runtime heuristics stay deterministic.
     restoreDomGlobalsToOriginal();
 
-    store.clear();
+    resetReactNativeMmkvStub();
     localStorageBacking.clear();
     sessionStorageBacking.clear();
 
@@ -389,37 +392,7 @@ afterAll(async () => {
     await dumpWhyIsNodeRunning('afterAll');
 });
 
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            const value = store.get(key);
-            if (value == null) return undefined;
-            return typeof value === 'string' ? value : undefined;
-        }
-
-        getNumber(key: string) {
-            const value = store.get(key);
-            if (value == null) return undefined;
-            if (typeof value === 'number') return value;
-            return undefined;
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        set(key: string, value: any) {
-            store.set(key, value);
-        }
-
-        delete(key: string) {
-            store.delete(key);
-        }
-
-        clearAll() {
-            store.clear();
-        }
-    }
-
-    return { MMKV };
-});
+vi.mock('react-native-mmkv', async () => await import('./reactNativeMmkvStub'));
 
 // Many UI components depend on `@expo/vector-icons`, but the package's internal entrypoints
 // are not reliably resolvable in Vitest's node environment. Provide a minimal stub for tests.
@@ -429,6 +402,36 @@ vi.mock('@expo/vector-icons', () => ({
     AntDesign: 'AntDesign',
     MaterialIcons: 'MaterialIcons',
 }));
+
+// The icon seam renders as an inspectable host element in tests, exactly as `Ionicons` did before
+// it — so assertions stay `findTestInstanceByTypeWithProps(screen, 'Icon', { name: 'terminal' })`
+// and need not know which Phosphor component a name resolves to. The seam's own behaviour (the
+// per-glyph optical scale, weight defaults) is covered by its dedicated test, which unmocks this.
+// Static, not `importOriginal` — pulling the real module back in here re-enters a module that is
+// mid-require and trips vitest's ERR_INTERNAL_ASSERTION. `ICON_SIZE` is a plain value object, so
+// restating it costs nothing; `IconName` is a type and erases.
+vi.mock('@/components/ui/icons/Icon', () => ({
+    Icon: 'Icon',
+    ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
+}));
+
+// Phosphor draws with `react-native-svg`, whose native primitives do not exist in the node test
+// runtime — without this, every component rendering a real icon fails to construct. Host-element
+// stand-ins keep the icon component in the tree while the leaf drawing primitives become
+// inspectable placeholders. A test needing different behaviour can still mock it locally.
+vi.mock('react-native-svg', () => {
+    const host = (name: string) => name;
+    return {
+        default: host('Svg'), Svg: host('Svg'), SvgXml: host('SvgXml'),
+        Path: host('Path'), G: host('G'), Circle: host('Circle'), Ellipse: host('Ellipse'),
+        Rect: host('Rect'), Line: host('Line'), Polyline: host('Polyline'), Polygon: host('Polygon'),
+        Text: host('SvgText'), TSpan: host('TSpan'), Defs: host('Defs'), Use: host('Use'),
+        Mask: host('Mask'), ClipPath: host('ClipPath'), Pattern: host('Pattern'),
+        Image: host('SvgImage'), LinearGradient: host('LinearGradient'),
+        RadialGradient: host('RadialGradient'), Stop: host('Stop'), Symbol: host('SvgSymbol'),
+        Marker: host('Marker'), ForeignObject: host('ForeignObject'),
+    };
+});
 
 // `@shopify/react-native-skia` requires native bindings; stub it for node/Vitest.
 vi.mock('@shopify/react-native-skia', () => ({
@@ -598,15 +601,11 @@ vi.mock('react-native-unistyles', () => {
             //
             // Main colors
             //
-            text: {
-                primary: '#000000',
-                secondary: '#666666',
-                tertiary: '#999999',
-                link: '#2BACCC',
-                destructive: '#FF3B30',
-                placeholder: '#999999',
-                disabled: '#C0C0C0',
-            },
+            // Not restated, for the reason spelled out on `state` below: hand-copying this block
+            // had it serving `#000000`/`#666666`/`#999999` where the app paints
+            // `#222222`/`#6c6c70`/`#99999d`, so every suite without its own theme was certifying
+            // colours the app never renders. `theme/tokens/surfaceAndTextColors.ts` imports nothing.
+            text: lightTextColors,
             accent: {
                 blue: '#007AFF',
                 green: '#34C759',
@@ -616,31 +615,25 @@ vi.mock('react-native-unistyles', () => {
                 indigo: '#5856D6',
                 purple: '#AF52DE',
             },
-            state: {
-                success: { foreground: '#34C759', background: 'rgba(52, 199, 89, 0.12)', border: '#34C759' },
-                warning: { foreground: '#FF9500', background: '#FFF8F0', border: '#FF9500' },
-                danger: { foreground: '#FF3B30', background: '#FFF0F0', border: '#FF3B30' },
-                info: { foreground: '#5856D6', background: 'rgba(0, 122, 255, 0.10)', border: '#007AFF' },
-                neutral: { foreground: '#8E8E93', background: '#F2F2F7', border: '#D1D1D6' },
-                active: { foreground: '#007AFF', background: 'rgba(0, 122, 255, 0.10)', border: 'rgba(0, 122, 255, 0.40)' },
-            },
+            // The one block that is NOT restated: components read `state.*` heavily and this
+            // program keeps adding roles to it, so a hand-copied value silently renders a colour
+            // the app never paints — or `undefined`, which looks like "no colour" and passes.
+            // `theme/tokens/stateColors.ts` imports nothing, so it is safe here where the real
+            // theme is not. `reactNativeStub`'s `Platform.select` resolves `default` first, so the
+            // test theme takes the same info hue the real theme resolves under Vitest;
+            // `vitestSetupThemeParity.test.ts` fails the moment those two disagree.
+            state: buildLightStateColors(LIGHT_STATE_INFO_FOREGROUND.default),
             background: { canvas: '#F5F5F5' },
-            surface: {
-                base: '#ffffff',
-                inset: '#F8F8F8',
-                elevated: '#f0f0f0',
-                ripple: 'rgba(0, 0, 0, 0.08)',
-                pressed: '#f0f0f2',
-                selected: '#f2f2f2',
-                pressedOverlay: '#f0f0f2',
-                sectionTint: 'rgba(0,0,0,0.022)',
-            },
+            // See `text` above — same owner, four more drifts closed (`pressed`, `pressedOverlay`,
+            // `selected`, `sectionTint`).
+            surface: lightSurfaceColors,
             border: {
                 default: '#eaeaea',
                 surface: 'transparent',
                 strong: '#d6d6d6',
                 modal: 'rgba(0, 0, 0, 0.1)',
             },
+            focus: { ring: '#0059B3' },
             glass: {
                 border: 'rgba(255, 255, 255, 0.92)',
                 innerShadow: 'inset 0px 8px 14px -10px rgba(0, 0, 0, 0.036)',
@@ -652,14 +645,17 @@ vi.mock('react-native-unistyles', () => {
                 header: { background: '#ffffff', foreground: '#18171C' },
             },
             shadow: { color: '#000000', opacity: 0.1 },
-            shadowLevels: Array.from({ length: 6 }, (_value, idx) => ({
+            // Keyed off the real scale rather than a hand-counted length: as a 0-indexed array of
+            // length 6 this silently had no entry for the highest level, and every consumer of it
+            // crashed on `undefined` the moment the scale grew.
+            shadowLevels: Object.fromEntries(SHADOW_LEVELS.map((level) => [level, {
                 boxShadow: '0 0 0 rgba(0, 0, 0, 0)',
                 shadowColor: '#000000',
-                shadowOffset: { width: 0, height: idx },
+                shadowOffset: { width: 0, height: level },
                 shadowOpacity: 0.1,
-                shadowRadius: idx,
-                elevation: idx,
-            })),
+                shadowRadius: level,
+                elevation: level,
+            }])),
             shadowPopoverArrowBoxShadow: '0 0 0 rgba(0, 0, 0, 0)',
             overlay: {
                 scrim: 'rgba(0, 0, 0, 0.45)',

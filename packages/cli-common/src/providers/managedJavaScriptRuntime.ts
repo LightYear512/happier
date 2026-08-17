@@ -5,11 +5,11 @@ import { basename, dirname, join } from 'node:path';
 
 import { resolveWindowsCommandOnPath, resolveWindowsCommandPath } from '../process/index.js';
 
+import { expandHomeDirPath } from '../path/expandHomeDirPath.js';
 import { createManagedToolScratchDir } from './createManagedToolScratchDir.js';
 import { downloadGitHubReleaseAsset } from './downloadGitHubReleaseAsset.js';
 import { extractGitHubReleaseAsset } from './extractGitHubReleaseAsset.js';
 import { fetchNodeRuntimeReleaseAsset } from './nodeRelease.js';
-import { expandHomeDirPath } from './resolution.js';
 import { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';
 
 function resolveManagedJavaScriptRuntimeBinaryName(): string {
@@ -319,6 +319,7 @@ export async function ensureManagedJavaScriptRuntimeCommand(
         archiveName: release.name,
         extractDir,
         outputPath: nextRuntimeDir,
+        skipTarLinks: true,
       });
 
       await mkdir(dirname(nextNodeBinaryPath), { recursive: true });
@@ -335,8 +336,8 @@ export async function ensureManagedJavaScriptRuntimeCommand(
     } finally {
       await rm(scratchDir, { recursive: true, force: true });
     }
-  } catch {
-    return null;
+  } catch (error) {
+    throw new Error('Managed JavaScript runtime is unavailable: bootstrap failed', { cause: error });
   } finally {
     if (lockHandle) {
       try {

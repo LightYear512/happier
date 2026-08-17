@@ -1,20 +1,39 @@
 import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
 import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
-import type { PrimaryTurnStatusV1, SessionRuntimeIssueV1 } from '@happier-dev/protocol';
+import type {
+    PrimaryTurnStatusV1,
+    SessionRuntimeActivityState,
+    SessionRuntimeIssueV1,
+} from '@happier-dev/protocol';
 import {
     deriveLatestPendingRequestObservedAtFromSession,
     derivePendingRequestFlagsFromAgentState,
     derivePendingRequestFlagsFromSession,
+    type TranscriptRequestStatesCache,
 } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import type { Message } from '@/sync/domains/messages/messageTypes';
-import { messageAttentionImpact } from '@/sync/domains/messages/messageUserAttention';
+import {
+    buildTranscriptRenderableAggregate,
+    canReuseTranscriptRenderableAggregateRequestStates,
+    type TranscriptRenderableAggregate,
+} from '@/sync/domains/messages/transcriptRenderableAggregate';
 import { resolveLastViewedSessionSeq } from '@/sync/domains/session/readCursor/resolveLastViewedSessionSeq';
 import { resolveSessionReadableSeq } from '@/sync/domains/session/readCursor/resolveSessionReadableSeq';
+import { countSessionAgentActivityFromMetadata } from '@/sync/domains/session/agentActivity/countSessionAgentActivityFromMetadata';
+import type { AgentActivityCounts } from '@/sync/domains/session/agentActivity/deriveAgentActivityCounts';
 import { resolveSessionProjectGroupingKeyParts } from './sessionListProjectGroupingKeys';
 import { deriveSessionListMeaningfulActivityAt } from './deriveSessionListActivity';
 import type { SessionListAttentionPromotionReason } from './attentionPromotion/sessionListAttentionPromotionTypes';
-import { projectSessionListPlacement } from './placement/sessionListPlacementProjection';
-import { resolveSessionRuntimePresenceFields } from '../attention/deriveSessionRuntimePresentationState';
+import {
+    didSessionListPlacementProjectionDiverge,
+    projectSessionListPlacement,
+    resolveSessionListUnreadEntryActivityAt,
+} from './placement/sessionListPlacementProjection';
+import { didSessionListWorkingRetentionInputsChange } from './placement/sessionListWorkingRetention';
+import {
+    deriveSessionRuntimePresentationState,
+    resolveSessionRuntimePresenceFields,
+} from '../attention/deriveSessionRuntimePresentationState';
 
 export { derivePendingRequestFlagsFromAgentState } from '@/sync/domains/session/pending/listPendingSessionRequests';
 
@@ -36,7 +55,30 @@ export interface SessionListRenderableMetadata {
         pendingActivityAt: number;
         updatedAt: number;
     } | null;
+    /**
+     * What agent work is live in this session, projected once from the published agent-activity
+     * headline.
+     *
+     * It lives on the PROJECTION rather than being read per row because a list row never holds a
+     * session's real metadata — only this narrow copy — and a row that had to reach for the full
+     * object to draw a number would put an O(sessions) metadata read back on the session list, which
+     * is a shape this repository has already measured as a freeze. Projected here it is computed
+     * once per metadata version, and it goes stale exactly when the rest of this object does.
+     *
+     * The whole tally rather than one scalar: the row says the same sentence the composer chip says,
+     * and a lone integer is what let the row understate a five-agent workflow as "1 agent working"
+     * while the chip named the workflow.
+     */
+    agentActivityCounts?: AgentActivityCounts;
     hiddenSystemSession?: boolean;
+    terminalControlServiceabilityV1?: {
+        v: 1;
+        attachmentId?: string;
+        state: 'servable' | 'recoverable_unservable' | 'unknown';
+        observedAt: number;
+        reason?: string;
+        retired?: boolean;
+    } | null;
 }
 
 export interface SessionListRenderableSession {
@@ -50,6 +92,7 @@ export interface SessionListRenderableSession {
     archivedAt?: number | null;
     pendingVersion?: number;
     pendingCount?: number;
+    pendingBlockedCount?: number;
     lastViewedSessionSeq?: number | null;
     metadataVersion: number;
     agentStateVersion: number;
@@ -60,11 +103,16 @@ export interface SessionListRenderableSession {
     latestTurnId?: string | null;
     latestTurnStatus?: PrimaryTurnStatusV1 | null;
     latestTurnStatusObservedAt?: number | null;
+    runtimeActivityState?: SessionRuntimeActivityState | null;
+    runtimeActivityActiveCount?: number;
+    runtimeActivityObservedAt?: number | null;
+    runtimeActivityRevision?: number | null;
     lastRuntimeIssue?: SessionRuntimeIssueV1 | null;
     rollbackEligibleTurnStarts?: readonly number[] | null;
     latestReadyEventSeq?: number | null;
     latestReadyEventAt?: number | null;
     optimisticThinkingAt?: number | null;
+    resumingAt?: number | null;
     thinkingGraceUntil?: number | null;
     owner?: string;
     accessLevel?: 'view' | 'edit' | 'admin';
@@ -73,9 +121,19 @@ export interface SessionListRenderableSession {
     hasPendingUserActionRequests?: boolean;
     pendingRequestObservedAt?: number | null;
     hasUnreadMessages?: boolean;
+    /**
+     * When this session entered its current unread state. Stable for as long
+     * as the session stays unread, so the attention lane can order unread rows
+     * without re-sorting on every incoming message. Server-materialized when
+     * the server reports it; otherwise stamped once by the merge owner
+     * (`resolveSessionListRenderableUnreadSince`). Always null when read.
+     */
+    unreadSince?: number | null;
     keepVisibleWhenInactive?: boolean;
     metadataUnavailable?: boolean;
 }
+
+export type SessionListRenderablePatchFields = Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
 
 type DirectSessionRenderableMetadata = NonNullable<SessionListRenderableMetadata['directSessionV1']>;
 type ReadStateRenderableMetadata = NonNullable<SessionListRenderableMetadata['readStateV1']>;
@@ -90,10 +148,11 @@ export function deriveSessionListRenderableHasUnreadMessagesFromSession(
     session: Pick<Session, 'seq' | 'metadata' | 'lastViewedSessionSeq'>
         & Partial<Pick<Session, 'latestTurnStatus' | 'latestReadyEventSeq'>>,
     messages?: ReadonlyArray<Message>,
+    transcriptAggregate?: TranscriptRenderableAggregate | null,
 ): boolean {
     return deriveSessionListRenderableHasUnreadMessagesFromReadableSeq(
         session,
-        resolveSessionListReadableSeq(session, messages),
+        resolveSessionListReadableSeq(session, messages, transcriptAggregate),
     );
 }
 
@@ -107,6 +166,17 @@ export function deriveSessionListRenderableHasUnreadMessagesFromReadableSeq(
         lastViewedSessionSeq: resolveLastViewedSessionSeq(session),
         lastViewedPendingActivityAt: session.metadata?.readStateV1?.pendingActivityAt,
     });
+}
+
+/**
+ * Work still open in this session — the same tally the session header's glyph, the composer chip
+ * and the Agents tab badge read. One counter, one grouping rule, one description (R-8).
+ *
+ * An agent stopped on a permission prompt is open work and is already inside `live`, so there is no
+ * second tally to add here and no way for the two to drift.
+ */
+function readAgentActivityCounts(metadata: Metadata): AgentActivityCounts {
+    return countSessionAgentActivityFromMetadata(metadata);
 }
 
 export function buildSessionListRenderableMetadata(metadata: Metadata | null | undefined): SessionListRenderableMetadata | null {
@@ -154,48 +224,61 @@ export function buildSessionListRenderableMetadata(metadata: Metadata | null | u
         flavor: typeof metadata.flavor === 'string' ? metadata.flavor : null,
         directSessionV1,
         readStateV1,
+        agentActivityCounts: readAgentActivityCounts(metadata),
         hiddenSystemSession: metadata.systemSessionV1?.hidden === true,
+        terminalControlServiceabilityV1: metadata.terminal?.controlServiceabilityV1 ?? null,
     };
 }
 
 export function buildSessionListRenderableFromSession(
     session: Session,
     messages?: ReadonlyArray<Message>,
+    transcriptAggregate?: TranscriptRenderableAggregate | null,
 ): SessionListRenderableSession {
-    const pending = derivePendingRequestFlagsFromSession(session, messages);
-    const latestCommittedMessageCreatedAt = Array.isArray(messages) && messages.length > 0
-        ? messages.reduce<number | null>((latest, message) => {
-            if (!messageAttentionImpact(message).affectsMeaningfulActivity) return latest;
-            const createdAt = message.createdAt;
-            if (typeof createdAt !== 'number' || !Number.isFinite(createdAt) || createdAt <= 0) return latest;
-            return latest == null ? createdAt : Math.max(latest, createdAt);
-        }, null)
-        : null;
+    // Single derivation path: the transcript folds live in the aggregate.
+    // Hot callers (streaming applyMessages) pass an incrementally-maintained
+    // aggregate; cold callers pass messages and pay one full walk here.
+    const completedRequests = (session.agentState?.completedRequests as Record<string, unknown> | null | undefined) ?? null;
+    const aggregate = (() => {
+        if (transcriptAggregate && canReuseTranscriptRenderableAggregateRequestStates(transcriptAggregate, completedRequests)) {
+            return transcriptAggregate;
+        }
+        if (Array.isArray(messages)) {
+            return buildTranscriptRenderableAggregate({ messages, completedRequests });
+        }
+        return null;
+    })();
+    const statesCache: TranscriptRequestStatesCache = aggregate ? { states: aggregate.requestStates } : {};
+    const pending = derivePendingRequestFlagsFromSession(session, messages, statesCache);
+    const latestCommittedMessageCreatedAt = aggregate ? aggregate.latestCommittedMessageCreatedAt : null;
     const latestTurnStatus = readSessionLatestTurnStatus(session);
-    const latestTurnStatusObservedAt = readSessionReadyEventNumber(session, 'latestTurnStatusObservedAt');
+    const latestTurnStatusObservedAt = readSessionNumericField(session, 'latestTurnStatusObservedAt');
     const runtimePresence = resolveSessionRuntimePresenceFields({
         thinking: session.thinking,
         thinkingAt: session.thinkingAt,
         latestTurnStatus,
         latestTurnStatusObservedAt,
     });
+    const meaningfulActivityAt = deriveSessionListMeaningfulActivityAt({
+        sessionCreatedAt: session.createdAt,
+        sessionMeaningfulActivityAt: session.meaningfulActivityAt ?? null,
+        latestCommittedMessageCreatedAt,
+        latestThinkingActivityAt: null,
+        latestPendingMessageCreatedAt: null,
+    });
+    const hasUnreadMessages = deriveSessionListRenderableHasUnreadMessagesFromSession(session, messages, aggregate);
     return {
         id: session.id,
         seq: session.seq,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
-        meaningfulActivityAt: deriveSessionListMeaningfulActivityAt({
-            sessionCreatedAt: session.createdAt,
-            sessionMeaningfulActivityAt: session.meaningfulActivityAt ?? null,
-            latestCommittedMessageCreatedAt,
-            latestThinkingActivityAt: null,
-            latestPendingMessageCreatedAt: null,
-        }),
+        meaningfulActivityAt,
         active: session.active,
         activeAt: session.activeAt,
         archivedAt: session.archivedAt ?? null,
         pendingVersion: session.pendingVersion,
         pendingCount: session.pendingCount,
+        pendingBlockedCount: session.pendingBlockedCount,
         lastViewedSessionSeq: normalizeLastViewedSessionSeq(session.lastViewedSessionSeq),
         metadataVersion: session.metadataVersion,
         agentStateVersion: session.agentStateVersion,
@@ -206,20 +289,72 @@ export function buildSessionListRenderableFromSession(
         latestTurnId: readSessionLatestTurnId(session),
         latestTurnStatus,
         latestTurnStatusObservedAt,
+        runtimeActivityState: session.runtimeActivityState ?? null,
+        runtimeActivityActiveCount: session.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: session.runtimeActivityObservedAt ?? null,
+        runtimeActivityRevision: session.runtimeActivityRevision ?? null,
         lastRuntimeIssue: readSessionLastRuntimeIssue(session),
         rollbackEligibleTurnStarts: readRollbackEligibleTurnStarts(session.rollbackEligibleTurnStarts),
-        latestReadyEventSeq: readSessionReadyEventNumber(session, 'latestReadyEventSeq'),
-        latestReadyEventAt: readSessionReadyEventNumber(session, 'latestReadyEventAt'),
+        latestReadyEventSeq: readSessionNumericField(session, 'latestReadyEventSeq'),
+        latestReadyEventAt: readSessionNumericField(session, 'latestReadyEventAt'),
         optimisticThinkingAt: session.optimisticThinkingAt ?? null,
+        resumingAt: session.resumingAt ?? null,
         thinkingGraceUntil: session.thinkingGraceUntil ?? null,
         owner: session.owner,
         accessLevel: session.accessLevel,
         canApprovePermissions: session.canApprovePermissions,
         hasPendingPermissionRequests: pending.hasPendingPermissionRequests,
         hasPendingUserActionRequests: pending.hasPendingUserActionRequests,
-        pendingRequestObservedAt: deriveLatestPendingRequestObservedAtFromSession(session, messages),
-        hasUnreadMessages: deriveSessionListRenderableHasUnreadMessagesFromSession(session, messages),
+        pendingRequestObservedAt: deriveLatestPendingRequestObservedAtFromSession(session, messages, statesCache),
+        hasUnreadMessages,
+        // Server-materialized entry fact only, never a client guess: a built
+        // renderable carrying a value is what tells the merge owner it holds an
+        // authoritative one. Stamping the fallback here would make an older
+        // server's rows indistinguishable from a materialized value, and the
+        // fallback would then re-derive itself from moving activity on every
+        // message. The merge owner stamps it once instead.
+        unreadSince: hasUnreadMessages ? readSessionNumericField(session, 'unreadSince') : null,
     };
+}
+
+/**
+ * Single owner of the unread entry fact across every renderable ingestion
+ * path. Unread membership is a boolean edge: while a session stays unread its
+ * entry time must not move, otherwise the attention lane re-sorts and the
+ * committed session list is invalidated on every incoming message.
+ *
+ * Precedence: the server-materialized value on the incoming row wins, because
+ * it is the only value that is the same on every device and across boots. It
+ * is stable by construction (stamped at the read -> unread edge, cleared on
+ * the way back), so preferring it cannot move the row while it stays unread.
+ * Only when the server supplies none — an older server, or a warm row that has
+ * not met the network yet — does the row keep the stamp it already carries,
+ * and only a row with no stamp at all gets a fresh one.
+ */
+function resolveSessionListRenderableUnreadSince(
+    previous: SessionListRenderableSession | undefined,
+    next: SessionListRenderableSession,
+): number | null {
+    if (next.hasUnreadMessages !== true) return null;
+    const incoming = normalizeUnreadSince(next.unreadSince);
+    if (incoming !== null) return incoming;
+    if (previous?.hasUnreadMessages === true) {
+        const carried = normalizeUnreadSince(previous.unreadSince);
+        if (carried !== null) return carried;
+        // The row was already unread but predates the entry fact (raw
+        // warm-cache rehydration): adopt ITS activity time so the row keeps
+        // the exact position it is already rendered at.
+        const previousEntryActivityAt = resolveSessionListUnreadEntryActivityAt(previous);
+        if (previousEntryActivityAt !== null) return previousEntryActivityAt;
+    }
+    // Read -> unread edge (or a row with no usable history): stamp once from the
+    // incoming activity time. `next.unreadSince` is provably absent here, so the
+    // only remaining source is the activity fallback.
+    return resolveSessionListUnreadEntryActivityAt(next);
+}
+
+function normalizeUnreadSince(value: number | null | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 export function preserveSessionListRenderableTransientState(
@@ -229,6 +364,7 @@ export function preserveSessionListRenderableTransientState(
     return {
         ...next,
         keepVisibleWhenInactive: previous?.keepVisibleWhenInactive === true,
+        unreadSince: resolveSessionListRenderableUnreadSince(previous, next),
     };
 }
 
@@ -342,6 +478,7 @@ export function areSessionListRenderablesEqual(
         && (previous.archivedAt ?? null) === (next.archivedAt ?? null)
         && (previous.pendingVersion ?? null) === (next.pendingVersion ?? null)
         && (previous.pendingCount ?? null) === (next.pendingCount ?? null)
+        && (previous.pendingBlockedCount ?? null) === (next.pendingBlockedCount ?? null)
         && (previous.lastViewedSessionSeq ?? null) === (next.lastViewedSessionSeq ?? null)
         && previous.metadataVersion === next.metadataVersion
         && previous.agentStateVersion === next.agentStateVersion
@@ -351,11 +488,16 @@ export function areSessionListRenderablesEqual(
         && (previous.latestTurnId ?? null) === (next.latestTurnId ?? null)
         && (previous.latestTurnStatus ?? null) === (next.latestTurnStatus ?? null)
         && (previous.latestTurnStatusObservedAt ?? null) === (next.latestTurnStatusObservedAt ?? null)
+        && (previous.runtimeActivityState ?? null) === (next.runtimeActivityState ?? null)
+        && (previous.runtimeActivityActiveCount ?? null) === (next.runtimeActivityActiveCount ?? null)
+        && (previous.runtimeActivityObservedAt ?? null) === (next.runtimeActivityObservedAt ?? null)
+        && (previous.runtimeActivityRevision ?? null) === (next.runtimeActivityRevision ?? null)
         && areSessionRuntimeIssuesEqual(previous.lastRuntimeIssue ?? null, next.lastRuntimeIssue ?? null)
         && areRollbackEligibleTurnStartsEqual(previous.rollbackEligibleTurnStarts, next.rollbackEligibleTurnStarts)
         && (previous.latestReadyEventSeq ?? null) === (next.latestReadyEventSeq ?? null)
         && (previous.latestReadyEventAt ?? null) === (next.latestReadyEventAt ?? null)
         && (previous.optimisticThinkingAt ?? null) === (next.optimisticThinkingAt ?? null)
+        && (previous.resumingAt ?? null) === (next.resumingAt ?? null)
         && (previous.thinkingGraceUntil ?? null) === (next.thinkingGraceUntil ?? null)
         && (previous.owner ?? null) === (next.owner ?? null)
         && (previous.accessLevel ?? null) === (next.accessLevel ?? null)
@@ -364,9 +506,36 @@ export function areSessionListRenderablesEqual(
         && (previous.hasPendingUserActionRequests ?? null) === (next.hasPendingUserActionRequests ?? null)
         && (previous.pendingRequestObservedAt ?? null) === (next.pendingRequestObservedAt ?? null)
         && (previous.hasUnreadMessages === true) === (next.hasUnreadMessages === true)
+        && (previous.unreadSince ?? null) === (next.unreadSince ?? null)
         && (previous.keepVisibleWhenInactive === true) === (next.keepVisibleWhenInactive === true)
         && (previous.metadataUnavailable === true) === (next.metadataUnavailable === true)
         && areSessionListRenderableMetadataEqual(previous.metadata, next.metadata);
+}
+
+export function applySessionListRenderablePatch(
+    renderable: SessionListRenderableSession,
+    patch: SessionListRenderablePatchFields,
+): SessionListRenderableSession {
+    const patched = {
+        ...renderable,
+        ...patch,
+        id: renderable.id,
+    };
+    // Streaming patches carry whole freshly-built renderables whose unread
+    // entry fact is re-stamped from the latest activity; keep the row's
+    // existing entry time so an unread row does not move on every message.
+    patched.unreadSince = resolveSessionListRenderableUnreadSince(renderable, patched);
+    return patched;
+}
+
+export function isSessionListRenderablePatchNoop(
+    renderable: SessionListRenderableSession,
+    patch: SessionListRenderablePatchFields,
+): boolean {
+    return areSessionListRenderablesEqual(
+        renderable,
+        applySessionListRenderablePatch(renderable, patch),
+    );
 }
 
 function readSessionLatestTurnId(session: Session): string | null {
@@ -396,9 +565,16 @@ export function readRollbackEligibleTurnStarts(value: unknown): readonly number[
 function resolveSessionListReadableSeq(
     session: Pick<Session, 'seq'> & Partial<Pick<Session, 'latestTurnStatus' | 'latestReadyEventSeq'>>,
     messages: ReadonlyArray<Message> | undefined,
+    transcriptAggregate?: TranscriptRenderableAggregate | null,
 ): number {
     return resolveSessionReadableSeq({
         messages: messages ?? null,
+        messagesProjection: transcriptAggregate
+            ? {
+                hasMessages: transcriptAggregate.messageCount > 0,
+                latestUnreadAffectingMessageSeq: transcriptAggregate.latestUnreadAffectingMessageSeq,
+            }
+            : null,
         sessionSeq: session.seq,
         latestReadyEventSeq: session.latestReadyEventSeq,
         latestTurnStatus: session.latestTurnStatus,
@@ -411,9 +587,9 @@ function readSessionLastRuntimeIssue(session: Session): SessionRuntimeIssueV1 | 
     return isSessionRuntimeIssueV1(value) ? value : null;
 }
 
-function readSessionReadyEventNumber(
+function readSessionNumericField(
     session: Session,
-    key: 'latestReadyEventSeq' | 'latestReadyEventAt' | 'latestTurnStatusObservedAt',
+    key: 'latestReadyEventSeq' | 'latestReadyEventAt' | 'latestTurnStatusObservedAt' | 'unreadSince',
 ): number | null {
     const value = (session as unknown as Record<string, unknown>)[key];
     return typeof value === 'number' && Number.isFinite(value)
@@ -460,7 +636,10 @@ export function resolveSessionListRenderableAttentionPromotionPlacement(
     nowMs: number = Date.now(),
 ): SessionListRenderableAttentionPromotionPlacement {
     const projection = projectSessionListPlacement({ session, nowMs });
-    return { kind: projection.kind, timestamp: projection.timestamp };
+    return {
+        kind: projection.kind,
+        timestamp: projection.timestamp,
+    };
 }
 
 export function didSessionListRenderableStructuralFieldsChange(
@@ -489,15 +668,9 @@ export function didSessionListRenderableEmbeddedListRowFieldsChange(
     next: SessionListRenderableSession,
 ): boolean {
     if (!previous) return true;
-    // High-churn runtime fields are owned by visible row subscriptions. This
-    // comparator only refreshes embedded source rows for stale identity/badge
-    // fields that otherwise remain stuck inside already-built list data.
-    if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return true;
-    if ((previous.lastViewedSessionSeq ?? null) !== (next.lastViewedSessionSeq ?? null)) return true;
-    if ((previous.hasPendingPermissionRequests ?? null) !== (next.hasPendingPermissionRequests ?? null)) return true;
-    if ((previous.hasPendingUserActionRequests ?? null) !== (next.hasPendingUserActionRequests ?? null)) return true;
-    if ((previous.pendingRequestObservedAt ?? null) !== (next.pendingRequestObservedAt ?? null)) return true;
-    if ((previous.hasUnreadMessages === true) !== (next.hasUnreadMessages === true)) return true;
+    // High-churn status, pending, unread, and turn-state fields are owned by
+    // row-store overlays. Keep embedded list data structural/identity-focused
+    // so live streaming does not republish the whole list array.
     if ((previous.metadataUnavailable === true) !== (next.metadataUnavailable === true)) return true;
     if (!areSessionListRenderableMetadataEqual(previous.metadata, next.metadata)) return true;
 
@@ -517,6 +690,25 @@ export function didSessionListRenderableAttentionPromotionFieldsChange(
         || previousPlacement.timestamp !== nextPlacement.timestamp;
 }
 
+/**
+ * Changes that do not move the placement at this instant but WILL change how
+ * placement evaluates at a future freshness boundary (extended working
+ * windows, refreshed retention inputs). These must not trigger the expensive
+ * structural rebuild, but the committed view data has to pick up the fresh
+ * session object through the row-refresh channel — otherwise the UI later
+ * re-evaluates placement against stale timestamps and, e.g., demotes a
+ * still-working session at the stale expiry while its row shows the spinner.
+ */
+export function didSessionListRenderablePlacementRelevantTimingChange(
+    previous: SessionListRenderableSession | undefined,
+    next: SessionListRenderableSession,
+    nowMs: number = Date.now(),
+): boolean {
+    if (!previous) return false;
+    if (didSessionListRenderableWorkingRetentionInputFieldsChange(previous, next)) return true;
+    return didSessionListPlacementProjectionDiverge({ previous, next, nowMs });
+}
+
 function didSessionListRenderableRetainedWorkingInvalidationFieldsChange(
     previous: SessionListRenderableSession,
     next: SessionListRenderableSession,
@@ -525,6 +717,25 @@ function didSessionListRenderableRetainedWorkingInvalidationFieldsChange(
         return false;
     }
     return !isRetainableWorkingProjectionCandidate(next);
+}
+
+/**
+ * Working RETENTION (the 'keep in working group while signals are stale'
+ * projection) depends on the UI layer's retained-key set, which is not
+ * available at store-commit time, so the placement divergence walk evaluates
+ * with retention disabled. Compensate with the canonical retention-input
+ * comparison (owned by sessionListWorkingRetention.ts, next to the functions
+ * that read those fields), scoped to retainable candidates so ordinary
+ * sessions do not pay row refreshes for these high-churn timestamps.
+ */
+function didSessionListRenderableWorkingRetentionInputFieldsChange(
+    previous: SessionListRenderableSession,
+    next: SessionListRenderableSession,
+): boolean {
+    if (!isRetainableWorkingProjectionCandidate(previous) && !isRetainableWorkingProjectionCandidate(next)) {
+        return false;
+    }
+    return didSessionListWorkingRetentionInputsChange(previous, next);
 }
 
 function isRetainableWorkingProjectionCandidate(session: SessionListRenderableSession): boolean {
@@ -596,10 +807,15 @@ export function didSessionListRenderableWarmCacheFieldsChange(
     if ((previous.archivedAt ?? null) !== (next.archivedAt ?? null)) return true;
     if ((previous.lastViewedSessionSeq ?? null) !== (next.lastViewedSessionSeq ?? null)) return true;
     if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return true;
+    if ((previous.pendingBlockedCount ?? null) !== (next.pendingBlockedCount ?? null)) return true;
     if ((previous.pendingVersion ?? null) !== (next.pendingVersion ?? null)) return true;
     if ((previous.latestTurnId ?? null) !== (next.latestTurnId ?? null)) return true;
     if ((previous.latestTurnStatus ?? null) !== (next.latestTurnStatus ?? null)) return true;
     if ((previous.latestTurnStatusObservedAt ?? null) !== (next.latestTurnStatusObservedAt ?? null)) return true;
+    if ((previous.runtimeActivityState ?? null) !== (next.runtimeActivityState ?? null)) return true;
+    if ((previous.runtimeActivityActiveCount ?? null) !== (next.runtimeActivityActiveCount ?? null)) return true;
+    if ((previous.runtimeActivityObservedAt ?? null) !== (next.runtimeActivityObservedAt ?? null)) return true;
+    if ((previous.runtimeActivityRevision ?? null) !== (next.runtimeActivityRevision ?? null)) return true;
     if (!areSessionRuntimeIssuesEqual(previous.lastRuntimeIssue ?? null, next.lastRuntimeIssue ?? null)) return true;
     if (!areRollbackEligibleTurnStartsEqual(previous.rollbackEligibleTurnStarts, next.rollbackEligibleTurnStarts)) return true;
     if ((previous.latestReadyEventSeq ?? null) !== (next.latestReadyEventSeq ?? null)) return true;
@@ -643,11 +859,16 @@ export function isSessionListRenderableWarmCacheProgressOnlyChange(
     if (previous.thinking !== next.thinking) return false;
     if ((previous.archivedAt ?? null) !== (next.archivedAt ?? null)) return false;
     if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return false;
+    if ((previous.pendingBlockedCount ?? null) !== (next.pendingBlockedCount ?? null)) return false;
     if ((previous.pendingVersion ?? null) !== (next.pendingVersion ?? null)) return false;
     if ((previous.lastViewedSessionSeq ?? null) !== (next.lastViewedSessionSeq ?? null)) return false;
     if ((previous.latestTurnId ?? null) !== (next.latestTurnId ?? null)) return false;
     if ((previous.latestTurnStatus ?? null) !== (next.latestTurnStatus ?? null)) return false;
     if ((previous.latestTurnStatusObservedAt ?? null) !== (next.latestTurnStatusObservedAt ?? null)) return false;
+    if ((previous.runtimeActivityState ?? null) !== (next.runtimeActivityState ?? null)) return false;
+    if ((previous.runtimeActivityActiveCount ?? null) !== (next.runtimeActivityActiveCount ?? null)) return false;
+    if ((previous.runtimeActivityObservedAt ?? null) !== (next.runtimeActivityObservedAt ?? null)) return false;
+    if ((previous.runtimeActivityRevision ?? null) !== (next.runtimeActivityRevision ?? null)) return false;
     if (!areSessionRuntimeIssuesEqual(previous.lastRuntimeIssue ?? null, next.lastRuntimeIssue ?? null)) return false;
     if (!areRollbackEligibleTurnStartsEqual(previous.rollbackEligibleTurnStarts, next.rollbackEligibleTurnStarts)) return false;
     if ((previous.latestReadyEventSeq ?? null) !== (next.latestReadyEventSeq ?? null)) return false;
@@ -668,6 +889,7 @@ export function isSessionListRenderableWarmCacheProgressOnlyChange(
         || (previous.meaningfulActivityAt ?? null) !== (next.meaningfulActivityAt ?? null)
         || previous.activeAt !== next.activeAt;
 }
+
 
 function areRollbackEligibleTurnStartsEqual(
     previous: readonly number[] | null | undefined,

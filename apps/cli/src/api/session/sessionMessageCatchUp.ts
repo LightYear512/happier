@@ -1,13 +1,26 @@
 import axios from 'axios';
+import { readPendingLocalId } from '@happier-dev/protocol';
 
-import { configuration } from '@/configuration';
 import { SessionMessageContentSchema, type Update } from '../types';
-import { resolveLoopbackHttpUrl } from '../client/loopbackUrl';
+import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 import {
     createAuthenticationHttpStatusError,
     isAuthenticationStatus,
     readAuthenticationStatus,
 } from '../client/httpStatusError';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+
+type SessionHistoryReplayProvenance = Readonly<{
+    sourceCreatedAt: number | null;
+    sourceUpdatedAt: number | null;
+}>;
+
+// Catch-up classification stays out of band so a remote row cannot forge "history" provenance.
+const sessionHistoryReplayProvenance = new WeakMap<object, SessionHistoryReplayProvenance>();
+
+export function readSessionHistoryReplayProvenance(update: Update): SessionHistoryReplayProvenance | null {
+    return sessionHistoryReplayProvenance.get(update as object) ?? null;
+}
 
 function readCatchUpTimestamp(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
@@ -20,7 +33,7 @@ export async function catchUpSessionMessagesAfterSeq(params: {
     onUpdate: (update: Update) => void;
 }): Promise<void> {
     let cursor = Number.isFinite(params.afterSeq) && params.afterSeq >= 0 ? Math.floor(params.afterSeq) : 0;
-    const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
+    const serverUrl = resolveServerHttpBaseUrl();
     for (let page = 0; page < 10; page++) {
         let response;
         try {
@@ -69,11 +82,9 @@ export async function catchUpSessionMessagesAfterSeq(params: {
             if (!parsedContent.success) continue;
 
             const localIdRaw = (msg as any).localId;
-            const localId =
-                typeof localIdRaw === 'string' ? (localIdRaw.trim() || null) : null;
+            const localId = readPendingLocalId(localIdRaw);
             const sidechainIdRaw = (msg as any).sidechainId;
-            const sidechainId =
-                typeof sidechainIdRaw === 'string' ? (sidechainIdRaw.trim() || null) : null;
+            const sidechainId = readNonBlankOpaqueIdentifier(sidechainIdRaw);
             const createdAt = readCatchUpTimestamp((msg as any).createdAt);
             const updatedAt = readCatchUpTimestamp((msg as any).updatedAt) ?? createdAt;
 
@@ -95,6 +106,11 @@ export async function catchUpSessionMessagesAfterSeq(params: {
                     },
                 },
             } as Update;
+
+            sessionHistoryReplayProvenance.set(update as object, {
+                sourceCreatedAt: createdAt,
+                sourceUpdatedAt: updatedAt,
+            });
 
             params.onUpdate(update);
             cursor = Math.max(cursor, seq);

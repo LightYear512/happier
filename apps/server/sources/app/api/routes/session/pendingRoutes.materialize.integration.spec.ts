@@ -1,19 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
+import { createFakeRouteApp } from "../../testkit/routeHarness";
 
 const emitUpdate = vi.fn();
 const buildNewMessageUpdate = vi.fn(() => ({ type: "new-message" }));
+const buildMessageUpdatedUpdate = vi.fn(() => ({ type: "message-updated" }));
 const buildPendingChangedUpdate = vi.fn(() => ({ type: "pending-changed" }));
 const buildUpdateSessionUpdate = vi.fn(() => ({ type: "update-session" }));
 const getSessionParticipantUserIds = vi.fn(async () => ["u1"]);
 const markAccountChanged = vi.fn(async () => 10);
+const refreshSessionParticipantBadgePushes = vi.fn(async () => {});
 
 const materializeNextPendingMessage = vi.fn();
+const listPendingMessages = vi.fn();
+const resolveAcceptedPendingDelivery = vi.fn();
+const blockPendingDelivery = vi.fn();
+const markPendingDeliveryHandled = vi.fn();
+const dismissPendingDelivery = vi.fn();
+const sendPendingDeliveryAsNew = vi.fn();
+const updatePendingMessage = vi.fn();
 
 vi.mock("@/app/events/eventRouter", () => ({
     eventRouter: { emitUpdate },
     buildNewMessageUpdate,
+    buildMessageUpdatedUpdate,
     buildPendingChangedUpdate,
     buildUpdateSessionUpdate,
 }));
@@ -21,6 +32,7 @@ vi.mock("@/app/events/eventRouter", () => ({
 vi.mock("@/utils/keys/randomKeyNaked", () => ({ randomKeyNaked: () => "k" }));
 vi.mock("@/app/share/sessionParticipants", () => ({ getSessionParticipantUserIds }));
 vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
+vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({ refreshSessionParticipantBadgePushes }));
 vi.mock("@/storage/inTx", () => ({
     inTx: vi.fn(async (fn: (tx: unknown) => unknown) => await fn({})),
 }));
@@ -29,7 +41,14 @@ vi.mock("@/app/session/pending/pendingMessageService", async (importOriginal) =>
     const actual = await importOriginal<typeof import("@/app/session/pending/pendingMessageService")>();
     return {
         ...actual,
+        listPendingMessages,
         materializeNextPendingMessage,
+        resolveAcceptedPendingDelivery,
+        blockPendingDelivery,
+        markPendingDeliveryHandled,
+        dismissPendingDelivery,
+        sendPendingDeliveryAsNew,
+        updatePendingMessage,
     };
 });
 
@@ -38,78 +57,88 @@ describe("sessionPendingRoutes (materialize-next)", () => {
         vi.resetModules();
         emitUpdate.mockReset();
         buildNewMessageUpdate.mockClear();
+        buildMessageUpdatedUpdate.mockClear();
         buildPendingChangedUpdate.mockClear();
         buildUpdateSessionUpdate.mockClear();
         getSessionParticipantUserIds.mockReset();
         getSessionParticipantUserIds.mockResolvedValue(["u1"]);
         markAccountChanged.mockReset();
         markAccountChanged.mockResolvedValue(10);
+        refreshSessionParticipantBadgePushes.mockReset();
+        refreshSessionParticipantBadgePushes.mockResolvedValue(undefined);
         materializeNextPendingMessage.mockReset();
+        listPendingMessages.mockReset();
+        resolveAcceptedPendingDelivery.mockReset();
+        blockPendingDelivery.mockReset();
+        markPendingDeliveryHandled.mockReset();
+        dismissPendingDelivery.mockReset();
+        sendPendingDeliveryAsNew.mockReset();
+        updatePendingMessage.mockReset();
     });
 
-    it("emits new-message and pending-changed updates on successful materialization", async () => {
-        materializeNextPendingMessage.mockResolvedValueOnce({
+    it("projects typed deliveryStatus in pending GET responses while retaining raw delivery fields", async () => {
+        const createdAt = new Date(1_000);
+        const updatedAt = new Date(2_000);
+        listPendingMessages.mockResolvedValueOnce({
             ok: true,
-            didMaterialize: true,
-            didWriteMessage: true,
-            message: { id: "m1", seq: 1, localId: "l1", messageRole: "user", content: { t: "plain", v: { role: "user", content: { type: "text", text: "hello" } } }, createdAt: new Date(1_000), updatedAt: new Date(1_000) },
-            pendingCount: 0,
-            pendingVersion: 2,
-            participantCursorsMessage: [
-                { accountId: "u1", cursor: 10 },
-                { accountId: "u2", cursor: 11 },
-            ],
-            participantCursorsPending: [
-                { accountId: "u1", cursor: 20 },
-                { accountId: "u2", cursor: 21 },
+            pending: [
+                {
+                    localId: "l-blocked",
+                    messageRole: "user",
+                    content: { t: "plain", v: { role: "user", content: { type: "text", text: "hello" } } },
+                    status: "queued",
+                    deliveryState: "blocked",
+                    deliveryBlockedReason: "terminal_composer_draft",
+                    deliveryStatus: { status: "blocked", reason: "terminal_composer_draft" },
+                    position: 1,
+                    createdAt,
+                    updatedAt,
+                    discardedAt: null,
+                    discardedReason: null,
+                    authorAccountId: "actor",
+                },
             ],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
-            method: "POST",
-            path: "/v2/sessions/:sessionId/pending/materialize-next",
+            method: "GET",
+            path: "/v2/sessions/:sessionId/pending",
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
         });
-        const { response: res } = await route.invoke({ userId: "actor", params: { sessionId: "s1" } });
-
-        expect(res).toEqual({
-            ok: true,
-            didMaterialize: true,
-            didWriteMessage: true,
-            pendingCount: 0,
-            pendingVersion: 2,
-            message: { id: "m1", seq: 1, localId: "l1", messageRole: "user", content: { t: "plain", v: { role: "user", content: { type: "text", text: "hello" } } }, createdAt: 1_000, updatedAt: 1_000 },
+        const { response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1" },
         });
 
-        expect(buildNewMessageUpdate).toHaveBeenCalledTimes(2);
-        expect(buildPendingChangedUpdate).toHaveBeenCalledTimes(2);
-        expect(buildPendingChangedUpdate).toHaveBeenNthCalledWith(
-            1,
-            expect.objectContaining({ meaningfulActivityAt: new Date(1_000) }),
-            20,
-            "k",
-        );
-        expect(buildPendingChangedUpdate).toHaveBeenNthCalledWith(
-            2,
-            expect.objectContaining({ meaningfulActivityAt: new Date(1_000) }),
-            21,
-            "k",
-        );
-        expect(buildUpdateSessionUpdate).not.toHaveBeenCalled();
-        expect(emitUpdate).toHaveBeenCalledTimes(4);
+        expect(listPendingMessages).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            sessionId: "s1",
+            includeDiscarded: false,
+        });
+        expect(res).toEqual({
+            pending: [
+                expect.objectContaining({
+                    localId: "l-blocked",
+                    status: "queued",
+                    deliveryState: "blocked",
+                    deliveryBlockedReason: "terminal_composer_draft",
+                    deliveryStatus: { status: "blocked", reason: "terminal_composer_draft" },
+                }),
+            ],
+        });
     });
 
-    it("returns pending state when there is no pending message to materialize", async () => {
+    it("fails omitted HTTP materialization closed without invoking the Pending owner", async () => {
         materializeNextPendingMessage.mockResolvedValueOnce({
             ok: true,
             didMaterialize: false,
-            pendingCount: 0,
-            pendingVersion: 5,
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 1,
         });
-
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
@@ -118,36 +147,61 @@ describe("sessionPendingRoutes (materialize-next)", () => {
                 sessionPendingRoutes(app as any);
             },
         });
-        const { response: res } = await route.invoke({ userId: "actor", params: { sessionId: "s1" } });
+        const { reply, response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1" },
+        });
 
-        expect(res).toEqual({ ok: true, didMaterialize: false, pendingCount: 0, pendingVersion: 5 });
+        expect(reply.statusCode).toBe(403);
+        expect(res).toEqual({ error: "forbidden" });
+        expect(materializeNextPendingMessage).not.toHaveBeenCalled();
+        expect(buildNewMessageUpdate).not.toHaveBeenCalled();
+        expect(buildPendingChangedUpdate).not.toHaveBeenCalled();
+    });
+
+    it("fails HTTP provider materialization closed without invoking the Pending owner", async () => {
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending/materialize-next",
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+        const { reply, response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1" },
+            body: { deliveryState: "provider" },
+        });
+
+        expect(reply.statusCode).toBe(403);
+        expect(res).toEqual({ error: "forbidden" });
+        expect(materializeNextPendingMessage).not.toHaveBeenCalled();
+    });
+
+    it("maps stale pending update races to a client-safe not-found response", async () => {
+        updatePendingMessage.mockResolvedValueOnce({ ok: false, error: "not-found" });
+
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "PATCH",
+            path: "/v2/sessions/:sessionId/pending/:localId",
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+        const { reply, response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1", localId: "missing-local" },
+            body: { ciphertext: "cipher-updated" },
+        });
+
+        expect(reply.statusCode).toBe(404);
+        expect(res).toEqual({ error: "not-found" });
         expect(emitUpdate).not.toHaveBeenCalled();
     });
 
-    it("emits ready projection updates when materialization returns a ready projection", async () => {
-        materializeNextPendingMessage.mockResolvedValueOnce({
-            ok: true,
-            didMaterialize: true,
-            didWriteMessage: true,
-            message: {
-                id: "m-ready",
-                seq: 7,
-                localId: "ready-local",
-                messageRole: "event",
-                content: { t: "plain", v: { type: "event" } },
-                createdAt: new Date(1_000),
-                updatedAt: new Date(1_000),
-            },
-            pendingCount: 0,
-            pendingVersion: 2,
-            participantCursorsMessage: [{ accountId: "u1", cursor: 10 }],
-            participantCursorsPending: [{ accountId: "u1", cursor: 20 }],
-            readyProjection: {
-                latestReadyEventSeq: 7,
-                latestReadyEventAt: 1_000,
-            },
-        });
-
+    it("rejects HTTP provider delivery-state opt-in while retaining the legacy route", async () => {
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
@@ -156,56 +210,209 @@ describe("sessionPendingRoutes (materialize-next)", () => {
                 sessionPendingRoutes(app as any);
             },
         });
-        await route.invoke({ userId: "actor", params: { sessionId: "s1" } });
-
-        expect(buildUpdateSessionUpdate).toHaveBeenCalledWith("s1", 10, expect.any(String), undefined, undefined, {
-            latestReadyEventSeq: 7,
-            latestReadyEventAt: 1_000,
+        const { reply, response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1" },
+            body: { deliveryState: "provider" },
         });
-        expect(emitUpdate).toHaveBeenCalledTimes(3);
+
+        expect(reply.statusCode).toBe(403);
+        expect(res).toEqual({ error: "forbidden" });
+        expect(materializeNextPendingMessage).not.toHaveBeenCalled();
+        expect(buildNewMessageUpdate).not.toHaveBeenCalled();
     });
 
-    it("keeps the route successful when one emitUpdate throws", async () => {
-        materializeNextPendingMessage.mockResolvedValueOnce({
+    it("does not expose user-authenticated HTTP provider-settlement authority", async () => {
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const app = createFakeRouteApp();
+        sessionPendingRoutes(app as any);
+
+        expect(app.routes.has("POST /v2/sessions/:sessionId/pending/:localId/delivery/accepted")).toBe(false);
+        expect(resolveAcceptedPendingDelivery).not.toHaveBeenCalled();
+        expect(emitUpdate).not.toHaveBeenCalled();
+    });
+    it("blocks an exact provider-unavailable delivery before acceptance", async () => {
+        blockPendingDelivery.mockResolvedValueOnce({
             ok: true,
-            didMaterialize: true,
-            didWriteMessage: true,
-            message: { id: "m1", seq: 1, localId: "l1", messageRole: "user", content: { t: "plain", v: { role: "user", content: { type: "text", text: "hello" } } }, createdAt: new Date(1_000), updatedAt: new Date(1_000) },
-            pendingCount: 0,
-            pendingVersion: 2,
-            participantCursorsMessage: [
-                { accountId: "u1", cursor: 10 },
-                { accountId: "u2", cursor: 11 },
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+            pendingVersion: 4,
+            participantCursors: [
+                { accountId: "u1", cursor: 40 },
+                { accountId: "u2", cursor: 41 },
             ],
-            participantCursorsPending: [
-                { accountId: "u1", cursor: 20 },
-                { accountId: "u2", cursor: 21 },
-            ],
+            badgeAttentionChanged: false,
+            didUpdate: true,
         });
-        emitUpdate
-            .mockImplementationOnce(() => {
-                throw new Error("emit failed");
-            })
-            .mockImplementation(() => undefined);
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
-            path: "/v2/sessions/:sessionId/pending/materialize-next",
+            path: "/v2/sessions/:sessionId/pending/:localId/delivery/block",
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
         });
-        const { response: res } = await route.invoke({ userId: "actor", params: { sessionId: "s1" } });
+        const { response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1", localId: "l-provider" },
+            body: { reason: "provider_unavailable_before_acceptance" },
+        });
 
+        expect(blockPendingDelivery).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            sessionId: "s1",
+            localId: "l-provider",
+            reason: "provider_unavailable_before_acceptance",
+        });
         expect(res).toEqual({
             ok: true,
-            didMaterialize: true,
-            didWriteMessage: true,
-            pendingCount: 0,
-            pendingVersion: 2,
-            message: { id: "m1", seq: 1, localId: "l1", messageRole: "user", content: { t: "plain", v: { role: "user", content: { type: "text", text: "hello" } } }, createdAt: 1_000, updatedAt: 1_000 },
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+            pendingVersion: 4,
         });
         expect(buildPendingChangedUpdate).toHaveBeenCalledTimes(2);
+        expect(emitUpdate).toHaveBeenCalledTimes(2);
     });
+
+    it("marks a provider delivery handled by explicit user resolution", async () => {
+        markPendingDeliveryHandled.mockResolvedValueOnce({
+            ok: true,
+            pendingCount: 0,
+            pendingVersion: 6,
+            participantCursors: [
+                { accountId: "u1", cursor: 60 },
+                { accountId: "u2", cursor: 61 },
+            ],
+            participantCursorsPending: [
+                { accountId: "u1", cursor: 60 },
+                { accountId: "u2", cursor: 61 },
+            ],
+            badgeAttentionChanged: true,
+            didResolve: true,
+        });
+
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending/:localId/delivery/handled",
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+        const { response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1", localId: "l-provider" },
+        });
+
+        expect(markPendingDeliveryHandled).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            sessionId: "s1",
+            localId: "l-provider",
+        });
+        expect(res).toEqual({
+            ok: true,
+            pendingCount: 0,
+            pendingVersion: 6,
+        });
+        expect(buildNewMessageUpdate).not.toHaveBeenCalled();
+        expect(buildPendingChangedUpdate).toHaveBeenCalledTimes(2);
+        expect(emitUpdate).toHaveBeenCalledTimes(2);
+    });
+
+    it("routes explicit uncertain dismissal without creating a message", async () => {
+        dismissPendingDelivery.mockResolvedValueOnce({
+            ok: true,
+            didDismiss: true,
+            pendingCount: 0,
+            pendingBlockedCount: 0,
+            pendingVersion: 7,
+            participantCursors: [{ accountId: "u1", cursor: 70 }],
+            badgeAttentionChanged: true,
+        });
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending/:localId/delivery/dismiss",
+            registerRoutes(app) { sessionPendingRoutes(app as any); },
+        });
+        const { response } = await route.invoke({ userId: "actor", params: { sessionId: "s1", localId: "l-provider" } });
+        expect(dismissPendingDelivery).toHaveBeenCalledWith({ actorUserId: "actor", sessionId: "s1", localId: "l-provider" });
+        expect(response).toMatchObject({ ok: true, didDismiss: true, pendingCount: 0, pendingVersion: 7 });
+        expect(buildNewMessageUpdate).not.toHaveBeenCalled();
+    });
+
+    it("leaves deterministic send-as-new identity with the atomic service owner", async () => {
+        sendPendingDeliveryAsNew.mockResolvedValueOnce({
+            ok: true,
+            didWrite: true,
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 8,
+            participantCursors: [{ accountId: "u1", cursor: 80 }],
+            badgeAttentionChanged: false,
+        });
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending/:localId/delivery/send-as-new",
+            registerRoutes(app) { sessionPendingRoutes(app as any); },
+        });
+        const { response } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1", localId: "l-provider" },
+            body: {},
+        });
+        expect(sendPendingDeliveryAsNew).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            sessionId: "s1",
+            localId: "l-provider",
+        });
+        expect(response).toMatchObject({ ok: true, didWrite: true, pendingCount: 1, pendingVersion: 8 });
+    });
+
+    it("emits pending-changed when handled provider delivery blocks on transcript conflict", async () => {
+        markPendingDeliveryHandled.mockResolvedValueOnce({
+            ok: false,
+            error: "transcript-conflict",
+            pendingStateChanged: true,
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+            pendingVersion: 9,
+            participantCursors: [{ accountId: "u1", cursor: 63 }],
+            badgeAttentionChanged: true,
+        });
+
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending/:localId/delivery/handled",
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+        const { reply, response: res } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1", localId: "l-provider-conflict" },
+        });
+
+        expect(reply.statusCode).toBe(409);
+        expect(res).toEqual({ error: "transcript-conflict" });
+        expect(buildPendingChangedUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionId: "s1",
+                pendingCount: 1,
+                pendingBlockedCount: 1,
+                pendingVersion: 9,
+            }),
+            63,
+            "k",
+        );
+        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledWith({
+            badgeAttentionChanged: true,
+            participantCursors: [{ accountId: "u1", cursor: 63 }],
+        });
+    });
+
 });

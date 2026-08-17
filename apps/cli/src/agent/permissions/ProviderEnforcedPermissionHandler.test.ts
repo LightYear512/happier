@@ -63,7 +63,14 @@ describe('ProviderEnforcedPermissionHandler always-auto-approve matching', () =>
     await expect(handler.handleToolCall('safe-3', 'happier_change_title', {})).resolves.toEqual({ decision: 'approved' });
     await expect(handler.handleToolCall('safe-4', 'mcp__happier__session_title_set', {})).resolves.toEqual({ decision: 'approved' });
     await expect(handler.handleToolCall('safe-5', 'happier_action_execute', { actionId: 'session.title.set' })).resolves.toEqual({ decision: 'approved' });
-    await expect(handler.handleToolCall('mcp__happier__change_title-1', 'other', {})).resolves.toEqual({ decision: 'approved' });
+    const misleadingIdPending = handler.handleToolCall('mcp__happier__change_title-1', 'other', {});
+    expect(session.agentState.requests['mcp__happier__change_title-1']).toBeTruthy();
+    await session.rpcHandlerManager.handlers.get('permission')?.({
+      id: 'mcp__happier__change_title-1',
+      approved: false,
+      decision: 'denied',
+    });
+    await expect(misleadingIdPending).resolves.toEqual({ decision: 'denied' });
 
     const executionRunPending = handler.handleToolCall('execution-run-1', 'mcp__happier__execution_run_start', {
       intent: 'delegate',
@@ -288,13 +295,34 @@ describe('ProviderEnforcedPermissionHandler always-auto-approve matching', () =>
       id: 'ask-1',
       approved: true,
       decision: 'approved',
-      answers: { language: 'TypeScript' },
+      answers: { 'Which language?': 'TypeScript' },
     });
     await expect(pending).resolves.toEqual({
       decision: 'approved',
-      answers: { language: 'TypeScript' },
+      answers: { 'Which language?': ['TypeScript'] },
     });
     expect(session.agentState.requests['ask-1']).toBeFalsy();
+  });
+
+  it('refuses opaque claimed IDs before full-access or safe-tool auto decisions', async () => {
+    const session = new FakeSession();
+    const opaqueClaim = { malformed: ['future-owner'] };
+    session.agentState.requests.claimed = {
+      tool: 'readTextFile',
+      arguments: { path: '/tmp/reserved' },
+      createdAt: 1,
+      permissionResponseClaimV1: opaqueClaim,
+    };
+    const handler = new ProviderEnforcedPermissionHandler(session as any, { logPrefix: '[Test]' });
+    handler.setPermissionMode('yolo');
+
+    expect(handler.getImmediateDecision('claimed', 'readTextFile', { path: '/tmp/reserved' })).toBeNull();
+    await expect(handler.handleToolCall('claimed', 'readTextFile', { path: '/tmp/reserved' })).rejects.toThrow(/reserved/i);
+
+    const retained = session.agentState.requests.claimed as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(retained, 'permissionResponseClaimV1')).toBe(true);
+    expect(retained.permissionResponseClaimV1).toBe(opaqueClaim);
+    expect(session.agentState.completedRequests.claimed).toBeUndefined();
   });
 
   it('resolves every duplicate same-id waiter from one permission response', async () => {

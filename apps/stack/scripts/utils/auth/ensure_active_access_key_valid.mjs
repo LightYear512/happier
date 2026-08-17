@@ -1,8 +1,11 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { chmod, copyFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { resolveStackCredentialPaths } from './credentials_paths.mjs';
 import { decodeJwtPayloadUnsafe } from './decode_jwt_payload_unsafe.mjs';
+
+const validationCache = new Map();
 
 function readAuthTokenFromCredentialPath(path) {
   const p = String(path ?? '').trim();
@@ -19,6 +22,26 @@ function readAuthTokenFromCredentialPath(path) {
       // fall through
     }
     return raw;
+  } catch {
+    return null;
+  }
+}
+
+function buildCredentialValidationCacheKey({ path, token, serverUrl }) {
+  const p = String(path ?? '').trim();
+  const t = String(token ?? '').trim();
+  const base = String(serverUrl ?? '').trim().replace(/\/+$/, '');
+  if (!p || !t || !base) return null;
+  try {
+    const stat = statSync(p);
+    const tokenHash = createHash('sha256').update(t).digest('hex');
+    return [
+      base,
+      p,
+      stat.size,
+      Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : 0,
+      tokenHash,
+    ].join('\0');
   } catch {
     return null;
   }
@@ -50,7 +73,7 @@ async function validateTokenAgainstServer({ token, serverUrl, timeoutMs }) {
  * Ensures the active server-scoped `access.key` file is usable for API calls.
  *
  * Context:
- * - stack daemons often force a stable `HAPPIER_ACTIVE_SERVER_ID` (e.g. stack_<name>__id_default)
+ * - stack daemons may use a stable server profile id while older/auth-specific flows use a URL/profile id
  * - interactive logins may have written credentials under the url-hash server id (env_<hash>)
  * - if the stable-scoped credentials are missing or stale, the daemon will fail to register the machine (401)
  *
@@ -63,25 +86,25 @@ export async function ensureActiveAccessKeyValid({ cliHomeDir, serverUrl, env = 
 
   const activePath = resolved.serverScopedPath;
   const activeToken = readAuthTokenFromCredentialPath(activePath);
+  const activeCacheKey = activeToken
+    ? buildCredentialValidationCacheKey({ path: activePath, token: activeToken, serverUrl })
+    : null;
   const allowAccountSwitch =
     (env.HAPPIER_STACK_AUTH_REPAIR_ALLOW_ACCOUNT_SWITCH ?? '').toString().trim() === '1';
   const activeSub = activeToken ? decodeJwtPayloadUnsafe(activeToken)?.sub ?? null : null;
   const activeValid = activeToken
-    ? await validateTokenAgainstServer({ token: activeToken, serverUrl, timeoutMs })
+    ? validationCache.get(activeCacheKey) ?? await validateTokenAgainstServer({ token: activeToken, serverUrl, timeoutMs })
     : { ok: false, status: null };
 
   if (activeValid.ok) {
+    if (activeCacheKey) validationCache.set(activeCacheKey, activeValid);
     return { kind: 'ok', activePath };
   }
 
-  const candidates = [resolved.urlHashServerScopedPath, resolved.legacyPath]
+  const candidates = [...resolved.aliasServerScopedPaths, resolved.legacyPath]
     .map((p) => String(p ?? '').trim())
     .filter(Boolean)
     .filter((p) => p !== activePath);
-  const hostPortPath = String(resolved.hostPortServerScopedPath ?? '').trim();
-  if (hostPortPath && hostPortPath !== activePath && !candidates.includes(hostPortPath)) {
-    candidates.unshift(hostPortPath);
-  }
 
   const validCandidates = [];
   for (const candidatePath of candidates) {

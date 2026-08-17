@@ -15,15 +15,15 @@ describe('configuration pending queue', () => {
     tempDirs.length = 0;
   });
 
-  it('defaults idle wake polling to a prompt defensive interval', async () => {
+  it('does not expose a periodic Pending wake poll even when the obsolete env is set', async () => {
     const homeDir = createTempDirSync('happier-cli-config-');
     tempDirs.push(homeDir);
     process.env.HAPPIER_HOME_DIR = homeDir;
-    delete process.env.HAPPIER_PENDING_QUEUE_IDLE_WAKE_POLL_INTERVAL_MS;
+    process.env.HAPPIER_PENDING_QUEUE_IDLE_WAKE_POLL_INTERVAL_MS = '60000';
 
     const configMod = await import('./configuration');
     configMod.reloadConfiguration();
 
-    expect(configMod.configuration.pendingQueueIdleWakePollIntervalMs).toBe(5_000);
+    expect('pendingQueueIdleWakePollIntervalMs' in configMod.configuration).toBe(false);
   });
 });

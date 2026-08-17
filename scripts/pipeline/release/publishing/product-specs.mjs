@@ -18,8 +18,18 @@
  *   releaseTitleBase: string;
  *   rollingNotesSubject: string;
  *   versionNotesSubject: string;
+ *   notarizationEvidenceSuffix: 'cli' | 'hstack' | 'server';
+ *   artifactTargets: ReadonlyArray<Readonly<{ os: string; arch: string }>>;
  * }} BinaryPublishProductSpec
  */
+
+export const BINARY_PUBLISH_TARGETS = Object.freeze([
+  Object.freeze({ os: 'linux', arch: 'x64' }),
+  Object.freeze({ os: 'linux', arch: 'arm64' }),
+  Object.freeze({ os: 'darwin', arch: 'x64' }),
+  Object.freeze({ os: 'darwin', arch: 'arm64' }),
+  Object.freeze({ os: 'windows', arch: 'x64' }),
+]);
 
 /** @type {ReadonlyArray<BinaryPublishProductSpec['id']>} */
 export const BINARY_PUBLISH_PRODUCT_IDS = Object.freeze(['cli', 'hstack', 'server']);
@@ -43,6 +53,8 @@ const PRODUCT_SPECS = Object.freeze({
     releaseTitleBase: 'Happier CLI',
     rollingNotesSubject: 'CLI binaries',
     versionNotesSubject: 'CLI',
+    notarizationEvidenceSuffix: 'cli',
+    artifactTargets: BINARY_PUBLISH_TARGETS,
   }),
   hstack: Object.freeze({
     id: 'hstack',
@@ -61,6 +73,8 @@ const PRODUCT_SPECS = Object.freeze({
     releaseTitleBase: 'Happier Stack',
     rollingNotesSubject: 'hstack binaries',
     versionNotesSubject: 'hstack',
+    notarizationEvidenceSuffix: 'hstack',
+    artifactTargets: BINARY_PUBLISH_TARGETS,
   }),
   server: Object.freeze({
     id: 'server',
@@ -79,6 +93,8 @@ const PRODUCT_SPECS = Object.freeze({
     releaseTitleBase: 'Happier Server',
     rollingNotesSubject: 'server runtime release',
     versionNotesSubject: 'Server runtime',
+    notarizationEvidenceSuffix: 'server',
+    artifactTargets: BINARY_PUBLISH_TARGETS,
   }),
 });
 

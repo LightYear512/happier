@@ -14,7 +14,12 @@ import {
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
 import { type ResetCountdownDaysFormatter } from '@/sync/domains/connectedServices/formatResetCountdown';
-import type { ConnectedServiceId } from '@happier-dev/protocol';
+import { shouldHideQuotaForCredentialStatus } from '@/sync/domains/connectedServices/shouldHideQuotaForCredentialStatus';
+import {
+    ConnectedServiceCredentialHealthStatusV1Schema,
+    type ConnectedServiceCredentialHealthStatusV1,
+    type ConnectedServiceId,
+} from '@happier-dev/protocol';
 import { t } from '@/text';
 
 import { resolveAccountUsageRows } from './accountBlockModel';
@@ -43,7 +48,15 @@ export interface AccountBlockProps {
     title: string;
     /** Identity line (e.g. provider email) shown when expanded. */
     identityLabel?: string | null;
-    status?: React.ComponentProps<typeof AccountBlockView>['status'];
+    /**
+     * RAW credential status (pass the record value untouched). AccountBlock is the
+     * single fail-direction owner for DISPLAY: the usage gate, snapshot fetch, and
+     * reauth pill all fail OPEN — absent/unknown still shows usage and no pill;
+     * only an explicit recognized `needs_reauth` hides usage and pins the pill.
+     * Callers must NOT pre-normalize (fail-closed normalization is for row
+     * actions/ordering only), or the fail-open gate becomes inert (UI-1).
+     */
+    status?: unknown;
     isDefault?: boolean;
     onToggleDefault?: () => void;
     /** Pool membership chip labels. */
@@ -77,6 +90,7 @@ const GAUGE_LABEL_FORMATTER: ConnectedServiceQuotaGaugeLabelFormatter = {
         t('connectedServices.quota.remainingWithReset', { percent, reset }),
     used: ({ used, limit }) => t('connectedServices.account.usedDetail', { used, limit }),
     durationNow: () => t('connectedServices.quota.duration.now'),
+    durationOutdated: () => t('connectedServices.quota.duration.outdated'),
     durationDaysHours: ({ days, hours }) => t('connectedServices.quota.duration.daysHours', { days, hours }),
     durationHoursMinutes: ({ hours, minutes }) =>
         t('connectedServices.quota.duration.hoursMinutes', { hours, minutes }),
@@ -90,6 +104,17 @@ const RESET_COUNTDOWN_DAYS_FORMATTER: ResetCountdownDaysFormatter = {
 };
 
 type SharedViewProps = Omit<React.ComponentProps<typeof AccountBlockView>, 'quota'>;
+
+/**
+ * Fail-OPEN display parse: a recognized enum value passes through; `null`,
+ * `undefined`, `''`, or any unrecognized string becomes `null` (no pill, no
+ * hidden usage). The fail-CLOSED normalizer (`unknown -> needs_reauth`) is for
+ * reauth-prompting actions/ordering at the callers, never for display (UI-1).
+ */
+function parseRecognizedCredentialStatus(status: unknown): ConnectedServiceCredentialHealthStatusV1 | null {
+    const parsed = ConnectedServiceCredentialHealthStatusV1Schema.safeParse(status);
+    return parsed.success ? parsed.data : null;
+}
 
 /**
  * Build the single `AccountBlockQuotaView` consumed by the header signals,
@@ -110,12 +135,15 @@ function buildQuotaView(hook: UseConnectedServiceQuotaSnapshotResult): AccountBl
 
     const usageRows = resolveAccountUsageRows(gauge?.allMeterRows);
     const capacityPct = gauge ? deriveAccountCapacityPct(gauge.allMeterRows) : null;
-    const resetRows = buildQuotaResetRows(snapshot?.recoveryCredits, nowMs, RESET_COUNTDOWN_DAYS_FORMATTER);
+    const resetRows = hook.canConsumeRecoveryCredit
+        ? buildQuotaResetRows(snapshot?.recoveryCredits, nowMs, RESET_COUNTDOWN_DAYS_FORMATTER)
+        : [];
 
     return {
         loading: hook.loading,
         hasSnapshot: snapshot != null,
         isStale: hook.isStale,
+        canRefresh: hook.canRefresh,
         isRefreshing: hook.isRefreshing,
         error: hook.error,
         refresh: hook.refresh,
@@ -123,14 +151,16 @@ function buildQuotaView(hook: UseConnectedServiceQuotaSnapshotResult): AccountBl
         usageRows,
         capacityPct,
         resetRows,
-        resetAvailableCount: hook.recoveryCreditSummary?.availableCount ?? 0,
+        resetAvailableCount: hook.canConsumeRecoveryCredit
+            ? hook.recoveryCreditSummary?.availableCount ?? 0
+            : 0,
         pinnedMeterIds: hook.pinnedMeterIds,
         togglePinnedMeter: hook.togglePinnedMeter,
         consumeRecoveryCredit: hook.consumeRecoveryCredit,
         consumeRecoveryCreditPending: hook.consumeRecoveryCreditPending,
         consumeRecoveryCreditPendingTarget: hook.consumeRecoveryCreditPendingTarget,
         // A reset can only be consumed when a target machine is resolved.
-        canConsume: hook.recoveryCreditMachineId != null,
+        canConsume: hook.canConsumeRecoveryCredit && hook.recoveryCreditMachineId != null,
     };
 }
 
@@ -141,11 +171,18 @@ function buildQuotaView(hook: UseConnectedServiceQuotaSnapshotResult): AccountBl
  * never invoked behind a closed gate (fail-closed).
  */
 const QuotaConnectedAccountBlock = React.memo(function QuotaConnectedAccountBlock(
-    props: Readonly<SharedViewProps & { serviceId: ConnectedServiceId; profileId: string }>,
+    props: Readonly<SharedViewProps & { serviceId: ConnectedServiceId; profileId: string; rawCredentialStatus: unknown }>,
 ) {
-    const hook = useConnectedServiceQuotaSnapshot({ serviceId: props.serviceId, profileId: props.profileId });
+    const { rawCredentialStatus, ...viewProps } = props;
+    const hook = useConnectedServiceQuotaSnapshot({
+        serviceId: props.serviceId,
+        profileId: props.profileId,
+        // The fetch key shares the fail-open gate with the display path, so it must
+        // see the RAW status, not the normalized pill value in `props.status`.
+        credentialHealthStatus: rawCredentialStatus,
+    });
     const quota = buildQuotaView(hook);
-    return <AccountBlockView {...props} quota={quota} />;
+    return <AccountBlockView {...viewProps} quota={quota} />;
 });
 
 export const AccountBlock = React.memo(function AccountBlock(props: AccountBlockProps) {
@@ -163,7 +200,11 @@ export const AccountBlock = React.memo(function AccountBlock(props: AccountBlock
         profileId: props.profileId,
         title: props.title,
         identityLabel: props.identityLabel,
-        status: props.status,
+        // Display fails OPEN end to end: only a RECOGNIZED enum value reaches the
+        // view (pill shows solely for explicit needs_reauth); absent/unknown raw
+        // values render as no-status. The raw value keeps flowing to the fail-open
+        // usage gate + snapshot hook below.
+        status: parseRecognizedCredentialStatus(props.status),
         isDefault: props.isDefault,
         onToggleDefault: props.onToggleDefault,
         poolLabels: props.poolLabels,
@@ -179,11 +220,21 @@ export const AccountBlock = React.memo(function AccountBlock(props: AccountBlock
         testID,
     };
 
-    if (!quotasEnabled) {
+    // Usage display fails OPEN: hide quota only for an EXPLICIT needs_reauth
+    // credential (shared with the snapshot hook). Absent/unknown status still
+    // shows usage so healthy accounts never blank their capacity avatar.
+    if (!quotasEnabled || shouldHideQuotaForCredentialStatus(props.status)) {
         return <AccountBlockView {...shared} quota={null} />;
     }
 
-    return <QuotaConnectedAccountBlock {...shared} serviceId={props.serviceId} profileId={props.profileId} />;
+    return (
+        <QuotaConnectedAccountBlock
+            {...shared}
+            serviceId={props.serviceId}
+            profileId={props.profileId}
+            rawCredentialStatus={props.status}
+        />
+    );
 });
 
 AccountBlock.displayName = 'AccountBlock';

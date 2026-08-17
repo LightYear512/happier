@@ -3,11 +3,65 @@ import { describe, expect, it } from 'vitest';
 import {
     formatSessionWorkStateBadgeLabel,
     readSessionWorkStateFromMetadata,
+    resolveActiveSessionGoalItem,
     resolvePrimarySessionWorkStateItem,
     resolveSessionWorkStateStatusBadgePresentation,
 } from './sessionWorkStatePresentation';
 
 const translate = (key: string, params?: Record<string, unknown>) => `${key}:${params?.title ?? ''}`;
+
+function snapshotWithGoal(status: string) {
+    return readSessionWorkStateFromMetadata({
+        sessionWorkStateV1: {
+            v: 1,
+            backendId: 'claude',
+            updatedAt: 10,
+            items: [
+                { id: 'goal:claude', kind: 'goal', origin: 'vendor', status, title: 'Ship goals', updatedAt: 10 },
+            ],
+        },
+    });
+}
+
+describe('sessionWorkStatePresentation goalCapabilities + active selector', () => {
+    it('parses provider goalCapabilities onto the goal item', () => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'claude',
+                updatedAt: 10,
+                items: [
+                    {
+                        id: 'goal:claude',
+                        kind: 'goal',
+                        origin: 'vendor',
+                        status: 'active',
+                        title: 'Ship goals',
+                        updatedAt: 10,
+                        goalCapabilities: { canEdit: true, canClear: true },
+                    },
+                ],
+            },
+        });
+        const goal = snapshot?.items.find((item) => item.kind === 'goal');
+        expect(goal?.goalCapabilities).toEqual({ canEdit: true, canClear: true });
+    });
+
+    it('omits goalCapabilities when none are provided (Codex legacy stays full-control)', () => {
+        const snapshot = snapshotWithGoal('active');
+        expect(snapshot?.items[0]?.goalCapabilities).toBeUndefined();
+    });
+
+    it('returns only the active goal as the current goal', () => {
+        expect(resolveActiveSessionGoalItem(snapshotWithGoal('active'))?.title).toBe('Ship goals');
+    });
+
+    it('does not treat completed, cancelled, or paused goals as the current goal', () => {
+        expect(resolveActiveSessionGoalItem(snapshotWithGoal('complete'))).toBeNull();
+        expect(resolveActiveSessionGoalItem(snapshotWithGoal('cancelled'))).toBeNull();
+        expect(resolveActiveSessionGoalItem(snapshotWithGoal('paused'))).toBeNull();
+    });
+});
 
 describe('sessionWorkStatePresentation', () => {
     it('reads canonical sessionWorkStateV1 metadata and resolves primaryItemId first', () => {
@@ -27,6 +81,65 @@ describe('sessionWorkStatePresentation', () => {
         const primary = resolvePrimarySessionWorkStateItem(snapshot);
         expect(primary?.id).toBe('goal:codex');
         expect(formatSessionWorkStateBadgeLabel(primary, translate)).toBe('session.workState.badge.goal:Migrate plugin support');
+    });
+
+    it('renders no badge label for a cancelled (cleared) goal so a cleared goal is not shown as current', () => {
+        // A cleared/cancelled goal means "no active goal" (mirrors happy's resolveVisibleAgentGoalStatus,
+        // which only shows active goals). Without this it fell through to the active "Goal: <title>"
+        // label, leaving a cleared goal looking active after the user cleared it (manual-QA-found).
+        const cancelledGoal = {
+            id: 'goal:claude', kind: 'goal', origin: 'vendor', status: 'cancelled', title: 'Refactor everything', updatedAt: 10,
+        } as const;
+        expect(formatSessionWorkStateBadgeLabel(cancelledGoal, translate)).toBeNull();
+    });
+
+    it('produces no status badge when the primary item is a cancelled goal', () => {
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: {
+                id: 'goal:claude', kind: 'goal', origin: 'vendor', status: 'cancelled', title: 'Refactor everything', updatedAt: 10,
+            },
+            activeStatusBadgeKey: null,
+            editableGoal: true,
+            translate,
+        });
+        expect(presentation).toBeNull();
+    });
+
+    it('does not trust a completed primaryItemId over a present active item (G4 read-side consistency)', () => {
+        // Even if a stale/legacy snapshot still points primaryItemId at a now-completed task, the
+        // reader must not pin the badge on it while an active goal exists — mirroring the protocol
+        // write-side resolver's status-rank rule so read and write agree.
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'claude',
+                updatedAt: 10,
+                primaryItemId: 'task:1',
+                items: [
+                    { id: 'task:1', kind: 'task', origin: 'vendor', status: 'complete', title: 'Done work', updatedAt: 9 },
+                    { id: 'goal:1', kind: 'goal', origin: 'vendor', status: 'active', title: 'Active goal', updatedAt: 10 },
+                ],
+            },
+        });
+
+        expect(resolvePrimarySessionWorkStateItem(snapshot)?.id).toBe('goal:1');
+    });
+
+    it('still surfaces a completed primary when every item is terminal (history badge)', () => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'claude',
+                updatedAt: 10,
+                primaryItemId: 'goal:1',
+                items: [
+                    { id: 'task:1', kind: 'task', origin: 'vendor', status: 'cancelled', title: 'Cancelled', updatedAt: 9 },
+                    { id: 'goal:1', kind: 'goal', origin: 'vendor', status: 'complete', title: 'Completed goal', updatedAt: 10 },
+                ],
+            },
+        });
+
+        expect(resolvePrimarySessionWorkStateItem(snapshot)?.id).toBe('goal:1');
     });
 
     it('falls back defensively when primaryItemId is stale', () => {
@@ -198,6 +311,109 @@ describe('sessionWorkStatePresentation', () => {
         });
     });
 
+    /**
+     * Fill in the composer status row means exactly one thing: a person is needed. `blocked` and
+     * `paused` qualify — both wait on a human decision. A completed goal does not: nothing is asked
+     * of anybody, and filling it makes the composer announce a success, which is the one thing the
+     * status row must never do (it would fire several times a day and train the fill to mean
+     * nothing). It keeps its success tone; it loses the chrome that demands attention.
+     */
+    it('does not fill a completed goal — fill is reserved for work that needs a person', () => {
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: {
+                id: 'goal:thread-1',
+                kind: 'goal',
+                origin: 'vendor',
+                status: 'complete',
+                title: 'Ship the release',
+                updatedAt: 10,
+            },
+            activeStatusBadgeKey: null,
+            editableGoal: true,
+            translate,
+        });
+
+        expect(presentation).toEqual({
+            itemKind: 'goal',
+            label: 'session.workState.badge.goalComplete:',
+            tone: 'complete',
+            emphasis: 'quiet',
+        });
+    });
+
+    it('still fills a paused goal, which waits on a person to resume it', () => {
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: {
+                id: 'goal:thread-1',
+                kind: 'goal',
+                origin: 'vendor',
+                status: 'paused',
+                title: 'Ship the release',
+                updatedAt: 10,
+            },
+            activeStatusBadgeKey: null,
+            editableGoal: true,
+            translate,
+        });
+
+        expect(presentation).toEqual({
+            itemKind: 'goal',
+            label: 'session.workState.badge.goalPaused:',
+            tone: 'paused',
+            emphasis: 'prominent',
+        });
+    });
+
+    it('preserves parentId and progress on work-state items for workflow correlation (W2)', () => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'claude',
+                updatedAt: 10,
+                items: [
+                    {
+                        id: 'task:child', kind: 'task', origin: 'vendor', status: 'active', title: 'Subagent task', updatedAt: 10,
+                        parentId: 'workflow:run-1', progress: 0.5,
+                    },
+                ],
+            },
+        });
+        expect(snapshot?.items[0]).toEqual(expect.objectContaining({ parentId: 'workflow:run-1', progress: 0.5 }));
+    });
+
+    it('drops an out-of-range progress and an empty parentId (W2 fail-safe)', () => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'claude',
+                updatedAt: 10,
+                items: [
+                    {
+                        id: 'task:child', kind: 'task', origin: 'vendor', status: 'active', title: 'Subagent task', updatedAt: 10,
+                        parentId: '   ', progress: 2,
+                    },
+                ],
+            },
+        });
+        expect(snapshot?.items[0]?.parentId).toBeUndefined();
+        expect(snapshot?.items[0]?.progress).toBeUndefined();
+    });
+
+    it('preserves the snapshot-level truncated marker (W2)', () => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'claude',
+                updatedAt: 10,
+                truncated: { reason: 'item_limit', omittedCount: 3 },
+                items: [
+                    { id: 'task:1', kind: 'task', origin: 'vendor', status: 'active', title: 'A task', updatedAt: 10 },
+                ],
+            },
+        });
+        expect(snapshot?.truncated).toEqual({ reason: 'item_limit', omittedCount: 3 });
+    });
+
     it('preserves precise budget-limited status reason and time fields from canonical metadata', () => {
         const snapshot = readSessionWorkStateFromMetadata({
             sessionWorkStateV1: {
@@ -230,5 +446,65 @@ describe('sessionWorkStatePresentation', () => {
             completedAt: 19,
         }));
         expect(formatSessionWorkStateBadgeLabel(snapshot?.items[0] ?? null, translate)).toBe('session.workState.badge.goalBudgetLimited:');
+    });
+
+    it.each([
+        ['blocked', 'session.workState.badge.goalBlocked:'],
+        ['usageLimited', 'session.workState.badge.goalBlocked:'],
+        ['budgetLimited', 'session.workState.badge.goalBudgetLimited:'],
+    ] as const)('preserves the %s blocked-family reason without losing the warning presentation', (statusReason, expectedLabel) => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'codex',
+                updatedAt: 20,
+                primaryItemId: 'goal:thread-1',
+                items: [{
+                    id: 'goal:thread-1',
+                    kind: 'goal',
+                    origin: 'vendor',
+                    status: 'blocked',
+                    statusReason,
+                    title: 'Ship blocked-family display',
+                    updatedAt: 20,
+                }],
+            },
+        });
+
+        const goal = snapshot?.items[0] ?? null;
+        expect(goal?.statusReason).toBe(statusReason);
+        expect(formatSessionWorkStateBadgeLabel(goal, translate)).toBe(expectedLabel);
+        expect(resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: goal,
+            activeStatusBadgeKey: null,
+            editableGoal: true,
+            translate,
+        })).toEqual(expect.objectContaining({
+            label: expectedLabel,
+            tone: 'warning',
+            emphasis: 'prominent',
+        }));
+    });
+
+    it('drops an unknown future status reason while preserving the otherwise valid blocked item', () => {
+        const snapshot = readSessionWorkStateFromMetadata({
+            sessionWorkStateV1: {
+                v: 1,
+                backendId: 'codex',
+                updatedAt: 20,
+                items: [{
+                    id: 'goal:thread-1',
+                    kind: 'goal',
+                    origin: 'vendor',
+                    status: 'blocked',
+                    statusReason: 'futureReason',
+                    title: 'Remain forward-compatible',
+                    updatedAt: 20,
+                }],
+            },
+        });
+
+        expect(snapshot?.items[0]).toEqual(expect.objectContaining({ status: 'blocked' }));
+        expect(snapshot?.items[0]?.statusReason).toBeUndefined();
     });
 });

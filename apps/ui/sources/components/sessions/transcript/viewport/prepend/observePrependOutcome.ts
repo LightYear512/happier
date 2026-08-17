@@ -1,8 +1,8 @@
-import { planNativeTranscriptViewportAnchorMeasuredOffsetRestore } from '@/components/sessions/transcript/transcriptNativeViewportAnchor';
+import { planNativeTranscriptViewportAnchorMeasuredOffsetRestore } from '@/components/sessions/transcript/viewport/driver/transcriptNativeViewportAnchor';
 import {
     resolveTranscriptViewportAnchorIndex,
     type TranscriptViewportAnchorResolvableItem,
-} from '@/components/sessions/transcript/transcriptViewportAnchorResolution';
+} from '@/components/sessions/transcript/viewport/entryRestore/transcriptViewportAnchorResolution';
 
 /**
  * Default alignment tolerance for classifying a prepend as MVCP-preserved.
@@ -52,11 +52,7 @@ export type PrependOutcome =
     | Readonly<{ kind: 'needs-fallback'; targetOffsetY: number; deltaPx: number }>
     | Readonly<{ kind: 'unresolvable'; reason: PrependOutcomeUnresolvableReason }>;
 
-/**
- * FlashList offset-corrector activity recorded over the transaction window (N2d.1): the sum of
- * `correction-applied` diffs and how many corrections landed. Sourced from the vendor-patch hook
- * via `scroll/flashListOffsetCorrectionHook`.
- */
+/** Legacy FlashList corrector coverage retained for already-recorded fallback diagnostics. */
 export type PrependCorrectorCoverage = Readonly<{
     appliedDiffTotalPx: number;
     eventCount: number;

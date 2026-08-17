@@ -1,4 +1,5 @@
 export {
+  SessionWorkStateGoalCapabilitiesV1Schema,
   SessionWorkStateItemKindV1Schema,
   SessionWorkStateItemOriginV1Schema,
   SessionWorkStateItemV1Schema,
@@ -7,6 +8,7 @@ export {
   SessionWorkStateTruncationV1Schema,
   SessionWorkStateV1Schema,
   readDisplayableSessionWorkStateV1,
+  type SessionWorkStateGoalCapabilitiesV1,
   type SessionWorkStateItemKindV1,
   type SessionWorkStateItemOriginV1,
   type SessionWorkStateItemV1,
@@ -23,7 +25,13 @@ export {
   buildVendorSessionWorkStateItemId,
 } from './sessionWorkStateItemIds.js';
 export { boundSessionWorkStateItemsV1 } from './sessionWorkStateBounds.js';
+export {
+  resolveSkillCatalogItemIdentityV1,
+  type SkillCatalogItemIdentityV1,
+  type SkillCatalogOriginV1,
+} from './skillCatalogItemIdentityV1.js';
 export { mergeSessionWorkStateMetadataV1, mergeSessionWorkStateV1 } from './sessionWorkStateMerge.js';
+export { resolveSessionWorkStatePrimaryItemId } from './sessionWorkStatePrimary.js';
 export {
   DaemonSessionGoalClearRequestV1Schema,
   DaemonSessionGoalGetRequestV1Schema,
@@ -38,6 +46,7 @@ export {
   SessionConnectedServiceAuthInvalidateTransportsRequestV1Schema,
   SessionConnectedServiceAuthInvalidateTransportsResponseV1Schema,
   SessionConnectedServiceAuthApplyGenerationAppliedViaV1Schema,
+  SessionConnectedServiceAuthCurrentGroupTruthV1Schema,
   SessionConnectedServiceAuthApplyGenerationReasonV1Schema,
   SessionConnectedServiceAuthApplyGenerationRequestV1Schema,
   SessionConnectedServiceAuthApplyGenerationResponseV1Schema,
@@ -78,6 +87,7 @@ export {
   type SessionConnectedServiceAuthInvalidateTransportsRequestV1,
   type SessionConnectedServiceAuthInvalidateTransportsResponseV1,
   type SessionConnectedServiceAuthApplyGenerationAppliedViaV1,
+  type SessionConnectedServiceAuthCurrentGroupTruthV1,
   type SessionConnectedServiceAuthApplyGenerationReasonV1,
   type SessionConnectedServiceAuthApplyGenerationRequestV1,
   type SessionConnectedServiceAuthApplyGenerationResponseV1,

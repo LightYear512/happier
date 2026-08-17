@@ -5,6 +5,7 @@ import type {
   TerminalInjectionFailurePhase,
   TerminalInputInjectionResult,
   TerminalPromptInput,
+  TerminalPromptWriteBoundaryV1,
 } from '@happier-dev/agents';
 import type { AttachSurfaceStaticMetadataV1 } from '@happier-dev/protocol';
 
@@ -14,21 +15,37 @@ export type {
   TerminalInjectionFailurePhase,
   TerminalInputInjectionResult,
   TerminalPromptInput,
+  TerminalPromptWriteBoundaryV1,
 } from '@happier-dev/agents';
 
 export type TerminalHostPreference = 'auto' | TerminalHostKind;
+
+declare const terminalAttachmentIdBrand: unique symbol;
+
+export type TerminalAttachmentId = string & Readonly<{
+  [terminalAttachmentIdBrand]: 'TerminalAttachmentId';
+}>;
 
 export type TerminalHostAttachMetadata = AttachSurfaceStaticMetadataV1 & Readonly<{
   attachStrategy: 'terminal_host';
 }>;
 
 export type TerminalHostHandle = Readonly<{
+  attachmentId?: TerminalAttachmentId;
   kind: TerminalHostKind;
   sessionName: string;
   paneId?: string;
   socketDir?: string;
   expectedCommandFragments?: readonly string[];
   attachMetadata: TerminalHostAttachMetadata;
+}>;
+
+export type TerminalHostCreateOrAttachOptions = Readonly<{
+  sessionName: string;
+  workingDirectory: string;
+  spawnArgv: readonly string[];
+  spawnEnv: Readonly<Record<string, string>>;
+  isolatedEnv: boolean;
 }>;
 
 export type TerminalHostLiveness = Readonly<{
@@ -54,14 +71,13 @@ export type TerminalInputState = Readonly<{
 
 export type TerminalHostAdapter = Readonly<{
   kind: TerminalHostKind;
-  createOrAttachHost(opts: Readonly<{
-    sessionName: string;
-    workingDirectory: string;
-    spawnArgv: readonly string[];
-    spawnEnv: Readonly<Record<string, string>>;
-    isolatedEnv: boolean;
-  }>): Promise<TerminalHostHandle>;
-  injectUserPrompt(handle: TerminalHostHandle, input: TerminalPromptInput): Promise<TerminalInputInjectionResult>;
+  createOrAttachHost(opts: TerminalHostCreateOrAttachOptions): Promise<TerminalHostHandle>;
+  adoptExistingHost?(handle: TerminalHostHandle): Promise<TerminalHostHandle>;
+  injectUserPrompt(
+    handle: TerminalHostHandle,
+    input: TerminalPromptInput,
+    writeBoundary?: TerminalPromptWriteBoundaryV1,
+  ): Promise<TerminalInputInjectionResult>;
   interruptTurn(handle: TerminalHostHandle): Promise<void>;
   evaluateLiveness(handle: TerminalHostHandle): Promise<TerminalHostLiveness>;
   captureInputState?(handle: TerminalHostHandle): Promise<TerminalInputState>;

@@ -77,6 +77,7 @@ describe('ToolCallsGroupRow', () => {
       transcriptStreamingSmoothingEnabled: false,
       transcriptMessageSelectionEnabled: true,
       transcriptMessageSendToSessionEnabled: false,
+      debugInformationEnabled: false,
       workspacePath: null,
     } satisfies TranscriptMessageDisplayCommon;
     const forkCommon = {
@@ -177,6 +178,134 @@ describe('ToolCallsGroupRow', () => {
             expect.objectContaining({ id: 'tool-2' }),
           ],
           status: 'running',
+        }),
+      ]),
+    );
+  });
+
+  it('projects a completed structured tool failure as a failed whole-row group', async () => {
+    const toolMessage = {
+      kind: 'tool-call',
+      id: 'tool-1',
+      localId: null,
+      createdAt: 1,
+      tool: {
+        id: 'bash-1',
+        name: 'Bash',
+        state: 'completed',
+        input: { command: 'happier tools call' },
+        result: {
+          content: [{
+            type: 'text',
+            text: '{"v":1,"ok":false,"kind":"tools_call","error":{"code":"invalid_parameters","message":"invalid_parameters"}}\n\n\nCommand exited with code 1',
+          }],
+          details: {},
+        },
+      },
+      children: [],
+    };
+
+    const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
+
+    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+      sessionId: 's1',
+      toolCallsGroupId: 'group-1',
+      toolMessageIds: ['tool-1'],
+      metadata: null,
+      expanded: false,
+      onSetExpanded: () => {},
+      interaction: { canSendMessages: true, canApprovePermissions: true },
+      getMessageById: (messageId: string) => (messageId === 'tool-1' ? toolMessage : null),
+    }));
+
+    expect(getRenderedToolCallsGroupViewProps()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'error' }),
+      ]),
+    );
+  });
+
+  it('projects an unavailable tool with a failed Happier envelope in stdout as a failed whole-row group', async () => {
+    const toolMessage = {
+      kind: 'tool-call',
+      id: 'tool-1',
+      localId: null,
+      createdAt: 1,
+      tool: {
+        id: 'delegate-1',
+        name: 'subagents.delegate.start',
+        state: 'unavailable',
+        input: {},
+        result: {
+          stdout: '{"v":1,"ok":false,"kind":"tools_call","error":{"code":"unknown_tool","message":"Unknown built-in Happier tool: subagents.delegate.start"}}\n',
+        },
+      },
+      children: [],
+    };
+
+    const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
+
+    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+      sessionId: 's1',
+      toolCallsGroupId: 'group-1',
+      toolMessageIds: ['tool-1'],
+      metadata: null,
+      expanded: false,
+      onSetExpanded: () => {},
+      interaction: { canSendMessages: true, canApprovePermissions: true },
+      getMessageById: (messageId: string) => (messageId === 'tool-1' ? toolMessage : null),
+    }));
+
+    expect(getRenderedToolCallsGroupViewProps()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'error' }),
+      ]),
+    );
+  });
+
+  it('forwards tool pin state and callbacks to the whole grouped-tool view', async () => {
+    const onToggleToolPin = vi.fn();
+    const messagePins = [{
+      version: 1,
+      sessionId: 's1',
+      seq: 9,
+      transcriptBlockIndex: 2,
+      routeMessageId: 'local:tool-1',
+      role: 'tool',
+      pinnedAtMs: 1_000,
+      label: null,
+    }];
+    const toolMessage = {
+      kind: 'tool-call',
+      id: 'tool-1',
+      localId: 'tool-1',
+      createdAt: 1,
+      seq: 9,
+      transcriptBlockIndex: 2,
+      tool: { id: 'bash-1', name: 'Bash', state: 'completed', input: { command: 'pwd' } },
+      children: [],
+    };
+
+    const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
+
+    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+      sessionId: 's1',
+      toolCallsGroupId: 'group-1',
+      toolMessageIds: ['tool-1'],
+      metadata: null,
+      expanded: false,
+      onSetExpanded: () => {},
+      interaction: { canSendMessages: true, canApprovePermissions: true },
+      getMessageById: (messageId: string) => (messageId === 'tool-1' ? toolMessage : null),
+      messagePins,
+      onToggleToolPin,
+    }));
+
+    expect(getRenderedToolCallsGroupViewProps()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          messagePins,
+          onToggleToolPin,
         }),
       ]),
     );

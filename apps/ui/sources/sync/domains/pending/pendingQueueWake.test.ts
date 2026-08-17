@@ -253,6 +253,54 @@ describe('getPendingQueueWakeResumeOptions', () => {
         });
     });
 
+    it('does not let detached runtime activity block a foreground-ready wake', () => {
+        const session: any = {
+            thinking: false,
+            thinkingAt: 0,
+            active: true,
+            activeAt: now - 10_000,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 5_000,
+            runtimeActivityState: 'active',
+            runtimeActivityRevision: 1,
+            runtimeActivityActiveCount: 1,
+            runtimeActivityObservedAt: now - 1_000,
+            agentState: null,
+            presence: 'online',
+            metadata: { machineId: 'm1', path: '/tmp', flavor: 'claude', claudeSessionId: 'c1' },
+        };
+
+        expect(getPendingQueueWakeResumeOptions({
+            sessionId: 's1',
+            session,
+            resumeCapabilityOptions: { accountSettings: {} },
+            nowMs: now,
+        })).toEqual(expect.objectContaining({
+            sessionId: 's1',
+            machineId: 'm1',
+            directory: '/tmp',
+        }));
+    });
+
+    it('does not wake an active session while exclusive local control blocks remote writes', () => {
+        const session: any = {
+            thinking: false,
+            active: true,
+            presence: 'online',
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now,
+            agentState: { controlledByUser: true },
+            metadata: { machineId: 'm1', path: '/tmp', flavor: 'claude', claudeSessionId: 'c1' },
+        };
+
+        expect(getPendingQueueWakeResumeOptions({
+            sessionId: 's1',
+            session,
+            resumeCapabilityOptions: { accountSettings: {} },
+            nowMs: now,
+        })).toBeNull();
+    });
+
     it('does not block wake for inactive sessions with stale active-turn projection', () => {
         const session: any = {
             active: false,

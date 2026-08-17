@@ -215,6 +215,8 @@ function createMetadataPendingRowModel(id: string): SessionListRowModel {
         isActive: false,
         hasUnreadMessages: false,
         pendingCount: 0,
+        agentActivityLabel: null,
+        pendingBlockedCount: 0,
         tags: [],
         allKnownTags: [],
         tagsEnabled: false,
@@ -225,6 +227,7 @@ function createMetadataPendingRowModel(id: string): SessionListRowModel {
         identityDisplay: 'avatar',
         activeColorMode: 'activityAndAttention',
         workingIndicatorMode: 'spinner',
+        workingIndicatorPaused: false,
         hideInactiveSessions: false,
     };
 }

@@ -1,8 +1,6 @@
 # Happier Server Instructions
 
-This file is the package-specific instruction file for `apps/server`.
-
-Read the root `AGENTS.md` first. Package rules here override root rules only where they are more specific.
+Package-specific instructions for `apps/server`. These supplement the root constitution and override broader guidance where more specific.
 
 ## Commands
 
@@ -46,8 +44,23 @@ Prefer existing domain folders and module owners before creating new top-level f
 
 ## Database and transactions
 
-- Do not create Prisma migrations yourself. Humans own migration creation.
-- Do not change Prisma schema unless the task explicitly requires it.
+- Do not change Prisma schema unless schema/data-model changes are explicitly in scope.
+- When schema changes are in scope, own the complete migration work:
+  - update the relevant Prisma schema(s),
+  - create/update the required migration(s) with the server workflow,
+  - keep provider-specific Postgres/SQLite/MySQL schemas and migrations in sync when affected,
+  - inspect generated SQL for data-loss or downtime risks,
+  - validate with the relevant server test/build lane.
+- Classify migration history before editing it:
+  - migrations that have not shipped in a supported stable or preview artifact may be edited or consolidated before the next supported release; shared development branches and `*-dev.*` artifacts require development-database reconciliation, not permanent product compatibility;
+  - stable/preview migration names and bytes are immutable and corrections are append-only;
+  - do not keep draft add/rename/contract/drop chains or checksum/name compatibility solely because a retained development database applied an unpublished revision.
+- Reconcile a retained development database separately from product migration history: back it up, inspect its actual schema and migration ledger, prepare a provider-specific procedure, and obtain explicit approval before mutating retained data. See `docs/compatibility.md`.
+- Treat an edited migration and its retained-development reconciliation as one conceptual seam. After the final migration edit—and again before handoff—refresh the procedure against the current bytes and complete physical schema, including index, constraint, and foreign-key names; any later edit makes earlier checksum/ledger reconciliation evidence stale.
+- Custom migration SQL, backfills, `db push`, or reset-style commands are allowed only when appropriate for the task and target database.
+  - Safe for disposable local/test databases when clearly scoped.
+  - Requires explicit approval for shared, staging, production, or user-data databases.
+- Do not use migrations as a workaround for unrelated schema drift. Identify and fix the owning schema/migration path.
 - Use `inTx` for database operations that must be transactional.
 - Use `afterTx` for events/side effects that must run only after a successful commit.
 - Do not run non-transactional side effects (file uploads, external calls, notifications, etc.) inside DB transactions.

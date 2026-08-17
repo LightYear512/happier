@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, vi } from 'vitest';
+import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 
-export const sendMessage = vi.fn();
-export const sendSessionMessageWithServerScope = vi.fn(async (_args: any) => ({ ok: true }));
+export const submitMessage = vi.fn();
+export const enqueuePendingMessage = vi.fn();
 export const daemonVoiceAgentStart = vi.fn();
 export const daemonVoiceAgentSendTurn = vi.fn();
 export const daemonVoiceAgentWelcome = vi.fn();
@@ -16,6 +17,7 @@ export const sessionExecutionRunList = vi.fn();
 export const sessionExecutionRunGet = vi.fn();
 export const sessionExecutionRunSend = vi.fn();
 export const sessionExecutionRunStop = vi.fn();
+export const sendSessionMessageWithServerScope = vi.fn();
 export const sessionRpcWithServerScope = vi.fn();
 export const createdAudioPlayers: any[] = [];
 export const fileDelete = vi.fn(async () => {});
@@ -230,7 +232,8 @@ export async function flushMicrotasks(turns: number = 1) {
 
 vi.mock('@/sync/sync', () => ({
     sync: {
-        sendMessage,
+        submitMessage,
+        enqueuePendingMessage,
         ensureSessionVisibleForMessageRoute: vi.fn(async () => {}),
         refreshSessionMessages: vi.fn(async () => {}),
         patchSessionMetadataWithRetry: async (sessionId: string, patch: (metadata: any) => any) => {
@@ -256,9 +259,23 @@ vi.mock('@/sync/sync', () => ({
     },
 }));
 
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage', () => ({
-    sendSessionMessageWithServerScope: (args: any) => sendSessionMessageWithServerScope(args),
-}));
+vi.mock('@/voice/sessionBinding/resolveVoiceSessionBinding', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/voice/sessionBinding/resolveVoiceSessionBinding')>();
+    return {
+        ...original,
+        resolveVoiceSessionBindingByControlSessionId: ({ controlSessionId }: { controlSessionId: string }) => ({
+            adapterId: 'local_conversation',
+            controlSessionId,
+            conversationSessionId: controlSessionId === VOICE_AGENT_GLOBAL_SESSION_ID
+                ? 'voice-test-conversation'
+                : controlSessionId,
+            transcriptMode: 'synthetic',
+            targetSessionId: controlSessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : controlSessionId,
+            updatedAt: 1,
+        }),
+        resolveVoiceSessionBindingByConversationSessionId: () => null,
+    };
+});
 
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
     sessionExecutionRunStart: (sessionId: string, request: any) => sessionExecutionRunStart(sessionId, request),
@@ -271,6 +288,10 @@ vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', () => ({
     sessionRpcWithServerScope: (args: any) => sessionRpcWithServerScope(args),
+}));
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage', () => ({
+    sendSessionMessageWithServerScope: (args: any) => sendSessionMessageWithServerScope(args),
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
@@ -485,9 +506,19 @@ export function registerLocalVoiceEngineHarnessHooks() {
     beforeEach(async () => {
         vi.resetModules();
         console.error = (() => {}) as any;
-        sendMessage.mockReset();
-        sendSessionMessageWithServerScope.mockReset();
-        sendSessionMessageWithServerScope.mockImplementation(async () => ({ ok: true }));
+        submitMessage.mockReset();
+        enqueuePendingMessage.mockReset();
+        enqueuePendingMessage.mockImplementation(async (
+            _sessionId: string,
+            _text: string,
+            _displayText: string | undefined,
+            _metaOverrides: Record<string, unknown> | undefined,
+            options: Readonly<{ localId?: string | null }>,
+        ) => ({
+            localId: String(options?.localId ?? ''),
+            accepted: true,
+            externalHandoffClaimed: true,
+        }));
         daemonVoiceAgentStart.mockReset();
         daemonVoiceAgentSendTurn.mockReset();
         daemonVoiceAgentStartTurnStream.mockReset();
@@ -495,6 +526,7 @@ export function registerLocalVoiceEngineHarnessHooks() {
         daemonVoiceAgentCancelTurnStream.mockReset();
         daemonVoiceAgentCommit.mockReset();
         daemonVoiceAgentStop.mockReset();
+        sendSessionMessageWithServerScope.mockReset();
         sessionRpcWithServerScope.mockReset();
         platformOs = 'ios';
         createdAudioPlayers.length = 0;

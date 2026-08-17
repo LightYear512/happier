@@ -9,14 +9,11 @@ import { emitCanonicalTurnDiffTool } from '@/agent/runtime/emitCanonicalTurnDiff
 import { ensureClaudeJsRuntimeExecutable } from '@/backends/claude/utils/ensureClaudeJsRuntimeExecutable';
 import { ClaudeTurnChangeTracker } from '../utils/ClaudeTurnChangeTracker';
 import { isClaudeExplicitDiffToolInput } from '../utils/isClaudeExplicitDiffToolInput';
-import { isReadOnlyClaudeSdkToolAllowed } from './isReadOnlyClaudeSdkToolAllowed';
+import type { AcpPermissionHandler } from '@/agent/acp/AcpBackend';
 import {
-  isTerminalClaudeAgentSdkProviderTaskStatus,
-  normalizeClaudeAgentSdkProviderTaskId,
-  readClaudeAgentSdkProviderTaskStatus,
-} from '@/backends/claude/sdk/providerTaskStatus';
-
-export type ClaudeSdkPermissionPolicy = 'no_tools' | 'read_only' | 'workspace_write';
+  createClaudeProviderActivityLedger,
+  normalizeClaudeProviderTaskEvent,
+} from '@/backends/claude/providerActivity/createClaudeProviderActivityLedger';
 
 export class ClaudeSdkAgentBackend implements AgentBackend {
   private readonly listeners: AgentMessageHandler[] = [];
@@ -27,8 +24,10 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
   private readonly toolNameByCallId = new Map<string, string>();
   private readonly suppressedExplicitDiffCallIds = new Set<string>();
   private readonly turnChangeTracker = new ClaudeTurnChangeTracker();
+  private readonly providerActivityLedger = createClaudeProviderActivityLedger();
   private query: ReturnType<typeof query> | null = null;
   private activeTaskId: string | null = null;
+  private activeTaskSessionId: string | null = null;
 
   private readonly localSessionId: SessionId = `voice-agent-claude-${randomUUID()}`;
   private readonly acceptedSessionIds = new Set<SessionId>();
@@ -53,7 +52,7 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
     private readonly opts: Readonly<{
       cwd: string;
       modelId: string;
-      permissionPolicy: ClaudeSdkPermissionPolicy;
+      permissionHandler: AcpPermissionHandler;
       settingsPath?: string;
       env?: NodeJS.ProcessEnv;
     }>,
@@ -108,6 +107,7 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
     if (this.started) return;
     this.started = true;
     this.activeTaskId = null;
+    this.activeTaskSessionId = null;
 
     const model = this.normalizeModelId(this.opts.modelId);
     const canCallTool = this.buildCanCallTool();
@@ -314,20 +314,14 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
   }
 
   private buildCanCallTool() {
-    if (this.opts.permissionPolicy === 'no_tools') {
-      return async () => ({ behavior: 'deny', message: 'Tools are disabled for voice agent.', interrupt: true } as const);
-    }
-
-    if (this.opts.permissionPolicy === 'workspace_write') {
-      return async (_toolName: string, input: unknown) => {
-        const updatedInput = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-        return { behavior: 'allow', updatedInput } as const;
-      };
-    }
-
     return async (toolName: string, input: unknown) => {
-      if (!isReadOnlyClaudeSdkToolAllowed(toolName, input)) {
-        return { behavior: 'deny', message: `Tool denied by voice agent policy: ${toolName}`, interrupt: true } as const;
+      const result = await this.opts.permissionHandler.handleToolCall(
+        'claude-sdk-execution-run',
+        toolName,
+        input,
+      );
+      if (result.decision === 'denied' || result.decision === 'abort') {
+        return { behavior: 'deny', message: `Tool denied by execution-run policy: ${toolName}`, interrupt: true } as const;
       }
       const updatedInput = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
       return { behavior: 'allow', updatedInput } as const;
@@ -360,43 +354,106 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
     }
   }
 
+  private emitIdleIfProviderBackgroundWorkComplete(): void {
+    if (this.pendingTurn || this.providerActivityLedger.hasActiveProviderTasks()) return;
+    // The execution/cancellation target is deliberately broader than Activity membership:
+    // typed task starts remain actionable even when they do not prove background work.
+    if (this.activeTaskId) return;
+    this.emit({ type: 'status', status: 'idle' });
+  }
+
+  private completeSuccessfulTurn(params: Readonly<{ settledTurnOrdinal: number | null }>): void {
+    const turnChangeSet = this.turnChangeTracker.completeTurn({
+      sessionId: this.vendorSessionId ?? this.localSessionId,
+      status: 'completed',
+    });
+    if (turnChangeSet) {
+      emitCanonicalTurnDiffTool({
+        turnChangeSet,
+        protocol: 'claude',
+        rawToolName: 'ClaudeTurnDiff',
+        sendToolCall: ({ toolName, input, callId }) => {
+          const resolvedCallId = callId ?? randomUUID();
+          const args = input && typeof input === 'object' && !Array.isArray(input)
+            ? (input as Record<string, unknown>)
+            : {};
+          this.emit({ type: 'tool-call', toolName, callId: resolvedCallId, args });
+          return resolvedCallId;
+        },
+        sendToolResult: ({ callId, output }) => {
+          this.emit({ type: 'tool-result', toolName: 'Diff', callId, result: output });
+        },
+      });
+    }
+
+    this.toolNameByCallId.clear();
+    this.suppressedExplicitDiffCallIds.clear();
+    const pending = this.pendingTurn;
+    if (pending) {
+      this.pendingTurn = null;
+      this.pendingTurnCompletion = null;
+      pending.resolve();
+    }
+    if (params.settledTurnOrdinal !== null) {
+      this.settledTurnOrdinal = params.settledTurnOrdinal;
+    }
+    this.emitIdleIfProviderBackgroundWorkComplete();
+  }
+
   private handleSdkMessage(msg: SDKMessage): void {
     if (!msg || typeof msg !== 'object') return;
     const type = msg.type;
+    const taskFacts = normalizeClaudeProviderTaskEvent(msg);
+    const taskActivity = taskFacts.activity;
+    if (taskActivity) this.providerActivityLedger.apply(taskActivity);
+    // The cancellation target is deliberately BROADER than Activity membership - a typed task that
+    // names no session stays actionable - but broader is not unowned. A row that names ANOTHER
+    // session is the one case we can prove is not ours, read from the same owner the admission gate
+    // uses (PLAN 4.9.1 step 2). Adopting it would point `stopTask` at someone else's work and, on
+    // its own, keep this runtime out of `idle` for as long as that foreign task lives.
+    const isForeignTaskRow = (
+      taskActivity !== null
+      && !this.providerActivityLedger.isOwnedSessionId(taskActivity.sessionId)
+    );
+    // A foreign row simply has no target from this runtime's point of view. Everything else about
+    // the message is unchanged: it still flows through the rest of this handler exactly as before.
+    const interruptTarget = isForeignTaskRow ? null : taskFacts.interruptTarget;
+    if (interruptTarget?.type === 'active') {
+      const startsNewTarget = (
+        type === 'user'
+        || (type === 'system' && (msg as SDKSystemMessage).subtype === 'task_started')
+      );
+      if (startsNewTarget || !this.activeTaskId) {
+        this.activeTaskId = interruptTarget.taskId;
+        this.activeTaskSessionId = taskActivity?.sessionId ?? null;
+      }
+    } else if (
+      interruptTarget?.type === 'terminal'
+      && interruptTarget.taskId === this.activeTaskId
+      && taskActivity?.type === 'terminal'
+      && (
+        this.activeTaskSessionId === null
+        || taskActivity.sessionId === this.activeTaskSessionId
+      )
+    ) {
+      const terminalTaskId = interruptTarget.taskId;
+      const activeBlockers = this.providerActivityLedger
+        .getActiveProviderTaskBlockers()
+        .filter((blocker) => blocker.taskId !== terminalTaskId);
+      const fallbackBlocker = activeBlockers.at(-1) ?? null;
+      this.activeTaskId = fallbackBlocker?.taskId ?? null;
+      this.activeTaskSessionId = fallbackBlocker?.sessionId ?? null;
+    }
+
     if (type === 'system') {
       const system = msg as SDKSystemMessage;
-      const subtype = system.subtype;
-
-      if (subtype === 'task_started') {
-        const taskId = normalizeClaudeAgentSdkProviderTaskId(system.task_id);
-        const isTerminalTaskStatus = isTerminalClaudeAgentSdkProviderTaskStatus(readClaudeAgentSdkProviderTaskStatus(system));
-        if (taskId && !isTerminalTaskStatus) {
-          this.activeTaskId = taskId;
-        }
-        if (taskId && isTerminalTaskStatus && taskId === this.activeTaskId) {
-          this.activeTaskId = null;
-        }
-      } else if (subtype === 'task_progress') {
-        const taskId = normalizeClaudeAgentSdkProviderTaskId(system.task_id);
-        const isTerminalTaskStatus = isTerminalClaudeAgentSdkProviderTaskStatus(readClaudeAgentSdkProviderTaskStatus(system));
-        if (!this.activeTaskId && taskId && !isTerminalTaskStatus) {
-          this.activeTaskId = taskId;
-        }
-        if (taskId && isTerminalTaskStatus && taskId === this.activeTaskId) {
-          this.activeTaskId = null;
-        }
-      } else if (subtype === 'task_notification') {
-        const taskId = normalizeClaudeAgentSdkProviderTaskId(system.task_id);
-        const status = readClaudeAgentSdkProviderTaskStatus(system);
-        if (taskId && taskId === this.activeTaskId && isTerminalClaudeAgentSdkProviderTaskStatus(status)) {
-          this.activeTaskId = null;
-        }
-      }
+      this.emitIdleIfProviderBackgroundWorkComplete();
 
       if (system.subtype === 'init') {
         const previousVendorSessionId = this.vendorSessionId;
         this.noteVendorSessionId(system.session_id);
         this.activeTaskId = null;
+        this.activeTaskSessionId = null;
         this.emit({ type: 'status', status: 'running' });
         const pending = this.pendingTurn;
         const isSessionBoundary = Boolean(
@@ -407,35 +464,7 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
           previousVendorSessionId !== system.session_id.trim(),
         );
         if (isSessionBoundary && pending) {
-          const turnChangeSet = this.turnChangeTracker.completeTurn({
-            sessionId: this.vendorSessionId ?? this.localSessionId,
-            status: 'completed',
-          });
-          if (turnChangeSet) {
-            emitCanonicalTurnDiffTool({
-              turnChangeSet,
-              protocol: 'claude',
-              rawToolName: 'ClaudeTurnDiff',
-              sendToolCall: ({ toolName, input, callId }) => {
-                const resolvedCallId = callId ?? randomUUID();
-                const args = input && typeof input === 'object' && !Array.isArray(input)
-                  ? (input as Record<string, unknown>)
-                  : {};
-                this.emit({ type: 'tool-call', toolName, callId: resolvedCallId, args });
-                return resolvedCallId;
-              },
-              sendToolResult: ({ callId, output }) => {
-                this.emit({ type: 'tool-result', toolName: 'Diff', callId, result: output });
-              },
-            });
-          }
-          this.toolNameByCallId.clear();
-          this.suppressedExplicitDiffCallIds.clear();
-          this.pendingTurn = null;
-          this.pendingTurnCompletion = null;
-          this.settledTurnOrdinal = this.currentTurnOrdinal;
-          pending.resolve();
-          this.emit({ type: 'status', status: 'idle' });
+          this.completeSuccessfulTurn({ settledTurnOrdinal: this.currentTurnOrdinal });
         }
       }
       return;
@@ -527,39 +556,7 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
       this.emitTokenCountTelemetry(result);
 
       if (result.subtype === 'success') {
-        const turnChangeSet = this.turnChangeTracker.completeTurn({
-          sessionId: this.vendorSessionId ?? this.localSessionId,
-          status: 'completed',
-        });
-        if (turnChangeSet) {
-          emitCanonicalTurnDiffTool({
-            turnChangeSet,
-            protocol: 'claude',
-            rawToolName: 'ClaudeTurnDiff',
-            sendToolCall: ({ toolName, input, callId }) => {
-              const resolvedCallId = callId ?? randomUUID();
-              const args = input && typeof input === 'object' && !Array.isArray(input)
-                ? (input as Record<string, unknown>)
-                : {};
-              this.emit({ type: 'tool-call', toolName, callId: resolvedCallId, args });
-              return resolvedCallId;
-            },
-            sendToolResult: ({ callId, output }) => {
-              this.emit({ type: 'tool-result', toolName: 'Diff', callId, result: output });
-            },
-          });
-        }
-        // A completed turn means tool call ids won't be reused; keep memory bounded.
-        this.toolNameByCallId.clear();
-        this.suppressedExplicitDiffCallIds.clear();
-        const pending = this.pendingTurn;
-        if (pending) {
-          this.pendingTurn = null;
-          this.pendingTurnCompletion = null;
-          pending.resolve();
-        }
-        this.settledTurnOrdinal = result.num_turns;
-        this.emit({ type: 'status', status: 'idle' });
+        this.completeSuccessfulTurn({ settledTurnOrdinal: result.num_turns });
         return;
       }
 
@@ -615,6 +612,11 @@ export class ClaudeSdkAgentBackend implements AgentBackend {
     if (!sessionId) return;
     const normalized = sessionId as SessionId;
     this.vendorSessionId = normalized;
+    // PLAN 4.9.1 step 2. This backend owns its OWN provider-activity ledger, so it arms the identity
+    // gate at its own session-identity chokepoint. A lineage, not a swap: `init` mints a new vendor
+    // session id at every compact boundary, and a task started before one must not become foreign to
+    // the ledger that is counting it.
+    this.providerActivityLedger.noteOwnedSessionId(normalized);
     if (!this.acceptedSessionIds.has(normalized)) {
       this.acceptedSessionIds.add(normalized);
       this.emit({ type: 'event', name: 'vendor_session_id', payload: { sessionId: normalized } });

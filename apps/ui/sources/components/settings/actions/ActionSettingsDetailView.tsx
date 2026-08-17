@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { Ionicons } from '@expo/vector-icons';
 import { Platform, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -19,6 +18,7 @@ import { t } from '@/text';
 
 import { ActionSettingsTargetModeControl } from './ActionSettingsTargetModeControl';
 import { ActionSettingsToolExposureControl } from './ActionSettingsToolExposureControl';
+import { SessionAgentSpawnPolicyControls } from './SessionAgentSpawnPolicyControls';
 import {
     applyActionSettingsTargetControlState,
     resolveActionSettingsTargetControlState,
@@ -37,6 +37,7 @@ import {
 } from './buildActionSettingsEntries';
 import { normalizeActionsSettings } from './normalizeActionsSettings';
 import { useActionSettingsNarrowLayout } from './useActionSettingsNarrowLayout';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 const categoryOrder: readonly ActionSettingsTargetCategory[] = ['app', 'voice', 'integrations'];
 
@@ -130,6 +131,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
     const compactLayout = useActionSettingsNarrowLayout();
     const [searchQuery, setSearchQuery] = React.useState('');
     const [rawSettings, setRawSettings] = useSettingMutable('actionsSettingsV1');
+    const [rawSpawnPolicy, setRawSpawnPolicy] = useSettingMutable('sessionAgentSpawnPolicyV1');
     const settings = React.useMemo(() => normalizeActionsSettings(rawSettings), [rawSettings]);
     const voiceSettings = useSetting('voice') as Readonly<{ privacy?: { shareDeviceInventory?: boolean } }> | null;
     const executionRunsEnabled = useFeatureEnabled('execution.runs');
@@ -184,6 +186,11 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
             })
             .filter((target): target is NonNullable<typeof target> => target !== null)
     ), [entry, filteredTargets, settings]);
+    const hasSessionAgentTarget = React.useMemo(() => (
+        entry?.targets.some((target) => target.id === 'session_agent') === true
+    ), [entry?.targets]);
+    const showSessionAgentSpawnPolicy = props.actionId === 'session.spawn_new'
+        && hasSessionAgentTarget;
 
     const commitSettings = React.useCallback((next: unknown) => {
         setRawSettings(normalizeActionsSettings(next));
@@ -228,7 +235,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                     <Item
                         title={t('settingsActions.invalidActionTitle')}
                         subtitle={t('settingsActions.invalidActionSubtitle')}
-                        icon={<Ionicons name="warning-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="warning" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                         showChevron={false}
                     />
@@ -251,11 +258,10 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                         testID={`settings-actions:action:${entry.actionId}:summary`}
                         title={entry.title}
                         subtitle={entry.description ?? t('settingsActions.noDescription')}
-                        subtitleLines={0}
                         detail={entry.enabled ? t('common.enabled') : t('common.disabled')}
                         icon={(
-                            <Ionicons
-                                name={entry.enabled ? 'flash-outline' : 'flash-off-outline'}
+                            <Icon
+                                name={entry.enabled ? 'lightning' : 'minus-circle'}
                                 size={29}
                                 color={entry.enabled ? theme.colors.state.success.foreground : theme.colors.state.danger.foreground}
                             />
@@ -313,8 +319,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                                     testID={targetTestIDPrefix}
                                     title={t(target.titleKey)}
                                     subtitle={getTargetSubtitle(target)}
-                                    subtitleLines={0}
-                                    icon={<Ionicons name={target.icon as React.ComponentProps<typeof Ionicons>['name']} size={29} color={theme.colors.text.secondary} />}
+                                    icon={<Icon name={target.icon as IconName} size={29} color={theme.colors.text.secondary} />}
                                     mode={available ? 'interactive' : 'info'}
                                     disabled={!entry.enabled || !available}
                                     showChevron={false}
@@ -345,6 +350,14 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                             );
                         })}
                     </ItemGroup>
+                ) : null}
+
+                {showSessionAgentSpawnPolicy ? (
+                    <SessionAgentSpawnPolicyControls
+                        rawPolicy={rawSpawnPolicy}
+                        disabled={!entry.enabled}
+                        onChange={setRawSpawnPolicy}
+                    />
                 ) : null}
             </ItemList>
         </View>

@@ -10,21 +10,29 @@ import { createCodexConnectedServicesMaterializer } from '@/backends/codex/conne
 import { materializeCodexConnectedServiceRuntimeAuthSelection } from '@/backends/codex/connectedServices/materializeCodexConnectedServiceRuntimeAuthSelection';
 import { resolveCodexConnectedServiceSwitchContinuity } from '@/backends/codex/connectedServices/resolveCodexConnectedServiceSwitchContinuity';
 import { resolveCodexConnectedServiceCandidatePersistedSessionFile } from '@/backends/codex/connectedServices/resolveCodexConnectedServiceCandidatePersistedSessionFile';
+import { openAiCodexQuotaFetcherDescriptor } from '@/backends/codex/connectedServices/quotaFetcher';
 import { codexDaemonSpawnHooks } from '@/backends/codex/daemon/spawnHooks';
 import { readCodexEnvironmentAuthState } from '@/backends/codex/cli/auth/readCodexEnvironmentAuthState';
 import { codexAppServerCatalogControlAdapter } from '@/backends/codex/appServer/catalogControl/codexAppServerCatalogControlAdapter';
 import { codexAppServerGoalControlAdapter } from '@/backends/codex/appServer/goalControl/codexAppServerGoalControlAdapter';
 import { codexAppServerUsageLimitRecoveryControlAdapter } from '@/backends/codex/appServer/usageLimitRecoveryControl/codexAppServerUsageLimitRecoveryControlAdapter';
+import { buildCodexRuntimeLocalHandoffMetadata } from '@/backends/codex/sessionHandoff/runtimeLocalMetadata';
+import { reconcileStableCodexHomesAtStartup } from '@/backends/codex/connectedServices/reconcileStableCodexHomes';
 import type { AgentCatalogEntry } from '../types';
 import type { ConnectedServiceCredentialLifecycleDescriptor } from '@/daemon/connectedServices/credentials/lifecycleTypes';
+import type { ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
 
 const codexConnectedServiceCredentialLifecycleDescriptor: ConnectedServiceCredentialLifecycleDescriptor = {
   providerId: 'codex',
   serviceIds: AGENTS_CORE.codex.connectedServices.supportedServiceIds,
   spawnPreflightOauthRefresh: { mode: 'expiry_window' },
-  refreshedCredentialApplication: { mode: 'restart_required' },
+  refreshedCredentialApplication: {
+    mode: 'restart_required',
+    noRestartRequiredWhenAccessTokenCallbackServiceIds: ['openai-codex'],
+  },
   predictiveSoftSwitch: { mode: 'supported' },
   sameAccountFanoutStrategy: 'provider_account_id',
+  generationApplicationScope: 'per_session_runtime',
   runtimeAuthApply: {
     directLiveHotAuth: {
       supportsInTurnApply: true,
@@ -36,7 +44,26 @@ const codexConnectedServiceCredentialLifecycleDescriptor: ConnectedServiceCreden
       },
     },
   },
+  buildLiveGenerationCurrentTruthRequest: ({ serviceId, currentTruth }) => ({
+    serviceId,
+    reason: 'diagnostic',
+    authGeneration: currentTruth,
+  }),
+  materializedHomeMaintenance: {
+    // Triage #4: stable codex homes are not refresh-target bound, so nothing else keeps their auth
+    // store format-valid or in sync with the store record. The startup reconcile owner drives this.
+    reconcileStableHomesAtStartup: reconcileStableCodexHomesAtStartup,
+  },
 };
+
+function resolveCodexProbeConnectedServicesIdentity(
+  connectedServices?: ConnectedServiceBindingsV1 | null,
+): string {
+  const binding = connectedServices?.bindingsByServiceId['openai-codex'] ?? null;
+  if (!binding || binding.source === 'native') return 'cs=native';
+  if (binding.selection === 'group') return `cs=group:${binding.groupId}`;
+  return `cs=profile:${binding.profileId}`;
+}
 
 export const agent = {
   id: AGENTS_CORE.codex.id,
@@ -50,6 +77,7 @@ export const agent = {
   getDaemonSpawnHooks: async () => codexDaemonSpawnHooks,
   getConnectedServiceMaterializer: async () => createCodexConnectedServicesMaterializer(),
   getConnectedServiceStateSharingDescriptor: async () => codexConnectedServiceStateSharingDescriptor,
+  connectedServiceQuotaFetcherDescriptor: openAiCodexQuotaFetcherDescriptor,
   getConnectedServiceRuntimeAuthAdapter: async () => createCodexConnectedServiceRuntimeAuthAdapter(),
   materializeConnectedServiceRuntimeAuthSelection: materializeCodexConnectedServiceRuntimeAuthSelection,
   getConnectedServiceCredentialLifecycleDescriptor: async () => codexConnectedServiceCredentialLifecycleDescriptor,
@@ -64,6 +92,7 @@ export const agent = {
   getSessionCatalogControlAdapter: async () => codexAppServerCatalogControlAdapter,
   getSessionUsageLimitRecoveryControlAdapter: async () => codexAppServerUsageLimitRecoveryControlAdapter,
   vendorResumeSupport: AGENTS_CORE.codex.resume.vendorResume,
+  buildRuntimeLocalHandoffMetadata: buildCodexRuntimeLocalHandoffMetadata,
   getVendorResumeSupport: async () => supportsCodexVendorResume,
   getAcpBackendFactory: async () => {
     const { createCodexAcpBackend } = await import('@/backends/codex/acp/backend');
@@ -72,13 +101,13 @@ export const agent = {
   getAcpForkContinuationHandler: async () => (await import('@/backends/codex/acp/forkContinuationHandler')).codexAcpForkContinuationHandler,
   getProviderNativeForkHandler: async () => (await import('@/backends/codex/appServer/providerNativeForkHandler')).codexAppServerProviderNativeForkHandler,
   needsAccountSettingsForProbes: true,
-  resolveModelsProbeVariant: ({ accountSettings }) => {
+  resolveModelsProbeVariant: ({ accountSettings, connectedServices }) => {
     // Keep dynamic model probes cache-partitioned by runtime flavor (appServer vs ACP vs MCP).
     const backendMode =
       resolveCodexSessionBackendMode({ metadata: null, accountSettings: accountSettings ?? null }) ?? 'appServer';
     // Speed eligibility is auth-dependent; include auth method to avoid stale modelOptions.
     const authMethod = readCodexEnvironmentAuthState().method ?? 'unknown';
-    return `codex:${backendMode}:${authMethod}`;
+    return `codex:${backendMode}:${authMethod}:${resolveCodexProbeConnectedServicesIdentity(connectedServices)}`;
   },
   getPreflightSessionControlsProbeAdapter: async () =>
     (await import('@/backends/codex/preflight/codexPreflightSessionControlsProbeAdapter')).codexPreflightSessionControlsProbeAdapter,

@@ -1,4 +1,5 @@
-import type { AcpConfigOption } from '@/sync/acp/configOptionsControl';
+import { readExtendedContextModelId } from './modelOptions';
+import type { SessionConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
 import type { PreflightModelList } from '@/sync/domains/models/modelOptions';
 
 export function parsePreflightModelListFromProbeModelsResult(raw: unknown): PreflightModelList | null {
@@ -15,11 +16,14 @@ export function parsePreflightModelListFromProbeModelsResult(raw: unknown): Pref
                 id: String(m.id),
                 name: String(m.name),
                 ...(typeof m.description === 'string' ? { description: m.description } : {}),
+                ...(readExtendedContextModelId(m.extendedContextModelId)
+                    ? { extendedContextModelId: readExtendedContextModelId(m.extendedContextModelId) }
+                    : {}),
                 ...(typeof m.contextWindowTokens === 'number' && Number.isFinite(m.contextWindowTokens) && m.contextWindowTokens > 0
                     ? { contextWindowTokens: Math.trunc(m.contextWindowTokens) }
                     : {}),
                 ...(Array.isArray(m.modelOptions) && m.modelOptions.length > 0
-                    ? { modelOptions: m.modelOptions as readonly AcpConfigOption[] }
+                    ? { modelOptions: m.modelOptions as readonly SessionConfigOption[] }
                     : {}),
             })),
         supportsFreeform: Boolean(supportsFreeformRaw),

@@ -100,7 +100,16 @@ describe('createActionExecutor (approvals)', () => {
       { surface: 'mcp' },
     );
 
-    expect(res).toEqual({ ok: false, errorCode: 'action_disabled', error: 'action_disabled' });
+    expect(res).toEqual({
+      ok: false,
+      errorCode: 'action_disabled',
+      error: 'action_disabled',
+      details: expect.objectContaining({
+        actionId: 'ui.voice_global.reset',
+        surface: 'mcp',
+        reason: 'unsupported_surface',
+      }),
+    });
     expect(approvalsCreate).not.toHaveBeenCalled();
   });
 
@@ -820,7 +829,12 @@ describe('createActionExecutor (approvals)', () => {
     });
 
     expect(res.ok).toBe(true);
-    expect(sessionSendMessage).toHaveBeenCalledWith({ sessionId: 's1', message: 'hello', serverId: undefined });
+    expect(sessionSendMessage).toHaveBeenCalledWith({
+      sessionId: 's1',
+      message: 'hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      serverId: undefined,
+    });
     expect(approvalsUpdate).toHaveBeenCalledTimes(2);
     expect(approvalsUpdate).toHaveBeenNthCalledWith(1, expect.objectContaining({
       artifactId: 'a1',
@@ -971,7 +985,12 @@ describe('createActionExecutor (approvals)', () => {
 
     expect(res.ok).toBe(true);
     expect(approvalsCreate).not.toHaveBeenCalled();
-    expect(sessionSendMessage).toHaveBeenCalledWith({ sessionId: 's1', message: 'hello', serverId: undefined });
+    expect(sessionSendMessage).toHaveBeenCalledWith({
+      sessionId: 's1',
+      message: 'hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      serverId: undefined,
+    });
   });
 
   it('uses the stored approval serverId when the decision context omits one', async () => {
@@ -988,7 +1007,12 @@ describe('createActionExecutor (approvals)', () => {
 
     expect(res.ok).toBe(true);
     expect(approvalsGet).toHaveBeenCalledWith({ artifactId: 'a1', serverId: null });
-    expect(sessionSendMessage).toHaveBeenCalledWith({ sessionId: 's1', message: 'hello', serverId: 'server-a' });
+    expect(sessionSendMessage).toHaveBeenCalledWith({
+      sessionId: 's1',
+      message: 'hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      serverId: 'server-a',
+    });
     expect(approvalsUpdate).toHaveBeenNthCalledWith(1, expect.objectContaining({
       artifactId: 'a1',
       serverId: 'server-a',
@@ -1124,7 +1148,12 @@ describe('createActionExecutor (approvals)', () => {
 
     expect(res.ok).toBe(true);
     expect(sessionSendMessage).toHaveBeenCalledTimes(1);
-    expect(sessionSendMessage).toHaveBeenCalledWith({ sessionId: 's1', message: 'hello', serverId: undefined });
+    expect(sessionSendMessage).toHaveBeenCalledWith({
+      sessionId: 's1',
+      message: 'hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      serverId: undefined,
+    });
     expect(approvalsUpdate).toHaveBeenCalledTimes(1);
     expect(approvalsUpdate).toHaveBeenCalledWith(expect.objectContaining({
       artifactId: 'a1',

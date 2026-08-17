@@ -68,7 +68,11 @@ describe('callBuiltInHappierTool', () => {
     expect(execute).toHaveBeenCalledWith(
       'subagents.plan.start',
       { backendTargetKeys: ['agent:codex'], instructions: 'Plan this change.' },
-      { defaultSessionId: 'sess-1', surface: 'cli' },
+      {
+        defaultSessionId: 'sess-1',
+        surface: 'cli',
+        actionsSettings: { v: 1, actions: {} },
+      },
     );
   });
 
@@ -87,6 +91,12 @@ describe('callBuiltInHappierTool', () => {
       ok: false,
       errorCode: 'action_disabled',
       error: 'Action is disabled',
+      details: expect.objectContaining({
+        actionId: 'action.options.resolve',
+        surface: 'cli',
+        reason: 'unsupported_surface',
+        settingsState: 'enabled',
+      }),
     });
     expect(execute).not.toHaveBeenCalled();
     expect(createCliActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
@@ -119,6 +129,27 @@ describe('callBuiltInHappierTool', () => {
       errorCode: 'session_id_ambiguous',
       error: 'Session id is ambiguous',
       candidates: ['sess-1', 'sess-2'],
+    });
+  });
+
+  it('reports session lookup timeouts without relabeling them as not-found', async () => {
+    resolveSessionTransportContext.mockResolvedValueOnce({
+      ok: false,
+      code: 'session_lookup_timeout',
+    });
+
+    const { callBuiltInHappierTool } = await import('./callBuiltInHappierTool');
+    const result = await callBuiltInHappierTool({
+      credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
+      sessionId: 'c000000000000000000000000',
+      toolName: 'change_title',
+      args: { title: 'Renamed' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'session_lookup_timeout',
+      error: 'Session lookup timed out; try again',
     });
   });
 
@@ -171,6 +202,12 @@ describe('callBuiltInHappierTool', () => {
       ok: false,
       errorCode: 'action_disabled',
       error: 'Action is disabled',
+      details: expect.objectContaining({
+        actionId: 'subagents.plan.start',
+        surface: 'cli',
+        reason: 'disabled_by_settings',
+        settingsState: 'disabled',
+      }),
     });
     expect(execute).not.toHaveBeenCalled();
   });
@@ -191,6 +228,12 @@ describe('callBuiltInHappierTool', () => {
       ok: false,
       errorCode: 'action_disabled',
       error: 'Action is disabled',
+      details: expect.objectContaining({
+        actionId: 'memory.search',
+        surface: 'cli',
+        reason: 'unsupported_surface',
+        settingsState: 'enabled',
+      }),
     });
     expect(execute).not.toHaveBeenCalled();
   });

@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { AgentStateSchema } from './storageTypes';
 
 describe('AgentStateSchema capabilities', () => {
+    it('keeps the snapshot when structured-answer support is malformed and treats it as unsupported', () => {
+        const parsed = AgentStateSchema.parse({
+            requests: {},
+            capabilities: { structuredQuestionAnswersV1Supported: 'stale' },
+        });
+        expect(parsed.requests).toEqual({});
+        expect(parsed.capabilities?.structuredQuestionAnswersV1Supported).toBeUndefined();
+    });
+
     it('preserves inFlightSteer capability when present', () => {
         const parsed = AgentStateSchema.parse({
             capabilities: {
@@ -35,6 +44,18 @@ describe('AgentStateSchema capabilities', () => {
 
         expect(parsed.capabilities?.terminalComposerClearSupported).toBe(true);
         expect(parsed.capabilities?.terminalComposerDraftPresent).toBe(true);
+    });
+
+    it('preserves session goal runtime-control capability fields when present', () => {
+        const parsed = AgentStateSchema.parse({
+            capabilities: {
+                sessionGoalSetSupported: true,
+                sessionGoalClearSupported: false,
+            },
+        });
+
+        expect(parsed.capabilities?.sessionGoalSetSupported).toBe(true);
+        expect(parsed.capabilities?.sessionGoalClearSupported).toBe(false);
     });
 
     it('preserves request source fields when present', () => {

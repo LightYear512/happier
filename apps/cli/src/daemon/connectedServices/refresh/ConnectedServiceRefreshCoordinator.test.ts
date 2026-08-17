@@ -1,9 +1,11 @@
-import { lstat, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError, AxiosHeaders } from 'axios';
 
 import { sealAccountScopedBlobCiphertext } from '@happier-dev/protocol';
@@ -14,18 +16,85 @@ import type { Credentials } from '@/persistence';
 import type { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import { writeClaudeCodeCredentialsFile } from '@/backends/claude/connectedServices/nativeAuth/claudeCodeCredentialFile';
+import { resolveClaudeConnectedServiceStableConfigDir } from '@/backends/claude/connectedServices/resolveClaudeConnectedServiceStableAuthDir';
 import {
   classifyConnectedServiceMaterializationDiagnosticForCredentialRefresh,
   ConnectedServiceRefreshCoordinator,
 } from './ConnectedServiceRefreshCoordinator';
 import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '../connectedServiceChildEnvironment';
 import { normalizeMaterializationKeyForPath } from '../materialize/normalizeMaterializationKeyForPath';
+import { buildDefaultConnectedServiceCredentialLifecycleDescriptor } from '../credentials/lifecycleTypes';
+import { ConnectedServiceRuntimeRegistry } from '../runtimeRegistry/registry';
+import { computeConnectedServiceAccessTokenFingerprint } from './credentialFreshness/tokenFingerprint';
+
+const { spawnSpy } = vi.hoisted(() => ({
+  spawnSpy: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: spawnSpy,
+  };
+});
 
 function resolveCodexHomeForMaterialization(baseDir: string, materializationKey: string): string {
   return join(baseDir, normalizeMaterializationKeyForPath(materializationKey), 'codex', 'codex-home');
 }
 
+type ExternalCredentialUpdateInput = Parameters<
+  ConnectedServiceRefreshCoordinator['handleExternalCredentialUpdate']
+>[0];
+
+function revisionedExternalCredentialUpdate<
+  const ServiceId extends ExternalCredentialUpdateInput['serviceId'],
+>(
+  serviceId: ServiceId,
+  profileId: string,
+): ExternalCredentialUpdateInput & Readonly<{ serviceId: ServiceId }> {
+  return {
+    serviceId,
+    profileId,
+    credentialBoundary: {
+      status: 'present',
+      revisionSemantics: 'revisioned',
+      credentialRevision: `csr_${'a'.repeat(22)}`,
+    },
+    executionAuthority: 'passive_projection',
+  };
+}
+
 describe('ConnectedServiceRefreshCoordinator', () => {
+  beforeEach(() => {
+    spawnSpy.mockImplementation((_command: string, args: readonly string[]) => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdin: Writable;
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.stdin = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      queueMicrotask(() => {
+        if (args[0] === 'find-generic-password') {
+          child.stderr.write('not found');
+          child.emit('close', 44);
+          return;
+        }
+        child.emit('close', 0);
+      });
+      return child;
+    });
+  });
+
+afterEach(() => {
+    spawnSpy.mockReset();
+  });
+
   it('keeps provider-specific materialization diagnostic codes out of the generic refresh coordinator', async () => {
     const source = await readFile(new URL('./ConnectedServiceRefreshCoordinator.ts', import.meta.url), 'utf8');
 
@@ -152,6 +221,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 	      }),
 	      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
 	    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
 	    const fetchMock = vi.fn(async () => ({
 	      ok: true,
@@ -198,6 +268,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
       serviceId: 'openai-codex',
       profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
       health: {
         v: 1,
         status: 'connected',
@@ -234,17 +305,20 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         providerEmail: null,
       },
     });
-
+    let credentialRevision = 'csr_abcdefghijklmnopqrstuv';
     const api = {
       getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
-      getConnectedServiceCredentialPlain: vi.fn(async () => ({ content: { t: 'plain' as const, v: storedRecord } })),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({ credentialRevision, content: { t: 'plain' as const, v: storedRecord } })),
       getConnectedServiceCredentialSealed: vi.fn(async () => null),
-      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000, ownerId: 'machine-scope-preserve', credentialRevision: 'csr_abcdefghijklmnopqrstuv' })),
       registerConnectedServiceCredentialPlain: vi.fn(async (params: { content: { v: typeof storedRecord } }) => {
         storedRecord = params.content.v;
+        credentialRevision = 'csr_1234567890123456789012';
+        return { success: true as const, credentialRevision };
       }),
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -297,6 +371,67 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(auth.access_token).toBe('new-access');
   });
 
+  it('fails closed before lease or provider I/O when a legacy-unfenced credential needs refresh', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-legacy-unfenced-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-refresh-legacy-unfenced-'));
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now - 1,
+      oauth: {
+        accessToken: 'legacy-access',
+        refreshToken: 'legacy-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: null,
+      },
+    });
+    const acquireConnectedServiceRefreshLease = vi.fn();
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({
+        revisionSemantics: 'legacy_unfenced' as const,
+        credentialRevision: null,
+        content: { t: 'plain' as const, v: record },
+      })),
+      getConnectedServiceCredentialSealed: vi.fn(async () => null),
+      acquireConnectedServiceRefreshLease,
+    } as unknown as ApiClient;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials: {
+        token: 'happy-token',
+        encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+      },
+      machineIdProvider: () => 'machine-legacy-unfenced',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+
+    await expect(coordinator.refreshConnectedServiceCredentialForSpawnPreflight({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      force: true,
+    })).resolves.toMatchObject({
+      status: 'lease_not_acquired',
+      credential: null,
+      diagnostic: { status: 'lease_not_acquired' },
+    });
+    expect(acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('falls back to plaintext credentials when the account-mode probe errors', async () => {
     const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-plain-fallback-'));
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-refresh-plain-fallback-'));
@@ -336,6 +471,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -447,6 +583,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         storedRecord = ConnectedServiceCredentialRecordV1Schema.parse(opened.value);
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -545,7 +682,15 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async (params: { sealed: { ciphertext: string } }) => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
+      // Canonical group state matches the target's snapshot (active 'backup' at generation 7).
+      getConnectedServiceAuthGroup: vi.fn(async () => ({
+        serviceId: 'openai-codex',
+        groupId: 'main',
+        activeProfileId: 'backup',
+        generation: 7,
+      })),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -655,6 +800,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 	        sealedCiphertext = params.sealed.ciphertext;
 	      }),
 	    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
 	    const fetchMock = vi.fn(async () => ({
 	      ok: true,
@@ -744,6 +890,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         },
       })),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const onAuthUpdated = vi.fn();
     const coordinator = new ConnectedServiceRefreshCoordinator({
@@ -773,7 +920,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     };
     expect(externalUpdate.handleExternalCredentialUpdate).toBeTypeOf('function');
 
-    await externalUpdate.handleExternalCredentialUpdate!({ serviceId: 'openai-codex', profileId: 'work' });
+    await externalUpdate.handleExternalCredentialUpdate!(
+      revisionedExternalCredentialUpdate('openai-codex', 'work'),
+    );
 
     const codexHome = resolveCodexHomeForMaterialization(baseDir, 'session-openai');
     const auth = JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'));
@@ -781,6 +930,135 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(onAuthUpdated).toHaveBeenCalledWith(expect.objectContaining({
       binding: { serviceId: 'openai-codex', profileId: 'work' },
       affectedTargets: [expect.objectContaining({ pid: 123, agentId: 'codex' })],
+      mutation: 'replaced',
+    }));
+  });
+
+  it('routes credential deletion directly to lifecycle invalidation without resolving the deleted credential', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-external-delete-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-external-delete-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => {
+        throw new Error('deleted credential must not be resolved');
+      }),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const onAuthUpdated = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => 1_000_000,
+      onAuthUpdated,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 456,
+      agentId: 'codex',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'session-openai',
+    });
+
+    await coordinator.handleExternalCredentialUpdate({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      credentialBoundary: { status: 'absent' },
+      executionAuthority: 'passive_projection',
+    });
+
+    expect(api.getConnectedServiceCredentialSealed).not.toHaveBeenCalled();
+    expect(onAuthUpdated).toHaveBeenCalledWith({
+      binding: { serviceId: 'openai-codex', profileId: 'work' },
+      affectedTargets: [expect.objectContaining({ pid: 456, agentId: 'codex' })],
+      credentialRevision: null,
+      mutation: 'deleted',
+      trigger: 'reconnect_propagation',
+    });
+  });
+
+  it('applies replacement lifecycle policy even for passive projection reconciliation', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-passive-replace-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-passive-replace-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 3_600_000,
+      oauth: {
+        accessToken: 'passive-replacement',
+        refreshToken: 'refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: null,
+      },
+    });
+    const sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        credentialRevision: `csr_${'a'.repeat(22)}`,
+        sealed: { format: 'account_scoped_v1' as const, ciphertext: sealedCiphertext },
+        metadata: {
+          kind: 'oauth',
+          providerEmail: null,
+          providerAccountId: 'acct',
+          expiresAt: now + 3_600_000,
+        },
+      })),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const onAuthUpdated = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      onAuthUpdated,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 457,
+      agentId: 'codex',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'session-openai',
+    });
+
+    await coordinator.handleExternalCredentialUpdate(
+      revisionedExternalCredentialUpdate('openai-codex', 'work'),
+    );
+
+    expect(onAuthUpdated).toHaveBeenCalledWith(expect.objectContaining({
+      mutation: 'replaced',
+      affectedTargets: [expect.objectContaining({ pid: 457 })],
     }));
   });
 
@@ -829,6 +1107,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         },
       })),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const coordinator = new ConnectedServiceRefreshCoordinator({
       api,
@@ -858,7 +1137,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     const externalUpdate = coordinator as unknown as {
       handleExternalCredentialUpdate?: (input: Readonly<{ serviceId: 'openai-codex'; profileId: string }>) => Promise<void>;
     };
-    await externalUpdate.handleExternalCredentialUpdate!({ serviceId: 'openai-codex', profileId: 'work' });
+    await externalUpdate.handleExternalCredentialUpdate!(
+      revisionedExternalCredentialUpdate('openai-codex', 'work'),
+    );
 
     const liveIdentityHome = join(baseDir, identityId, 'codex', 'codex-home');
     const auth = JSON.parse(await readFile(join(liveIdentityHome, 'auth.json'), 'utf8'));
@@ -922,6 +1203,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         },
       })),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const coordinator = new ConnectedServiceRefreshCoordinator({
       api,
@@ -949,7 +1231,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     const externalUpdate = coordinator as unknown as {
       handleExternalCredentialUpdate?: (input: Readonly<{ serviceId: 'claude-subscription'; profileId: string }>) => Promise<void>;
     };
-    await externalUpdate.handleExternalCredentialUpdate!({ serviceId: 'claude-subscription', profileId: 'work' });
+    await externalUpdate.handleExternalCredentialUpdate!(
+      revisionedExternalCredentialUpdate('claude-subscription', 'work'),
+    );
 
     const stableConfigDir = join(
       activeServerDir,
@@ -1019,6 +1303,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -1072,12 +1357,740 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     );
     const credential = JSON.parse(await readFile(join(stableConfigDir, '.credentials.json'), 'utf8'));
     expect(credential.claudeAiOauth.accessToken).toBe('runtime-access');
-    expect(credential.claudeAiOauth.refreshToken).toBe('runtime-refresh');
+    expect(credential.claudeAiOauth).not.toHaveProperty('refreshToken');
     expect(credential.claudeAiOauth.scopes).toEqual(['user:inference', 'user:profile', 'user:sessions:claude_code']);
     expect(onAuthUpdated).toHaveBeenCalledWith({
       binding: { serviceId: 'claude-subscription', profileId: 'work' },
       affectedTargets: [expect.objectContaining({ pid: 125, agentId: 'claude' })],
+      credentialRevision: 'csr_0000000000000000000001',
       trigger: 'refresh_triggered_restart',
+    });
+  });
+
+  it('repairs a stale live Claude home even when the store credential is outside the refresh window', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-home-freshness-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-home-freshness-'));
+    const sourceHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-source-home-freshness-'));
+    const sessionDirectory = await mkdtemp(join(tmpdir(), 'happier-connected-services-project-home-freshness-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'claude-subscription',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 10 * 60_000,
+      oauth: {
+        accessToken: 'store-fresh-access',
+        refreshToken: 'store-refresh',
+        idToken: null,
+        scope: 'user:inference user:profile user:sessions:claude_code',
+        tokenType: 'Bearer',
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+
+    const sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1' as const, ciphertext: sealedCiphertext },
+        metadata: {
+          kind: 'oauth',
+          providerEmail: 'user@example.com',
+          providerAccountId: 'acct',
+          expiresAt: now + 10 * 60_000,
+        },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('store refresh should not run');
+    }) as unknown as typeof fetch);
+
+    const onAuthUpdated = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      processEnv: { HOME: sourceHomeDir },
+      onAuthUpdated,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 125,
+      agentId: 'claude',
+      sessionDirectory,
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'claude-subscription': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'session-claude-home-freshness',
+    });
+
+    const externalUpdate = coordinator as unknown as {
+      handleExternalCredentialUpdate(input: Readonly<{ serviceId: 'claude-subscription'; profileId: string }>): Promise<void>;
+    };
+    await externalUpdate.handleExternalCredentialUpdate(
+      revisionedExternalCredentialUpdate('claude-subscription', 'work'),
+    );
+    onAuthUpdated.mockClear();
+
+    const stableConfigDir = join(
+      activeServerDir,
+      'daemon',
+      'connected-services',
+      'homes',
+      'claude-subscription',
+      'work',
+      'claude',
+      'claude-config',
+    );
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: stableConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'stale-home-access',
+          expiresAt: now + 30_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+
+    await coordinator.tickOnce();
+
+    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
+    expect(api.registerConnectedServiceCredentialSealed).not.toHaveBeenCalled();
+    const credential = JSON.parse(await readFile(join(stableConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('store-fresh-access');
+    expect(onAuthUpdated).toHaveBeenCalledWith({
+      binding: { serviceId: 'claude-subscription', profileId: 'work' },
+      affectedTargets: [expect.objectContaining({ pid: 125, agentId: 'claude' })],
+      credentialRevision: null,
+      trigger: 'refresh_triggered_restart',
+    });
+  });
+
+  it('consults the injected lifecycle descriptor materializedHomeMaintenance hook, not a hardcoded provider (RR-9)', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-home-hook-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-home-hook-'));
+    const sourceHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-source-home-hook-'));
+    const sessionDirectory = await mkdtemp(join(tmpdir(), 'happier-connected-services-project-home-hook-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'claude-subscription',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 10 * 60_000,
+      oauth: {
+        accessToken: 'store-fresh-access',
+        refreshToken: 'store-refresh',
+        idToken: null,
+        scope: 'user:inference user:profile user:sessions:claude_code',
+        tokenType: 'Bearer',
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+
+    const sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1' as const, ciphertext: sealedCiphertext },
+        metadata: { kind: 'oauth', providerEmail: 'user@example.com', providerAccountId: 'acct', expiresAt: now + 10 * 60_000 },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('store refresh should not run'); }) as unknown as typeof fetch);
+
+    // A descriptor whose home-maintenance hook reports NOT stale. If the coordinator still hardcoded
+    // the Claude freshness path it would detect the stale home below and distribute; consuming the
+    // injected hook instead suppresses that.
+    const hasStaleMaterializedHomeForBinding = vi.fn(async () => false);
+    const resolveLifecycleDescriptor = vi.fn(async (agentId: 'claude') => ({
+      ...buildDefaultConnectedServiceCredentialLifecycleDescriptor(agentId),
+      serviceIds: ['claude-subscription'] as const,
+      materializedHomeMaintenance: { hasStaleMaterializedHomeForBinding },
+    }));
+
+    const onAuthUpdated = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      processEnv: { HOME: sourceHomeDir },
+      onAuthUpdated,
+      resolveLifecycleDescriptor: resolveLifecycleDescriptor as never,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 127,
+      agentId: 'claude',
+      sessionDirectory,
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'claude-subscription': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'session-claude-home-hook',
+    });
+
+    const externalUpdate = coordinator as unknown as {
+      handleExternalCredentialUpdate(input: Readonly<{ serviceId: 'claude-subscription'; profileId: string }>): Promise<void>;
+    };
+    await externalUpdate.handleExternalCredentialUpdate(
+      revisionedExternalCredentialUpdate('claude-subscription', 'work'),
+    );
+    onAuthUpdated.mockClear();
+
+    const stableConfigDir = join(
+      activeServerDir, 'daemon', 'connected-services', 'homes', 'claude-subscription', 'work', 'claude', 'claude-config',
+    );
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: stableConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'stale-home-access',
+          expiresAt: now + 30_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+
+    await coordinator.tickOnce();
+
+    expect(hasStaleMaterializedHomeForBinding).toHaveBeenCalledWith(
+      expect.objectContaining({ binding: { serviceId: 'claude-subscription', profileId: 'work' } }),
+    );
+    expect(onAuthUpdated).not.toHaveBeenCalled();
+    const credential = JSON.parse(await readFile(join(stableConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('stale-home-access');
+  });
+
+  it('redistributes a clock-valid Claude home when its access token differs from the store credential', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-home-fingerprint-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-home-fingerprint-'));
+    const sourceHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-source-home-fingerprint-'));
+    const sessionDirectory = await mkdtemp(join(tmpdir(), 'happier-connected-services-project-home-fingerprint-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'claude-subscription',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 10 * 60_000,
+      oauth: {
+        accessToken: 'store-fresh-access',
+        refreshToken: 'store-refresh',
+        idToken: null,
+        scope: 'user:inference user:profile user:sessions:claude_code',
+        tokenType: 'Bearer',
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+
+    const sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1' as const, ciphertext: sealedCiphertext },
+        metadata: {
+          kind: 'oauth',
+          providerEmail: 'user@example.com',
+          providerAccountId: 'acct',
+          expiresAt: now + 10 * 60_000,
+        },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('store refresh should not run');
+    }) as unknown as typeof fetch);
+
+    const onAuthUpdated = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      processEnv: { HOME: sourceHomeDir },
+      onAuthUpdated,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 126,
+      agentId: 'claude',
+      sessionDirectory,
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'claude-subscription': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'session-claude-home-fingerprint',
+    });
+
+    const externalUpdate = coordinator as unknown as {
+      handleExternalCredentialUpdate(input: Readonly<{ serviceId: 'claude-subscription'; profileId: string }>): Promise<void>;
+    };
+    await externalUpdate.handleExternalCredentialUpdate(
+      revisionedExternalCredentialUpdate('claude-subscription', 'work'),
+    );
+    onAuthUpdated.mockClear();
+
+    const stableConfigDir = join(
+      activeServerDir,
+      'daemon',
+      'connected-services',
+      'homes',
+      'claude-subscription',
+      'work',
+      'claude',
+      'claude-config',
+    );
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: stableConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'old-home-access',
+          expiresAt: now + 60 * 60_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+
+    await coordinator.tickOnce();
+
+    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
+    expect(api.registerConnectedServiceCredentialSealed).not.toHaveBeenCalled();
+    const credential = JSON.parse(await readFile(join(stableConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('store-fresh-access');
+    expect(onAuthUpdated).toHaveBeenCalledWith({
+      binding: { serviceId: 'claude-subscription', profileId: 'work' },
+      affectedTargets: [expect.objectContaining({ pid: 126, agentId: 'claude' })],
+      credentialRevision: null,
+      trigger: 'refresh_triggered_restart',
+    });
+  });
+
+  // The shared group home is OWNED by the group's active profile. A refresh cycle for any other
+  // member binding must neither treat the active token as stale nor write its own credential into
+  // the shared home (live incident 2026-07-08: member-vs-active fingerprint confusion caused a
+  // cross-account clobber of the pool home plus a 30s restart loop).
+  async function buildGroupHomeOwnershipHarness() {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-group-owner-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-group-owner-'));
+    const sourceHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-source-group-owner-'));
+    const sessionDirectory = await mkdtemp(join(tmpdir(), 'happier-connected-services-project-group-owner-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const buildProfileRecord = (profileId: string, accessToken: string) => buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'claude-subscription',
+      profileId,
+      kind: 'oauth',
+      expiresAt: now + 60 * 60_000,
+      oauth: {
+        accessToken,
+        refreshToken: `${profileId}-refresh`,
+        idToken: null,
+        scope: 'user:inference user:profile user:sessions:claude_code',
+        tokenType: 'Bearer',
+        providerAccountId: `acct-${profileId}`,
+        providerEmail: `${profileId}@example.com`,
+      },
+    });
+    const sealedByProfileId = new Map<string, string>([
+      ['workA', sealAccountScopedBlobCiphertext({
+        kind: 'connected_service_credential',
+        material: { type: 'legacy', secret: credentials.encryption.secret },
+        payload: buildProfileRecord('workA', 'active-access'),
+        randomBytes: (length) => randomBytes(length),
+      })],
+      ['workB', sealAccountScopedBlobCiphertext({
+        kind: 'connected_service_credential',
+        material: { type: 'legacy', secret: credentials.encryption.secret },
+        payload: buildProfileRecord('workB', 'member-access'),
+        randomBytes: (length) => randomBytes(length),
+      })],
+    ]);
+    let canonicalActiveProfileId = 'workA';
+    let canonicalGeneration = 4;
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async (input: { profileId: string }) => {
+        const ciphertext = sealedByProfileId.get(input.profileId);
+        if (!ciphertext) return null;
+        return {
+          sealed: { format: 'account_scoped_v1' as const, ciphertext },
+          metadata: {
+            kind: 'oauth',
+            providerEmail: `${input.profileId}@example.com`,
+            providerAccountId: `acct-${input.profileId}`,
+            expiresAt: now + 60 * 60_000,
+          },
+        };
+      }),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      // Round-trip: rotations persist back into the sealed store so redistribution reads the
+      // FRESH record (the live daemon's store behaves this way).
+      registerConnectedServiceCredentialSealed: vi.fn(async (input: { profileId: string; sealed: { ciphertext: string } }) => {
+        sealedByProfileId.set(input.profileId, input.sealed.ciphertext);
+      }),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+      // Canonical group state (server truth): active profile is workA at generation 4.
+      getConnectedServiceAuthGroup: vi.fn(async () => ({
+        serviceId: 'claude-subscription',
+        groupId: 'pool',
+        activeProfileId: canonicalActiveProfileId,
+        generation: canonicalGeneration,
+      })),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('store refresh should not run');
+    }) as unknown as typeof fetch);
+
+    const onAuthUpdated = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      processEnv: { HOME: sourceHomeDir },
+      onAuthUpdated,
+    });
+    // Target A: session spawned when the canonical active (workA) matched its snapshot.
+    const selectionA = {
+      kind: 'group' as const,
+      serviceId: 'claude-subscription' as const,
+      groupId: 'pool',
+      activeProfileId: 'workA',
+      fallbackProfileId: 'workB',
+      generation: 4,
+    };
+    coordinator.registerSpawnTarget({
+      pid: 127,
+      agentId: 'claude',
+      sessionId: 'session-group-owner-a',
+      sessionDirectory,
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: {
+          'claude-subscription': {
+            source: 'connected',
+            selection: 'group',
+            groupId: 'pool',
+            profileId: 'workA',
+          },
+        },
+      },
+      connectedServiceSelectionsEnv: {
+        [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([selectionA]),
+      },
+      materializationKey: 'session-claude-group-owner-a',
+    });
+    // Target B: session respawned with a STALE snapshot claiming workB is active at an older
+    // generation — the divergent-snapshot shape from the 2026-07-08 live restart-loop incident.
+    const selectionB = {
+      kind: 'group' as const,
+      serviceId: 'claude-subscription' as const,
+      groupId: 'pool',
+      activeProfileId: 'workB',
+      fallbackProfileId: 'workA',
+      generation: 3,
+    };
+    coordinator.registerSpawnTarget({
+      pid: 128,
+      agentId: 'claude',
+      sessionId: 'session-group-owner-b',
+      sessionDirectory,
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: {
+          'claude-subscription': {
+            source: 'connected',
+            selection: 'group',
+            groupId: 'pool',
+            profileId: 'workB',
+          },
+        },
+      },
+      connectedServiceSelectionsEnv: {
+        [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([selectionB]),
+      },
+      materializationKey: 'session-claude-group-owner-b',
+    });
+
+    const groupConfigDir = resolveClaudeConnectedServiceStableConfigDir({
+      activeServerDir,
+      serviceId: 'claude-subscription',
+      fallbackProfileId: 'workB',
+      selection: { ...selectionA, record: null as never, policy: null },
+    });
+    if (!groupConfigDir) throw new Error('fixture: group config dir must resolve');
+
+    return {
+      coordinator,
+      onAuthUpdated,
+      groupConfigDir,
+      now,
+      api,
+      setCanonicalGroupState(activeProfileId: string, generation: number) {
+        canonicalActiveProfileId = activeProfileId;
+        canonicalGeneration = generation;
+      },
+    };
+  }
+
+  it('distributes a spawn-preflight rotation to registered targets (RR-1: rotate+distribute is one transaction)', async () => {
+    const harness = await buildGroupHomeOwnershipHarness();
+
+    // Group home holds the current active token; the ACTIVE profile then rotates via a
+    // spawn-preflight forced refresh. Distribution must be BY CONSTRUCTION on the single
+    // 'refreshed' completion path — a preflight rotation that skipped distribution left group
+    // siblings holding the superseded (murdered) token until the next scheduler tick.
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: harness.groupConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'active-access',
+          expiresAt: harness.now + 60 * 60_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        access_token: 'rotated-access',
+        refresh_token: 'rotated-refresh',
+        expires_in: 3600,
+      }),
+    })) as unknown as typeof fetch);
+
+    const result = await harness.coordinator.refreshConnectedServiceCredentialForSpawnPreflight({
+      serviceId: 'claude-subscription',
+      profileId: 'workA',
+      force: true,
+    });
+
+    expect(result.status).toBe('refreshed');
+    const credential = JSON.parse(await readFile(join(harness.groupConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('rotated-access');
+    expect(harness.onAuthUpdated).toHaveBeenCalled();
+  });
+
+  it('reports a successful old-member refresh as superseded when the session materializes current group truth', async () => {
+    const harness = await buildGroupHomeOwnershipHarness();
+    harness.setCanonicalGroupState('workB', 5);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        access_token: 'rotated-old-member-access',
+        refresh_token: 'rotated-old-member-refresh',
+        expires_in: 3600,
+      }),
+    })) as unknown as typeof fetch);
+
+    const result = await harness.coordinator.refreshConnectedServiceCredentialForRuntimeAuthFailure({
+      serviceId: 'claude-subscription',
+      profileId: 'workA',
+      sessionId: 'session-group-owner-a',
+    });
+    expect(result).toMatchObject({
+      status: 'refreshed',
+      runtimeAuthDisposition: 'superseded_by_current_group',
+    });
+  });
+
+  it('keeps a shared group home stable across divergent-snapshot member sessions (no clobber, no restart loop)', async () => {
+    const harness = await buildGroupHomeOwnershipHarness();
+
+    // Group home holds the CANONICAL active profile's current token — correct content.
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: harness.groupConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'active-access',
+          expiresAt: harness.now + 60 * 60_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+
+    // Two refresh cycles: with a stale-snapshot session (claiming workB is active) present, the
+    // pre-fix corridor rewrote the home to the snapshot account and requested a restart EVERY
+    // cycle — the 2026-07-08 live restart loop. Canonical ownership must keep it untouched.
+    await harness.coordinator.tickOnce();
+    await harness.coordinator.tickOnce();
+
+    const credential = JSON.parse(await readFile(join(harness.groupConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('active-access');
+    expect(harness.onAuthUpdated).not.toHaveBeenCalled();
+  });
+
+  it('repairs a stale shared group home with the CANONICAL active credential exactly once', async () => {
+    const harness = await buildGroupHomeOwnershipHarness();
+
+    // Group home holds a dead token matching NEITHER canonical active nor any snapshot.
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: harness.groupConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'dead-old-access',
+          expiresAt: harness.now + 60 * 60_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+
+    await harness.coordinator.tickOnce();
+
+    // The repair must write the group's CANONICAL active credential — never a snapshot's — and
+    // must converge in ONE repair (no ping-pong between divergent-snapshot sessions).
+    const credential = JSON.parse(await readFile(join(harness.groupConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('active-access');
+    expect(harness.onAuthUpdated).toHaveBeenCalledTimes(1);
+
+    // A subsequent cycle must see the repaired home as fresh — no further writes or restarts.
+    harness.onAuthUpdated.mockClear();
+    await harness.coordinator.tickOnce();
+    expect(harness.onAuthUpdated).not.toHaveBeenCalled();
+  });
+
+  it('uses the canonical active credential when distributing from a stale member binding', async () => {
+    const harness = await buildGroupHomeOwnershipHarness();
+
+    await writeClaudeCodeCredentialsFile({
+      claudeConfigDir: harness.groupConfigDir,
+      payload: {
+        claudeAiOauth: {
+          accessToken: 'dead-old-access',
+          expiresAt: harness.now + 60 * 60_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      },
+      preserveNewerExistingCredential: false,
+    });
+
+    const rematerialize = harness.coordinator as unknown as {
+      rematerializeTargetsForBindingDetailed(binding: Readonly<{
+        serviceId: 'claude-subscription';
+        profileId: string;
+      }>): Promise<unknown>;
+    };
+    await rematerialize.rematerializeTargetsForBindingDetailed({
+      serviceId: 'claude-subscription',
+      profileId: 'workB',
+    });
+
+    const credential = JSON.parse(await readFile(join(harness.groupConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('active-access');
+    expect(harness.api.getConnectedServiceCredentialSealed).toHaveBeenCalledWith({
+      serviceId: 'claude-subscription',
+      profileId: 'workA',
+    });
+  });
+
+  it('re-reads canonical group truth before a shared-home mutation', async () => {
+    const harness = await buildGroupHomeOwnershipHarness();
+    const coordinatorInternals = harness.coordinator as unknown as {
+      resolveCanonicalGroupStateForRefresh(
+        input: Readonly<{ serviceId: 'claude-subscription'; groupId: string }>,
+        now: number,
+      ): Promise<unknown>;
+      rematerializeTargetsForBindingDetailed(binding: Readonly<{
+        serviceId: 'claude-subscription';
+        profileId: string;
+      }>): Promise<unknown>;
+    };
+
+    await coordinatorInternals.resolveCanonicalGroupStateForRefresh({
+      serviceId: 'claude-subscription',
+      groupId: 'pool',
+    }, harness.now);
+    harness.setCanonicalGroupState('workB', 5);
+    vi.mocked(harness.api.getConnectedServiceCredentialSealed).mockClear();
+
+    await coordinatorInternals.rematerializeTargetsForBindingDetailed({
+      serviceId: 'claude-subscription',
+      profileId: 'workA',
+    });
+
+    const credential = JSON.parse(await readFile(join(harness.groupConfigDir, '.credentials.json'), 'utf8'));
+    expect(credential.claudeAiOauth.accessToken).toBe('member-access');
+    expect(harness.api.getConnectedServiceCredentialSealed).toHaveBeenCalledWith({
+      serviceId: 'claude-subscription',
+      profileId: 'workB',
     });
   });
 
@@ -1133,6 +2146,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       updateConnectedServiceCredentialHealth,
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -1146,6 +2160,8 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     })) as unknown as typeof fetch);
 
     const onAuthUpdated = vi.fn();
+    const runtimeRegistry = new ConnectedServiceRuntimeRegistry();
+    const adoptCredentialRevision = vi.spyOn(runtimeRegistry, 'adoptCredentialRevisionForProfile');
     const coordinator = new ConnectedServiceRefreshCoordinator({
       api,
       credentials,
@@ -1157,6 +2173,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       now: () => now,
       processEnv: { HOME: sourceHomeDir },
       onAuthUpdated,
+      runtimeRegistry,
     });
 
     coordinator.registerSpawnTarget({
@@ -1189,6 +2206,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
     }));
     expect(onAuthUpdated).not.toHaveBeenCalled();
+    expect(adoptCredentialRevision).not.toHaveBeenCalled();
     expect(updateConnectedServiceCredentialHealth).toHaveBeenLastCalledWith({
       serviceId: 'claude-subscription',
       profileId: 'work',
@@ -1254,6 +2272,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       updateConnectedServiceCredentialHealth,
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -1305,7 +2324,13 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         providerErrorCode: 'runtime_auth_target_not_registered',
       }),
     }));
-    expect(onAuthUpdated).not.toHaveBeenCalled();
+    // RR-1: the rotation itself distributes BY CONSTRUCTION, so the OTHER registered target for
+    // this binding is redistributed + notified even though the REQUESTED session (which has no
+    // registered target) still gets the failure result above.
+    expect(onAuthUpdated).toHaveBeenCalledWith(expect.objectContaining({
+      binding: expect.objectContaining({ serviceId: 'openai-codex', profileId: 'primary' }),
+      trigger: 'refresh_triggered_restart',
+    }));
     expect(updateConnectedServiceCredentialHealth).toHaveBeenLastCalledWith({
       serviceId: 'openai-codex',
       profileId: 'primary',
@@ -1366,6 +2391,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       })),
       updateConnectedServiceCredentialHealth,
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const onAuthUpdated = vi.fn();
     const coordinator = new ConnectedServiceRefreshCoordinator({
@@ -1397,7 +2423,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     try {
-      await externalUpdate.handleExternalCredentialUpdate!({ serviceId: 'claude-subscription', profileId: 'work' });
+      await externalUpdate.handleExternalCredentialUpdate!(
+        revisionedExternalCredentialUpdate('claude-subscription', 'work'),
+      );
       expect(warn).toHaveBeenCalledWith(
         '[DAEMON RUN] Connected-service rematerialization blocked; skipping auth-update restart',
         expect.objectContaining({
@@ -1501,6 +2529,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       updateConnectedServiceCredentialHealth,
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const onAuthUpdated = vi.fn();
     const coordinator = new ConnectedServiceRefreshCoordinator({
@@ -1535,7 +2564,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     try {
-      await externalUpdate.handleExternalCredentialUpdate!({ serviceId: 'openai-codex', profileId: 'work' });
+      await externalUpdate.handleExternalCredentialUpdate!(
+        revisionedExternalCredentialUpdate('openai-codex', 'work'),
+      );
     } finally {
       warn.mockRestore();
     }
@@ -1599,6 +2630,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -1692,7 +2724,15 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async (params: { sealed: { ciphertext: string } }) => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
+      // Canonical group state matches the bridge request and registered target.
+      getConnectedServiceAuthGroup: vi.fn(async () => ({
+        serviceId: 'openai-codex',
+        groupId: 'main',
+        activeProfileId: 'backup',
+        generation: 7,
+      })),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -1716,22 +2756,49 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       refreshLeaseMs: 30_000,
       now: () => now,
     });
-    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge({
-      selection: {
-        kind: 'group',
-        serviceId: 'openai-codex',
-        groupId: 'main',
-        activeProfileId: 'backup',
-        fallbackProfileId: 'work',
-        generation: 7,
+    const selection = {
+      kind: 'group' as const,
+      serviceId: 'openai-codex' as const,
+      groupId: 'main',
+      activeProfileId: 'backup',
+      fallbackProfileId: 'work',
+      generation: 7,
+      credentialRevision: 'csr_0000000000000000000000',
+    };
+    coordinator.registerSpawnTarget({
+      pid: 122,
+      agentId: 'codex',
+      sessionId: 'happy-session-bridge-group',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: {
+          'openai-codex': {
+            source: 'connected',
+            selection: 'group',
+            groupId: 'main',
+            profileId: 'work',
+          },
+        },
       },
-      chatgptPlanType: 'plus',
+      connectedServiceSelectionsEnv: {
+        [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([selection]),
+      },
+      materializationKey: 'openai-codex-refresh-backup',
     });
+    const request = {
+      sessionId: 'happy-session-bridge-group',
+      selection,
+      chatgptPlanType: 'plus',
+      // Exercise the rotation path explicitly (F6: rotation now requires near-expiry OR force).
+      forceRefresh: true,
+    };
+    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge(request);
 
     expect(result).toEqual({
       accessToken: 'new-access',
       chatgptAccountId: 'chatgpt-account',
       chatgptPlanType: 'plus',
+      credentialRevision: 'csr_0000000000000000000001',
     });
     expect(result).not.toHaveProperty('refreshToken');
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledWith({
@@ -1740,6 +2807,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       machineId: 'machine-1',
       ownerId: 'machine-1:daemon-a',
       leaseMs: 30_000,
+      expectedCredentialRevision: expect.any(String),
     });
 
     const opened = openConnectedServiceCredentialCiphertext({
@@ -1805,6 +2873,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -1840,25 +2909,512 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       materializationKey: 'session-bridge',
     });
 
-    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge({
+    const request = {
+      sessionId: 'happy-session-bridge',
       selection: {
-        kind: 'profile',
-        serviceId: 'openai-codex',
+        kind: 'profile' as const,
+        serviceId: 'openai-codex' as const,
         profileId: 'work',
       },
       chatgptPlanType: 'team',
-    });
+      forceRefresh: true,
+    };
+
+    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge(request);
 
     expect(result).toEqual({
       accessToken: 'new-access',
       chatgptAccountId: 'chatgpt-account',
       chatgptPlanType: 'team',
+      credentialRevision: 'csr_0000000000000000000001',
     });
     const activeCodexHome = resolveCodexHomeForMaterialization(baseDir, 'session-bridge');
     const activeAuth = JSON.parse(await readFile(join(activeCodexHome, 'auth.json'), 'utf8'));
     expect(activeAuth.access_token).toBe('new-access');
     expect(activeAuth.refresh_token).toBe('rotated-refresh');
     await expect(lstat(resolveCodexHomeForMaterialization(baseDir, 'openai-codex-refresh-work'))).rejects.toThrow();
+  });
+
+  it('returns the CURRENT Codex access token without rotating when valid and forceRefresh is not set (F6)', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-bridge-noforce-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-refresh-bridge-noforce-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(11) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      // Far from expiry vs refreshWindowMs below — must NOT rotate the single-use refresh token.
+      expiresAt: now + 60 * 60_000,
+      oauth: {
+        accessToken: 'current-codex-access',
+        refreshToken: 'current-codex-refresh-MUST-NOT-ROTATE',
+        idToken: 'id',
+        scope: null,
+        tokenType: 'Bearer',
+        providerAccountId: 'chatgpt-account',
+        providerEmail: 'alice@example.com',
+      },
+    });
+    const sealed = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const acquireLease = vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 }));
+    const registerSealed = vi.fn(async () => {});
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1', ciphertext: sealed },
+        metadata: { kind: 'oauth', providerEmail: 'alice@example.com', providerAccountId: 'chatgpt-account', expiresAt: now + 60 * 60_000 },
+      })),
+      acquireConnectedServiceRefreshLease: acquireLease,
+      registerConnectedServiceCredentialSealed: registerSealed,
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const fetchMock = vi.fn(async () => { throw new Error('must not refresh a still-valid token'); });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 5 * 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 124,
+      agentId: 'codex',
+      sessionId: 'happy-session-bridge-noforce',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'happy-session-bridge-noforce',
+    });
+
+    const request = {
+      sessionId: 'happy-session-bridge-noforce',
+      selection: { kind: 'profile' as const, serviceId: 'openai-codex' as const, profileId: 'work' },
+      chatgptPlanType: 'plus',
+      forceRefresh: false,
+    };
+
+    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge(request);
+
+    expect(result).toEqual({
+      accessToken: 'current-codex-access',
+      chatgptAccountId: 'chatgpt-account',
+      chatgptPlanType: 'plus',
+      credentialRevision: 'csr_abcdefghijklmnopqrstuv',
+    });
+    // No provider refresh, no lease, no rotation/persist when the token is still valid.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(acquireLease).not.toHaveBeenCalled();
+    expect(registerSealed).not.toHaveBeenCalled();
+  });
+
+  it('does not cold-cache adopt a future-dated Codex token contradicted by canonical credential health', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-bridge-health-gate-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-bridge-health-gate-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(19) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 60 * 60_000,
+      oauth: {
+        accessToken: 'known-invalid-access',
+        refreshToken: 'recoverable-refresh',
+        idToken: 'id',
+        scope: null,
+        tokenType: 'Bearer',
+        providerAccountId: 'chatgpt-account',
+        providerEmail: 'alice@example.com',
+      },
+    });
+    let sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1' as const, ciphertext: sealedCiphertext },
+        metadata: { kind: 'oauth', providerEmail: 'alice@example.com', providerAccountId: 'chatgpt-account', expiresAt: now + 60 * 60_000 },
+      })),
+      listConnectedServiceProfiles: vi.fn(async () => ({
+        serviceId: 'openai-codex',
+        profiles: [{ profileId: 'work', status: 'needs_reauth' as const }],
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async (params: { sealed: { ciphertext: string } }) => {
+        sealedCiphertext = params.sealed.ciphertext;
+      }),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        access_token: 'provider-proven-access',
+        refresh_token: 'provider-proven-refresh',
+        expires_in: 3600,
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 5 * 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 125,
+      agentId: 'codex',
+      sessionId: 'happy-session-bridge-health-gate',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'happy-session-bridge-health-gate',
+    });
+
+    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge({
+      sessionId: 'happy-session-bridge-health-gate',
+      selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'work' },
+      chatgptPlanType: 'plus',
+      forceRefresh: false,
+    });
+
+    expect(result.accessToken).toBe('provider-proven-access');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
+      health: expect.objectContaining({ status: 'connected', reconnectRequired: false }),
+    });
+  });
+
+  it('adopts a newer current Codex token despite stale predecessor reauth health', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-bridge-newer-token-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-bridge-newer-token-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(20) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+    const now = 1_000_000;
+    const currentAccessToken = 'newer-current-access';
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 60 * 60_000,
+      oauth: {
+        accessToken: currentAccessToken,
+        refreshToken: 'newer-current-refresh',
+        idToken: 'id',
+        scope: null,
+        tokenType: 'Bearer',
+        providerAccountId: 'chatgpt-account',
+        providerEmail: 'alice@example.com',
+      },
+    });
+    const sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1' as const, ciphertext: sealedCiphertext },
+        metadata: { kind: 'oauth', providerEmail: 'alice@example.com', providerAccountId: 'chatgpt-account', expiresAt: now + 60 * 60_000 },
+      })),
+      listConnectedServiceProfiles: vi.fn(async () => ({
+        serviceId: 'openai-codex',
+        profiles: [{ profileId: 'work', status: 'needs_reauth' as const }],
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const fetchMock = vi.fn(async () => {
+      throw new Error('a newer canonical token must be adopted without rotating its refresh token');
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 5 * 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 126,
+      agentId: 'codex',
+      sessionId: 'happy-session-bridge-newer-token',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'happy-session-bridge-newer-token',
+    });
+
+    await expect(coordinator.refreshOpenAiCodexChatGptTokensForBridge({
+      sessionId: 'happy-session-bridge-newer-token',
+      selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'work' },
+      chatgptPlanType: 'plus',
+      forceRefresh: true,
+      failingAccessTokenFingerprint: computeConnectedServiceAccessTokenFingerprint('predecessor-access'),
+    })).resolves.toEqual(expect.objectContaining({ accessToken: currentAccessToken }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
+  });
+
+  it('serves the session-owned Codex profile and IGNORES a caller-named foreign profile (identity-only authz)', async () => {
+    // Identity-only authz: the caller cannot pick which credential is served. A request naming a
+    // foreign `victim-profile` serves the session's OWN `owner-profile` token, never the victim's.
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-bridge-authz-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-bridge-authz-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(12) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'owner-profile',
+      kind: 'oauth',
+      expiresAt: now + 60 * 60_000,
+      oauth: {
+        accessToken: 'owner-codex-access',
+        refreshToken: 'owner-codex-refresh',
+        idToken: 'id',
+        scope: null,
+        tokenType: 'Bearer',
+        providerAccountId: 'chatgpt-owner',
+        providerEmail: 'owner@example.com',
+      },
+    });
+    const sealed = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const getSealed = vi.fn(async (params: { profileId: string }) => {
+      if (params.profileId !== 'owner-profile') throw new Error(`foreign profile ${params.profileId} must not be read`);
+      return {
+        sealed: { format: 'account_scoped_v1', ciphertext: sealed },
+        metadata: { kind: 'oauth', providerEmail: 'owner@example.com', providerAccountId: 'chatgpt-owner', expiresAt: now + 60 * 60_000 },
+      };
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: getSealed,
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const fetchMock = vi.fn(async () => { throw new Error('must not rotate a valid owner token'); });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 5 * 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 231,
+      agentId: 'codex',
+      sessionId: 'sess-owner',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'owner-profile' } },
+      },
+      materializationKey: 'sess-owner',
+    });
+
+    const request = {
+      sessionId: 'sess-owner',
+      selection: { kind: 'profile' as const, serviceId: 'openai-codex' as const, profileId: 'victim-profile' },
+      chatgptPlanType: 'plus',
+      forceRefresh: false,
+    };
+
+    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge(request);
+
+    expect(result).toEqual({
+      accessToken: 'owner-codex-access',
+      chatgptAccountId: 'chatgpt-owner',
+      chatgptPlanType: 'plus',
+      credentialRevision: 'csr_abcdefghijklmnopqrstuv',
+    });
+    expect(getSealed).toHaveBeenCalledWith(expect.objectContaining({ profileId: 'owner-profile' }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
+  });
+
+  it('accepts Codex bridge requests for the session-owned profile binding', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-bridge-authz-ok-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-bridge-authz-ok-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(13) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'owner-profile',
+      kind: 'oauth',
+      expiresAt: now + 60 * 60_000,
+      oauth: {
+        accessToken: 'owner-codex-access',
+        refreshToken: 'owner-codex-refresh',
+        idToken: 'id',
+        scope: null,
+        tokenType: 'Bearer',
+        providerAccountId: 'chatgpt-owner',
+        providerEmail: 'owner@example.com',
+      },
+    });
+    const sealed = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1', ciphertext: sealed },
+        metadata: { kind: 'oauth', providerEmail: 'owner@example.com', providerAccountId: 'chatgpt-owner', expiresAt: now + 60 * 60_000 },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const fetchMock = vi.fn(async () => { throw new Error('must not rotate a valid owner token'); });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 5 * 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+    coordinator.registerSpawnTarget({
+      pid: 232,
+      agentId: 'codex',
+      sessionId: 'sess-owner',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'owner-profile' } },
+      },
+      materializationKey: 'sess-owner',
+    });
+
+    const request = {
+      sessionId: 'sess-owner',
+      selection: { kind: 'profile' as const, serviceId: 'openai-codex' as const, profileId: 'owner-profile' },
+      chatgptPlanType: 'plus',
+      forceRefresh: false,
+    };
+    const result = await coordinator.refreshOpenAiCodexChatGptTokensForBridge(request);
+
+    expect(result).toEqual({
+      accessToken: 'owner-codex-access',
+      chatgptAccountId: 'chatgpt-owner',
+      chatgptPlanType: 'plus',
+      credentialRevision: 'csr_abcdefghijklmnopqrstuv',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
+  });
+
+  it('rejects Codex bridge requests from unknown sessions', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-bridge-authz-unknown-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-bridge-authz-unknown-'));
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(14) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+    const now = 1_000_000;
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => {
+        throw new Error('must not read credentials for unknown bridge sessions');
+      }),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 5 * 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+
+    const request = {
+      sessionId: 'missing-session',
+      selection: { kind: 'profile' as const, serviceId: 'openai-codex' as const, profileId: 'owner-profile' },
+      chatgptPlanType: 'plus',
+      forceRefresh: false,
+    };
+
+    await expect(coordinator.refreshOpenAiCodexChatGptTokensForBridge(request))
+      .rejects.toThrow('connected_service_bridge_selection_not_authorized');
+    expect(api.getConnectedServiceCredentialSealed).not.toHaveBeenCalled();
   });
 
   it('waits and re-reads credentials when another daemon owns the refresh lease for spawn preflight', async () => {
@@ -1932,6 +3488,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
     const sleepMs = vi.fn(async () => {});
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
@@ -1964,6 +3521,445 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(api.getConnectedServiceCredentialSealed).toHaveBeenCalledTimes(2);
     expect(api.registerConnectedServiceCredentialSealed).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['expired', 'empty_token', 'non_oauth'] as const)(
+    'does not adopt a changed but unusable %s credential after losing the refresh lease',
+    async (candidateKind) => {
+      const baseDir = await mkdtemp(join(tmpdir(), `happier-connected-services-refresh-lease-unusable-${candidateKind}-`));
+      const activeServerDir = await mkdtemp(join(tmpdir(), `happier-connected-services-server-lease-unusable-${candidateKind}-`));
+      const credentials: Credentials = {
+        token: 'happy-token',
+        encryption: { type: 'legacy', secret: new Uint8Array(32).fill(17) },
+      };
+      if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+      const now = 1_000_000;
+      const staleRecord = buildConnectedServiceCredentialRecord({
+        now,
+        serviceId: 'openai-codex',
+        profileId: 'work',
+        kind: 'oauth',
+        expiresAt: now + 10_000,
+        oauth: {
+          accessToken: 'stale-access',
+          refreshToken: 'stale-refresh',
+          idToken: null,
+          scope: null,
+          tokenType: null,
+          providerAccountId: 'acct',
+          providerEmail: 'user@example.com',
+        },
+      });
+      const candidateRecord = candidateKind === 'non_oauth'
+        ? buildConnectedServiceCredentialRecord({
+          now: now + 50,
+          serviceId: 'openai-codex',
+          profileId: 'work',
+          kind: 'token',
+          token: {
+            token: 'setup-token',
+            providerAccountId: 'acct',
+            providerEmail: 'user@example.com',
+          },
+        })
+        : buildConnectedServiceCredentialRecord({
+          now: now + 50,
+          serviceId: 'openai-codex',
+          profileId: 'work',
+          kind: 'oauth',
+          expiresAt: candidateKind === 'expired' ? now - 1 : now + 3_600_000,
+          oauth: {
+            accessToken: candidateKind === 'empty_token' ? ' ' : 'other-daemon-access',
+            refreshToken: 'other-daemon-refresh',
+            idToken: null,
+            scope: null,
+            tokenType: null,
+            providerAccountId: 'acct',
+            providerEmail: 'user@example.com',
+          },
+        });
+      const staleCiphertext = sealAccountScopedBlobCiphertext({
+        kind: 'connected_service_credential',
+        material: { type: 'legacy', secret: credentials.encryption.secret },
+        payload: staleRecord,
+        randomBytes: (length) => randomBytes(length),
+      });
+      const candidateCiphertext = sealAccountScopedBlobCiphertext({
+        kind: 'connected_service_credential',
+        material: { type: 'legacy', secret: credentials.encryption.secret },
+        payload: candidateRecord,
+        randomBytes: (length) => randomBytes(length),
+      });
+      let credentialReads = 0;
+      const api = {
+        getConnectedServiceCredentialSealed: vi.fn(async () => {
+          credentialReads += 1;
+          const record = credentialReads === 1 ? staleRecord : candidateRecord;
+          return {
+            sealed: {
+              format: 'account_scoped_v1' as const,
+              ciphertext: credentialReads === 1 ? staleCiphertext : candidateCiphertext,
+            },
+            metadata: {
+              kind: record.kind,
+              providerEmail: 'user@example.com',
+              providerAccountId: 'acct',
+              expiresAt: record.expiresAt,
+            },
+          };
+        }),
+        acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: false, leaseUntil: now + 50 })),
+        updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+      } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+      const coordinator = new ConnectedServiceRefreshCoordinator({
+        api,
+        credentials,
+        machineIdProvider: () => 'machine-1',
+        ownerIdProvider: () => 'machine-1:daemon-a',
+        activeServerDir,
+        baseDir,
+        refreshWindowMs: 60_000,
+        refreshLeaseMs: 30_000,
+        leaseContentionWaitMaxMs: 100,
+        sleepMs: async () => {},
+        now: () => now,
+      });
+
+      const result = await coordinator.refreshConnectedServiceCredentialForSpawnPreflight({
+        serviceId: 'openai-codex',
+        profileId: 'work',
+      });
+
+      expect(result.status).toBe('lease_not_acquired');
+      expect(result.credential).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(api.updateConnectedServiceCredentialHealth).not.toHaveBeenCalled();
+    },
+  );
+
+  it('re-reads the canonical credential after a two-controller lease handoff and never submits the consumed predecessor', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-two-controller-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-two-controller-'));
+    const now = 1_000_000;
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(16) },
+    };
+    let storedRecord = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 10_000,
+      oauth: {
+        accessToken: 'predecessor-access',
+        refreshToken: 'predecessor-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+    let credentialRevision = 'csr_abcdefghijklmnopqrstuv';
+
+    let resolveBothAtLease: () => void = () => {};
+    const bothAtLease = new Promise<void>((resolve) => {
+      resolveBothAtLease = resolve;
+    });
+    let leaseEntrants = 0;
+    let resolveFirstPersistence: () => void = () => {};
+    const firstPersistence = new Promise<void>((resolve) => {
+      resolveFirstPersistence = resolve;
+    });
+    const updateConnectedServiceCredentialHealth = vi.fn(async (_params: unknown) => {});
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({
+        credentialRevision,
+        content: { t: 'plain' as const, v: storedRecord },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async (params: { machineId: string }) => {
+        leaseEntrants += 1;
+        if (leaseEntrants === 2) resolveBothAtLease();
+        if (params.machineId === 'machine-a') {
+          await bothAtLease;
+          return {
+            acquired: true,
+            leaseUntil: now + 60_000,
+            ownerId: 'machine-a:daemon',
+            credentialRevision,
+          };
+        }
+        await firstPersistence;
+        return {
+          acquired: false,
+          leaseUntil: now,
+          ownerId: 'machine-a:daemon',
+          credentialRevision,
+        };
+      }),
+      registerConnectedServiceCredentialPlain: vi.fn(async (params: { content: { v: typeof storedRecord } }) => {
+        storedRecord = params.content.v;
+        credentialRevision = 'csr_bcdefghijklmnopqrstuvw';
+        resolveFirstPersistence();
+        return { success: true as const, credentialRevision };
+      }),
+      updateConnectedServiceCredentialHealth,
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+
+    const submittedRefreshTokens: string[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body;
+      const refreshToken = body instanceof URLSearchParams
+        ? body.get('refresh_token')
+        : new URLSearchParams(String(body ?? '')).get('refresh_token');
+      submittedRefreshTokens.push(refreshToken ?? '');
+      if (submittedRefreshTokens.length > 1) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: async () => JSON.stringify({ error: 'invalid_grant' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'rotated-access',
+          refresh_token: 'rotated-refresh',
+          expires_in: 3600,
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const createCoordinator = (machineId: string) => new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => machineId,
+      ownerIdProvider: () => `${machineId}:daemon`,
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      leaseContentionWaitMaxMs: 100,
+      sleepMs: async () => {},
+      now: () => now,
+    });
+    const controllerA = createCoordinator('machine-a');
+    const controllerB = createCoordinator('machine-b');
+
+    const [resultA, resultB] = await Promise.all([
+      controllerA.refreshConnectedServiceCredentialForQuota({
+        serviceId: 'openai-codex',
+        profileId: 'work',
+        force: true,
+      }),
+      controllerB.refreshConnectedServiceCredentialForQuota({
+        serviceId: 'openai-codex',
+        profileId: 'work',
+        force: true,
+      }),
+    ]);
+
+    expect(resultA?.record?.oauth?.accessToken).toBe('rotated-access');
+    expect(resultB?.record?.oauth?.accessToken).toBe('rotated-access');
+    expect(submittedRefreshTokens).toEqual(['predecessor-refresh']);
+    expect(api.registerConnectedServiceCredentialPlain).toHaveBeenCalledTimes(1);
+    expect(updateConnectedServiceCredentialHealth).toHaveBeenCalledTimes(2);
+    for (const [healthUpdate] of updateConnectedServiceCredentialHealth.mock.calls) {
+      expect(healthUpdate).toEqual(expect.objectContaining({
+        expectedCredentialRevision: credentialRevision,
+      }));
+    }
+  });
+
+  it('rejects a post-persist same-token credential that moved beyond the minted revision', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-post-persist-aba-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-post-persist-aba-'));
+    const now = 1_000_000;
+    const sourceRevision = 'csr_abcdefghijklmnopqrstuv';
+    const mintedRevision = 'csr_bcdefghijklmnopqrstuvw';
+    const supersedingRevision = 'csr_cdefghijklmnopqrstuvwx';
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(21) },
+    };
+    let storedRecord = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now - 1,
+      oauth: {
+        accessToken: 'old-access',
+        refreshToken: 'old-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+    let credentialReads = 0;
+    const updateConnectedServiceCredentialHealth = vi.fn(async () => ({ success: true as const, credentialRevision: supersedingRevision }));
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => {
+        credentialReads += 1;
+        return {
+          credentialRevision: credentialReads <= 2 ? sourceRevision : supersedingRevision,
+          content: { t: 'plain' as const, v: storedRecord },
+        };
+      }),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({
+        acquired: true,
+        leaseUntil: now + 60_000,
+        ownerId: 'machine-1:daemon-a',
+        credentialRevision: sourceRevision,
+      })),
+      registerConnectedServiceCredentialPlain: vi.fn(async (params: { content: { v: typeof storedRecord } }) => {
+        storedRecord = params.content.v;
+        return { success: true as const, credentialRevision: mintedRevision };
+      }),
+      updateConnectedServiceCredentialHealth,
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        expires_in: 3600,
+      }),
+    })) as unknown as typeof fetch);
+
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+
+    const result = await coordinator.refreshConnectedServiceCredentialForQuota({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      force: true,
+    });
+
+    expect(result.record).toBeNull();
+    expect(credentialReads).toBeGreaterThanOrEqual(3);
+    expect(updateConnectedServiceCredentialHealth).not.toHaveBeenCalled();
+  });
+
+  it('does not adopt a changed credential that expires while the lease is being acquired', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-lease-clock-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-lease-clock-'));
+    let clock = 1_000_000;
+    const initialNow = clock;
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(18) },
+    };
+    const predecessor = buildConnectedServiceCredentialRecord({
+      now: initialNow,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: initialNow + 10_000,
+      oauth: {
+        accessToken: 'predecessor-access',
+        refreshToken: 'predecessor-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+    const expiredDuringLease = buildConnectedServiceCredentialRecord({
+      now: initialNow + 5_000,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: initialNow + 15_000,
+      oauth: {
+        accessToken: 'intermediate-access',
+        refreshToken: 'intermediate-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: 'user@example.com',
+      },
+    });
+    let credentialReads = 0;
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => {
+        credentialReads += 1;
+        return {
+          content: {
+            t: 'plain' as const,
+            v: credentialReads === 1 ? predecessor : expiredDuringLease,
+          },
+        };
+      }),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => {
+        clock = initialNow + 20_000;
+        return { acquired: true, leaseUntil: clock + 30_000 };
+      }),
+      registerConnectedServiceCredentialPlain: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const submittedRefreshTokens: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body;
+      submittedRefreshTokens.push(body instanceof URLSearchParams
+        ? body.get('refresh_token') ?? ''
+        : new URLSearchParams(String(body ?? '')).get('refresh_token') ?? '');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'final-access',
+          refresh_token: 'final-refresh',
+          expires_in: 3600,
+        }),
+      };
+    }) as unknown as typeof fetch);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => clock,
+    });
+
+    const result = await coordinator.refreshConnectedServiceCredentialForQuota({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      force: true,
+    });
+
+    expect(result?.record?.oauth?.accessToken).toBe('final-access');
+    expect(submittedRefreshTokens).toEqual(['intermediate-refresh']);
+    expect(api.registerConnectedServiceCredentialPlain).toHaveBeenCalledOnce();
   });
 
   it('serializes forced refreshes for the same binding inside one daemon process', async () => {
@@ -2011,6 +4007,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2052,8 +4049,109 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
-    expect(firstResult?.oauth?.accessToken).toBe('new-access');
-    expect(secondResult?.oauth?.accessToken).toBe('new-access');
+    expect(firstResult?.record?.oauth?.accessToken).toBe('new-access');
+    expect(secondResult?.record?.oauth?.accessToken).toBe('new-access');
+  });
+
+  it('shares a forced refresh result with joiners while leaf I/O owns timeout behavior', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-singleflight-timeout-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-refresh-singleflight-timeout-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 30_000,
+      oauth: {
+        accessToken: 'old-access',
+        refreshToken: 'old-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: null,
+      },
+    });
+
+    let sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1', ciphertext: sealedCiphertext },
+        metadata: { kind: 'oauth', providerEmail: null, providerAccountId: 'acct', expiresAt: now + 30_000 },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async (params: { sealed: { ciphertext: string } }) => {
+        sealedCiphertext = params.sealed.ciphertext;
+      }),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+
+    let resolveFetchStarted: () => void = () => {};
+    const fetchStarted = new Promise<void>((resolve) => {
+      resolveFetchStarted = resolve;
+    });
+    let releaseFetch: () => void = () => {};
+    const fetchRelease = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const fetchMock = vi.fn(async () => {
+      resolveFetchStarted();
+      await fetchRelease;
+      return {
+        ok: true,
+        json: async () => ({
+          access_token: 'new-access',
+          refresh_token: 'new-refresh',
+          expires_in: 3600,
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+
+    const first = coordinator.refreshConnectedServiceCredentialForQuota({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      force: true,
+    });
+    await fetchStarted;
+    const second = coordinator.refreshConnectedServiceCredentialForQuota({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      force: true,
+    });
+
+    releaseFetch();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ record: expect.objectContaining({ oauth: expect.objectContaining({ accessToken: 'new-access' }) }) }),
+      expect.objectContaining({ record: expect.objectContaining({ oauth: expect.objectContaining({ accessToken: 'new-access' }) }) }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not satisfy a forced refresh from an in-flight non-forced not-needed refresh', async () => {
@@ -2113,6 +4211,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -2158,7 +4257,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
-    expect(forcedResult?.oauth?.accessToken).toBe('forced-access');
+    expect(forcedResult?.record?.oauth?.accessToken).toBe('forced-access');
   });
 
   it('coalesces a concurrent forced and non-forced refresh of the same near-expiry binding into one rotation', async () => {
@@ -2207,11 +4306,19 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     // Each refresh-token POST rotates: rt0 -> rt1 (only the FIRST POST is honored). A second concurrent
     // POST presenting the already-consumed rt0 would mint a superseded token. We assert it never happens.
     const issuedRefreshTokens = new Set<string>();
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'GET') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+        };
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
       const tokenSuffix = issuedRefreshTokens.size + 1;
       issuedRefreshTokens.add(`rt${tokenSuffix}`);
@@ -2256,7 +4363,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     const [, forcedResult] = await Promise.all([nonForced, forced]);
 
     // Exactly ONE network rotation and ONE lease acquisition for the shared binding.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
     expect(api.registerConnectedServiceCredentialSealed).toHaveBeenCalledTimes(1);
     // The forced caller adopts the single coalesced rotation rather than racing a second one.
@@ -2311,8 +4418,16 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'GET') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+        };
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
       return {
         ok: true,
@@ -2343,7 +4458,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
 
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
     expect(firstResult.credential?.oauth?.accessToken).toBe('access-1');
     expect(secondResult.credential?.oauth?.accessToken).toBe('access-1');
@@ -2394,9 +4509,17 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     let rotation = 0;
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'GET') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+        };
+      }
       rotation += 1;
       const current = rotation;
       return {
@@ -2427,7 +4550,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     });
 
     // Two fully sequential forced refreshes (no overlap) each perform their own rotation.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2);
     expect(firstResult.credential?.oauth?.accessToken).toBe('access-1');
     expect(secondResult.credential?.oauth?.accessToken).toBe('access-2');
   });
@@ -2492,6 +4615,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         sealedByProfile.set(params.profileId, params.sealed.ciphertext);
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -2563,6 +4687,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
     void sealedCiphertext;
 
     vi.stubGlobal('fetch', vi.fn() as unknown as typeof fetch);
@@ -2584,6 +4709,79 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     await expect(first).rejects.toThrow('credential read exploded');
     await expect(second).rejects.toThrow('credential read exploded');
     expect(api.getConnectedServiceCredentialSealed).toHaveBeenCalledTimes(1);
+  });
+
+  it('revision-guards missing-refresh-token health against a superseding credential', async () => {
+    const now = 1_000_000;
+    const leasedRevision = 'csr_abcdefghijklmnopqrstuv';
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(17) },
+    };
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now - 1,
+      oauth: {
+        accessToken: 'old-access',
+        refreshToken: ' ',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: null,
+      },
+    });
+    const updateConnectedServiceCredentialHealth = vi.fn(async () => ({
+      error: 'connect_credential_mutation_superseded' as const,
+      reason: 'revision_mismatch' as const,
+      credentialRevision: 'csr_bcdefghijklmnopqrstuvw',
+    }));
+    const onCredentialHealthNotification = vi.fn(async () => {});
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({
+        credentialRevision: leasedRevision,
+        content: { t: 'plain' as const, v: record },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({
+        acquired: true,
+        leaseUntil: now + 60_000,
+        ownerId: 'machine-1:daemon-a',
+        credentialRevision: leasedRevision,
+      })),
+      updateConnectedServiceCredentialHealth,
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      ownerIdProvider: () => 'machine-1:daemon-a',
+      activeServerDir: '/tmp/happier-active',
+      baseDir: '/tmp/happier-base',
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      onCredentialHealthNotification,
+    });
+
+    const result = await coordinator.refreshConnectedServiceCredentialForSpawnPreflight({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+    });
+
+    expect(result.status).toBe('refresh_failed');
+    expect(updateConnectedServiceCredentialHealth).toHaveBeenCalledWith(expect.objectContaining({
+      expectedCredentialRevision: leasedRevision,
+      health: expect.objectContaining({
+        status: 'needs_reauth',
+        lastRefreshFailureKind: 'missing_refresh_token',
+      }),
+    }));
+    expect(onCredentialHealthNotification).not.toHaveBeenCalled();
   });
 
   it('persists reauth-required credential health for invalid provider refresh grants without raw provider bodies', async () => {
@@ -2631,6 +4829,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
       updateConnectedServiceCredentialHealth,
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: false,
@@ -2709,10 +4908,11 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       debug.mockRestore();
     }
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ record: null, reauthRequired: true });
     expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
       serviceId: 'openai-codex',
       profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
       health: {
         v: 1,
         status: 'needs_reauth',
@@ -2754,6 +4954,151 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(JSON.stringify(updateConnectedServiceCredentialHealth.mock.calls)).not.toContain('secret-refresh-token');
     expect(JSON.stringify(logRefreshDiagnostic.mock.calls)).not.toContain('secret-refresh-token');
     expect(JSON.stringify(onCredentialHealthNotification.mock.calls)).not.toContain('secret-refresh-token');
+  });
+
+  it('does not harvest a Claude Code refresh token from a materialized profile home before persisting invalid-grant health', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-claude-harvest-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-claude-harvest-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'claude-subscription',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 10 * 60_000,
+      oauth: {
+        accessToken: 'old-access',
+        refreshToken: 'stale-daemon-refresh',
+        idToken: null,
+        scope: 'user:inference user:profile user:sessions:claude_code',
+        tokenType: 'Bearer',
+        providerAccountId: 'acct',
+        providerEmail: 'claude@example.com',
+      },
+    });
+
+    let sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+
+    const profileClaudeConfigDir = resolveClaudeConnectedServiceStableConfigDir({
+      activeServerDir,
+      serviceId: 'claude-subscription',
+      fallbackProfileId: 'work',
+      selection: {
+        kind: 'profile',
+        serviceId: 'claude-subscription',
+        profileId: 'work',
+        record,
+      },
+    });
+    if (!profileClaudeConfigDir) throw new Error('expected profile config dir');
+    await mkdir(profileClaudeConfigDir, { recursive: true });
+    await writeFile(
+      join(profileClaudeConfigDir, '.credentials.json'),
+      `${JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'rotated-materialized-access',
+          refreshToken: 'rotated-materialized-refresh',
+          expiresAt: now + 20 * 60_000,
+          scopes: ['user:inference', 'user:profile', 'user:sessions:claude_code'],
+        },
+      })}\n`,
+    );
+
+    const updateConnectedServiceCredentialHealth = vi.fn(async () => {});
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1', ciphertext: sealedCiphertext },
+        metadata: {
+          kind: 'oauth',
+          providerEmail: 'claude@example.com',
+          providerAccountId: 'acct',
+          expiresAt: now + 10 * 60_000,
+        },
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async (params: { sealed: { ciphertext: string } }) => {
+        sealedCiphertext = params.sealed.ciphertext;
+      }),
+      updateConnectedServiceCredentialHealth,
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+
+    const refreshTokensSeen: string[] = [];
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { refresh_token?: string } : {};
+      refreshTokensSeen.push(body.refresh_token ?? '');
+      if (body.refresh_token === 'stale-daemon-refresh') {
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'bad request',
+          text: async () => JSON.stringify({ error: 'invalid_grant' }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          access_token: 'recovered-claude-access',
+          refresh_token: 'recovered-claude-refresh',
+          expires_in: 3600,
+          scope: 'user:inference user:profile user:sessions:claude_code',
+          token_type: 'Bearer',
+          account: { uuid: 'acct', email_address: 'claude@example.com' },
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const logRefreshDiagnostic = vi.fn();
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+      logRefreshDiagnostic,
+    });
+
+    await expect(coordinator.refreshConnectedServiceCredentialForQuota({
+      serviceId: 'claude-subscription',
+      profileId: 'work',
+      force: true,
+    })).resolves.toEqual({ record: null, reauthRequired: true });
+
+    expect(refreshTokensSeen).toEqual(['stale-daemon-refresh']);
+    expect(updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
+      serviceId: 'claude-subscription',
+      profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
+      health: {
+        v: 1,
+        status: 'needs_reauth',
+        reconnectRequired: true,
+        lastRefreshAttemptAt: now,
+        lastRefreshFailureAt: now,
+        lastRefreshFailureKind: 'invalid_grant',
+        providerHttpStatus: 400,
+        providerErrorCode: 'invalid_grant',
+      },
+    });
+    expect(JSON.stringify(updateConnectedServiceCredentialHealth.mock.calls)).not.toContain('rotated-materialized-refresh');
+    expect(JSON.stringify(logRefreshDiagnostic.mock.calls)).not.toContain('rotated-materialized-refresh');
+    expect(api.registerConnectedServiceCredentialSealed).not.toHaveBeenCalled();
   });
 
   it('warns when credential health persistence fails after refresh', async () => {
@@ -2807,6 +5152,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         });
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: false,
@@ -2834,7 +5180,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         serviceId: 'openai-codex',
         profileId: 'work',
         force: true,
-      })).resolves.toBeNull();
+      })).resolves.toEqual({ record: null, reauthRequired: true });
 
       expect(warn).toHaveBeenCalledWith(
         '[DAEMON RUN] Failed to update connected-service credential health after refresh',
@@ -2860,7 +5206,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     }
   });
 
-  it('does not retry scheduled refresh for profiles already marked reconnect-required', async () => {
+  it('reprobes scheduled reconnect-required credentials and clears health after a successful refresh', async () => {
     const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-needs-reauth-'));
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-refresh-needs-reauth-'));
 
@@ -2871,6 +5217,113 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
 
     const now = 1_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 30_000,
+      oauth: {
+        accessToken: 'old-access',
+        refreshToken: 'recoverable-refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'acct',
+        providerEmail: null,
+      },
+    });
+
+    const sealedCiphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+      payload: record,
+      randomBytes: (length) => randomBytes(length),
+    });
+
+    const api = {
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        sealed: { format: 'account_scoped_v1', ciphertext: sealedCiphertext },
+        metadata: { kind: 'oauth', providerEmail: null, providerAccountId: 'acct', expiresAt: now + 30_000 },
+      })),
+      listConnectedServiceProfiles: vi.fn(async () => ({
+        serviceId: 'openai-codex',
+        profiles: [{
+          profileId: 'work',
+          status: 'needs_reauth' as const,
+          kind: 'oauth' as const,
+          providerEmail: null,
+          providerAccountId: 'acct',
+          expiresAt: now + 30_000,
+        }],
+      })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
+      updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
+    } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
+
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        access_token: 'recovered-access',
+        refresh_token: 'recovered-refresh',
+        expires_in: 3600,
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const coordinator = new ConnectedServiceRefreshCoordinator({
+      api,
+      credentials,
+      machineIdProvider: () => 'machine-1',
+      activeServerDir,
+      baseDir,
+      refreshWindowMs: 60_000,
+      refreshLeaseMs: 30_000,
+      now: () => now,
+    });
+
+    coordinator.registerSpawnTarget({
+      pid: 123,
+      agentId: 'codex',
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'work' } },
+      },
+      materializationKey: 'session-1',
+    });
+
+    await expect(coordinator.tickOnce()).resolves.toBeUndefined();
+
+    expect(api.listConnectedServiceProfiles).toHaveBeenCalledWith({ serviceId: 'openai-codex' });
+    expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
+      health: {
+        v: 1,
+        status: 'connected',
+        reconnectRequired: false,
+        lastRefreshAttemptAt: now,
+        lastRefreshSuccessAt: now,
+      },
+    });
+  });
+
+  it('backs off scheduled reconnect-required reprobes after a failed probe', async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-refresh-needs-reauth-backoff-'));
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-refresh-needs-reauth-backoff-'));
+
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    if (credentials.encryption.type !== 'legacy') throw new Error('fixture');
+
+    let now = 1_000_000;
     const record = buildConnectedServiceCredentialRecord({
       now,
       serviceId: 'openai-codex',
@@ -2915,12 +5368,17 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
-    const fetchMock = vi.fn(async () => {
-      throw new Error('scheduled refresh should not reach provider for reconnect-required credentials');
-    });
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      statusText: 'bad request',
+      text: async () => JSON.stringify({ error: 'invalid_grant' }),
+    }));
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
 
+    const logRefreshDiagnostic = vi.fn();
     const coordinator = new ConnectedServiceRefreshCoordinator({
       api,
       credentials,
@@ -2930,6 +5388,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       refreshWindowMs: 60_000,
       refreshLeaseMs: 30_000,
       now: () => now,
+      logRefreshDiagnostic,
     });
 
     coordinator.registerSpawnTarget({
@@ -2942,15 +5401,23 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       materializationKey: 'session-1',
     });
 
-    await expect(coordinator.tickOnce()).resolves.toBeUndefined();
+    await expect(coordinator.tickOnce()).rejects.toThrow(AggregateError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    expect(api.listConnectedServiceProfiles).toHaveBeenCalledWith({ serviceId: 'openai-codex' });
-    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(api.updateConnectedServiceCredentialHealth).not.toHaveBeenCalled();
+    now += 30_000;
+    await expect(coordinator.tickOnce()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(logRefreshDiagnostic).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'blocked_by_credential_health',
+      reason: 'scheduled',
+    }));
+
+    now += 30_000;
+    await expect(coordinator.tickOnce()).rejects.toThrow(AggregateError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('returns reconnect-required from spawn preflight before the expiry-window shortcut', async () => {
+  it('returns an honest blocked-health spawn preflight result before the expiry-window shortcut', async () => {
     const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-spawn-health-gate-'));
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-spawn-health-gate-'));
 
@@ -3005,6 +5472,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => {
       throw new Error('spawn preflight should not reach provider for reconnect-required credentials');
@@ -3027,17 +5495,18 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       profileId: 'work',
     });
 
-    expect(result.status).toBe('refresh_failed');
+    expect(result.status).toBe('blocked_by_credential_health');
     expect(result.diagnostic).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       profileId: 'work',
       reason: 'spawn_preflight',
-      category: 'invalid_grant',
       expiresAt: now + 10 * 60_000,
     }));
+    expect(result.diagnostic.category).toBeUndefined();
     expect(api.listConnectedServiceProfiles).toHaveBeenCalledWith({ serviceId: 'openai-codex' });
     expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(api.updateConnectedServiceCredentialHealth).not.toHaveBeenCalled();
   });
 
   it('honors forced Claude spawn preflight refresh for future-dated OAuth credentials', async () => {
@@ -3089,15 +5558,25 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        access_token: 'forced-access',
-        refresh_token: 'forced-refresh',
-        expires_in: 3600,
-      }),
-    }));
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'GET') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          access_token: 'forced-access',
+          refresh_token: 'forced-refresh',
+          expires_in: 3600,
+        }),
+      };
+    });
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
 
     const coordinator = new ConnectedServiceRefreshCoordinator({
@@ -3118,7 +5597,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     });
 
     expect(result.status).toBe('refreshed');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
     expect(result.credential?.kind).toBe('oauth');
     if (!result.credential || result.credential.kind !== 'oauth') {
@@ -3180,6 +5659,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const coordinator = new ConnectedServiceRefreshCoordinator({
       api,
@@ -3207,7 +5687,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(payload).not.toContain('"data"');
   });
 
-  it('does not quota-bridge refresh cached reconnect-required credentials when forced', async () => {
+  it('lets forced quota-bridge refresh bypass reconnect-required backoff and clear health', async () => {
     const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-quota-health-gate-'));
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-quota-health-gate-'));
 
@@ -3226,7 +5706,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       expiresAt: now + 10 * 60_000,
       oauth: {
         accessToken: 'old-access',
-        refreshToken: 'invalid-refresh',
+        refreshToken: 'recoverable-refresh',
         idToken: null,
         scope: null,
         tokenType: null,
@@ -3262,10 +5742,16 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async () => {}),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
-    const fetchMock = vi.fn(async () => {
-      throw new Error('quota bridge should not reach provider for reconnect-required credentials');
-    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        access_token: 'quota-recovered-access',
+        refresh_token: 'quota-recovered-refresh',
+        expires_in: 3600,
+      }),
+    }));
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
 
     const coordinator = new ConnectedServiceRefreshCoordinator({
@@ -3283,11 +5769,26 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       serviceId: 'openai-codex',
       profileId: 'work',
       force: true,
-    })).resolves.toBeNull();
+    })).resolves.toEqual(expect.objectContaining({
+      record: expect.objectContaining({ kind: 'oauth' }),
+      reauthRequired: false,
+    }));
 
     expect(api.listConnectedServiceProfiles).toHaveBeenCalledWith({ serviceId: 'openai-codex' });
-    expect(api.acquireConnectedServiceRefreshLease).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
+      health: {
+        v: 1,
+        status: 'connected',
+        reconnectRequired: false,
+        lastRefreshAttemptAt: now,
+        lastRefreshSuccessAt: now,
+      },
+    });
   });
 
   it('refreshes the active group profile and re-materializes the selected group home for tracked group spawn targets', async () => {
@@ -3344,7 +5845,15 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       registerConnectedServiceCredentialSealed: vi.fn(async (params: { sealed: { ciphertext: string } }) => {
         sealedCiphertext = params.sealed.ciphertext;
       }),
+      // Canonical group state matches the target's snapshot (active 'backup' at generation 7).
+      getConnectedServiceAuthGroup: vi.fn(async () => ({
+        serviceId: 'openai-codex',
+        groupId: 'main',
+        activeProfileId: 'backup',
+        generation: 7,
+      })),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -3481,6 +5990,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       }),
       updateConnectedServiceCredentialHealth: vi.fn(async () => {}),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
 
     const fetchMock = vi.fn(async (input: any) => {
       const url = String(input);
@@ -3539,6 +6049,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith({
       serviceId: 'openai-codex',
       profileId: 'work',
+      expectedCredentialRevision: expect.any(String),
       health: {
         v: 1,
         status: 'refresh_failed_retryable',
@@ -3588,15 +6099,27 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         providerEmail: 'user@example.com',
       },
     });
+    let credentialRevision = 'csr_abcdefghijklmnopqrstuv';
     const api = {
       getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
-      getConnectedServiceCredentialPlain: vi.fn(async () => ({ content: { t: 'plain' as const, v: storedRecord } })),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({
+        credentialRevision,
+        content: { t: 'plain' as const, v: storedRecord },
+      })),
       getConnectedServiceCredentialSealed: vi.fn(async () => null),
-      acquireConnectedServiceRefreshLease: vi.fn(async () => ({ acquired: true, leaseUntil: now + 60_000 })),
+      acquireConnectedServiceRefreshLease: vi.fn(async () => ({
+        acquired: true,
+        leaseUntil: now + 60_000,
+        ownerId: 'machine-scope-preserve',
+        credentialRevision,
+      })),
       registerConnectedServiceCredentialPlain: vi.fn(async (params: { content: { v: typeof storedRecord } }) => {
         storedRecord = params.content.v;
+        credentialRevision = 'csr_bcdefghijklmnopqrstuvw';
+        return { success: true as const, credentialRevision };
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -3623,11 +6146,18 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       force: true,
     });
 
-    expect(result?.kind).toBe('oauth');
-    expect(result?.oauth?.scope).toBe('user:inference user:profile user:sessions:claude_code');
-    expect(result?.oauth?.tokenType).toBe('Bearer');
+    expect(result?.record?.kind).toBe('oauth');
+    expect(result?.record?.oauth?.scope).toBe('user:inference user:profile user:sessions:claude_code');
+    expect(result?.record?.oauth?.tokenType).toBe('Bearer');
     expect(storedRecord.oauth?.scope).toBe('user:inference user:profile user:sessions:claude_code');
     expect(storedRecord.oauth?.tokenType).toBe('Bearer');
+    expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledWith(expect.objectContaining({
+      expectedCredentialRevision: 'csr_abcdefghijklmnopqrstuv',
+    }));
+    expect(api.registerConnectedServiceCredentialPlain).toHaveBeenCalledWith(expect.objectContaining({
+      expectedCredentialRevision: 'csr_abcdefghijklmnopqrstuv',
+      refreshLeaseOwnerId: 'machine-scope-preserve',
+    }));
   });
 
   it('updates stored OAuth scope and token type when refresh returns replacements', async () => {
@@ -3663,6 +6193,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         storedRecord = params.content.v;
       }),
     } as unknown as ApiClient;
+    completeCredentialAuthorityBoundaryFixture(api);
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -3691,10 +6222,100 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       force: true,
     });
 
-    expect(result?.kind).toBe('oauth');
-    expect(result?.oauth?.scope).toBe('user:inference user:profile user:sessions:claude_code user:mcp_servers user:file_upload');
-    expect(result?.oauth?.tokenType).toBe('Bearer');
+    expect(result?.record?.kind).toBe('oauth');
+    expect(result?.record?.oauth?.scope).toBe('user:inference user:profile user:sessions:claude_code user:mcp_servers user:file_upload');
+    expect(result?.record?.oauth?.tokenType).toBe('Bearer');
     expect(storedRecord.oauth?.scope).toBe('user:inference user:profile user:sessions:claude_code user:mcp_servers user:file_upload');
     expect(storedRecord.oauth?.tokenType).toBe('Bearer');
   });
 });
+
+/**
+ * Completes narrow API boundary fakes with the revision/lease facts the real server always returns.
+ * Individual race tests can still return explicit revisions; those values take precedence and
+ * advance the fake's canonical revision for subsequent reads.
+ */
+function completeCredentialAuthorityBoundaryFixture(api: ApiClient): void {
+  // Boundary fixtures intentionally use dynamic method replacement so the 50+ focused scenarios
+  // exercise one canonical server contract instead of reimplementing revision minting in each test.
+  const boundary = api as any;
+  const revisions = new Map<string, string>();
+  const persistedRepresentations = new Map<string, Record<string, unknown>>();
+  let revisionSequence = 0;
+  const fallbackRevision = 'csr_abcdefghijklmnopqrstuv';
+  const keyOf = (params: { serviceId: string; profileId: string }) => `${params.serviceId}::${params.profileId}`;
+  const mintRevision = () => {
+    revisionSequence += 1;
+    return `csr_${String(revisionSequence).padStart(22, '0')}`;
+  };
+
+  for (const methodName of ['getConnectedServiceCredentialPlain', 'getConnectedServiceCredentialSealed'] as const) {
+    const original = boundary[methodName];
+    if (typeof original !== 'function') continue;
+    boundary[methodName] = vi.fn(async (params: { serviceId: string; profileId: string }) => {
+      const result = await original.call(boundary, params);
+      if (!result) return result;
+      const key = keyOf(params);
+      const persistedRepresentation = persistedRepresentations.get(key);
+      const credentialRevision = typeof result.credentialRevision === 'string'
+        ? result.credentialRevision
+        : revisions.get(key) ?? fallbackRevision;
+      revisions.set(key, credentialRevision);
+      return {
+        ...result,
+        ...(typeof result.credentialRevision !== 'string' && persistedRepresentation
+          ? persistedRepresentation
+          : {}),
+        revisionSemantics: 'revisioned',
+        credentialRevision,
+      };
+    });
+  }
+
+  const originalLease = boundary.acquireConnectedServiceRefreshLease;
+  if (typeof originalLease === 'function') {
+    boundary.acquireConnectedServiceRefreshLease = vi.fn(async (params: {
+      serviceId: string;
+      profileId: string;
+      machineId: string;
+      ownerId?: string;
+      expectedCredentialRevision?: string;
+    }) => {
+      const result = await originalLease.call(boundary, params);
+      const key = keyOf(params);
+      const credentialRevision = typeof result.credentialRevision === 'string'
+        ? result.credentialRevision
+        : revisions.get(key) ?? params.expectedCredentialRevision ?? fallbackRevision;
+      revisions.set(key, credentialRevision);
+      return {
+        ...result,
+        ownerId: typeof result.ownerId === 'string' ? result.ownerId : params.ownerId ?? params.machineId,
+        credentialRevision,
+      };
+    });
+  }
+
+  for (const methodName of ['registerConnectedServiceCredentialPlain', 'registerConnectedServiceCredentialSealed'] as const) {
+    const original = boundary[methodName];
+    if (typeof original !== 'function') continue;
+    boundary[methodName] = vi.fn(async (params: {
+      serviceId: string;
+      profileId: string;
+      content?: unknown;
+      sealed?: unknown;
+      metadata?: unknown;
+    }) => {
+      const result = await original.call(boundary, params);
+      if (result && typeof result === 'object' && 'error' in result) return result;
+      const key = keyOf(params);
+      const credentialRevision = result && typeof result === 'object' && typeof result.credentialRevision === 'string'
+        ? result.credentialRevision
+        : mintRevision();
+      revisions.set(key, credentialRevision);
+      persistedRepresentations.set(key, params.content
+        ? { content: params.content }
+        : { sealed: params.sealed, metadata: params.metadata });
+      return { success: true, credentialRevision };
+    });
+  }
+}

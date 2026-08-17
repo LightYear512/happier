@@ -1,6 +1,6 @@
 import { parseClaudeScreenState, type ClaudeScreenState } from './tuiControls/screenState';
-import { isClaudeComposerCaptureStyleUnavailablePlaceholderCandidate } from './tuiControls/composerCaptureClassification';
-import { isControllerTypedSlashCommandResidue } from './tuiControls/slashControls';
+import { classifyClaudeOwnComposerDraft } from './ownComposerDraftClassification';
+import { resolveClaudeUnifiedDialogBlockedReason } from './tuiControls/dialogRegistry';
 
 const DEFAULT_DRAFT_CLEAR_SETTLE_MS = 250;
 // Same bounded semantics as the slash-control leftover clear (lane U): one clear key can leave the
@@ -14,6 +14,10 @@ export type OwnComposerDraftGuardResult =
   | Readonly<{ status: 'foreign_draft'; screen: ClaudeScreenState }>
   /** Composer text may be a dim Claude suggestion, but the capture lacks style evidence. */
   | Readonly<{ status: 'capture_style_unavailable'; screen: ClaudeScreenState }>
+  /** Provider is known unavailable from the visible Claude TUI state; this is not a user draft. */
+  | Readonly<{ status: 'provider_unavailable'; screen: ClaudeScreenState }>
+  /** A dialog/editor/selection state owns input; this is not a user draft. */
+  | Readonly<{ status: 'blocked_non_input_state'; screen: ClaudeScreenState; blockedReason: string }>
   /** Screen is generating: the clear key (Escape) would interrupt the running turn. */
   | Readonly<{ status: 'generating'; screen: ClaudeScreenState }>
   | Readonly<{ status: 'capture_failed' }>
@@ -58,21 +62,25 @@ export async function clearOwnLeftoverComposerDraft(opts: Readonly<{
     }
   }
 
-  function classify(captureResult: Readonly<{ screen: ClaudeScreenState; rawText: string }>): 'empty' | 'own' | 'foreign' | 'capture_style_unavailable' | 'generating' {
-    const { screen, rawText } = captureResult;
-    const content = screen.composerContent ?? '';
-    if (content.length === 0) return 'empty';
+  function classify(captureResult: Readonly<{ screen: ClaudeScreenState; rawText: string }>) {
+    return classifyClaudeOwnComposerDraft({
+      screen: captureResult.screen,
+      rawText: captureResult.rawText,
+      ownComposerTexts: opts.ownComposerTexts,
+    });
+  }
+
+  function resolveBlockedNonInputReason(screen: ClaudeScreenState): string {
+    const dialogReason = resolveClaudeUnifiedDialogBlockedReason(screen);
+    if (dialogReason) return dialogReason;
+    if (screen.permissionPromptVisible) return 'permission_prompt';
+    if (screen.trustFolderPromptVisible) return 'trust_folder_prompt';
+    if (screen.permissionEditorOpen) return 'permission_editor';
+    if (screen.selectionListVisible) return 'selection_list';
+    if (screen.queuedMessageBannerVisible) return 'queued_message_banner';
     if (screen.generating) return 'generating';
-    if (opts.ownComposerTexts.matches(content)) return 'own';
-    // RESUME2 respawn gap (A2-HIGH-1): controller-typed slash commands are echo-suppressed out
-    // of the persisted transcript, so a respawned registry can never exact-match their residue.
-    // The finite controller vocabulary (/model, /effort) is still OUR OWN text and stays
-    // clearable; everything else (incl. user-typed slash drafts like /compact …) stays foreign.
-    if (isControllerTypedSlashCommandResidue(content)) return 'own';
-    if (isClaudeComposerCaptureStyleUnavailablePlaceholderCandidate(rawText, screen)) {
-      return 'capture_style_unavailable';
-    }
-    return 'foreign';
+    if (screen.composerContent === null) return 'no_interactive_composer';
+    return 'non_input_state';
   }
 
   let captured = await capture();
@@ -83,6 +91,10 @@ export async function clearOwnLeftoverComposerDraft(opts: Readonly<{
       return { status: 'no_draft', screen };
     case 'generating':
       return { status: 'generating', screen };
+    case 'provider_unavailable':
+      return { status: 'provider_unavailable', screen };
+    case 'non_input_state':
+      return { status: 'blocked_non_input_state', screen, blockedReason: resolveBlockedNonInputReason(screen) };
     case 'capture_style_unavailable':
       return { status: 'capture_style_unavailable', screen };
     case 'foreign':
@@ -108,6 +120,10 @@ export async function clearOwnLeftoverComposerDraft(opts: Readonly<{
         return { status: 'cleared', screen, attempts: attempt };
       case 'generating':
         return { status: 'generating', screen };
+      case 'provider_unavailable':
+        return { status: 'provider_unavailable', screen };
+      case 'non_input_state':
+        return { status: 'blocked_non_input_state', screen, blockedReason: resolveBlockedNonInputReason(screen) };
       case 'capture_style_unavailable':
         return { status: 'capture_style_unavailable', screen };
       case 'foreign':

@@ -2,6 +2,7 @@ import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     classifyChangeForCheckpoint,
     getChangeTargetMessageSeq,
+    getChangeUpdatedMessageHint,
     type ChangeCheckpointBlockedReason,
     type PlannedChangeActions,
 } from './changesPlanner';
@@ -54,7 +55,9 @@ export async function applyPlannedChangeActions(params: {
         todos?: () => Promise<void>;
     };
     refreshSessionFolderAssignments?: (plan: Exclude<PlannedChangeActions['sessionFolderAssignments'], { mode: 'none' }>) => Promise<void>;
+    refreshSessionOrganization?: (plan: Exclude<PlannedChangeActions['sessionOrganization'], { mode: 'none' }>) => Promise<void>;
     invalidateMessagesForSession: (sessionId: string) => Promise<void>;
+    repairSessionTranscriptRevision?: (repair: PlannedChangeActions['sessionTranscriptRepairs'][number]) => Promise<void>;
     invalidateScmStatusForSession: (sessionId: string) => void;
     applyTodoSocketUpdates: (changes: TodoSocketUpdate[]) => Promise<void>;
     kvBulkGet: (credentials: AuthCredentials, keys: string[]) => Promise<{ values: TodoSocketUpdate[] }>;
@@ -69,15 +72,22 @@ export async function applyPlannedChangeActions(params: {
     const tasks: Array<() => Promise<void>> = [];
     const completedMessageCatchUpSessionIds = new Set<string>();
     const failedMessageCatchUpSessionIds = new Set<string>();
+    const completedTranscriptRepairSessionIds = new Set<string>();
+    const failedTranscriptRepairSessionIds = new Set<string>();
     const completedPendingSessionIds = new Set<string>();
     const failedPendingSessionIds = new Set<string>();
     let sessionFolderAssignmentsRefreshFailed = false;
+    let sessionOrganizationRefreshFailed = false;
     const loadedCatchUpSessionIds = planned.sessionIdsToCatchUp.filter((sessionId) =>
         params.isSessionMessagesLoaded(sessionId),
     );
+    const transcriptRepairBySessionId = new Map(
+        planned.sessionTranscriptRepairs.map((repair) => [repair.sessionId, repair] as const),
+    );
+    const changedSessionIds = planned.sessionIdsToCatchUp;
     const sessionListInvalidationContext: SessionListInvalidationContext = {
-        requiredHydrationSessionIds: loadedCatchUpSessionIds,
-        prioritizeSessionIds: loadedCatchUpSessionIds,
+        requiredHydrationSessionIds: changedSessionIds,
+        prioritizeSessionIds: changedSessionIds,
     };
 
     let sessionsInvalidationFailed = false;
@@ -129,6 +139,23 @@ export async function applyPlannedChangeActions(params: {
         });
     }
 
+    const sessionOrganizationPlan = planned.sessionOrganization.mode === 'none'
+        ? null
+        : planned.sessionOrganization;
+    if (sessionOrganizationPlan) {
+        tasks.push(async () => {
+            try {
+                if (!params.refreshSessionOrganization) {
+                    sessionOrganizationRefreshFailed = true;
+                    return;
+                }
+                await params.refreshSessionOrganization(sessionOrganizationPlan);
+            } catch {
+                sessionOrganizationRefreshFailed = true;
+            }
+        });
+    }
+
     for (const sessionId of loadedCatchUpSessionIds) {
         tasks.push(async () => {
             try {
@@ -143,6 +170,21 @@ export async function applyPlannedChangeActions(params: {
                 completedMessageCatchUpSessionIds.add(sessionId);
             } catch {
                 failedMessageCatchUpSessionIds.add(sessionId);
+                return;
+            }
+
+            const repair = transcriptRepairBySessionId.get(sessionId);
+            if (repair) {
+                try {
+                    if (!params.repairSessionTranscriptRevision) {
+                        failedTranscriptRepairSessionIds.add(sessionId);
+                        return;
+                    }
+                    await params.repairSessionTranscriptRevision(repair);
+                    completedTranscriptRepairSessionIds.add(sessionId);
+                } catch {
+                    failedTranscriptRepairSessionIds.add(sessionId);
+                }
             }
         });
         params.invalidateScmStatusForSession(sessionId);
@@ -220,12 +262,6 @@ export async function applyPlannedChangeActions(params: {
             };
         }
 
-        if (classification.decision === 'intentionally-skipped-by-explicit-policy') {
-            safeAdvanceCursor = classification.cursor;
-            processedChanges += 1;
-            continue;
-        }
-
         if (
             sessionsInvalidationFailed
             && (classification.kind === 'session' || classification.kind === 'share')
@@ -272,10 +308,45 @@ export async function applyPlannedChangeActions(params: {
             continue;
         }
 
+        if (classification.materializationProof === 'session-organization') {
+            if (sessionOrganizationRefreshFailed) {
+                return {
+                    status: 'partial',
+                    safeAdvanceCursor,
+                    blockedCursor: classification.cursor,
+                    blockedReason: 'partial-materialization',
+                    processedChanges,
+                    blockedChanges: planned.changes.length - processedChanges,
+                };
+            }
+            safeAdvanceCursor = classification.cursor;
+            processedChanges += 1;
+            continue;
+        }
+
         if (
             (classification.kind === 'session' || classification.kind === 'share')
             && params.isSessionMessagesLoaded(classification.entityId)
             && (!completedMessageCatchUpSessionIds.has(classification.entityId) || failedMessageCatchUpSessionIds.has(classification.entityId))
+        ) {
+            return {
+                status: 'partial',
+                safeAdvanceCursor,
+                blockedCursor: classification.cursor,
+                blockedReason: 'partial-materialization',
+                processedChanges,
+                blockedChanges: planned.changes.length - processedChanges,
+            };
+        }
+
+        const updatedMessage = getChangeUpdatedMessageHint(change);
+        if (
+            updatedMessage
+            && params.isSessionMessagesLoaded(classification.entityId)
+            && (
+                !completedTranscriptRepairSessionIds.has(classification.entityId)
+                || failedTranscriptRepairSessionIds.has(classification.entityId)
+            )
         ) {
             return {
                 status: 'partial',

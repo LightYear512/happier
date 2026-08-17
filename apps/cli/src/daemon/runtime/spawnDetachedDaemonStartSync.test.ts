@@ -19,7 +19,28 @@ vi.mock('./resolveDaemonLaunchSpec', () => ({
 }));
 
 describe('spawnDetachedDaemonStartSync', () => {
-  const envScope = createEnvKeyScope(['HAPPIER_RELEASE_RING', 'HAPPIER_PUBLIC_RELEASE_CHANNEL', 'HAPPIER_HOME_DIR']);
+  it('adds successor-specific bounded authorization for self-restart launches', async () => {
+    const mod = await import('./spawnDetachedDaemonStartSync');
+    await mod.spawnDetachedDaemonStartSync({ startupSource: 'self-restart', env: {} });
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['daemon', 'start-sync']),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          HAPPIER_DAEMON_SELF_RESTART_CORRELATION_ID: expect.stringMatching(/^self-restart-/),
+          HAPPIER_DAEMON_SELF_RESTART_DEADLINE_MS: expect.any(String),
+        }),
+      }),
+    );
+  });
+  const envScope = createEnvKeyScope([
+    'HAPPIER_RELEASE_RING',
+    'HAPPIER_PUBLIC_RELEASE_CHANNEL',
+    'HAPPIER_HOME_DIR',
+    'HAPPIER_DAEMON_STARTUP_SOURCE',
+    'HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT',
+  ]);
   const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
 
   afterEach(() => {
@@ -46,6 +67,45 @@ describe('spawnDetachedDaemonStartSync', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, , options] = spawnMock.mock.calls[0] as any[];
     expect(options?.env?.HAPPIER_PUBLIC_RELEASE_CHANNEL).toBe('dev');
+  });
+
+  it('lets an explicit startup source override an inherited daemon startup source', async () => {
+    Object.defineProperty(process, 'platform', { ...originalPlatformDescriptor, value: 'linux' });
+    envScope.patch({
+      HAPPIER_DAEMON_STARTUP_SOURCE: 'manual',
+      HAPPIER_HOME_DIR: '/tmp/happier-cli-test-home',
+    });
+
+    const mod = await import('./spawnDetachedDaemonStartSync');
+    await mod.spawnDetachedDaemonStartSync({
+      startupSource: 'self-restart',
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, , options] = spawnMock.mock.calls[0] as any[];
+    expect(options?.env?.HAPPIER_DAEMON_STARTUP_SOURCE).toBe('self-restart');
+  });
+
+  it('resolves the successor launch from the detached child environment', async () => {
+    Object.defineProperty(process, 'platform', { ...originalPlatformDescriptor, value: 'linux' });
+    envScope.patch({
+      HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT: '1111111111111111',
+    });
+    const successorEnv = {
+      ...process.env,
+      HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT: '2222222222222222',
+    };
+
+    const mod = await import('./spawnDetachedDaemonStartSync');
+    await mod.spawnDetachedDaemonStartSync({
+      startupSource: 'self-restart',
+      env: successorEnv,
+    });
+
+    expect(resolveDaemonLaunchSpecMock).toHaveBeenCalledWith(
+      ['daemon', 'start-sync'],
+      successorEnv,
+    );
   });
 
   it('uses Start-Process on Windows so detached daemon launch handles cmd/runtime paths reliably', async () => {

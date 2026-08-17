@@ -17,4 +17,3 @@ describe('getPermissionsInUiWhileLocal', () => {
         expect(getPermissionsInUiWhileLocal({})).toBe(false);
     });
 });
-

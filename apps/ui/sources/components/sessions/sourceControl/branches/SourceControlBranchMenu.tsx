@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { Octicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -23,7 +22,7 @@ import {
 } from '@/sync/ops';
 import { useSetting } from '@/sync/domains/state/storage';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
 import { showSwitchBranchWithChangesDialog } from './SwitchBranchWithChangesDialog';
 import { t } from '@/text';
 import { scmStatusSync } from '@/scm/scmStatusSync';
@@ -36,6 +35,7 @@ import {
 } from './branchMenuPredicates';
 import { handleSourceControlBranchMenuSelect } from './handleSourceControlBranchMenuSelect';
 import { parsePullRequestReferenceInput } from './pullRequestReferenceInput';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export type SourceControlBranchMenuProps = Readonly<{
     sessionId: string;
@@ -53,7 +53,7 @@ export function SourceControlBranchMenu(props: SourceControlBranchMenuProps): Re
     const writeEnabled = props.writeEnabled !== false;
     const snapshot = props.snapshot;
     const currentBranch = props.currentBranch;
-    const machineTarget = readMachineTargetForSession(props.sessionId);
+    const machineTarget = useSessionMachineTarget(props.sessionId);
 
     const branchSwitchSettingRaw = useSetting('scmUncommittedChangesStrategy');
     const branchSwitchSetting = normalizeBranchSwitchSetting(branchSwitchSettingRaw);
@@ -487,8 +487,8 @@ export function SourceControlBranchMenu(props: SourceControlBranchMenuProps): Re
                     >
                         {currentBranch || t('files.detachedHead')}
                     </Text>
-                    <Octicons
-                        name={open ? 'chevron-up' : 'chevron-down'}
+                    <Icon
+                        name={open ? 'caret-up' : 'caret-down'}
                         size={14}
                         color={theme.colors.text.secondary}
                         style={{ flexShrink: 0 }}

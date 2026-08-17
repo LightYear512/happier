@@ -1,8 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import tweetnacl from 'tweetnacl';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { Ionicons } from '@expo/vector-icons';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Item } from '@/components/ui/lists/Item';
@@ -29,6 +27,8 @@ import { resolveConnectedServiceOauthPasteCopy } from './oauth/resolveConnectedS
 import { resolveConnectedServiceOauthErrorMessage } from './oauth/resolveConnectedServiceOauthErrorMessage';
 import { storeConnectedServiceCredentialWithIdentityConfirmation } from './storeConnectedServiceCredentialWithIdentityConfirmation';
 import { runConnectedServiceCredentialStoredEffects } from './runConnectedServiceCredentialStoredEffects';
+import { Icon } from '@/components/ui/icons/Icon';
+import { createConnectedServiceOauthExchangeKeyPair } from '@/sync/domains/connectedServices/oauth/createConnectedServiceOauthExchangeKeyPair';
 
 function asStringParam(value: unknown): string {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : '';
@@ -54,9 +54,9 @@ export const ConnectedServiceOauthPasteView = React.memo(function ConnectedServi
   const [busy, setBusy] = React.useState(false);
   const [redirectUrlInput, setRedirectUrlInput] = React.useState('');
   const [didShowOpenInstructions, setDidShowOpenInstructions] = React.useState(false);
-  const keyPairRef = React.useRef<tweetnacl.BoxKeyPair | null>(null);
+  const keyPairRef = React.useRef<ReturnType<typeof createConnectedServiceOauthExchangeKeyPair> | null>(null);
   if (!keyPairRef.current) {
-    keyPairRef.current = tweetnacl.box.keyPair();
+    keyPairRef.current = createConnectedServiceOauthExchangeKeyPair();
   }
 
   React.useEffect(() => {
@@ -190,7 +190,7 @@ export const ConnectedServiceOauthPasteView = React.memo(function ConnectedServi
   }
 
   return (
-    <ItemList>
+    <ItemList keyboardAware keyboardShouldPersistTaps="handled">
       <ItemGroup title={t('connectedServices.oauthPaste.connectWebGroupTitle')}>
         <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
           <Text style={{ color: theme.colors.text.secondary }}>
@@ -255,7 +255,7 @@ export const ConnectedServiceOauthPasteView = React.memo(function ConnectedServi
           <Item
             testID="connectedServices.oauthPaste.switchMethodItem"
             title={props.fallbackAction.title}
-            icon={<Ionicons name="swap-horizontal-outline" size={22} color={theme.colors.accent.blue} />}
+            icon={<Icon name="arrows-left-right" size={20} color={theme.colors.accent.blue} />}
             onPress={props.fallbackAction.onPress}
           />
         </ItemGroup>

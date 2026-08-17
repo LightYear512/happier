@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { View, TouchableOpacity, Platform } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { Ionicons } from '@expo/vector-icons';
 import { getToolViewComponent } from '@/components/tools/renderers/core/_registry';
 import { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
 import { useElapsedTime } from '@/hooks/ui/useElapsedTime';
@@ -13,14 +12,14 @@ import { ApprovalPromptCard } from '../approvals/ApprovalPromptCard';
 import { parseToolUseError } from '@/utils/errors/toolErrorParser';
 import { t } from '@/text';
 import { useSetting } from '@/sync/domains/state/storage';
-import { resolveToolViewDetailLevel } from '@/components/tools/normalization/policy/resolveToolViewDetailLevel';
+import { resolveToolViewDetailLevel, type ToolViewDetailLevel } from '@/components/tools/normalization/policy/resolveToolViewDetailLevel';
 import { Text } from '@/components/ui/text/Text';
 import { ToolInlineBody } from './ToolInlineBody';
 import { TranscriptCollapsible } from '@/components/sessions/transcript/motion/TranscriptCollapsible';
 import { buildToolHeaderModel } from '@/components/tools/shell/presentation/buildToolHeaderModel';
 import { resolveToolStatusIndicatorKind } from '@/components/tools/shell/presentation/resolveToolStatusIndicatorKind';
 import { resolveToolErrorSummary } from '@/components/tools/shell/presentation/resolveToolErrorSummary';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import {
     resolveToolViewDetailLevelDefaultForChromeMode,
     resolveToolViewExpandedDetailLevelDefaultForChromeMode,
@@ -41,7 +40,21 @@ import { isGenericSubAgentToolName, isSubAgentTranscriptToolName } from '@happie
 import { resolveInactiveSessionToolCallFailure } from '../permissions/resolveInactiveSessionToolCallFailure';
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import { buildApprovalToolCallLocation, doesApprovalMatchToolCall } from './toolApprovalPromptMatching';
+import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import { TranscriptJumpAttention } from '@/components/sessions/transcript/navigation/TranscriptJumpHighlightOverlay';
+import { RowActionRevealSlot } from '@/components/sessions/transcript/messageActions/RowActionRevealSlot';
+import { readCoarsePrimaryPointer, useRowActionHoverHost } from '@/components/sessions/transcript/messageActions/rowActionRevealHost';
+import { shouldShowTranscriptRowPinAction } from '@/components/sessions/transcript/messageCopyVisibility';
+import type { ToolRowPinAction } from '@/components/sessions/transcript/toolCalls/ToolCallPinAction';
+import { Icon } from '@/components/ui/icons/Icon';
 
+const TOOL_VIEW_HIGHLIGHT_RADIUS = 12;
+
+/**
+ * Ink size of the card's status mark. The running spinner derives its diameter from this through
+ * `iconMatchedSpinnerSize`, so the mark cannot appear to change size as a tool settles.
+ */
+const TOOL_VIEW_STATUS_GLYPH_PX = 20;
 
 interface ToolViewProps {
     metadata: Metadata | null;
@@ -50,6 +63,9 @@ interface ToolViewProps {
     onPress?: () => void;
     sessionId?: string;
     messageId?: string;
+    /** Row seq, so a seq-targeted transcript jump can land its highlight here. */
+    jumpHighlightSeq?: number | null;
+    headerAction?: ToolRowPinAction | null;
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
     forcePermissionPromptsInTranscript?: boolean;
     /**
@@ -60,16 +76,12 @@ interface ToolViewProps {
      * Standalone tool cards (default) keep the intrinsic margin.
      */
     embedded?: boolean;
-    interaction?: {
-        canSendMessages: boolean;
-        canApprovePermissions: boolean;
-        permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
-        disableToolNavigation?: boolean;
-    };
+    interaction?: TranscriptInteraction;
 }
 
 export const ToolView = React.memo<ToolViewProps>((props) => {
     const { tool, onPress, sessionId, messageId } = props;
+    const headerActionHost = useRowActionHoverHost();
     const router = useRouter();
     const { theme } = useUnistyles();
     const [isExpanded, setIsExpanded] = React.useState(false);
@@ -178,11 +190,11 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
               toolInput: toolForRendering.input,
               detailLevelDefault: resolvedDetailLevelDefault,
               detailLevelDefaultLocalControl: toolViewDetailLevelDefaultLocalControl,
-              detailLevelByToolName: toolViewDetailLevelByToolName as any,
+              detailLevelByToolName: toolViewDetailLevelByToolName as Record<string, ToolViewDetailLevel> | null | undefined,
           });
 
     const expandedDetailLevel: 'summary' | 'full' =
-        (toolViewExpandedDetailLevelByToolName as any)?.[normalizedToolName] ?? resolvedExpandedDetailLevelDefault;
+        (toolViewExpandedDetailLevelByToolName as Record<string, 'summary' | 'full'> | null | undefined)?.[normalizedToolName] ?? resolvedExpandedDetailLevelDefault;
 
     const effectiveDetailLevel = isExpanded ? expandedDetailLevel : collapsedDetailLevel;
 
@@ -193,6 +205,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
     const sidechainHydration = useEnsureSidechainsLoaded({
         enabled:
             isExpanded &&
+            props.interaction?.disableToolNavigation !== true &&
             isSubAgentTranscriptToolName(normalizedToolName),
         sessionId,
         sidechainIds: [transcriptSidechainId],
@@ -250,22 +263,32 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
 
     const statusKind = resolveToolStatusIndicatorKind(toolForRendering);
     if (statusKind === 'permission_blocked') {
-        statusIcon = <Ionicons name="remove-circle-outline" size={20} color={theme.colors.text.secondary} />;
+        statusIcon = <Icon name="minus-circle" size={TOOL_VIEW_STATUS_GLYPH_PX} color={theme.colors.text.secondary} />;
     } else if (statusKind === 'permission_pending') {
-        statusIcon = <Ionicons name="lock-closed-outline" size={20} color={theme.colors.state.neutral.foreground} />;
+        statusIcon = <Icon name="lock" size={TOOL_VIEW_STATUS_GLYPH_PX} color={theme.colors.state.neutral.foreground} />;
     } else if (isToolUseError) {
-        statusIcon = <Ionicons name="remove-circle-outline" size={20} color={theme.colors.text.secondary} />;
+        statusIcon = <Icon name="minus-circle" size={TOOL_VIEW_STATUS_GLYPH_PX} color={theme.colors.text.secondary} />;
         hideDefaultError = true;
         minimal = true;
     } else {
         switch (statusKind) {
             case 'running':
                 if (!noStatus) {
-                    statusIcon = <ActivitySpinner size="small" color={theme.colors.text.secondary} style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }} />;
+                    // Matched to the 20px glyphs this slot swaps to, through the one helper that
+                    // owns the ratio. The hand-rolled `size="small"` plus a 0.8 transform was the
+                    // same arithmetic done privately: it scaled the drawing but not the layout box,
+                    // so the mark still reserved 20px and the correction could drift from the
+                    // helper the moment either number changed.
+                    statusIcon = (
+                        <ActivitySpinner
+                            size={iconMatchedSpinnerSize(TOOL_VIEW_STATUS_GLYPH_PX)}
+                            color={theme.colors.text.secondary}
+                        />
+                    );
                 }
                 break;
             case 'error':
-                statusIcon = <Ionicons name="alert-circle" size={20} color={theme.colors.state.danger.foreground} />;
+                statusIcon = <Icon name="warning-circle" size={TOOL_VIEW_STATUS_GLYPH_PX} color={theme.colors.state.danger.foreground} />;
                 break;
             case 'completed':
             case 'none':
@@ -332,8 +355,12 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
         statusKind === 'error' ? (resolveToolErrorSummary(toolForRendering) ?? t('common.error')) : null;
 
     return (
-        <View
-            testID="tool-view-container"
+        <TranscriptJumpAttention
+            sessionId={sessionId ?? ''}
+            routeMessageId={messageId ?? null}
+            seq={props.jumpHighlightSeq ?? null}
+            radius={TOOL_VIEW_HIGHLIGHT_RADIUS}
+            viewProps={{ testID: 'tool-view-container', ...headerActionHost.hoverProps }}
             style={[styles.container, props.embedded ? styles.containerEmbedded : null]}
         >
             <View style={[styles.header, timelineDensity === 'compact' ? styles.headerCompact : null]}>
@@ -373,11 +400,26 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                 <View style={styles.headerRight}>
                     {errorSummary ? (
                         <View style={styles.headerError}>
-                            <Ionicons name="alert-circle" size={18} color={theme.colors.state.danger.foreground} />
+                            <Icon name="warning-circle" size={16} color={theme.colors.state.danger.foreground} />
                             <Text style={styles.headerErrorText} numberOfLines={1}>
                                 {errorSummary}
                             </Text>
                         </View>
+                    ) : null}
+                    {props.headerAction ? (
+                        <RowActionRevealSlot
+                            revealed={shouldShowTranscriptRowPinAction({
+                                platformOS: Platform.OS,
+                                isRowHovered: headerActionHost.isHovered,
+                                isActionHovered: false,
+                                coarsePrimaryPointer: readCoarsePrimaryPointer(),
+                                pinned: props.headerAction.pinned,
+                            })}
+                            style={styles.headerActionsContainer}
+                            testID="tool-view-header-reveal-slot"
+                        >
+                            {props.headerAction.node}
+                        </RowActionRevealSlot>
                     ) : null}
                     {headerActions ? (
                         <View style={styles.headerActionsContainer}>
@@ -396,11 +438,11 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                             accessibilityLabel={secondaryTapAction === 'open' ? t('toolView.open') : t('toolView.expand')}
                         >
                             {secondaryTapAction === 'open' ? (
-                                <Ionicons name="open-outline" size={18} color={theme.colors.text.secondary} />
+                                <Icon name="arrow-square-out" size={16} color={theme.colors.text.secondary} />
                             ) : (
-                                <Ionicons
-                                    name={isExpanded ? 'chevron-up-outline' : 'chevron-down-outline'}
-                                    size={18}
+                                <Icon
+                                    name={isExpanded ? 'caret-up' : 'caret-down'}
+                                    size={16}
                                     color={theme.colors.text.secondary}
                                 />
                             )}
@@ -458,7 +500,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                     disabledReason={props.interaction?.permissionDisabledReason}
                 />
             ))}
-        </View>
+        </TranscriptJumpAttention>
     );
 });
 

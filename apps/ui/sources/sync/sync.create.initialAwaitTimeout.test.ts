@@ -1,26 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
-const kvStore = vi.hoisted(() => new Map<string, string>());
-vi.mock('react-native-mmkv', () => {
-    class MMKV {
-        getString(key: string) {
-            return kvStore.get(key);
-        }
-        set(key: string, value: string) {
-            kvStore.set(key, value);
-        }
-        delete(key: string) {
-            kvStore.delete(key);
-        }
-        clearAll() {
-            kvStore.clear();
-        }
-    }
-
-    return { MMKV };
-});
-
 const appStateAddListener = vi.hoisted(() => vi.fn(() => ({ remove: vi.fn() })));
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -103,7 +82,6 @@ function installLocalStorage(): void {
 describe('sync.create initial awaits', () => {
     beforeEach(() => {
         vi.useFakeTimers();
-        kvStore.clear();
         appStateAddListener.mockClear();
         installLocalStorage();
     });
@@ -158,18 +136,10 @@ describe('sync.create initial awaits', () => {
         expect(resolved).toBe(true);
 
         await promise;
+        // Routing is no longer forwarded from here: Encryption resolves it from SyncTuning
+        // at construction, so it reaches every instance instead of only this one. What sync
+        // still owns — and what this pins — is the active account's scope binding.
         expect(configureNativeCryptoWorkerSpy).toHaveBeenCalledWith({
-            routing: {
-                mode: 'auto',
-                maxBatchSize: 32,
-                minBatchSize: 2,
-                minPayloadBytes: 0,
-                timeoutMs: 1234,
-                logFallbacks: true,
-                telemetryEnabled: true,
-                streamingSampleRate: 0.5,
-                capabilityStalenessMs: 60_000,
-            },
             scope: {
                 accountId: 'server-test',
                 serverId: expect.any(String),

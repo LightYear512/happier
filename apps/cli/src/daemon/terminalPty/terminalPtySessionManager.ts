@@ -17,22 +17,13 @@ type EnsureOk = Readonly<{ ok: true; terminalId: string; reused: boolean }>;
 type ReadOk = Readonly<{ ok: true; terminalId: string; events: readonly DaemonTerminalStreamEvent[]; nextCursor: number; done: boolean }>;
 type SimpleOk = Readonly<{ ok: true }>;
 
-export type TerminalPtyLaunchOverride = Readonly<{
+export type TerminalPtyLaunchSpec = Readonly<{
   file: string;
   args: readonly string[];
   cwd?: string;
-  env: NodeJS.ProcessEnv;
+  env?: Readonly<Record<string, string>>;
   initialInput?: string | null;
   outputResponder?: (input: Readonly<{ data: string; outputBuffer: string }>) => string | null | undefined;
-}>;
-
-type TerminalEnsureInput = Readonly<{
-  terminalKey: string;
-  cwd: string;
-  cols?: number;
-  rows?: number;
-  initialCommand?: string;
-  launch?: TerminalPtyLaunchOverride;
 }>;
 
 export type TerminalPtySessionManagerConfig = Readonly<{
@@ -46,17 +37,30 @@ export type TerminalPtySessionManagerConfig = Readonly<{
   defaultRows: number;
 }>;
 
+type TerminalPtyEnsureInput = Readonly<{
+  terminalKey: string;
+  cwd: string;
+  cols?: number;
+  rows?: number;
+  initialCommand?: string;
+  launch?: TerminalPtyLaunchSpec;
+}>;
+
 export type TerminalPtySessionManager = Readonly<{
-  ensure: (input: TerminalEnsureInput) => EnsureOk | ErrorResult;
+  ensure: (input: TerminalPtyEnsureInput) => EnsureOk | ErrorResult;
   read: (input: Readonly<{ terminalId: string; cursor: number; maxBytes: number; maxEvents: number }>) => ReadOk | ErrorResult;
   input: (input: Readonly<{ terminalId: string; data: string }>) => SimpleOk | ErrorResult;
   resize: (input: Readonly<{ terminalId: string; cols: number; rows: number }>) => SimpleOk | ErrorResult;
   close: (input: Readonly<{ terminalId: string }>) => SimpleOk | ErrorResult;
-  restart: (input: TerminalEnsureInput) => EnsureOk | ErrorResult;
+  restart: (input: TerminalPtyEnsureInput) => EnsureOk | ErrorResult;
 }>;
 
 function okDisabled(errorCode: DaemonTerminalErrorCode): ErrorResult {
   return { ok: false, errorCode, error: errorCode };
+}
+
+function isTerminalResizeUnavailableError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'terminal_resize_unavailable';
 }
 
 type EventBuffer = {
@@ -146,7 +150,7 @@ type PtySession = {
   lastActivityAtMs: number;
   urlDetector: ReturnType<typeof createTerminalUrlDetector>;
   automationOutputBuffer: string;
-  outputResponder?: TerminalPtyLaunchOverride['outputResponder'];
+  outputResponder?: TerminalPtyLaunchSpec['outputResponder'];
 };
 
 function splitByApproxBytesUtf8(input: string, maxBytes: number): string[] {
@@ -256,7 +260,7 @@ export function createTerminalPtySessionManager(params: Readonly<{
     return { ok: true };
   };
 
-  const ensure = (input: TerminalEnsureInput): EnsureOk | ErrorResult => {
+  const ensure = (input: TerminalPtyEnsureInput): EnsureOk | ErrorResult => {
     reapIdle();
     const existingId = terminalIdByKey.get(input.terminalKey) ?? null;
     if (existingId) {
@@ -300,7 +304,6 @@ export function createTerminalPtySessionManager(params: Readonly<{
     const spawnFile = input.launch?.file ?? shell?.file;
     const spawnArgs = input.launch ? [...input.launch.args] : (shell?.args.slice() ?? []);
     const spawnCwd = input.launch?.cwd ?? input.cwd;
-    const spawnEnv = input.launch?.env ?? resolveTerminalSpawnEnv(env);
     if (!spawnFile) return okDisabled('terminal_spawn_failed');
 
     let pty: PtyProcess;
@@ -313,7 +316,10 @@ export function createTerminalPtySessionManager(params: Readonly<{
           cols,
           rows,
           cwd: spawnCwd,
-          env: resolveTerminalSpawnEnv(spawnEnv),
+          env: {
+            ...resolveTerminalSpawnEnv(env),
+            ...(input.launch?.env ?? {}),
+          },
           encoding: 'utf8',
         },
       });
@@ -403,7 +409,7 @@ export function createTerminalPtySessionManager(params: Readonly<{
     return { ok: true, terminalId, reused: false };
   };
 
-  const restart = (input: TerminalEnsureInput): EnsureOk | ErrorResult => {
+  const restart = (input: TerminalPtyEnsureInput): EnsureOk | ErrorResult => {
     reapIdle();
     const existing = terminalIdByKey.get(input.terminalKey) ?? null;
     if (existing) {
@@ -459,8 +465,8 @@ export function createTerminalPtySessionManager(params: Readonly<{
       session.cols = input.cols;
       session.rows = input.rows;
       return { ok: true };
-    } catch {
-      return okDisabled('terminal_not_found');
+    } catch (error) {
+      return okDisabled(isTerminalResizeUnavailableError(error) ? 'terminal_resize_unavailable' : 'terminal_not_found');
     }
   };
 

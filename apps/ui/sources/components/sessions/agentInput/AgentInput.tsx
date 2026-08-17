@@ -1,8 +1,11 @@
-import { Ionicons, Octicons } from '@expo/vector-icons';
 import * as React from 'react';
 import { View, Platform, useWindowDimensions, ViewStyle, Pressable, ScrollView } from 'react-native';
 import { layout } from '@/components/ui/layout/layout';
 import { MultiTextInput, KeyPressEvent, type MultiTextInputSubmitBehavior } from '@/components/ui/forms/MultiTextInput';
+import {
+    TEXT_INPUT_LARGE_TEXT_CHANGE_DEBOUNCE_MS,
+    isLargeTextInputValueLength,
+} from '@/components/ui/forms/largeTextInputPolicy';
 import { MULTI_TEXT_INPUT_BASE_FONT_SIZE } from '@/components/ui/forms/multiTextInputTypography';
 import {
     areActiveWordsEqual,
@@ -10,6 +13,8 @@ import {
     resolveLiveInputTextStatus,
 } from './liveInputState';
 import { isGlassComposerSurface } from './composerSurfaceStyle';
+import { resolveComposerSelectionRestore } from './composerSelectionRestore';
+import { COMPOSER_SURFACE_RADIUS } from './composerContentInset';
 import { Typography } from '@/constants/Typography';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import { findModelOptionForEffectiveModelId, getModelOptionsForSession, supportsFreeformModelSelectionForSession, type ModelOption } from '@/sync/domains/models/modelOptions';
@@ -27,11 +32,12 @@ import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessio
 import { hapticsLight, hapticsError } from '@/components/ui/theme/haptics';
 import { type ShakeInstance } from '@/components/ui/feedback/Shaker';
 import { StatusDot } from '@/components/ui/status/StatusDot';
-import { useActiveSuggestions } from '@/components/autocomplete/useActiveSuggestions';
+import { useActiveSuggestions, type ActiveSuggestionsHandler } from '@/components/autocomplete/useActiveSuggestions';
 import { TextInputState, MultiTextInputHandle } from '@/components/ui/forms/MultiTextInput';
 import { applySuggestion } from '@/components/autocomplete/applySuggestion';
 import { findActiveWord, type ActiveWord } from '@/components/autocomplete/findActiveWord';
-import type { AutocompleteSuggestion } from '@/components/autocomplete/autocompleteTypes';
+import { resolveComposerSuggestionKind } from '@/components/autocomplete/composerSuggestionKinds';
+import type { ComposerSuggestionKindId } from '@/components/autocomplete/composerSuggestionGrammar';
 import { type ModelPickerProbeState } from '@/components/model/ModelPickerOverlay';
 import type { OptionPickerProbeState } from '@/components/sessions/pickers/OptionPickerOverlay';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -89,6 +95,7 @@ import { AgentInputOverlayLayer } from './components/AgentInputOverlayLayer';
 import { useCommandMenuKeyboard, type CommandMenuAnchor } from '@/components/ui/commandMenu';
 import { AgentInputCommandMenu } from './commandMenu/AgentInputCommandMenu';
 import { useAgentInputCommandMenu } from './commandMenu/useAgentInputCommandMenu';
+import { recordLargeTextInputDiagnostic } from '@/utils/system/userInteractionDiagnostics';
 import { resolveAgentInputCommandMenuAnchor } from './commandMenu/resolveAgentInputCommandMenuAnchor';
 import { useTextInputCaretRect } from '@/hooks/ui/textInputCaretRect';
 import { createBackdropNativeStyle, createBackdropWebStyle } from '@/components/ui/overlays/createBackdropLayerStyle';
@@ -107,14 +114,14 @@ import { useRenderedAgentInputControlRows } from './controls/useRenderedAgentInp
 import { buildAgentInputSelectionOverlayViewModel } from './selection/buildAgentInputSelectionOverlayViewModel';
 import { useAgentInputSelectionAnchors } from './selection/useAgentInputSelectionAnchors';
 import { useAgentInputSelectionOverlayController } from './selection/useAgentInputSelectionOverlayController';
-import { computeSessionModePickerControl } from '@/sync/acp/sessionModeControl';
+import { computeSessionModePickerControl } from '@/sync/domains/sessionControl/sessionModeControl';
 import {
-    computeAcpConfigOptionControls,
-    computeAcpConfigOptionControlsForProvider,
-    computeAcpConfigOptionControlsFromOverride,
-    type AcpConfigOption,
-    type AcpConfigOptionValueId,
-} from '@/sync/acp/configOptionsControl';
+    computeSessionConfigOptionControls,
+    computeSessionConfigOptionControlsForProvider,
+    computeSessionConfigOptionControlsFromOverride,
+    type SessionConfigOption,
+    type SessionConfigOptionValueId,
+} from '@/sync/domains/sessionControl/configOptionsControl';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { Text } from '@/components/ui/text/Text';
@@ -150,7 +157,6 @@ import {
     buildStructuredInputMetaOverrides,
     createStructuredInputMentionFromSuggestion,
     reconcileStructuredInputMentionsWithText,
-    reconcileStructuredInputMentionsWithTextChange,
     type ComposerStructuredInputMention,
 } from './structuredInputMentions';
 import { buildGlassCastShadowStyle } from '@/shadowElevation';
@@ -164,6 +170,8 @@ import {
 } from '@/keyboard/composer';
 import { useKeyboardShortcutHandlers } from '@/keyboard/KeyboardShortcutProvider';
 import type { KeyboardShortcutHandlers } from '@/keyboard/runtime';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import type { StyleProp } from 'react-native';
 
 /**
  * Synthesized model-card toggle id for catalog-declared extended-context model variants
@@ -186,9 +194,9 @@ const AGENT_INPUT_CONTAINER_VERTICAL_PADDING = 4;
 const AGENT_INPUT_CONTAINER_VERTICAL_CHROME_HEIGHT = AGENT_INPUT_CONTAINER_VERTICAL_PADDING * 2;
 const AGENT_INPUT_PANEL_PADDING_TOP = 2;
 const AGENT_INPUT_PANEL_PADDING_BOTTOM = 8;
-// Composer panel corner radius. Shared by the panel surface and its cast-shadow
-// wrapper so the drop shadow follows the same rounded shape.
-const AGENT_INPUT_PANEL_RADIUS = Platform.select({ default: 16, android: 20 });
+// Composer panel corner radius. Shared by the panel surface, its cast-shadow wrapper so the drop
+// shadow follows the same rounded shape, and the auxiliary banners stacked above the panel.
+const AGENT_INPUT_PANEL_RADIUS = COMPOSER_SURFACE_RADIUS;
 const AGENT_INPUT_PANEL_VERTICAL_CHROME_HEIGHT = AGENT_INPUT_PANEL_PADDING_TOP + AGENT_INPUT_PANEL_PADDING_BOTTOM;
 const AGENT_INPUT_VARIABLE_SECTION_CONTENT_PADDING_BOTTOM = 4;
 const EMPTY_PERMISSION_LOCATIONS_BY_ID = new Map<string, PermissionToolCallMessageLocation | null>();
@@ -199,17 +207,6 @@ const AGENT_INPUT_TEST_IDS = {
     newSessionSend: 'new-session-composer-send',
     connectionStatusText: 'agent-input-connection-status-text',
 } as const;
-
-export type AgentInputAutocompleteSelectionResult =
-    | Readonly<{ handled: false }>
-    | Readonly<{ handled: true; text: string; cursorPosition: number }>;
-
-export type AgentInputAutocompleteSelectionHandler = (args: Readonly<{
-    suggestion: AutocompleteSuggestion;
-    inputText: string;
-    selection: Readonly<{ start: number; end: number }>;
-    activeWord: ActiveWord | null;
-}>) => AgentInputAutocompleteSelectionResult | Promise<AgentInputAutocompleteSelectionResult>;
 
 function normalizeLayoutHeightPx(height: number): number {
     return Number.isFinite(height) ? Math.max(0, Math.trunc(height)) : 0;
@@ -229,6 +226,23 @@ function updateLayoutHeight(
 ): void {
     const nextHeight = normalizeLayoutHeightPx(height);
     setHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
+}
+
+type AgentInputPendingParentTextSync = {
+    text: string;
+    hasFlushed: boolean;
+};
+
+function shouldDeferAgentInputParentTextSync(
+    parentText: string,
+    nextText: string,
+): boolean {
+    if (!isLargeTextInputValueLength(nextText.length)) {
+        return false;
+    }
+    const parentStatus = resolveLiveInputTextStatus(parentText);
+    const nextStatus = resolveLiveInputTextStatus(nextText);
+    return parentStatus.hasText === nextStatus.hasText;
 }
 
 type ProgrammaticHistoryInputState = Readonly<{
@@ -280,10 +294,10 @@ interface AgentInputProps {
      * Optional: show a probe/loading state + refresh control in the ACP mode picker.
      */
     acpSessionModeOptionsOverrideProbe?: ModelPickerProbeState;
-    acpConfigOptionsOverride?: ReadonlyArray<AcpConfigOption>;
+    acpConfigOptionsOverride?: ReadonlyArray<SessionConfigOption>;
     acpConfigOptionsOverrideProbe?: ModelPickerProbeState;
     acpConfigOptionOverridesOverride?: AcpConfigOptionOverridesV1 | null;
-    onAcpConfigOptionChange?: (configId: string, valueId: AcpConfigOptionValueId) => void;
+    onSessionConfigOptionChange?: (configId: string, valueId: SessionConfigOptionValueId) => void;
     modelMode?: ModelMode;
     onModelModeChange?: (mode: ModelMode) => void;
     /**
@@ -298,6 +312,8 @@ interface AgentInputProps {
      */
     modelOptionsOverrideProbe?: ModelPickerProbeState;
     metadata?: Metadata | null;
+    /** Whether the existing session runtime is active. Omit for pre-session composers. */
+    sessionActive?: boolean;
     onAbort?: () => void | Promise<void>;
     showAbortButton?: boolean;
     connectionStatus?: {
@@ -309,9 +325,10 @@ interface AgentInputProps {
     statusBadges?: ReadonlyArray<AgentInputStatusBadgeDescriptor>;
     activeStatusBadgeKey?: string | null;
     onActiveStatusBadgeKeyChange?: (key: string | null) => void;
-    autocompletePrefixes: string[];
-    autocompleteSuggestions: (query: string) => Promise<AutocompleteSuggestion[]>;
-    onAutocompleteSuggestionSelect?: AgentInputAutocompleteSelectionHandler;
+    /** Eligible suggestion kinds for this composer host. Trigger characters follow from the kinds (INV-1). */
+    autocompleteKinds: readonly ComposerSuggestionKindId[];
+    /** Receives an abort signal for the query it is resolving; a superseded query is never applied (D-15). */
+    autocompleteSuggestions: ActiveSuggestionsHandler;
     usageData?: {
         inputTokens: number;
         outputTokens: number;
@@ -515,7 +532,7 @@ function AgentInputHiddenUsageOverflow(props: AgentInputHiddenUsageOverflowProps
                     pressed ? styles.hiddenUsageOverflowPressed : null,
                 ]}
             >
-                <Ionicons name="ellipsis-horizontal" size={14} color={theme.colors.text.secondary} />
+                <Icon name="dots-three" size={14} color={theme.colors.text.secondary} />
             </Pressable>
             <AgentInputContentPopover
                 open={open}
@@ -1095,20 +1112,20 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const keyboardShortcutDisabledCommandIdsV1 = useSetting('keyboardShortcutDisabledCommandIdsV1') ?? [];
     const renderIoniconNode = React.useCallback(
         (
-            name: React.ComponentProps<typeof Ionicons>['name'],
+            name: IconName,
             size: number,
             color: string,
-            style?: React.ComponentProps<typeof Ionicons>['style'],
-        ) => normalizeNodeForView(<Ionicons name={name} size={size} color={color} style={style} />),
+            style?: StyleProp<ViewStyle>,
+        ) => normalizeNodeForView(<Icon name={name} size={size} color={color} style={style} />),
         [],
     );
     const renderOcticonNode = React.useCallback(
         (
-            name: React.ComponentProps<typeof Octicons>['name'],
+            name: IconName,
             size: number,
             color: string,
-            style?: React.ComponentProps<typeof Octicons>['style'],
-        ) => normalizeNodeForView(<Octicons name={name} size={size} color={color} style={style} />),
+            style?: StyleProp<ViewStyle>,
+        ) => normalizeNodeForView(<Icon name={name} size={size} color={color} style={style} />),
         [],
     );
 
@@ -1180,6 +1197,9 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         && props.inputExpansion.collapsedMaxHeight > 0
         ? props.inputExpansion.collapsedMaxHeight
         : null;
+    const handleInputContentHeightChange = React.useCallback((height: number) => {
+        updateNullableLayoutHeight(setInputContentHeightPx, height);
+    }, []);
     const hasInputExpansion = Boolean(props.inputExpansion);
     React.useEffect(() => {
         setInputExpansionToggleVisible((currentVisible) => {
@@ -1300,7 +1320,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
             const profileIcon = React.useMemo(() => {
                 // Always show a stable "profile" icon so the chip reads as Profile selection (not "current provider").
-                return 'person-circle-outline';
+                return 'user-circle';
             }, []);
 
     const supportsExactContextUsageBadge = React.useMemo(
@@ -1356,15 +1376,72 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const inputStateRef = React.useRef<TextInputState>(initialInputState);
     const [inputSelection, setInputSelection] = React.useState<TextInputState['selection']>(initialInputState.selection);
     const [activeWordState, setActiveWordState] = React.useState<ActiveWord | undefined>(() => (
-        findActiveWord(initialInputState.text, initialInputState.selection, props.autocompletePrefixes)
+        findActiveWord(initialInputState.text, initialInputState.selection, props.autocompleteKinds)
     ));
     const [hasAutocompleteTextInteraction, setHasAutocompleteTextInteraction] = React.useState(false);
     const lastControlledValueRef = React.useRef(props.value);
+    const onChangeTextRef = React.useRef(props.onChangeText);
+    const deferredParentTextSyncRef = React.useRef<AgentInputPendingParentTextSync | null>(null);
+    const deferredParentTextSyncTimerRef = React.useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
     const inputScopeKeyRef = React.useRef<string | null>(props.sessionId ?? null);
+    // Selection restore is an OPEN-time resumption: applied at most once per generation,
+    // and voided as soon as the user edits (see composerSelectionRestore).
+    const consumedSelectionRestoreTokenRef = React.useRef<string | null>(null);
+    const composerEditedSinceOpenRef = React.useRef(false);
     const [uncontrolledStructuredInputMentions, setUncontrolledStructuredInputMentions] = React.useState<ComposerStructuredInputMention[]>([]);
     const structuredInputMentions = props.structuredInputMentions ?? uncontrolledStructuredInputMentions;
     const structuredInputMentionsRef = React.useRef<readonly ComposerStructuredInputMention[]>(structuredInputMentions);
     const historyAppliedInputStateRef = React.useRef<ProgrammaticHistoryInputState | null>(null);
+
+    React.useEffect(() => {
+        onChangeTextRef.current = props.onChangeText;
+    }, [props.onChangeText]);
+
+    const clearDeferredParentTextSync = React.useCallback(() => {
+        if (deferredParentTextSyncTimerRef.current !== null) {
+            globalThis.clearTimeout(deferredParentTextSyncTimerRef.current);
+            deferredParentTextSyncTimerRef.current = null;
+        }
+        deferredParentTextSyncRef.current = null;
+    }, []);
+
+    const flushDeferredParentTextSync = React.useCallback(() => {
+        const pending = deferredParentTextSyncRef.current;
+        if (!pending) return null;
+        if (deferredParentTextSyncTimerRef.current !== null) {
+            globalThis.clearTimeout(deferredParentTextSyncTimerRef.current);
+            deferredParentTextSyncTimerRef.current = null;
+        }
+        if (!pending.hasFlushed) {
+            pending.hasFlushed = true;
+            onChangeTextRef.current(pending.text);
+        }
+        return pending.text;
+    }, []);
+
+    const scheduleDeferredParentTextSync = React.useCallback((text: string) => {
+        deferredParentTextSyncRef.current = {
+            text,
+            hasFlushed: false,
+        };
+        if (deferredParentTextSyncTimerRef.current !== null) {
+            globalThis.clearTimeout(deferredParentTextSyncTimerRef.current);
+        }
+        deferredParentTextSyncTimerRef.current = globalThis.setTimeout(() => {
+            deferredParentTextSyncTimerRef.current = null;
+            const pending = deferredParentTextSyncRef.current;
+            if (!pending || pending.hasFlushed) return;
+            pending.hasFlushed = true;
+            onChangeTextRef.current(pending.text);
+        }, TEXT_INPUT_LARGE_TEXT_CHANGE_DEBOUNCE_MS);
+    }, []);
+
+    React.useEffect(() => () => {
+        if (deferredParentTextSyncTimerRef.current !== null) {
+            globalThis.clearTimeout(deferredParentTextSyncTimerRef.current);
+            deferredParentTextSyncTimerRef.current = null;
+        }
+    }, []);
 
     React.useEffect(() => {
         structuredInputMentionsRef.current = structuredInputMentions;
@@ -1395,11 +1472,11 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     ), [messageHistory]);
 
     const updateActiveWordState = React.useCallback((state: TextInputState) => {
-        const nextActiveWord = findActiveWord(state.text, state.selection, props.autocompletePrefixes);
+        const nextActiveWord = findActiveWord(state.text, state.selection, props.autocompleteKinds);
         setActiveWordState((currentActiveWord) => (
             areActiveWordsEqual(currentActiveWord, nextActiveWord) ? currentActiveWord : nextActiveWord
         ));
-    }, [props.autocompletePrefixes]);
+    }, [props.autocompleteKinds]);
 
     const updateInputSelectionState = React.useCallback((selection: TextInputState['selection']) => {
         setInputSelection((currentSelection) => (
@@ -1419,10 +1496,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             historyAppliedInputStateRef.current = null;
             messageHistory.pause(newState.text);
         }
-        updateStructuredInputMentions((current) => reconcileStructuredInputMentionsWithTextChange({
-            previousText,
-            nextText: newState.text,
-            previousSelection: previousState.selection,
+        // SB-7 — one reconciler for every text change, live edit or programmatic swap alike.
+        // It used to be two, because maintaining a mention's `[start, end)` needed the selection
+        // an edit replaced to resolve the changed span. A mention is now kept by whether the text
+        // still contains its token, which needs neither the previous text nor the selection.
+        updateStructuredInputMentions((current) => reconcileStructuredInputMentionsWithText({
+            text: newState.text,
             mentions: current,
         }));
         if (newState.text !== previousText && !isProgrammaticHistoryApply) {
@@ -1441,11 +1520,15 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
     React.useEffect(() => {
         historyAppliedInputStateRef.current = null;
+        // A different session/scope is a fresh open, so its persisted selection is
+        // eligible again.
+        composerEditedSinceOpenRef.current = false;
     }, [props.sessionId, historyScope]);
 
 
     React.useEffect(() => {
         if (props.value === lastControlledValueRef.current) return;
+        clearDeferredParentTextSync();
         lastControlledValueRef.current = props.value;
 
         const current = inputStateRef.current;
@@ -1464,8 +1547,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             selection: nextSelection,
         };
         updateStructuredInputMentions((currentMentions) => reconcileStructuredInputMentionsWithText({
-            previousText: current.text,
-            nextText: props.value,
+            text: props.value,
             mentions: currentMentions,
         }));
         setHasAutocompleteTextInteraction(false);
@@ -1477,7 +1559,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             setLiveTextStatus(nextStatus);
         }
         updateInputSelectionState(nextSelection);
-    }, [props.value, updateActiveWordState, updateInputSelectionState, updateStructuredInputMentions]);
+    }, [clearDeferredParentTextSync, props.value, updateActiveWordState, updateInputSelectionState, updateStructuredInputMentions]);
 
     React.useEffect(() => {
         updateActiveWordState(inputStateRef.current);
@@ -1495,8 +1577,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         const nextState = { text: props.value, selection: nextSelection };
         historyAppliedInputStateRef.current = { state: nextState };
         updateStructuredInputMentions((currentMentions) => reconcileStructuredInputMentionsWithText({
-            previousText: liveInputText,
-            nextText: props.value,
+            text: props.value,
             mentions: currentMentions,
         }));
         inputStateRef.current = nextState;
@@ -1516,13 +1597,40 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     }, [props.sessionId]);
 
     const handleComposerTextChange = React.useCallback((text: string) => {
+        // A persisted selection describes the text as it was at OPEN. The moment the user
+        // edits, those offsets describe text that no longer exists — and the stored value
+        // can be a RANGE, so re-applying it would select a word and let the next keystroke
+        // replace it. Void the restore for this composer from here on.
+        composerEditedSinceOpenRef.current = true;
         setHasAutocompleteTextInteraction(true);
-        props.onChangeText(text);
-    }, [props.onChangeText]);
+        const isProgrammaticHistoryApply = historyAppliedInputStateRef.current?.state.text === text;
+        if (isProgrammaticHistoryApply || !shouldDeferAgentInputParentTextSync(lastControlledValueRef.current, text)) {
+            clearDeferredParentTextSync();
+            props.onChangeText(text);
+            return;
+        }
+        scheduleDeferredParentTextSync(text);
+    }, [clearDeferredParentTextSync, props.onChangeText, scheduleDeferredParentTextSync]);
 
     React.useEffect(() => {
         const selection = props.inputPersistence?.initialSelection;
-        if (!selection) return;
+        const decision = resolveComposerSelectionRestore({
+            token: props.inputPersistence?.restoreToken,
+            lastConsumedToken: consumedSelectionRestoreTokenRef.current,
+            hasEditedSinceOpen: composerEditedSinceOpenRef.current,
+            hasSelection: Boolean(selection),
+        });
+        consumedSelectionRestoreTokenRef.current = decision.consumedToken;
+        if (!decision.apply || !selection) return;
+        const liveTextLength = inputRef.current?.getText?.().length ?? props.value.length;
+        recordLargeTextInputDiagnostic({
+            phase: 'selection-restore',
+            platform: Platform.OS,
+            surface: 'agentInput',
+            textLength: liveTextLength,
+            selection,
+            valueLength: props.value.length,
+        });
         inputRef.current?.setSelection(selection);
     }, [props.inputPersistence?.restoreToken]);
 
@@ -1536,9 +1644,19 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         if (sendActionDisabled) {
             return;
         }
-        const liveInputText = inputRef.current?.flushPendingTextChange?.()
+        const liveInputText = flushDeferredParentTextSync()
+            ?? inputRef.current?.flushPendingTextChange?.()
             ?? inputRef.current?.getText?.()
             ?? inputStateRef.current.text;
+        recordLargeTextInputDiagnostic({
+            phase: 'send-flush',
+            platform: Platform.OS,
+            surface: 'agentInput',
+            textLength: liveInputText.length,
+            selection: inputStateRef.current.selection,
+            valueLength: props.value.length,
+            liveTextLength: liveInputText.length,
+        });
         if (inputStateRef.current.text !== liveInputText) {
             const nextState = {
                 text: liveInputText,
@@ -1571,6 +1689,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         );
     }, [
         messageHistory,
+        flushDeferredParentTextSync,
         props.onSend,
         props.sessionId,
         props.value,
@@ -1618,7 +1737,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         const focusedActiveWord = findActiveWord(
             inputStateRef.current.text,
             inputStateRef.current.selection,
-            props.autocompletePrefixes,
+            props.autocompleteKinds,
         );
         if (focusedActiveWord) {
             setActiveWordState((currentActiveWord) => (
@@ -1627,12 +1746,13 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             setHasAutocompleteTextInteraction(true);
         }
         messageHistory.warmup();
-    }, [composerKeyboardLayoutForFocus, messageHistory, props.autocompletePrefixes]);
+    }, [composerKeyboardLayoutForFocus, messageHistory, props.autocompleteKinds]);
 
     const handleComposerBlur = React.useCallback(() => {
+        flushDeferredParentTextSync();
         composerKeyboardLayoutForFocus?.setComposerInputFocused?.(false);
         setIsInputFocused(false);
-    }, [composerKeyboardLayoutForFocus]);
+    }, [composerKeyboardLayoutForFocus, flushDeferredParentTextSync]);
 
     const applyHistoryInputText = React.useCallback((next: string) => {
         const nextState = { text: next, selection: { start: next.length, end: next.length } };
@@ -1670,9 +1790,8 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
     const activeWord = activeWordState?.activeWord ?? null;
     const activeSuggestionQuery = isInputFocused && hasAutocompleteTextInteraction && !props.disabled ? activeWord : null;
-    // Using default options: clampSelection=true, autoSelectFirst=true, wrapAround=true
-    // To customize: useActiveSuggestions(activeWord, props.autocompleteSuggestions, { clampSelection: false, wrapAround: false })
-    const [suggestions, selected, moveUp, moveDown] = useActiveSuggestions(activeSuggestionQuery, props.autocompleteSuggestions, { clampSelection: true, wrapAround: true });
+    // Selection follows candidate identity, not an index (INV-6) — the hook owns that.
+    const [suggestions, selected, moveUp, moveDown] = useActiveSuggestions(activeSuggestionQuery, props.autocompleteSuggestions, { wrapAround: true });
 
     // Handle suggestion selection
     const handleSuggestionSelect = React.useCallback((index: number) => {
@@ -1680,8 +1799,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
         const suggestion = suggestions[index];
         const currentInputState = inputStateRef.current;
-        const activeWordForSelection = findActiveWord(currentInputState.text, currentInputState.selection, props.autocompletePrefixes);
-        const insertionStart = activeWordForSelection?.offset ?? currentInputState.selection.start;
+        const activeWordForSelection = findActiveWord(currentInputState.text, currentInputState.selection, props.autocompleteKinds);
 
         const applyResolvedSelection = (result: Readonly<{ text: string; cursorPosition: number }>) => {
             inputRef.current?.setTextAndSelection(result.text, {
@@ -1695,34 +1813,42 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 currentInputState.text,
                 currentInputState.selection,
                 suggestion.text,
-                props.autocompletePrefixes,
+                props.autocompleteKinds,
                 true
             );
             applyResolvedSelection(result);
 
-            const mention = createStructuredInputMentionFromSuggestion({ suggestion, start: insertionStart });
+            const mention = createStructuredInputMentionFromSuggestion({ suggestion });
             if (mention) {
+                // Re-picking the same candidate inserts the same token, so it replaces rather
+                // than accumulating. A mention whose token the new text no longer carries is
+                // dropped by the reconciler on the state change this insertion produces.
                 updateStructuredInputMentions((current) => [
-                    ...current.filter((existing) => existing.start !== mention.start || existing.end !== mention.end),
+                    ...current.filter((existing) => existing.tokenText !== mention.tokenText),
                     mention,
                 ]);
             }
         };
 
-        const override = props.onAutocompleteSuggestionSelect?.({
-            suggestion,
-            inputText: currentInputState.text,
-            selection: currentInputState.selection,
-            activeWord: activeWordForSelection ?? null,
-        });
-
-        if (override) {
-            void Promise.resolve(override).then((result) => {
+        // A kind whose selection is not "replace the token with a string" owns that
+        // rewrite itself (D-20). This used to be a host prop implemented identically
+        // in SessionView and useNewSessionScreenModel.
+        const applySelection = resolveComposerSuggestionKind(suggestion.kind).applySelection;
+        if (applySelection) {
+            void applySelection({
+                suggestion,
+                inputText: currentInputState.text,
+                selection: currentInputState.selection,
+                activeWord: activeWordForSelection ?? null,
+            }).then((result) => {
                 if (result.handled) {
                     applyResolvedSelection(result);
                 } else {
                     applyDefaultSelection();
                 }
+            }).catch((e: unknown) => {
+                Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
+            }).finally(() => {
                 hapticsLight();
             });
             return;
@@ -1730,7 +1856,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
         applyDefaultSelection();
         hapticsLight();
-    }, [suggestions, props.autocompletePrefixes, props.onAutocompleteSuggestionSelect, updateStructuredInputMentions]);
+    }, [suggestions, props.autocompleteKinds, updateStructuredInputMentions]);
 
     // --- Command Menu adapter ---
     // Bridges existing autocomplete state into the CommandMenu primitive shape.
@@ -1784,7 +1910,13 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const caretRect = useTextInputCaretRect({
         inputRef,
         selection: inputSelection,
-        enabled: isInputFocused && !props.disabled && activeWord !== null,
+        // D38: focus-scoped, NOT menu-scoped. Adding `&& activeWord !== null` here
+        // (collateral drift in 795326144) released the keyboard-controller subscription
+        // until the trigger character was typed, so the selection event for that very
+        // keystroke landed in an empty handler map and the menu's first paint fell back
+        // to the composer-view anchor — the "menu appears at the top of the composer,
+        // then jumps on the next keystroke" report.
+        enabled: isInputFocused && !props.disabled,
     });
     const commandMenuAnchor: CommandMenuAnchor = React.useMemo(
         () => resolveAgentInputCommandMenuAnchor(caretRect, composerAnchorRef),
@@ -1827,17 +1959,49 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         });
     }, [agentId, props.metadata, props.modelMode]);
 
-    const effectiveModelLabel = React.useMemo(() => {
-        const found = findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.effectiveModelId);
+    const selectedModelLabel = React.useMemo(() => {
+        const found = findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.selectedModelId);
         if (found) {
-            return found.value === effectiveModelPolicy.effectiveModelId
-                ? found.label
-                : t('agentInput.model.extendedContextLabel', { model: found.label });
+            return found.extendedContextModelId === effectiveModelPolicy.selectedModelId
+                ? t('agentInput.model.extendedContextLabel', { model: found.label })
+                : found.label;
         }
-        return effectiveModelPolicy.effectiveModelId === 'default'
+        return effectiveModelPolicy.selectedModelId === 'default'
             ? t('agentInput.model.useCliSettings')
-            : effectiveModelPolicy.effectiveModelId;
-    }, [effectiveModelPolicy.effectiveModelId, modelOptions]);
+            : effectiveModelPolicy.selectedModelId;
+    }, [effectiveModelPolicy.selectedModelId, modelOptions]);
+
+    const appliedModelPresentation = React.useMemo(() => {
+        const appliedModelId = effectiveModelPolicy.appliedModelId;
+        if (!appliedModelId) return null;
+        const found = findModelOptionForEffectiveModelId(modelOptions, appliedModelId);
+        const label = found
+            ? (found.extendedContextModelId === appliedModelId
+                ? t('agentInput.model.extendedContextLabel', { model: found.label })
+                : found.label)
+            : appliedModelId;
+        const status = props.sessionActive === true
+            ? 'running'
+            : props.sessionActive === false
+                ? 'lastUsed'
+                : 'lastReported';
+        return {
+            optionValue: found?.value ?? appliedModelId,
+            iconName: props.sessionActive === true
+                ? 'play-circle' as const
+                : props.sessionActive === false
+                    ? 'clock' as const
+                    : 'info' as const,
+            summary: t(`agentInput.model.${status}`, { model: label }),
+        };
+    }, [effectiveModelPolicy.appliedModelId, modelOptions, props.sessionActive]);
+
+    const modelNotes = React.useMemo(() => {
+        if (props.sessionActive === false) {
+            return [t('agentInput.model.selectedForResume')];
+        }
+        return effectiveModelPolicy.notes;
+    }, [effectiveModelPolicy.notes, props.sessionActive]);
 
     const canEnterCustomModel = React.useMemo(() => {
         return supportsFreeformModelSelectionForSession(agentId, props.metadata ?? null);
@@ -1956,9 +2120,9 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     }, [sessionModeChipControl]);
 
     const acpConfigOptionControls = React.useMemo(() => {
-        if (!props.onAcpConfigOptionChange) return null;
+        if (!props.onSessionConfigOptionChange) return null;
         if (props.acpConfigOptionsOverride) {
-            return computeAcpConfigOptionControlsForProvider({
+            return computeSessionConfigOptionControlsForProvider({
                 providerId: agentId,
                 configOptions: props.acpConfigOptionsOverride,
                 overrides: props.acpConfigOptionOverridesOverride?.overrides ?? null,
@@ -1966,27 +2130,27 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 hideModelOption: modelOptions.length > 0,
             });
         }
-        return computeAcpConfigOptionControls({ agentId, metadata: props.metadata ?? null });
+        return computeSessionConfigOptionControls({ agentId, metadata: props.metadata ?? null });
     }, [
         agentId,
         modelOptions.length,
         props.acpConfigOptionsOverride,
         props.acpConfigOptionOverridesOverride,
         props.metadata,
-        props.onAcpConfigOptionChange,
+        props.onSessionConfigOptionChange,
         sessionModeChipControl,
     ]);
 
     const selectedModelForControls = React.useMemo(() => {
-        return findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.effectiveModelId);
-    }, [effectiveModelPolicy.effectiveModelId, modelOptions]);
+        return findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.selectedModelId);
+    }, [effectiveModelPolicy.selectedModelId, modelOptions]);
 
     const selectedModelOptionControls = React.useMemo(() => {
-        if (!props.onAcpConfigOptionChange) return null;
+        if (!props.onSessionConfigOptionChange) return null;
         const selectedModel = selectedModelForControls;
         if (!selectedModel) return null;
         const baseControls = selectedModel.modelOptions?.length
-            ? computeAcpConfigOptionControlsFromOverride({
+            ? computeSessionConfigOptionControlsFromOverride({
                 agentId,
                 configOptions: selectedModel.modelOptions,
                 overrides: props.acpConfigOptionOverridesOverride?.overrides ?? null,
@@ -1995,7 +2159,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         // Extended-context (e.g. Claude `[1m]`) is a MODEL-ID VARIANT, not a config option:
         // the toggle is synthesized here and routed through the model-override pipeline.
         if (selectedModel.extendedContextModelId && props.onModelModeChange) {
-            const extendedSelected = effectiveModelPolicy.effectiveModelId === selectedModel.extendedContextModelId;
+            const extendedSelected = effectiveModelPolicy.selectedModelId === selectedModel.extendedContextModelId;
             const value = extendedSelected ? 'true' : 'false';
             baseControls.push({
                 option: {
@@ -2012,14 +2176,14 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         return baseControls.length > 0 ? baseControls : null;
     }, [
         agentId,
-        effectiveModelPolicy.effectiveModelId,
+        effectiveModelPolicy.selectedModelId,
         selectedModelForControls,
         props.acpConfigOptionOverridesOverride,
-        props.onAcpConfigOptionChange,
+        props.onSessionConfigOptionChange,
         props.onModelModeChange,
     ]);
 
-    const handleSelectModelOptionValue = React.useCallback((configId: string, valueId: AcpConfigOptionValueId) => {
+    const handleSelectModelOptionValue = React.useCallback((configId: string, valueId: SessionConfigOptionValueId) => {
         if (configId === EXTENDED_CONTEXT_MODEL_TOGGLE_OPTION_ID) {
             const selectedModel = selectedModelForControls;
             if (!selectedModel?.extendedContextModelId) return;
@@ -2028,8 +2192,8 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             return;
         }
         hapticsLight();
-        props.onAcpConfigOptionChange?.(configId, valueId);
-    }, [props.onAcpConfigOptionChange, props.onModelModeChange, selectedModelForControls]);
+        props.onSessionConfigOptionChange?.(configId, valueId);
+    }, [props.onSessionConfigOptionChange, props.onModelModeChange, selectedModelForControls]);
     const hasSettingsAcpConfigSection = Boolean(acpConfigOptionControls);
 
     const shouldShowModelOptionDescriptions = React.useMemo(() => {
@@ -2060,6 +2224,18 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             modelOptions={modelOptions.map((option) => ({
                 value: option.value,
                 label: option.label,
+                ...(appliedModelPresentation?.optionValue === option.value
+                    ? {
+                        trailingStatusIcon: (
+                            <Icon
+                                name={appliedModelPresentation.iconName}
+                                size={16}
+                                color={theme.colors.text.secondary}
+                            />
+                        ),
+                        accessibilityLabel: appliedModelPresentation.summary,
+                    }
+                    : {}),
                 description:
                     option.value === 'default'
                     && shouldShowModelOptionDescriptions
@@ -2068,9 +2244,9 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                         : option.description,
                 ...(option.modelOptions ? { modelOptions: option.modelOptions } : {}),
             }))}
-            selectedModelId={effectiveModelPolicy.effectiveModelId}
-            effectiveModelLabel={effectiveModelLabel}
-            modelNotes={effectiveModelPolicy.notes}
+            selectedModelId={effectiveModelPolicy.selectedModelId}
+            modelSummary={appliedModelPresentation?.summary}
+            modelNotes={modelNotes}
             modelEmptyText={t('agentInput.model.configureInCli')}
             canEnterCustomModel={canEnterCustomModel}
             // Keep a single refresh affordance in the model section, but wire it to refresh all
@@ -2082,13 +2258,13 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             }}
             onSubmitCustomValue={canEnterCustomModel ? submitCustomModel : undefined}
             selectedModelOptionControls={selectedModelOptionControls}
-            onSelectModelOptionValue={props.onAcpConfigOptionChange ? handleSelectModelOptionValue : undefined}
+            onSelectModelOptionValue={props.onSessionConfigOptionChange ? handleSelectModelOptionValue : undefined}
             configControls={acpConfigOptionControls}
             onSelectConfigValue={
-                props.onAcpConfigOptionChange
+                props.onSessionConfigOptionChange
                     ? (configId, valueId) => {
                         hapticsLight();
-                        props.onAcpConfigOptionChange?.(configId, valueId);
+                        props.onSessionConfigOptionChange?.(configId, valueId);
                     }
                     : undefined
             }
@@ -2098,17 +2274,18 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     ), [
         acpConfigOptionControls,
         canEnterCustomModel,
-        effectiveModelLabel,
-        effectiveModelPolicy.effectiveModelId,
-        effectiveModelPolicy.notes,
+        effectiveModelPolicy.selectedModelId,
+        modelNotes,
         modelOptions,
+        appliedModelPresentation,
         unifiedEnginePickerProbe,
         shouldShowModelOptionDescriptions,
-        props.onAcpConfigOptionChange,
+        props.onSessionConfigOptionChange,
         props.onModelModeChange,
         submitCustomModel,
         selectedModelOptionControls,
         handleSelectModelOptionValue,
+        theme.colors.text.secondary,
     ]);
 
     const hasInternalAgentPickerOptions = Boolean(
@@ -2284,8 +2461,8 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         toggleSelectionOverlay,
     });
     const engineChipLabel = React.useMemo(() => {
-        return hasAgentPickerOptions ? effectiveModelLabel : resolvedAgentLabel;
-    }, [effectiveModelLabel, hasAgentPickerOptions, resolvedAgentLabel]);
+        return hasAgentPickerOptions ? selectedModelLabel : resolvedAgentLabel;
+    }, [hasAgentPickerOptions, resolvedAgentLabel, selectedModelLabel]);
     const hasRecipient = React.useMemo(() => {
         return (props.extraActionChips ?? []).some((chip) => chip.controlId === 'recipient');
     }, [props.extraActionChips]);
@@ -2713,6 +2890,10 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         theme.colors.overlay.scrimWizard,
         uiBackdropBlurEnabled,
     ]);
+    const deferredParentTextSync = deferredParentTextSyncRef.current;
+    const renderedComposerInputValue = deferredParentTextSync && props.value === lastControlledValueRef.current
+        ? deferredParentTextSync.text
+        : props.value;
 
     const renderComposerInput = () => (
         <View
@@ -2728,7 +2909,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 ref={inputRef}
                 testID={props.sessionId ? AGENT_INPUT_TEST_IDS.sessionInput : AGENT_INPUT_TEST_IDS.newSessionInput}
                 textStyle={props.sessionId ? styles.sessionInputText : styles.newSessionInputText}
-                value={props.value}
+                value={renderedComposerInputValue}
                 paddingTop={Platform.OS === 'web' ? 10 : 8}
                 paddingBottom={Platform.OS === 'web' ? 10 : 8}
                 paddingRight={shouldReserveInputExpansionToggleSpace ? INPUT_EXPANSION_TOGGLE_INPUT_PADDING_RIGHT : undefined}
@@ -2747,9 +2928,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 editable={!composerDisabled}
                 onFilesDropped={props.onAttachmentsAdded}
                 onFilesPasted={props.onAttachmentsAdded}
-                onContentHeightChange={(height) => {
-                    updateNullableLayoutHeight(setInputContentHeightPx, height);
-                }}
+                onContentHeightChange={handleInputContentHeightChange}
             />
             {props.inputExpansion && shouldShowInputExpansionToggle ? (
                 <Pressable
@@ -2764,7 +2943,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                     ]}
                 >
                     {renderIoniconNode(
-                        props.inputExpansion.expanded ? 'contract-outline' : 'expand-outline',
+                        props.inputExpansion.expanded ? 'arrows-in' : 'arrows-out',
                         16,
                         theme.colors.text.secondary,
                     )}
@@ -3226,7 +3405,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                             ]}
                         >
                             <View style={styles.fileDropOverlayContent}>
-                                {renderIoniconNode('attach-outline', 18, theme.colors.text.primary)}
+                                {renderIoniconNode('paperclip', 18, theme.colors.text.primary)}
                                 <Text style={styles.fileDropOverlayText}>{t('agentInput.dropToAttach')}</Text>
                             </View>
                         </View>

@@ -18,15 +18,19 @@ import {
 import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
 import {
     reportServerUnreachable,
+    invalidateServerReachabilitySupervisor,
+    reportServerRestarting,
     startServerReachabilitySupervisor,
     stopServerReachabilitySupervisor,
     subscribeServerReachabilityState,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import { createNotAuthenticatedError } from '@/sync/runtime/connectivity/authErrors';
 import { isSocketIoAckTimeoutError, raceSocketIoAckTimeout } from '@/sync/runtime/socketIoAckTimeout';
+import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 
 const STATIC_EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS =
     process.env.EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS;
+const SOCKET_PLANNED_RESTART_PROBE_DELAY_MS = 250;
 
 function readSocketAckAuthSettleTimeoutMs(): number {
     const raw = String(STATIC_EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS ?? '').trim();
@@ -34,6 +38,16 @@ function readSocketAckAuthSettleTimeoutMs(): number {
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed)) return 250;
     return Math.max(0, Math.min(5_000, parsed));
+}
+
+function readSocketPlannedRestartProbeDelayMs(payload: unknown): number {
+    if (typeof payload !== 'object' || payload === null) {
+        return SOCKET_PLANNED_RESTART_PROBE_DELAY_MS;
+    }
+    const raw = (payload as { retryAfterMs?: unknown }).retryAfterMs;
+    return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+        ? Math.min(SOCKET_PLANNED_RESTART_PROBE_DELAY_MS, Math.floor(raw))
+        : SOCKET_PLANNED_RESTART_PROBE_DELAY_MS;
 }
 
 function readSessionEncryptionModeFromLocalState(sessionId: string): 'plain' | 'e2ee' | null {
@@ -126,17 +140,23 @@ function buildSocketRpcCallPayload(params: Readonly<{
     method: string;
     payload: unknown;
     timeoutMs?: number;
-}>): Readonly<{ method: string; params: unknown; timeoutMs?: number }> {
+    authorization?: SocketRpcAuthorizationContext;
+}>): Readonly<{ method: string; params: unknown; timeoutMs?: number; authorization?: SocketRpcAuthorizationContext }> {
+    const authorization = params.authorization
+        ? { authorization: params.authorization }
+        : {};
     if (typeof params.timeoutMs === 'number' && params.timeoutMs > 0) {
         return {
             method: params.method,
             params: params.payload,
             timeoutMs: params.timeoutMs,
+            ...authorization,
         };
     }
     return {
         method: params.method,
         params: params.payload,
+        ...authorization,
     };
 }
 
@@ -253,6 +273,17 @@ class ApiSocket {
         void transport?.disconnect({ intentional: true });
         void transport?.destroy();
         this.socket = null;
+        // Unsubscribing above means the supervisor's own teardown state can no longer reach our listeners, so
+        // the last state we published would stay `online` for the whole background window. Consumers would then
+        // read "endpoint online, socket down" on resume and surface it as a server outage. A diagnosed problem
+        // (offline / auth_failed) is left untouched: an intentional teardown must not erase it either.
+        if (this.currentConnectionState.phase === 'online' || this.currentConnectionState.phase === 'connecting') {
+            this.applyManagedConnectionState({
+                ...this.currentConnectionState,
+                phase: 'shutting_down',
+                lastDisconnectedAt: Date.now(),
+            });
+        }
         this.updateStatus('disconnected');
     }
 
@@ -299,7 +330,12 @@ class ApiSocket {
     /**
      * RPC call for sessions - uses session-specific encryption
      */
-    async sessionRPC<R, A>(sessionId: string, method: string, params: A, options?: { timeoutMs?: number }): Promise<R> {
+    async sessionRPC<R, A>(
+        sessionId: string,
+        method: string,
+        params: A,
+        options?: { timeoutMs?: number; onIssued?: () => void },
+    ): Promise<R> {
         const sessionEncryptionMode = readSessionEncryptionModeFromLocalState(sessionId);
         const usePlaintextParams = sessionEncryptionMode === 'plain';
         const sessionEncryption = usePlaintextParams ? null : this.encryption?.getSessionEncryption(sessionId);
@@ -374,7 +410,11 @@ class ApiSocket {
         machineId: string,
         method: string,
         params: A,
-        options?: { timeoutMs?: number },
+        options?: {
+            timeoutMs?: number;
+            authorization?: SocketRpcAuthorizationContext;
+            onIssued?: () => void;
+        },
     ): Promise<R> {
         const machineEncryption = this.encryption!.getMachineEncryption(machineId);
         if (!machineEncryption) {
@@ -387,6 +427,7 @@ class ApiSocket {
                 method: `${machineId}:${method}`,
                 payload: await machineEncryption.encryptRaw(params),
                 timeoutMs: options?.timeoutMs,
+                authorization: options?.authorization,
             }),
             options,
         );
@@ -405,7 +446,11 @@ class ApiSocket {
         return true;
     }
 
-    async emitWithAck<T = any>(event: string, data: any, opts?: { timeoutMs?: number }): Promise<T> {
+    async emitWithAck<T = any>(
+        event: string,
+        data: any,
+        opts?: { timeoutMs?: number; onIssued?: () => void },
+    ): Promise<T> {
         if (this.currentConnectionState.phase === 'auth_failed') {
             throw createNotAuthenticatedError();
         }
@@ -414,10 +459,11 @@ class ApiSocket {
         }
         const timeoutMs = opts?.timeoutMs;
         try {
-            const ackPromise =
-                typeof timeoutMs === 'number' && timeoutMs > 0
-                    ? this.socket.timeout(timeoutMs).emitWithAck(event, data) as Promise<T>
-                    : this.socket.emitWithAck(event, data) as Promise<T>;
+            const socketEmission = typeof timeoutMs === 'number' && timeoutMs > 0
+                ? this.socket.timeout(timeoutMs)
+                : this.socket;
+            opts?.onIssued?.();
+            const ackPromise = socketEmission.emitWithAck(event, data) as Promise<T>;
             return await raceSocketIoAckTimeout(ackPromise, timeoutMs);
         } catch (error) {
             throw await this.coerceAckTimeoutAuthError(error);
@@ -583,6 +629,14 @@ class ApiSocket {
         });
     }
 
+    private invalidateReachabilityAfterSocketTransportFailure(error: unknown): void {
+        const config = this.config;
+        if (!config) return;
+        void invalidateServerReachabilitySupervisor({ serverUrl: config.endpoint, token: config.token }).catch(() => {
+            reportServerUnreachable(config.endpoint, error);
+        });
+    }
+
     private ensureSocketTransport(): void {
         if (!this.config) return;
         const key = `${this.config.endpoint}|${this.config.token}`;
@@ -624,16 +678,21 @@ class ApiSocket {
                     return;
                 }
                 this.pendingReconnectNotification = true;
-                reportServerUnreachable(this.config!.endpoint, event.error ?? new Error(event.reason ?? 'socket disconnect'));
+                this.invalidateReachabilityAfterSocketTransportFailure(event.error ?? new Error(event.reason ?? 'socket disconnect'));
             }),
             transport.onError((error: unknown) => {
                 this.setError(error instanceof Error ? error : new Error(String(error)));
-                reportServerUnreachable(this.config!.endpoint, error);
+                this.invalidateReachabilityAfterSocketTransportFailure(error);
             }),
         ];
     }
 
     private installSocketEventHandlers(socket: Socket) {
+        socket.on?.('server:restarting', (payload: unknown) => {
+            const config = this.config;
+            if (!config) return;
+            reportServerRestarting(config.endpoint, readSocketPlannedRestartProbeDelayMs(payload));
+        });
         socket.onAny((event, data) => {
             syncPerformanceTelemetry.measure(
                 'sync.socket.event',

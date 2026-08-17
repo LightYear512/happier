@@ -1,21 +1,19 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
-    ClientSideConnection,
     ndJsonStream,
     PROTOCOL_VERSION,
-    type Agent,
-    type Client,
     type InitializeRequest,
     type InitializeResponse,
-    type RequestPermissionRequest,
-    type RequestPermissionResponse,
-    type SessionNotification,
 } from '@agentclientprotocol/sdk';
 
 import { logger } from '@/ui/logger';
 import type { TransportHandler } from '@/agent/transport';
 import { nodeToWebStreams } from '@/agent/acp/nodeToWebStreams';
 import { killProcessTree } from '@/agent/acp/killProcessTree';
+import {
+    createAcpClientConnection,
+    type AcpClientConnection,
+} from '@/agent/acp/connection/createAcpClientConnection';
 import { AsyncTtlCache } from '@happier-dev/protocol';
 import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
 
@@ -47,35 +45,7 @@ function buildAcpProbeCacheKey(params: {
 }
 
 async function terminateProcess(child: ChildProcess): Promise<void> {
-    if (child.killed) return;
-
-    if (process.platform === 'win32') {
-        await killProcessTree(child, { graceMs: 250 }).catch(() => undefined);
-        return;
-    }
-
-    const waitForExit = new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-    });
-
-    try {
-        child.kill('SIGTERM');
-    } catch {
-        // ignore
-    }
-
-    await Promise.race([
-        waitForExit,
-        new Promise<void>((resolve) => setTimeout(resolve, 250)),
-    ]);
-
-    if (!child.killed) {
-        try {
-            child.kill('SIGKILL');
-        } catch {
-            // ignore
-        }
-    }
+    await killProcessTree(child, { graceMs: 250 }).catch(() => undefined);
 }
 
 export async function probeAcpAgentCapabilities(params: {
@@ -104,6 +74,7 @@ export async function probeAcpAgentCapabilities(params: {
     const checkedAt = Date.now();
 
     let child: ChildProcess | null = null;
+    let connection: AcpClientConnection | null = null;
     let spawnErrorPromise: Promise<never> | null = null;
     try {
         const env = { ...process.env, ...params.env };
@@ -202,15 +173,17 @@ export async function probeAcpAgentCapabilities(params: {
 
         const stream = ndJsonStream(writable, filteredReadable);
 
-        const client: Client = {
-            sessionUpdate: async (_params: SessionNotification) => {},
-            requestPermission: async (_params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
+        connection = createAcpClientConnection({
+            name: 'happier-cli-capabilities',
+            transport: stream,
+            handlers: {
+              sessionUpdate: async () => {},
+              requestPermission: async () => {
                 // Probe should never ask for permissions; fail closed if it does.
                 return { outcome: { outcome: 'selected', optionId: 'cancel' } };
+              },
             },
-        };
-
-        const connection = new ClientSideConnection((_agent: Agent) => client, stream);
+        });
 
         const initRequest: InitializeRequest = {
             protocolVersion: PROTOCOL_VERSION,
@@ -221,7 +194,7 @@ export async function probeAcpAgentCapabilities(params: {
         };
 
         const initResponse = await Promise.race([
-            connection.initialize(initRequest),
+            connection.peer.initialize(initRequest),
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`ACP initialize timeout after ${timeoutMs}ms`)), timeoutMs)),
             ...(spawnErrorPromise ? [spawnErrorPromise] : []),
         ]);
@@ -235,6 +208,8 @@ export async function probeAcpAgentCapabilities(params: {
         acpProbeCache.setSuccess(cacheKey, result, { ttlMs: ACP_PROBE_ERROR_TTL_MS });
         return result;
     } finally {
+        connection?.close();
+        await connection?.closed.catch(() => {});
         if (child) {
             await terminateProcess(child);
         }

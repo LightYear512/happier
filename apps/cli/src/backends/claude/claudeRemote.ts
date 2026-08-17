@@ -16,17 +16,28 @@ import { logClaudeRuntimeAuthEnvDiagnostic } from "./spawn/logClaudeRuntimeAuthE
 import { ensureClaudeJsRuntimeExecutable } from "./utils/ensureClaudeJsRuntimeExecutable";
 import { resolveClaudeCliPath } from "./utils/resolveClaudeCliPath";
 import { resolveCliRuntimeAssetPath } from '@/runtime/assets/resolveCliRuntimeAssetPath';
-import { buildClaudeEffortCliArgs } from "./utils/claudeEffort";
+import { buildClaudeEffortCliArgs, resolveModeEffortLevelsForModel } from "./utils/claudeEffort";
 import {
     buildClaudeCompactionCompletedEvent,
     buildClaudeCompactionLifecycleId,
     buildClaudeCompactionStartedEvent,
     type ClaudeCompletionEvent,
 } from './contextCompactionEvents';
+import {
+    confirmClaudeRemoteProviderPromptAccepted,
+    reportClaudeRemoteProviderPromptTransportFailure,
+    type ClaudeRemoteProviderAcceptedPrompt,
+    type ClaudeRemoteProviderPromptAcceptedHandler,
+    type ClaudeRemoteProviderPromptTransportFailureHandler,
+} from './remote/providerPromptAcceptance';
+import type { createClaudeProviderRuntimeActivityAdapter } from './providerActivity/createClaudeProviderRuntimeActivityAdapter';
+import { isClaudeLegacyRequiredHookObservationFailure } from './remote/runtimeActivityEvidence';
+import { materializeClaudeMcpConfigArgsForSpawn } from './utils/materializeClaudeMcpConfigArgsForSpawn';
 
 function buildClaudeEffortArgs(params: Readonly<{
     modelId: unknown;
     effort: unknown;
+    supportedLevels?: readonly string[];
 }>): string[] {
     return buildClaudeEffortCliArgs(params);
 }
@@ -80,6 +91,15 @@ function resolveSettingSourcesPassthroughArgs(mode: EnhancedMode): string[] | nu
     return null;
 }
 
+function isClaudeHookLifecycleStreamMessage(value: SDKMessage): boolean {
+    return value.type === 'system'
+        && (
+            value.subtype === 'hook_started'
+            || value.subtype === 'hook_progress'
+            || value.subtype === 'hook_response'
+        );
+}
+
 export async function claudeRemote(opts: {
 
     // Fixed parameters
@@ -105,14 +125,21 @@ export async function claudeRemote(opts: {
      * Used by the remote launcher to implement UI "Abort" without losing context.
      */
     setTurnInterrupt?: ((handler: (() => Promise<void>) | null) => void) | null,
-    canCallTool: (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }) => Promise<PermissionResult>,
+    canCallTool: (
+        toolName: string,
+        input: unknown,
+        mode: EnhancedMode,
+        options: { signal: AbortSignal; toolUseId?: string | null },
+    ) => Promise<PermissionResult>,
     /** Path to temporary settings file with SessionStart hook (required for session tracking) */
     hookSettingsPath: string,
+    /** Session-scoped plugin whose hooks provide lifecycle and runtime-activity evidence. */
+    hookPluginDir?: string | null,
     /** JavaScript runtime to use for spawning Claude Code (default: 'node') */
     jsRuntime?: JsRuntime,
 
     // Dynamic parameters
-    nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
+    nextMessage: () => Promise<ClaudeRemoteProviderAcceptedPrompt<EnhancedMode> | null>,
     onReady: () => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
@@ -123,6 +150,11 @@ export async function claudeRemote(opts: {
     onCompletionEvent?: (event: ClaudeCompletionEvent) => void,
     onSessionReset?: () => void,
     setUserMessageSender?: (sender: ((message: SDKUserMessage) => void) | null) => void,
+    onPromptAcceptedByProvider?: ClaudeRemoteProviderPromptAcceptedHandler | null,
+    onPromptTransportFailure?: ClaudeRemoteProviderPromptTransportFailureHandler | null,
+    onProviderActivityObservationLost?: (() => void) | null,
+    runtimeActivityAdapter?: ReturnType<typeof createClaudeProviderRuntimeActivityAdapter> | null,
+    onWorkflowActivityObserverReady?: (() => void) | null,
 }) {
 
     // Determine how we should (re)start the Claude session.
@@ -202,8 +234,15 @@ export async function claudeRemote(opts: {
     const effortArgs = buildClaudeEffortArgs({
         modelId: argOverrides.model ?? initial.mode.model,
         effort: argOverrides.effort ?? initial.mode.reasoningEffort,
+        supportedLevels: resolveModeEffortLevelsForModel(initial.mode, argOverrides.model ?? initial.mode.model),
     });
-    const extraArgs = [...effortArgs, ...(settingSourcesArgs ?? []), ...(passthroughMcpArgs ?? []), ...(injectedMcpArgs ?? [])];
+    const rawExtraArgs = [
+        ...(opts.hookPluginDir ? ['--plugin-dir', opts.hookPluginDir] : []),
+        ...effortArgs,
+        ...(settingSourcesArgs ?? []),
+        ...(passthroughMcpArgs ?? []),
+        ...(injectedMcpArgs ?? []),
+    ];
     const runtimeExecutable = await ensureClaudeJsRuntimeExecutable(opts.jsRuntime);
     const resolvedClaudeCliPath = resolveClaudeCliPath();
     const launcherEnv = {
@@ -223,6 +262,8 @@ export async function claudeRemote(opts: {
         childEnv: launcherEnv,
     });
 
+    const materializedMcpConfig = await materializeClaudeMcpConfigArgsForSpawn(rawExtraArgs);
+    try {
     const sdkOptions: QueryOptions = {
         cwd: opts.path,
         continue: shouldContinue || undefined,
@@ -233,9 +274,10 @@ export async function claudeRemote(opts: {
         maxTurns: argOverrides.maxTurns,
         customSystemPrompt: customSystemPrompt || undefined,
         appendSystemPrompt: (appendSystemPrompt ? appendSystemPrompt + '\n\n' : '') + remoteSystemPrompt,
-        extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
+        extraArgs: materializedMcpConfig.args.length > 0 ? materializedMcpConfig.args : undefined,
         strictMcpConfig: argOverrides.strictMcpConfig,
-        canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) =>
+        includeHookEvents: true,
+        canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal; toolUseId?: string | null }) =>
             opts.canCallTool(toolName, input, mode, options),
         executable: runtimeExecutable,
         abort: opts.signal,
@@ -256,25 +298,62 @@ export async function claudeRemote(opts: {
         }
     };
 
-    // Push initial message
-    let messages = new PushableAsyncIterable<SDKUserMessage>();
-    opts.setUserMessageSender?.((message: SDKUserMessage) => messages.push(message));
-    messages.push({
-        type: 'user',
-        message: {
-            role: 'user',
-            content: initial.message,
+    type ProviderInputEnvelope = Readonly<{
+        message: SDKUserMessage;
+        acceptedPrompt?: ClaudeRemoteProviderAcceptedPrompt<EnhancedMode>;
+    }>;
+    const messages = new PushableAsyncIterable<ProviderInputEnvelope>();
+    const pendingPromptByMessage = new WeakMap<object, ClaudeRemoteProviderAcceptedPrompt<EnhancedMode>>();
+    const providerMessages: AsyncIterable<SDKUserMessage> = {
+        async *[Symbol.asyncIterator]() {
+            for await (const envelope of messages) {
+                if (envelope.acceptedPrompt) {
+                    pendingPromptByMessage.set(envelope.message, envelope.acceptedPrompt);
+                }
+                yield envelope.message;
+            }
         },
-    });
-
+    };
     // Start the loop
     const response = query({
-        prompt: messages,
+        prompt: providerMessages,
         options: sdkOptions,
+        onPromptTransportOutcome: (message, outcome) => {
+            if (!message || typeof message !== 'object') return;
+            const acceptedPrompt = pendingPromptByMessage.get(message);
+            if (!acceptedPrompt) return;
+            pendingPromptByMessage.delete(message);
+            if (outcome === 'accepted') {
+                confirmClaudeRemoteProviderPromptAccepted(
+                    opts.onPromptAcceptedByProvider,
+                    acceptedPrompt,
+                );
+                return;
+            }
+            reportClaudeRemoteProviderPromptTransportFailure(
+                opts.onPromptTransportFailure,
+                acceptedPrompt,
+                outcome,
+            );
+        },
         onMessageReceived: (message) => {
+            if (isClaudeHookLifecycleStreamMessage(message)) return;
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
             opts.onMessage(message);
         },
+    });
+    opts.onWorkflowActivityObserverReady?.();
+    await opts.runtimeActivityAdapter?.activateObservation('claude-legacy-provider-observer-installed');
+    opts.setUserMessageSender?.((message: SDKUserMessage) => messages.push({ message }));
+    messages.push({
+        message: {
+            type: 'user',
+            message: {
+                role: 'user',
+                content: initial.message,
+            },
+        },
+        acceptedPrompt: initial,
     });
 
     const interruptTurn = async (): Promise<void> => {
@@ -292,6 +371,7 @@ export async function claudeRemote(opts: {
     opts.setTurnInterrupt?.(interruptTurn);
 
     updateThinking(true);
+    let currentProviderSessionId = startFrom;
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
@@ -306,11 +386,16 @@ export async function claudeRemote(opts: {
 
                 const systemInit = message as SDKSystemMessage;
                 if (systemInit.session_id) {
+                    currentProviderSessionId = systemInit.session_id;
                     // Do not block on filesystem writes here.
                     // The session scanner can handle missing files via watcher retries + UI warnings.
                     logger.debug(`[claudeRemote] Session initialized: ${systemInit.session_id}`);
                     opts.onSessionFound(systemInit.session_id);
                 }
+            }
+
+            if (isClaudeLegacyRequiredHookObservationFailure(message, currentProviderSessionId)) {
+                opts.onProviderActivityObservationLost?.();
             }
 
             // Handle result messages
@@ -335,7 +420,10 @@ export async function claudeRemote(opts: {
                     return;
                 }
                 mode = next.mode;
-                messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                messages.push({
+                    message: { type: 'user', message: { role: 'user', content: next.message } },
+                    acceptedPrompt: next,
+                });
             }
 
             // Handle tool result
@@ -362,5 +450,8 @@ export async function claudeRemote(opts: {
         opts.setTurnInterrupt?.(null);
         opts.setUserMessageSender?.(null);
         updateThinking(false);
+    }
+    } finally {
+        await materializedMcpConfig.cleanup();
     }
 }

@@ -18,7 +18,7 @@ function createRegistrar(): { handlers: Map<string, RpcHandler>; registrar: RpcH
 }
 
 describe('registerSessionHandlers pending queue materialization', () => {
-  it('exposes a retryable pending materializer RPC even before the safe materializer owner is ready', async () => {
+  it('keeps the legacy method side-effect-free for old daemons', async () => {
     const { handlers, registrar } = createRegistrar();
 
     registerSessionHandlers(registrar, process.cwd());
@@ -27,36 +27,84 @@ describe('registerSessionHandlers pending queue materialization', () => {
     await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_MATERIALIZE_NEXT)?.({
       reconcileWhenEmpty: 'force',
     })).resolves.toEqual({
-      ok: false,
-      error: 'pending_materializer_unavailable',
-      errorCode: 'pending_materializer_unavailable',
+      ok: true,
+      didMaterialize: false,
+      result: { type: 'deferred', reason: 'runtime_upgrade_required' },
     });
   });
 
-  it('delegates pending materialization RPC to the safe materializer owner', async () => {
+  it('keeps the legacy method side-effect-free when unrelated controls exist', async () => {
     const { handlers, registrar } = createRegistrar();
-    const materializeNextPendingMessageSafely = vi.fn(async () => ({
-      type: 'materialized' as const,
-      localId: 'local-1',
-      seq: 3,
-      content: { t: 'plain' as const, v: { text: 'hello' } },
-    }));
 
     registerSessionHandlers(registrar, process.cwd(), {
-      materializeNextPendingMessageSafely,
+      sessionRuntimeControls: {},
     });
 
     await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_MATERIALIZE_NEXT)?.({
       reconcileWhenEmpty: 'force',
-    })).resolves.toMatchObject({
+    })).resolves.toEqual({
       ok: true,
-      didMaterialize: true,
-      result: {
-        type: 'materialized',
-        localId: 'local-1',
-        seq: 3,
+      didMaterialize: false,
+      result: { type: 'deferred', reason: 'runtime_upgrade_required' },
+    });
+  });
+
+  it('discovers and publishes only the versioned wake operation', async () => {
+    const { handlers, registrar } = createRegistrar();
+    const wakePendingMaterialization = vi.fn();
+
+    registerSessionHandlers(registrar, process.cwd(), {
+      sessionRuntimeControls: { wakePendingMaterialization },
+    });
+
+    await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_WAKE_CAPABILITY_GET_V1)?.({})).resolves.toEqual({
+      ok: true,
+      capability: 'pending_queue_wake_v1',
+      protocolVersion: 1,
+      method: SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_WAKE_V1,
+    });
+    expect(wakePendingMaterialization).not.toHaveBeenCalled();
+
+    await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_WAKE_V1)?.({ protocolVersion: 1 })).resolves.toEqual({
+      ok: true,
+      result: 'wake_published',
+    });
+    expect(wakePendingMaterialization).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a terminating runtime before accepting wake work', async () => {
+    const { handlers, registrar } = createRegistrar();
+    const wakePendingMaterialization = vi.fn();
+
+    registerSessionHandlers(registrar, process.cwd(), {
+      sessionRuntimeControls: {
+        isPendingMaterializationAvailable: () => false,
+        wakePendingMaterialization,
       },
     });
-    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({ reconcileWhenEmpty: 'force' });
+
+    const unavailable = {
+      ok: false,
+      error: 'pending_materialization_wake_unavailable',
+      errorCode: 'runtime_terminating',
+    };
+    await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_WAKE_CAPABILITY_GET_V1)?.({}))
+      .resolves.toEqual(unavailable);
+    await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_WAKE_V1)?.({ protocolVersion: 1 }))
+      .resolves.toEqual(unavailable);
+    expect(wakePendingMaterialization).not.toHaveBeenCalled();
   });
+
+  it('rejects malformed wake requests without publishing', async () => {
+    const { handlers, registrar } = createRegistrar();
+    const wakePendingMaterialization = vi.fn();
+    registerSessionHandlers(registrar, process.cwd(), { sessionRuntimeControls: { wakePendingMaterialization } });
+
+    await expect(handlers.get(SESSION_RPC_METHODS.SESSION_PENDING_QUEUE_WAKE_V1)?.({
+      protocolVersion: 1,
+      didMaterialize: false,
+    })).rejects.toBeDefined();
+    expect(wakePendingMaterialization).not.toHaveBeenCalled();
+  });
+
 });

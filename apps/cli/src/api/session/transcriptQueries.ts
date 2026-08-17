@@ -1,17 +1,16 @@
 import axios from 'axios';
 
 import { resolveLatestPermissionIntent } from '@happier-dev/agents';
+import type { SessionEncryptionMode } from '@happier-dev/protocol';
 
-import { configuration } from '@/configuration';
 import { logger } from '@/ui/logger';
-import { resolveLoopbackHttpUrl } from '../client/loopbackUrl';
 import { isAuthenticationError } from '../client/httpStatusError';
 import { serializeAxiosErrorForLog } from '../client/serializeAxiosErrorForLog';
+import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 
 import { decodeBase64, decrypt } from '../encryption';
 import { SessionMessageContentSchema, type PermissionMode } from '../types';
 import { extractSemanticTranscriptItem } from '@/session/services/transcript/extractSemanticTranscriptItem';
-import type { SemanticTranscriptItem, SemanticTranscriptRole } from '@/session/services/transcript/semanticTranscriptItem';
 
 type EncryptionVariant = 'legacy' | 'dataKey';
 
@@ -35,7 +34,7 @@ export async function fetchRecentTranscriptTextItemsForAcpImportFromServer(
   params: SessionTranscriptQueryParams & { take?: number },
 ): Promise<Array<{ role: 'user' | 'agent'; text: string }>> {
   const take = normalizeTake(params.take, 150);
-  const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
+  const serverUrl = resolveServerHttpBaseUrl();
 
   try {
     const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
@@ -87,10 +86,10 @@ export async function fetchRecentTranscriptTextItemsForAcpImportFromServer(
 }
 
 export async function fetchLatestUserPermissionIntentFromEncryptedTranscript(
-  params: SessionTranscriptQueryParams & { take?: number },
+  params: SessionTranscriptQueryParams & { sessionEncryptionMode: SessionEncryptionMode; take?: number },
 ): Promise<{ intent: PermissionMode; updatedAt: number } | null> {
   const take = normalizeTake(params.take, 200);
-  const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
+  const serverUrl = resolveServerHttpBaseUrl();
 
   try {
     const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
@@ -115,6 +114,8 @@ export async function fetchLatestUserPermissionIntentFromEncryptedTranscript(
       const content = msg?.content;
       const parsedContent = SessionMessageContentSchema.safeParse(content);
       if (!parsedContent.success) continue;
+      if (params.sessionEncryptionMode === 'e2ee' && parsedContent.data.t !== 'encrypted') continue;
+      if (params.sessionEncryptionMode === 'plain' && parsedContent.data.t !== 'plain') continue;
 
       let decrypted: unknown;
       if (parsedContent.data.t === 'plain') {
@@ -159,7 +160,7 @@ export async function hasCommittedUserMessageAfterMs(params: Readonly<{
   const failureAtMs = Number.isFinite(params.failureAtMs)
     ? Math.max(0, Math.trunc(params.failureAtMs))
     : 0;
-  const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
+  const serverUrl = resolveServerHttpBaseUrl();
 
   try {
     const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
@@ -184,244 +185,6 @@ export async function hasCommittedUserMessageAfterMs(params: Readonly<{
   } catch (error) {
     if (isAuthenticationError(error)) throw error;
     logTranscriptQueryFailure('[API] Failed to fetch transcript messages for continuation recovery suppression', error);
-    return false;
-  }
-}
-
-export type CommittedProviderActivityAfterUserPromptEvidence =
-  | Readonly<{
-      status: 'activity_found';
-      latestUserMessageAtMs: number;
-      activityAtMs: number;
-      activityKind: string;
-      activityRole: Exclude<SemanticTranscriptRole, 'user'>;
-    }>
-  | Readonly<{
-      status: 'no_activity_found';
-      latestUserMessageAtMs: number;
-    }>
-  | Readonly<{
-      status: 'unknown';
-      reason:
-        | 'latest_user_prompt_unavailable'
-        | 'transcript_unavailable'
-        | 'ambiguous_post_prompt_row';
-    }>;
-
-function readTranscriptCreatedAt(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
-    : null;
-}
-
-export async function detectCommittedProviderActivityAfterLatestUserPrompt(
-  params: SessionTranscriptQueryParams & Readonly<{
-    failureAtMs: number;
-    take?: number;
-  }>,
-): Promise<CommittedProviderActivityAfterUserPromptEvidence> {
-  const take = normalizeTake(params.take, 100);
-  const failureAtMs = Number.isFinite(params.failureAtMs)
-    ? Math.max(0, Math.trunc(params.failureAtMs))
-    : 0;
-  const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
-
-  try {
-    const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
-      headers: {
-        Authorization: `Bearer ${params.token}`,
-        'Content-Type': 'application/json',
-      },
-      params: { limit: take },
-      timeout: 10_000,
-    });
-
-    const data = response?.data as unknown;
-    const raw = data && typeof data === 'object' ? (data as Record<string, unknown>).messages : null;
-    if (!Array.isArray(raw)) return { status: 'unknown', reason: 'transcript_unavailable' };
-
-    const transcriptRows = raw
-      .map((msg, index) => {
-        const record = msg && typeof msg === 'object' && !Array.isArray(msg)
-          ? msg as Record<string, unknown>
-          : null;
-        if (!record) return null;
-        const createdAt = readTranscriptCreatedAt(record.createdAt);
-        if (createdAt === null) return null;
-        const item = extractSemanticTranscriptItem({
-          row: record,
-          index,
-          ctx: {
-            encryptionKey: params.encryptionKey,
-            encryptionVariant: params.encryptionVariant,
-          },
-          options: {
-            mode: 'transcript',
-            transcriptRoles: ['user', 'assistant'],
-            includeTools: true,
-            includeReasoning: true,
-            includeEvents: true,
-            maxTextChars: null,
-          },
-        }).item;
-        return { createdAt, item };
-      })
-      .filter((row): row is { createdAt: number; item: SemanticTranscriptItem | null } => row !== null);
-
-    const latestUser = transcriptRows
-      .filter((row): row is { createdAt: number; item: SemanticTranscriptItem } =>
-        row.item?.semanticRole === 'user' && row.createdAt <= failureAtMs)
-      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
-    if (!latestUser) {
-      return { status: 'unknown', reason: 'latest_user_prompt_unavailable' };
-    }
-
-    const laterRows = transcriptRows
-      .filter((row) => row.createdAt > latestUser.createdAt)
-      .sort((a, b) => a.createdAt - b.createdAt);
-    if (laterRows.some((row) => row.item === null)) {
-      return { status: 'unknown', reason: 'ambiguous_post_prompt_row' };
-    }
-    const semanticLaterRows = laterRows as Array<{ createdAt: number; item: SemanticTranscriptItem }>;
-    const providerActivity = semanticLaterRows.find((row) => row.item.semanticRole !== 'user') ?? null;
-    if (providerActivity) {
-      return {
-        status: 'activity_found',
-        latestUserMessageAtMs: latestUser.createdAt,
-        activityAtMs: providerActivity.createdAt,
-        activityKind: providerActivity.item.kind,
-        activityRole: providerActivity.item.semanticRole as Exclude<SemanticTranscriptRole, 'user'>,
-      };
-    }
-
-    return {
-      status: 'no_activity_found',
-      latestUserMessageAtMs: latestUser.createdAt,
-    };
-  } catch (error) {
-    if (isAuthenticationError(error)) throw error;
-    logTranscriptQueryFailure('[API] Failed to fetch transcript messages for connected-service provider activity evidence', error);
-    return { status: 'unknown', reason: 'transcript_unavailable' };
-  }
-}
-
-export type LatestCommittedUserTextBeforeFailure = Readonly<{
-  text: string;
-  localId: string | null;
-  createdAt: number;
-  permissionMode: string | null;
-  model: string | null;
-}>;
-
-function readUserTextRecordFromTranscriptContent(input: Readonly<{
-  content: unknown;
-  encryptionKey: Uint8Array;
-  encryptionVariant: EncryptionVariant;
-}>): Readonly<{
-  text: string;
-  permissionMode: string | null;
-  model: string | null;
-}> | null {
-  const parsedContent = SessionMessageContentSchema.safeParse(input.content);
-  if (!parsedContent.success) return null;
-
-  let decoded: unknown;
-  if (parsedContent.data.t === 'plain') {
-    decoded = parsedContent.data.v;
-  } else {
-    try {
-      decoded = decrypt(
-        input.encryptionKey,
-        input.encryptionVariant,
-        decodeBase64(parsedContent.data.c),
-      );
-    } catch {
-      return null;
-    }
-  }
-
-  const decodedObj = decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-    ? decoded as Record<string, unknown>
-    : null;
-  if (decodedObj?.role !== 'user') return null;
-  const body = decodedObj.content;
-  const bodyObj = body && typeof body === 'object' && !Array.isArray(body)
-    ? body as Record<string, unknown>
-    : null;
-  if (bodyObj?.type !== 'text' || typeof bodyObj.text !== 'string') return null;
-  const text = bodyObj.text.trim();
-  if (!text) return null;
-  const meta = decodedObj.meta && typeof decodedObj.meta === 'object' && !Array.isArray(decodedObj.meta)
-    ? decodedObj.meta as Record<string, unknown>
-    : null;
-  const permissionMode = typeof meta?.permissionMode === 'string' && meta.permissionMode.trim().length > 0
-    ? meta.permissionMode.trim()
-    : null;
-  const model = typeof meta?.model === 'string' && meta.model.trim().length > 0
-    ? meta.model.trim()
-    : null;
-  return { text, permissionMode, model };
-}
-
-export async function fetchLatestCommittedUserTextAtOrBeforeMs(
-  params: SessionTranscriptQueryParams & Readonly<{
-    failureAtMs: number;
-    take?: number;
-  }>,
-): Promise<LatestCommittedUserTextBeforeFailure | null> {
-  const take = normalizeTake(params.take, 25);
-  const failureAtMs = Number.isFinite(params.failureAtMs)
-    ? Math.max(0, Math.trunc(params.failureAtMs))
-    : 0;
-  const serverUrl = resolveLoopbackHttpUrl(configuration.apiServerUrl).replace(/\/+$/, '');
-
-  try {
-    const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
-      headers: {
-        Authorization: `Bearer ${params.token}`,
-        'Content-Type': 'application/json',
-      },
-      params: { limit: take, role: 'user' },
-      timeout: 10_000,
-    });
-
-    const data = response?.data as unknown;
-    const raw = data && typeof data === 'object' ? (data as Record<string, unknown>).messages : null;
-    if (!Array.isArray(raw)) return null;
-
-    const candidates = raw
-      .map((msg): LatestCommittedUserTextBeforeFailure | null => {
-        const record = msg && typeof msg === 'object' && !Array.isArray(msg)
-          ? msg as Record<string, unknown>
-          : null;
-        if (!record) return null;
-        const createdAt = typeof record.createdAt === 'number' && Number.isFinite(record.createdAt)
-          ? Math.trunc(record.createdAt)
-          : null;
-        if (createdAt === null || createdAt > failureAtMs) return null;
-        const decoded = readUserTextRecordFromTranscriptContent({
-          content: record.content,
-          encryptionKey: params.encryptionKey,
-          encryptionVariant: params.encryptionVariant,
-        });
-        if (!decoded) return null;
-        return {
-          text: decoded.text,
-          localId: typeof record.localId === 'string' && record.localId.trim().length > 0
-            ? record.localId.trim()
-            : null,
-          createdAt,
-          permissionMode: decoded.permissionMode,
-          model: decoded.model,
-        };
-      })
-      .filter((candidate): candidate is LatestCommittedUserTextBeforeFailure => candidate !== null)
-      .sort((a, b) => b.createdAt - a.createdAt);
-
-    return candidates[0] ?? null;
-  } catch (error) {
-    if (isAuthenticationError(error)) throw error;
-    logTranscriptQueryFailure('[API] Failed to fetch transcript messages for original-message retry', error);
-    return null;
+    throw error;
   }
 }

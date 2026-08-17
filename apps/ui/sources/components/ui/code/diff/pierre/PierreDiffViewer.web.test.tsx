@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import React from 'react';
 import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +12,9 @@ import { installCodeDiffCommonModuleMocks } from '../codeDiffTestHelpers';
 const fileDiffSpy = vi.fn();
 const virtualizerSpy = vi.fn();
 const settingValues: Record<string, unknown> = {};
+const pierreWorkerPoolMock = vi.hoisted(() => ({
+    current: null as any,
+}));
 
 function resetSettingValues() {
     settingValues.filesDiffTokenizationMaxLineLength = 1234;
@@ -43,7 +48,7 @@ vi.mock('./pierreThemeRegistry.web', () => ({
 }));
 
 vi.mock('./pierreWorkerPool.web', () => ({
-    getPierreDiffWorkerPool: () => null,
+    getPierreDiffWorkerPool: () => pierreWorkerPoolMock.current,
 }));
 
 vi.mock('./resolvePierreLanguageOverride.web', () => ({
@@ -110,6 +115,26 @@ async function findPierreHoverUtilityButtonProps(utility: any): Promise<any> {
 describe('PierreDiffViewer (web)', () => {
     beforeEach(() => {
         resetSettingValues();
+        pierreWorkerPoolMock.current = null;
+    });
+
+    it('uses an exact content-sensitive cache key for the Pierre diff', async () => {
+        const { buildPierreInitialPresentationCacheKey } = await import('./pierreInitialPresentation.web');
+        const first = buildPierreInitialPresentationCacheKey({
+            fileName: 'src/a.ts',
+            language: 'typescript',
+            patch: '@@ -1 +1 @@\n-a\n+b',
+        });
+        const second = buildPierreInitialPresentationCacheKey({
+            fileName: 'src/a.ts',
+            language: 'typescript',
+            patch: '@@ -1 +1 @@\n-a\n+c',
+        });
+
+        expect(first).not.toBe(second);
+        expect(first).toMatch(/^happier-pierre-diff:v1:[0-9a-f]{64}$/);
+        expect(first).not.toContain('@@ -1 +1 @@\n-a\n+b');
+        expect(second).toHaveLength(first.length);
     });
 
     it('inherits maxHeight on the wrapper when virtualized', async () => {

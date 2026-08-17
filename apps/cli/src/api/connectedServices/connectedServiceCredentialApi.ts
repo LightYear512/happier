@@ -4,12 +4,16 @@ import { z } from 'zod';
 import {
   AccountEncryptionModeResponseSchema,
   ConnectedServiceAuthGroupErrorResponseV1Schema,
+  ConnectedServiceAuthGroupListResponseV1Schema,
   ConnectedServiceAuthGroupResponseV1Schema,
   ConnectedServiceCredentialRecordV1Schema,
   SealedConnectedServiceCredentialV1Schema,
   StoredJsonContentEnvelopeSchema,
+  assertConnectedServiceCredentialRecordBinding,
+  readConnectedServiceCredentialRevisionBoundaryV1,
   type ConnectedServiceAuthGroupV1,
   type ConnectedServiceCredentialRecordV1,
+  type ConnectedServiceCredentialRevisionBoundaryV1,
   type ConnectedServiceId,
   type SealedConnectedServiceCredentialV1,
 } from '@happier-dev/protocol';
@@ -18,15 +22,31 @@ import type { Credentials } from '@/persistence';
 import { logger } from '@/ui/logger';
 
 import { createHttpStatusError } from '../client/httpStatusError';
-import { serializeAxiosErrorForLog } from '../client/serializeAxiosErrorForLog';
+import { logServerEndpointFailure } from '../client/serverEndpointFailureLog';
 import { resolveServerHttpBaseUrl } from '../client/serverHttpBaseUrl';
-
-const CONNECTED_SERVICE_CREDENTIAL_HTTP_TIMEOUT_MS = 5_000;
+import { resolveConnectedServicesServerApiTimeoutMs } from './serverApiTimeout';
 
 export class ConnectedServiceAuthGroupGenerationConflictError extends Error {
   constructor(public readonly generation: number) {
     super('connected_service_auth_group_generation_conflict');
   }
+}
+
+export class ConnectedServiceAuthGroupRuntimeStateRevisionConflictError extends Error {
+  constructor(public readonly runtimeStateRevision: number) {
+    super('connected_service_auth_group_runtime_state_revision_conflict');
+  }
+}
+
+export const connectedServiceAuthGroupUnavailableCode = 'connected_service_auth_group_unavailable';
+
+export function isConnectedServiceAuthGroupUnavailableError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'code' in error
+    && error.code === connectedServiceAuthGroupUnavailableCode,
+  );
 }
 
 export class ConnectedServiceCredentialUnsupportedFormatError extends Error {
@@ -41,6 +61,12 @@ export class ConnectedServiceCredentialUnsupportedFormatError extends Error {
   }
 }
 
+/**
+ * The compatible credential responses below adapt exact server-v0.2.1 at
+ * 4913c1e533c872a0712ba1c25b3104fd470aacc2, which omitted credential revisions.
+ * Remove the legacy response branch when exact 0.2.1 leaves the supported
+ * predecessor window.
+ */
 export type ConnectedServiceCredentialSealedResponse = Readonly<{
   sealed: SealedConnectedServiceCredentialV1;
   metadata: {
@@ -49,28 +75,37 @@ export type ConnectedServiceCredentialSealedResponse = Readonly<{
     providerAccountId?: string | null;
     expiresAt?: number | null;
   };
-}>;
+}> & ConnectedServiceCredentialRevisionBoundaryV1;
 
 export type ConnectedServiceCredentialPlainResponse = Readonly<{
   content: { t: 'plain'; v: ConnectedServiceCredentialRecordV1 };
-}>;
+}> & ConnectedServiceCredentialRevisionBoundaryV1;
 
 export type ConnectedServiceCredentialApi = Readonly<{
-  getAccountEncryptionMode?: () => Promise<'e2ee' | 'plain' | 'unknown'>;
+  getAccountEncryptionMode?: (options?: Readonly<{
+    refresh?: boolean;
+    signal?: AbortSignal;
+  }>) => Promise<'e2ee' | 'plain' | 'unknown'>;
   getConnectedServiceCredentialSealed: (params: {
     serviceId: ConnectedServiceId;
     profileId: string;
+    signal?: AbortSignal;
   }) => Promise<ConnectedServiceCredentialSealedResponse | null>;
   getConnectedServiceCredentialPlain?: (params: {
     serviceId: ConnectedServiceId;
     profileId: string;
+    signal?: AbortSignal;
   }) => Promise<ConnectedServiceCredentialPlainResponse | null>;
 }>;
 
 export type ConnectedServiceAuthGroupApi = Readonly<{
+  listConnectedServiceAuthGroups: (params: {
+    serviceId: ConnectedServiceId;
+  }) => Promise<readonly ConnectedServiceAuthGroupV1[]>;
   getConnectedServiceAuthGroup: (params: {
     serviceId: ConnectedServiceId;
     groupId: string;
+    signal?: AbortSignal;
   }) => Promise<ConnectedServiceAuthGroupV1 | null>;
 }>;
 
@@ -117,15 +152,20 @@ export function createConnectedServiceCredentialApi(
   const token = credentials.token;
 
   return {
-    getAccountEncryptionMode: async () => getAccountEncryptionMode({ token }),
+    getAccountEncryptionMode: async (options) => getAccountEncryptionMode({
+      token,
+      ...(options?.signal ? { signal: options.signal } : {}),
+    }),
     getConnectedServiceCredentialSealed: async (params) => getConnectedServiceCredentialSealed({ token, ...params }),
     getConnectedServiceCredentialPlain: async (params) => getConnectedServiceCredentialPlain({ token, ...params }),
+    listConnectedServiceAuthGroups: async (params) => listConnectedServiceAuthGroups({ token, ...params }),
     getConnectedServiceAuthGroup: async (params) => getConnectedServiceAuthGroup({ token, ...params }),
   };
 }
 
 export async function getAccountEncryptionMode(params: Readonly<{
   token: string;
+  signal?: AbortSignal;
 }>): Promise<'e2ee' | 'plain' | 'unknown'> {
   const serverUrl = resolveServerHttpBaseUrl();
   try {
@@ -133,7 +173,8 @@ export async function getAccountEncryptionMode(params: Readonly<{
       `${serverUrl}/v1/account/encryption`,
       {
         headers: authHeaders(params.token),
-        timeout: CONNECTED_SERVICE_CREDENTIAL_HTTP_TIMEOUT_MS,
+        timeout: resolveConnectedServicesServerApiTimeoutMs(),
+        signal: params.signal,
       },
     );
     if (response.status === 404) return 'e2ee';
@@ -145,7 +186,11 @@ export async function getAccountEncryptionMode(params: Readonly<{
     throwConnectedServiceGroupGenerationConflictIfPresent(error);
     const status = readAxiosStatus(error);
     if (status === 404) return 'e2ee';
-    logger.debug(`[API] [ERROR] Failed to get account encryption mode:`, serializeAxiosErrorForLog(error));
+    logServerEndpointFailure({
+      logger,
+      operation: 'Failed to get account encryption mode',
+      error,
+    });
     return 'unknown';
   }
 }
@@ -154,6 +199,7 @@ export async function getConnectedServiceCredentialSealed(params: Readonly<{
   token: string;
   serviceId: ConnectedServiceId;
   profileId: string;
+  signal?: AbortSignal;
 }>): Promise<ConnectedServiceCredentialSealedResponse | null> {
   const serverUrl = resolveServerHttpBaseUrl();
   const serviceId = encodeURIComponent(params.serviceId);
@@ -164,7 +210,8 @@ export async function getConnectedServiceCredentialSealed(params: Readonly<{
       `${serverUrl}/v2/connect/${serviceId}/profiles/${profileId}/credential`,
       {
         headers: authHeaders(params.token),
-        timeout: CONNECTED_SERVICE_CREDENTIAL_HTTP_TIMEOUT_MS,
+        timeout: resolveConnectedServicesServerApiTimeoutMs(),
+        signal: params.signal,
       },
     );
     if (response.status !== 200) {
@@ -177,7 +224,8 @@ export async function getConnectedServiceCredentialSealed(params: Readonly<{
     }
 
     const sealedParsed = SealedConnectedServiceCredentialV1Schema.safeParse((raw as Record<string, unknown>).sealed);
-    if (!sealedParsed.success) {
+    const revision = readConnectedServiceCredentialRevisionBoundaryV1(raw as Record<string, unknown>);
+    if (!sealedParsed.success || !revision) {
       throw new Error('Invalid connected service credential response');
     }
 
@@ -192,7 +240,7 @@ export async function getConnectedServiceCredentialSealed(params: Readonly<{
       throw new Error('Invalid connected service credential response');
     }
 
-    return { sealed: sealedParsed.data, metadata: metadataParsed.data };
+    return { ...revision, sealed: sealedParsed.data, metadata: metadataParsed.data };
   } catch (error: unknown) {
     throwConnectedServiceGroupGenerationConflictIfPresent(error);
     const status = readAxiosStatus(error);
@@ -203,7 +251,11 @@ export async function getConnectedServiceCredentialSealed(params: Readonly<{
     if (status === 409 && code === 'connect_credential_unsupported_format') {
       throw new ConnectedServiceCredentialUnsupportedFormatError(params.serviceId, params.profileId);
     }
-    logger.debug(`[API] [ERROR] Failed to get connected service credential:`, serializeAxiosErrorForLog(error));
+    logServerEndpointFailure({
+      logger,
+      operation: 'Failed to get connected service credential',
+      error,
+    });
     throw new Error(`Failed to get connected service credential: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -212,6 +264,7 @@ export async function getConnectedServiceCredentialPlain(params: Readonly<{
   token: string;
   serviceId: ConnectedServiceId;
   profileId: string;
+  signal?: AbortSignal;
 }>): Promise<ConnectedServiceCredentialPlainResponse | null> {
   const serverUrl = resolveServerHttpBaseUrl();
   const serviceId = encodeURIComponent(params.serviceId);
@@ -222,7 +275,8 @@ export async function getConnectedServiceCredentialPlain(params: Readonly<{
       `${serverUrl}/v3/connect/${serviceId}/profiles/${profileId}/credential`,
       {
         headers: authHeaders(params.token),
-        timeout: CONNECTED_SERVICE_CREDENTIAL_HTTP_TIMEOUT_MS,
+        timeout: resolveConnectedServicesServerApiTimeoutMs(),
+        signal: params.signal,
       },
     );
     if (response.status !== 200) {
@@ -234,7 +288,8 @@ export async function getConnectedServiceCredentialPlain(params: Readonly<{
     }
 
     const contentParsed = StoredJsonContentEnvelopeSchema.safeParse((raw as Record<string, unknown>).content);
-    if (!contentParsed.success || contentParsed.data.t !== 'plain') {
+    const revision = readConnectedServiceCredentialRevisionBoundaryV1(raw as Record<string, unknown>);
+    if (!contentParsed.success || contentParsed.data.t !== 'plain' || !revision) {
       throw new Error('Invalid connected service credential response');
     }
 
@@ -242,8 +297,16 @@ export async function getConnectedServiceCredentialPlain(params: Readonly<{
     if (!recordParsed.success) {
       throw new Error('Invalid connected service credential response');
     }
+    try {
+      assertConnectedServiceCredentialRecordBinding({
+        binding: { serviceId: params.serviceId, profileId: params.profileId },
+        record: recordParsed.data,
+      });
+    } catch {
+      throw new Error('Invalid connected service credential response');
+    }
 
-    return { content: { t: 'plain', v: recordParsed.data } };
+    return { ...revision, content: { t: 'plain', v: recordParsed.data } };
   } catch (error: unknown) {
     throwConnectedServiceGroupGenerationConflictIfPresent(error);
     const status = readAxiosStatus(error);
@@ -254,8 +317,47 @@ export async function getConnectedServiceCredentialPlain(params: Readonly<{
     if (status === 409 && code === 'connect_credential_unsupported_format') {
       return null;
     }
-    logger.debug(`[API] [ERROR] Failed to get connected service credential (v3):`, serializeAxiosErrorForLog(error));
+    logServerEndpointFailure({
+      logger,
+      operation: 'Failed to get connected service credential (v3)',
+      error,
+    });
     throw new Error(`Failed to get connected service credential: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+export async function listConnectedServiceAuthGroups(params: Readonly<{
+  token: string;
+  serviceId: ConnectedServiceId;
+}>): Promise<readonly ConnectedServiceAuthGroupV1[]> {
+  const serverUrl = resolveServerHttpBaseUrl();
+  const serviceId = encodeURIComponent(params.serviceId);
+  try {
+    const response = await axios.get(
+      `${serverUrl}/v3/connect/${serviceId}/groups`,
+      {
+        headers: authHeaders(params.token),
+        timeout: resolveConnectedServicesServerApiTimeoutMs(),
+      },
+    );
+    if (response.status !== 200) throw new Error(`Server returned status ${response.status}`);
+    const parsed = ConnectedServiceAuthGroupListResponseV1Schema.safeParse(response.data);
+    if (!parsed.success) throw new Error('Invalid connected service auth group list response');
+    return parsed.data.groups;
+  } catch (error: unknown) {
+    const status = readAxiosStatus(error);
+    logServerEndpointFailure({
+      logger,
+      operation: 'Failed to list connected service auth groups',
+      error,
+    });
+    if (typeof status === 'number' && Number.isFinite(status)) {
+      throw createHttpStatusError(status, `Failed to list connected service auth groups (${status})`);
+    }
+    throw createCausePreservingError(
+      `Failed to list connected service auth groups: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      error,
+    );
   }
 }
 
@@ -263,6 +365,7 @@ export async function getConnectedServiceAuthGroup(params: Readonly<{
   token: string;
   serviceId: ConnectedServiceId;
   groupId: string;
+  signal?: AbortSignal;
 }>): Promise<ConnectedServiceAuthGroupV1 | null> {
   const serverUrl = resolveServerHttpBaseUrl();
   const serviceId = encodeURIComponent(params.serviceId);
@@ -273,7 +376,8 @@ export async function getConnectedServiceAuthGroup(params: Readonly<{
       `${serverUrl}/v3/connect/${serviceId}/groups/${groupId}`,
       {
         headers: authHeaders(params.token),
-        timeout: CONNECTED_SERVICE_CREDENTIAL_HTTP_TIMEOUT_MS,
+        timeout: resolveConnectedServicesServerApiTimeoutMs(),
+        signal: params.signal,
       },
     );
     if (response.status !== 200) {
@@ -287,8 +391,20 @@ export async function getConnectedServiceAuthGroup(params: Readonly<{
   } catch (error: unknown) {
     throwConnectedServiceGroupGenerationConflictIfPresent(error);
     const status = readAxiosStatus(error);
-    if (status === 404) return null;
-    logger.debug(`[API] [ERROR] Failed to get connected service auth group:`, serializeAxiosErrorForLog(error));
+    const code = readAxiosErrorCode(error);
+    if (status === 404 && code === 'connect_group_not_found') return null;
+    if (status === 404) {
+      throw createHttpStatusError(
+        404,
+        'Connected service auth group unavailable',
+        connectedServiceAuthGroupUnavailableCode,
+      );
+    }
+    logServerEndpointFailure({
+      logger,
+      operation: 'Failed to get connected service auth group',
+      error,
+    });
     if (typeof status === 'number' && Number.isFinite(status)) {
       throw createHttpStatusError(
         status,

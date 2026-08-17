@@ -2,17 +2,20 @@ import * as React from 'react';
 import {
     View,
     NativeSyntheticEvent,
+    type TextInputScrollEventData,
     TextInputKeyPressEventData,
     TextInputSelectionChangeEventData,
     TextStyle,
     findNodeHandle,
     type LayoutChangeEvent,
+    Platform,
 } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
 import { TextInput } from '@/components/ui/text/Text';
 import { normalizeKeyboardKeyPressEvent, type KeyPressEvent as KeyboardKeyPressEvent } from '@/keyboard/events';
 import { useLocalSetting } from '@/sync/store/hooks';
+import { recordLargeTextInputDiagnostic } from '@/utils/system/userInteractionDiagnostics';
 import {
     normalizeNativeMultiTextInputMaxHeight,
     resolveNativeMultiTextInputMinHeight,
@@ -62,6 +65,13 @@ export interface MultiTextInputHandle {
      * Native: returns `null`. Web uses `getInputElement()` instead.
      */
     getInputElement: () => HTMLTextAreaElement | null;
+
+    /**
+     * The input's own content scroll offset. Caret-anchored surfaces need it because
+     * the native caret payload is content-relative, so the visible caret position is
+     * `caret - scrollOffset` once the input clamps at max height and scrolls.
+     */
+    getScrollOffset: () => Readonly<{ x: number; y: number }>;
 }
 
 export type MultiTextInputSubmitBehavior = 'newline' | 'submit' | 'blurAndSubmit';
@@ -91,7 +101,10 @@ function clampTextSelection(selection: { start: number; end: number }, textLengt
     return { start, end };
 }
 
-function resolveCursorFromTextDiff(previousText: string, nextText: string): { start: number; end: number } {
+function resolveTextDiffBounds(previousText: string, nextText: string): Readonly<{
+    commonPrefixLength: number;
+    commonSuffixLength: number;
+}> {
     const previousLength = previousText.length;
     const nextLength = nextText.length;
     const sharedLength = Math.min(previousLength, nextLength);
@@ -113,6 +126,13 @@ function resolveCursorFromTextDiff(previousText: string, nextText: string): { st
     ) {
         commonSuffixLength += 1;
     }
+
+    return { commonPrefixLength, commonSuffixLength };
+}
+
+function resolveCursorFromTextDiff(previousText: string, nextText: string): { start: number; end: number } {
+    const nextLength = nextText.length;
+    const { commonPrefixLength, commonSuffixLength } = resolveTextDiffBounds(previousText, nextText);
 
     const insertedLength = Math.max(0, nextLength - commonPrefixLength - commonSuffixLength);
     const cursor = commonPrefixLength + insertedLength;
@@ -254,10 +274,16 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
         paddingTop: props.paddingTop,
         paddingBottom: props.paddingBottom,
     });
-    // Track latest selection in a ref
+    // Track latest selection in a ref.
     const selectionRef = React.useRef({ start: value.length, end: value.length });
     const latestNativeTextRef = React.useRef(value);
     const controlledValueRef = React.useRef(value);
+    const inputRef = React.useRef<React.ElementRef<typeof TextInput> | null>(null);
+    // Controlled `value` keeps the Fabric shadow tree's text in sync so native autogrow
+    // measurement works (an uncontrolled `defaultValue` input never re-measures on
+    // typing — the composer stops growing). Stale-echo protection lives with the value
+    // OWNERS (prompt rehydrate dirty-guard, focused-only draft persistence, editor
+    // flush-and-skip), so the controlled round-trip only ever carries our own emissions.
     if (controlledValueRef.current !== value) {
         const previousValue = controlledValueRef.current;
         const wasSelectionAtPreviousEnd = selectionRef.current.start === previousValue.length
@@ -268,39 +294,49 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
         controlledValueRef.current = value;
     }
     latestNativeTextRef.current = value;
-    const inputRef = React.useRef<React.ElementRef<typeof TextInput> | null>(null);
     const lastReportedContentHeightRef = React.useRef<number | null>(null);
 
     const handleKeyPress = React.useCallback((e: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-        if (!onKeyPress) return;
-
         const nativeEvent = e.nativeEvent as TextInputKeyPressEventData & Partial<KeyboardKeyPressEvent>;
         const keyEvent = normalizeKeyboardKeyPressEvent(nativeEvent);
-        if (!keyEvent) return;
+        let handled = false;
 
-        const handled = onKeyPress({
-            ...keyEvent,
-            inputState: {
-                text: value,
-                selection: { ...selectionRef.current },
-            },
-        });
+        if (onKeyPress && keyEvent) {
+            handled = onKeyPress({
+                ...keyEvent,
+                inputState: {
+                    text: latestNativeTextRef.current,
+                    selection: { ...selectionRef.current },
+                },
+            });
+        }
         if (handled) {
             e.preventDefault();
+            return;
         }
-    }, [onKeyPress, value]);
+    }, [onKeyPress]);
 
     const handleTextChange = React.useCallback((text: string) => {
+        const previousText = latestNativeTextRef.current;
         const selection = resolveNativeChangedTextSelection({
-            previousText: latestNativeTextRef.current,
+            previousText,
             previousSelection: selectionRef.current,
             nextText: text,
         });
         latestNativeTextRef.current = text;
         selectionRef.current = selection;
 
+        recordLargeTextInputDiagnostic({
+            phase: 'native-change',
+            platform: Platform.OS,
+            surface: 'agentInput',
+            textLength: text.length,
+            selection,
+            valueLength: controlledValueRef.current.length,
+        });
+
         onChangeText(text);
-        
+
         if (onStateChange) {
             onStateChange({ text, selection });
         }
@@ -319,8 +355,58 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
             return;
         }
         lastReportedContentHeightRef.current = nextHeight;
+        recordLargeTextInputDiagnostic({
+            phase: 'native-content-size',
+            platform: Platform.OS,
+            surface: 'agentInput',
+            textLength: latestNativeTextRef.current.length,
+            contentHeight: nextHeight,
+            maxHeight: normalizedMaxHeight,
+        });
         onContentHeightChange?.(nextHeight);
-    }, [onContentHeightChange]);
+    }, [normalizedMaxHeight, onContentHeightChange]);
+
+    // The composer scrolls its own content once it is clamped at max height. Track the
+    // offset so caret-anchored surfaces can convert the content-relative caret position
+    // into a visible one; a ref (not state) because this must not re-render on scroll.
+    const contentScrollOffsetRef = React.useRef<Readonly<{ x: number; y: number }>>({ x: 0, y: 0 });
+    // Both platforms silently DROP setTextAndSelection when the command's event count is behind
+    // the native one (iOS: `if (_mostRecentEventCount != eventCount) return;`, Android:
+    // `canUpdateWithEventCount`). A restore issued right after the draft text lands can lose that
+    // race, so re-issue once on the next frame — the command is idempotent, and the basis guard
+    // below keeps the retry from firing against text the user has since changed.
+    const pendingSelectionRetryRef = React.useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+    const applyNativeSelection = React.useCallback((selection: { start: number; end: number }) => {
+        const issue = () => {
+            const input = inputRef.current as (typeof inputRef.current & {
+                setSelection?: (start: number, end: number) => void;
+            }) | null;
+            input?.setSelection?.(selection.start, selection.end);
+        };
+        issue();
+        if (pendingSelectionRetryRef.current !== null) {
+            clearTimeout(pendingSelectionRetryRef.current);
+        }
+        pendingSelectionRetryRef.current = setTimeout(() => {
+            pendingSelectionRetryRef.current = null;
+            if (latestNativeTextRef.current !== controlledValueRef.current) return;
+            issue();
+        }, 0);
+    }, []);
+
+    React.useEffect(() => () => {
+        if (pendingSelectionRetryRef.current !== null) {
+            clearTimeout(pendingSelectionRetryRef.current);
+            pendingSelectionRetryRef.current = null;
+        }
+    }, []);
+
+    const handleScroll = React.useCallback((e: NativeSyntheticEvent<TextInputScrollEventData>) => {
+        const offset = e.nativeEvent?.contentOffset;
+        if (!offset) return;
+        contentScrollOffsetRef.current = { x: offset.x, y: offset.y };
+        props.onScrollYChange?.(offset.y);
+    }, [props.onScrollYChange]);
 
     const handleSelectionChange = React.useCallback((e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
         if (e.nativeEvent.selection) {
@@ -347,10 +433,10 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
             const nextSelection = clampTextSelection(selection, text.length);
             latestNativeTextRef.current = text;
             if (inputRef.current) {
-                // Use setNativeProps for direct manipulation
+                // Use setNativeProps for direct manipulation.
                 inputRef.current.setNativeProps({
-                    text: text,
-                    selection: nextSelection
+                    text,
+                    selection: nextSelection,
                 });
             }
 
@@ -371,11 +457,13 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
                 return;
             }
             const nextSelection = clampTextSelection(selection, value.length);
-            if (inputRef.current) {
-                inputRef.current.setNativeProps({
-                    selection: nextSelection
-                });
-            }
+            // Fabric's RCTTextInputComponentView.updateProps has no branch for `selection` (only
+            // selectionColor), so a setNativeProps({ selection }) write is stored and never
+            // applied — a silent no-op that made native caret restore dead code. RN's supported
+            // path is the setTextAndSelection command, exposed as setSelection(start, end); on
+            // iOS it ends with scrollRangeToVisible, so it restores the caret AND scrolls to it
+            // without taking focus or raising the keyboard.
+            applyNativeSelection(nextSelection);
 
             selectionRef.current = nextSelection;
 
@@ -402,6 +490,9 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
             return findNodeHandle(inputRef.current) ?? null;
         },
         getInputElement: () => null,
+        // The native caret payload is content-relative, so consumers need the
+        // input's own scroll offset to place anything against the visible caret.
+        getScrollOffset: () => contentScrollOffsetRef.current,
     }), [onChangeText, onStateChange, onSelectionChange, value]);
 
     return (
@@ -431,6 +522,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
                 onContentSizeChange={handleContentSizeChange}
                 onKeyPress={handleKeyPress}
                 onSelectionChange={handleSelectionChange}
+                onScroll={handleScroll}
                 multiline={true}
                 scrollEnabled={true}
                 autoCapitalize="sentences"

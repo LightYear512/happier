@@ -46,12 +46,40 @@ const validMediaItem = {
 } as const;
 
 describe('session media v1 schemas', () => {
+  it('exports the canonical combined durable-envelope entry limit', () => {
+    expect(Reflect.get(protocol, 'SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1')).toBe(256);
+  });
+
   it('accepts persisted generated image metadata with provider origin identifiers', () => {
     const schema = readSchema('SessionMediaItemV1Schema');
 
     const parsed = schema.parse(validMediaItem);
 
     expect(parsed).toEqual(validMediaItem);
+  });
+
+  it('accepts bounded generated descriptions and portable reference-image metadata', () => {
+    const schema = readSchema('SessionMediaItemV1Schema');
+    const item = {
+      ...validMediaItem,
+      description: 'Architecture diagram',
+      references: [{
+        mediaKind: 'image',
+        path: 'references/source.png',
+        mimeType: 'image/png',
+        sizeBytes: 42,
+      }],
+    };
+
+    expect(schema.parse(item)).toEqual(item);
+    expect(schema.safeParse({
+      ...item,
+      references: [{ ...item.references[0], path: '/private/source.png' }],
+    }).success).toBe(false);
+    expect(schema.safeParse({
+      ...item,
+      references: [{ ...item.references[0], path: `references/${'a'.repeat(16_384)}.png` }],
+    }).success).toBe(false);
   });
 
   it('accepts the exact session_media.v1 meta envelope shape', () => {
@@ -76,6 +104,80 @@ describe('session media v1 schemas', () => {
     const schema = readSchema('SessionMediaMessageMetaEnvelopeV1Schema');
 
     expect(schema.safeParse({ kind: 'session_media.v1', payload: { media: [] } }).success).toBe(false);
+  });
+
+  it('accepts a bounded unavailable-media state without fabricating persisted file metadata', () => {
+    const schema = readSchema('SessionMediaMessageMetaEnvelopeV1Schema');
+    const unavailable = {
+      id: 'b'.repeat(64),
+      role: 'output',
+      category: 'generated',
+      mediaKind: 'image',
+      code: 'provider_file_unavailable',
+      origin: {
+        source: 'provider-generated',
+        agentId: 'cursor',
+        toolCallIdHash: 'c'.repeat(64),
+      },
+    } as const;
+
+    expect(schema.parse({
+      kind: 'session_media.v1',
+      payload: { media: [], unavailable: [unavailable] },
+    })).toEqual({
+      kind: 'session_media.v1',
+      payload: { media: [], unavailable: [unavailable] },
+    });
+    expect(schema.safeParse({
+      kind: 'session_media.v1',
+      payload: {
+        media: [],
+        unavailable: [{ ...unavailable, path: '/tmp/not-a-real-image.png' }],
+      },
+    }).success).toBe(false);
+    expect(schema.safeParse({
+      kind: 'session_media.v1',
+      payload: {
+        media: [],
+        unavailable: [{
+          ...unavailable,
+          origin: { ...unavailable.origin, toolCallId: 'raw-provider-call-id' },
+        }],
+      },
+    }).success).toBe(false);
+  });
+
+  it('bounds unavailable-media states and the combined durable envelope size', () => {
+    const schema = readSchema('SessionMediaMessageMetaEnvelopeV1Schema');
+    const unavailable = {
+      id: 'b'.repeat(64),
+      role: 'output',
+      category: 'generated',
+      mediaKind: 'image',
+      code: 'persistence_failed',
+      origin: { source: 'provider-generated' },
+    } as const;
+
+    expect(schema.safeParse({
+      kind: 'session_media.v1',
+      payload: {
+        media: [validMediaItem],
+        unavailable: Array.from({ length: 256 }, (_, index) => ({ ...unavailable, id: `${index}` })),
+      },
+    }).success).toBe(false);
+    expect(schema.safeParse({
+      kind: 'session_media.v1',
+      payload: { media: [], unavailable: [{ ...unavailable, code: 'UPPER CASE' }] },
+    }).success).toBe(false);
+  });
+
+  it('bounds the number of media items in one durable envelope', () => {
+    const schema = readSchema('SessionMediaMessageMetaEnvelopeV1Schema');
+
+    expect(schema.safeParse({
+      kind: 'session_media.v1',
+      payload: { media: Array.from({ length: 257 }, (_, index) => ({ ...validMediaItem, id: `media_${index}` })) },
+    }).success).toBe(false);
   });
 
   it('rejects transient bytes and unsafe persisted paths', () => {
@@ -125,5 +227,20 @@ describe('session media v1 schemas', () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it('bounds durable media names and provider correlation identifiers', () => {
+    const schema = readSchema('SessionMediaItemV1Schema');
+    const oversizedName = 'x'.repeat(513);
+    const oversizedOriginId = 'x'.repeat(16_385);
+
+    expect(schema.safeParse({ ...validMediaItem, id: oversizedName }).success).toBe(false);
+    expect(schema.safeParse({ ...validMediaItem, name: oversizedName }).success).toBe(false);
+    for (const field of ['agentId', 'toolCallId', 'generationId', 'providerEventId', 'providerFileId'] as const) {
+      expect(schema.safeParse({
+        ...validMediaItem,
+        origin: { ...validMediaItem.origin, [field]: oversizedOriginId },
+      }).success).toBe(false);
+    }
   });
 });

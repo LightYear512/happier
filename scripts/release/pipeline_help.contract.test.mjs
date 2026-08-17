@@ -172,7 +172,7 @@ test('pipeline CLI help reflects the current release-validate execution surface'
   assert.match(help, /artifact-verify \(local-build or --product\/--version\)/);
   assert.match(help, /docker-release-assets \(local-build\|published-channel; published-channel -> local-build upgrade\)/);
   assert.match(help, /cli-update \(published-channel\|published-tag -> published-channel\|published-tag\|local-build\|local-pack\)/);
-  assert.match(help, /server-upgrade \(dry-run planning only\)/);
+  assert.doesNotMatch(help, /server-upgrade/);
   assert.doesNotMatch(help, /Later phases will add executor wiring/);
 });
 
@@ -190,4 +190,18 @@ test('pipeline help covers every supported subcommand', async () => {
     assert.doesNotMatch(out, /^Unknown command:/m, `missing help entry for: ${cmd}`);
     assert.match(out, new RegExp(`\\b${cmd.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`));
   }
+});
+
+test('release help exposes the workflow-control fence without reviving manual release notes', () => {
+  const help = execFileSync(process.execPath, [pipelineCli, 'help', 'release'], {
+    cwd: repoRoot,
+    env: { ...process.env },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30_000,
+  });
+
+  assert.match(help, /--workflow-control-sha/);
+  assert.match(help, /--resume-run-id/);
+  assert.doesNotMatch(help, /--release-message/);
 });

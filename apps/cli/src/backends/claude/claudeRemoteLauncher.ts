@@ -4,22 +4,28 @@ import type { Metadata } from '@/api/types';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { RemoteModeDisplay } from "@/backends/claude/ui/RemoteModeDisplay";
 import React from "react";
-import { claudeRemoteDispatch } from "./remote/claudeRemoteDispatch";
-import { createClaudeInFlightSteerCapabilityPublisher } from './unifiedTerminal/createClaudeInFlightSteerCapabilityPublisher';
+import {
+    claudeRemoteDispatch,
+    type ClaudeRemoteRunnerKind,
+} from "./remote/claudeRemoteDispatch";
+import { ClaudeResumeSessionUnavailableError } from './remote/sessionStartPlan';
+import {
+    prepareClaudeUnifiedStartupLifecycle,
+    type ClaudeUnifiedStartupLifecycleIntent,
+} from './unifiedTerminal/startupLifecycle';
+import {
+    createClaudeInFlightSteerCapabilityPublisher,
+    type ClaudeInFlightSteerAvailabilitySnapshot,
+} from './unifiedTerminal/createClaudeInFlightSteerCapabilityPublisher';
 import {
     runClaudeUnifiedTerminalSession,
     type ClaudeUnifiedTerminalSessionOptions,
 } from './unifiedTerminal/runClaudeUnifiedTerminalSession';
-import { CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL_FEATURE_ID, DEFAULT_CLAUDE_TUI_CONTROL_TIMINGS } from './unifiedTerminal/tuiControls';
-import { ClaudeUnifiedResumeChoiceBroker } from './unifiedTerminal/resumeChoice/claudeUnifiedResumeChoiceBroker';
-import { createClaudeUnifiedResumeChoiceStartupResolver } from './unifiedTerminal/resumeChoice/claudeUnifiedResumeChoiceStartupResolver';
-import type {
-    ClaudeUnifiedRuntimeConfigOutcomeEvent,
-    ClaudeUnifiedRuntimeControlApplyResult,
-} from './unifiedTerminal/runtimeControlIntegration';
+import { CLAUDE_UNIFIED_TUI_RUNTIME_CONTROL_FEATURE_ID } from './unifiedTerminal/tuiControls';
+import { ClaudeUnifiedDialogChoiceBroker } from './unifiedTerminal/dialogChoice/claudeUnifiedDialogChoiceBroker';
+import type { ClaudeUnifiedRuntimeControlApplyResult } from './unifiedTerminal/runtimeControlIntegration';
 import {
     buildClaudeUnifiedRuntimeConfigOutcomeSessionEvent,
-    isClaudeUnifiedRuntimeControlUserDraftBlocker,
 } from './unifiedTerminal/runtimeControlIntegration';
 import { createTerminalComposerDraftBlockedEvent } from './unifiedTerminal/terminalComposerDraftBlockedEvent';
 import {
@@ -31,6 +37,26 @@ import {
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { bindClaudeUnifiedTerminalSession } from './unifiedTerminal/bindClaudeUnifiedTerminalSession';
 import { surfaceClaudeUnifiedTerminalRuntimeIssue } from './unifiedTerminal/surfaceClaudeUnifiedTerminalRuntimeIssue';
+import {
+    isClaudeUnifiedProviderUnavailablePromptDeliveryWindowActive,
+    resolveClaudeUnifiedProviderUnavailableUntilMs,
+    resolveClaudeUnifiedProviderUnavailableWindowForUsageLimitDialog,
+    type ClaudeUnifiedProviderUnavailablePromptDeliveryWindow,
+} from './unifiedTerminal/pendingDeliveryBlock';
+import type { ClaudeUnifiedTerminalScreenObservation } from './unifiedTerminal/_types';
+import {
+    createClaudeUnifiedSustainedPendingDeliveryBlockHandler,
+    handleClaudeUnifiedTerminalRuntimeIssuePendingDeliveryBlock,
+    type ClaudeUnifiedTerminalRuntimeIssueHandlingResult,
+} from './unifiedTerminal/claudeUnifiedPendingDeliveryBlockHandling';
+import {
+    createClaudeUnifiedTerminalUnobservedFailedTurnError,
+    isClaudeUnifiedTerminalAmbiguousInjectionFailureError,
+} from './unifiedTerminal/terminalInjectionFailureError';
+import {
+    blockUndeliverableProviderPrompt,
+    readSinglePendingDeliveryLocalId,
+} from '@/agent/runtime/session/pendingDelivery/undeliverableProviderPrompt';
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { AbortError, type SDKAssistantMessage, type SDKMessage, type SDKUserMessage } from "./sdk/types";
@@ -40,13 +66,13 @@ import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import type { EnhancedMode, PermissionMode } from "./loop";
 import { RawJSONLines } from "@/backends/claude/types";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
-import { getToolName } from "./utils/getToolName";
 import { syncClaudePermissionModeFromMetadata } from "./utils/syncPermissionModeFromMetadata";
 import { resolveClaudeSdkPermissionModeFromEnhancedMode } from "./utils/permissionMode";
 import { readClaudeActiveTerminalMode } from './utils/readClaudeActiveTerminalMode';
 import { formatErrorForUi } from '@/ui/formatErrorForUi';
 import { createClaudePendingAwareInputConsumer } from './createClaudePendingAwareInputConsumer';
 import type { MessageBatch } from '@/agent/runtime/sessionInput/types';
+import { readDaemonInitialGoalFromEnv } from '@/agent/runtime/sessionInitialGoal';
 import { resolveClaudeRemoteQueuedPromptWithReplaySeed } from '@/backends/claude/remote/resolveClaudeRemoteQueuedPromptWithReplaySeed';
 import { cleanupStdinAfterInk } from '@/ui/ink/cleanupStdinAfterInk';
 import { restoreStdinBestEffort } from '@/ui/ink/restoreStdinBestEffort';
@@ -54,7 +80,9 @@ import { resolveSwitchRequestTarget } from '@/agent/localControl/switchRequestTa
 import { ensureSessionInfoBeforeSwitch } from '@/backends/claude/utils/ensureSessionInfoBeforeSwitch';
 import { ClaudeRemoteTaskOutputCollector } from './remote/sidechains/claudeRemoteTaskOutputCollector';
 import { ClaudeRemoteSubagentFileCollector } from './remote/sidechains/claudeRemoteSubagentFileCollector';
+import { createWorkflowAgentTranscriptRegistrar } from './remote/sidechains/createWorkflowAgentTranscriptRegistrar';
 import { resolveClaudeSubagentJsonlPathForRemoteSession } from './remote/sidechains/resolveClaudeSubagentJsonlPathForRemoteSession';
+import { reportSessionToDaemonIfRunning } from '@/agent/runtime/startupSideEffects';
 import { createClaudeRemoteTeamInboxBridge } from './remote/teamInbox/claudeRemoteTeamInboxBridge';
 import { resolveHasTTY } from '@/ui/tty/resolveHasTTY';
 import { createNonBlockingStdout } from '@/ui/ink/nonBlockingStdout';
@@ -75,29 +103,60 @@ import { tryReadTextFileTail } from '@/agent/runtime/readTextFileTail';
 import { readClaudeSessionJsonlMessages } from './utils/readClaudeSessionJsonlMessages';
 import { normalizeClaudeToolUseNamesInRawJsonLines } from './utils/normalizeClaudeToolUseNames';
 import { buildTurnChangeSetDiffInput } from '@/agent/tools/diff/buildTurnChangeSetDiffInput';
-import { delay } from '@/utils/time';
 import { ClaudeTurnChangeTracker } from './utils/ClaudeTurnChangeTracker';
 import { isClaudeExplicitDiffToolInput } from './utils/isClaudeExplicitDiffToolInput';
 import {
     buildClaudeSessionModelsMetadataFromSupportedModels,
-    buildClaudeSessionModelsMetadataWithCurrentModelId,
 } from './remote/buildClaudeSessionModelsMetadataFromSupportedModels';
+import { applyClaudeEffectiveModelUpdate } from './sessionModels/effectiveModelUpdate';
 import {
     createStreamedTranscriptWriter,
     type StreamedTranscriptWriter,
 } from '@/api/session/streamedTranscriptWriter';
 import { createClaudeRemoteStreamedTranscriptSession } from './remote/createClaudeRemoteStreamedTranscriptSession';
-import { hashClaudeUnifiedTerminalLaunchOptionsForQueue } from './remote/modeHash';
+import {
+    createClaudeRemoteProviderInputOutcomeBridge,
+    createClaudeRemoteUnifiedProviderInputOutcomeGeneration,
+} from './remote/claudeRemoteProviderInputOutcome';
+import {
+    createClaudeRuntimeActivityEvidence,
+    handleClaudeRuntimeActivityLoss,
+    observeClaudeProviderTaskRuntimeActivityHook,
+    observeClaudeProviderTaskRuntimeActivityRow,
+} from './remote/runtimeActivityEvidence';
+import {
+    hashClaudeEnhancedModeForQueue,
+    hashClaudeUnifiedTerminalLaunchOptionsForQueue,
+} from './remote/modeHash';
+import {
+    normalizeClaudeRemoteMode,
+    pinClaudeRemoteModeToActiveRuntime,
+    type NormalizedClaudeRemoteModeKind,
+} from './remote/normalizeClaudeRemoteMode';
 import type { ClaudeCompletionEvent } from './contextCompactionEvents';
 import { mergeSessionWorkStateMetadataV1, type SessionWorkStateV1 } from '@/session/workState/sessionWorkStateMetadata';
-import { createClaudeReadyHandler } from './ready/createClaudeReadyHandler';
+import { createClaudeGoalWorkStateSource } from './workState/claudeGoalSource';
 import {
+    CLAUDE_GOAL_WORK_STATE_ITEM_ID,
+    CLAUDE_GOAL_WORK_STATE_SOURCE_FAMILY,
+} from './workState/claudeGoalStatus';
+import { createClaudeWorkflowActivitySourceForSession } from './workflows/createClaudeWorkflowActivitySourceForSession';
+import { filterWorkflowOwnedWorkStateItems } from './workflows/claudeWorkflowOwnedWorkState';
+import { routeClaudeSdkMessageToWorkflowSource } from './workflows/routeClaudeSdkMessageToWorkflowSource';
+import { createClaudeGoalStatusTranscriptTail } from './workState/createClaudeGoalStatusTranscriptTail';
+import { createClaudeReadyHandler } from './ready/createClaudeReadyHandler';
+import { readClaudeRemoteProviderPromptAttribution } from './remote/providerPromptAcceptance';
+import {
+    recordClaudeRateLimitQuotaEvidence,
     surfaceClaudeRuntimeAuthFailure,
     surfaceClaudeRateLimitRuntimeIssue,
 } from './connectedServices/surfaceClaudeRuntimeIssues';
 import type { NormalizedProviderUsageLimitDetailsV1 } from './connectedServices/mapClaudeRateLimitEventToUsageDetails';
 import { surfacePrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/surfacePrimarySessionRuntimeIssue';
 import { createClaudeUnifiedTerminalMetadataModeApplier } from './unifiedTerminal/metadataRuntimeModeApplier';
+import { createClaudeUnifiedTerminalSharedCallbacks } from './unifiedTerminal/createClaudeUnifiedTerminalSharedCallbacks';
+import { resolveClaudeSubscriptionRefreshSelectionFromEnv } from './connectedServices/claudeSubscriptionAccessTokenRefresh';
+import { readClaudeMainChainAssistantModelId } from './sessionModels/readClaudeMainChainAssistantModelId';
 
 function mergeSessionWorkStateIntoMetadata(
     metadata: Metadata,
@@ -251,6 +310,13 @@ function resolveClaudeCurrentModelIdFromMetadata(metadata: Record<string, unknow
     return acpCurrent || null;
 }
 
+function readClaudeSdkEffectiveModelId(message: SDKMessage): string | null {
+    if (message.type === 'system') {
+        return readNonEmptyString((message as Record<string, unknown>).model);
+    }
+    return readClaudeMainChainAssistantModelId(message);
+}
+
 async function formatClaudeCodeArtifactsTailForUi(artifacts: ClaudeCodeArtifacts): Promise<string> {
     const sections: string[] = [];
 
@@ -279,8 +345,38 @@ function resolveClaudeProjectDir(session: Session): string {
 export { createClaudeReadyHandler as createClaudeRemoteReadyHandler };
 
 const MAX_CONSECUTIVE_REMOTE_UNIFIED_PARK_RELAUNCHES = 3;
+type ClaudeUnifiedTerminalRuntimeIssueSurfaceResult = ClaudeUnifiedTerminalRuntimeIssueHandlingResult;
 
-export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
+export function resolveClaudeRemoteLaunchErrorDisposition(params: Readonly<{
+    exitReason: 'switch' | 'exit' | null;
+    runtimeTerminationStarted: boolean;
+    error?: unknown;
+    exitCode?: number | null;
+    userAbort?: boolean;
+    sessionIdAtLaunchStart?: string | null;
+    currentSessionId?: string | null;
+}>): 'ignore' | 'terminate' | 'surface' | 'preserve-resume-and-exit' | 'preserve-resume-and-wait' {
+    if (params.exitReason !== null) return 'ignore';
+    if (params.runtimeTerminationStarted) return 'terminate';
+
+    const resumeSessionId = params.sessionIdAtLaunchStart?.trim();
+    const isSameResumeSession = Boolean(
+        resumeSessionId
+        && params.currentSessionId === params.sessionIdAtLaunchStart,
+    );
+    if (isSameResumeSession && params.error instanceof ClaudeResumeSessionUnavailableError) {
+        return 'preserve-resume-and-exit';
+    }
+    if (isSameResumeSession && (params.userAbort === true || params.exitCode === 1)) {
+        return 'preserve-resume-and-wait';
+    }
+    return 'surface';
+}
+
+export async function claudeRemoteLauncher(
+    session: Session,
+    options: Readonly<{ initialMode?: EnhancedMode }> = {},
+): Promise<'switch' | 'exit'> {
     logger.debug('[claudeRemoteLauncher] Starting remote launcher');
     const turnAssistantPreviewTracker = createTurnAssistantPreviewTracker();
     // Resolve the Claude Unified TUI runtime-control feature gate once per launch. It defaults ON
@@ -478,7 +574,13 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
     // Create outgoing message queue
     const messageQueue = new OutgoingMessageQueue(
-        (logMessage, meta) => session.client.sendClaudeSessionMessage(logMessage, meta)
+        async (logMessage, meta) => {
+            const commit = session.client.sendClaudeSessionMessageCommittedExact;
+            if (!commit) {
+                throw new Error('Claude transcript ordering requires exact session message commits');
+            }
+            await commit.call(session.client, logMessage, meta);
+        },
     );
 
     const streamedTranscriptWriter: StreamedTranscriptWriter = createStreamedTranscriptWriter({
@@ -486,11 +588,152 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         session: createClaudeRemoteStreamedTranscriptSession(session.client),
     });
 
+    // Centralized Claude Dynamic Workflow ACTIVITY source (CWF2/CWF3/CWF4). Built at the launcher
+    // (which owns credentials + stored-content encryption) and fed the SAME raw transcript channel as
+    // the goal source (`onRawTranscriptValue`). Its CWF4 owned-id filter is applied at the work-state
+    // merge chokepoint below so workflow agents do not ALSO render as top-level task/todo rows. Null
+    // when no credentials are available yet — the goal / work-state path is unaffected.
+    // The sidechain importer is created further down (it needs the message queue), so the workflow
+    // source reaches it through this holder rather than the other way round: a workflow run cannot
+    // start before the launcher has finished wiring, so the holder is expected to be set by the
+    // time the journal follower asks for it — and the registrar FAILS rather than assuming it.
+    let subagentFileCollectorRef: ClaudeRemoteSubagentFileCollector | null = null;
+    const workflowActivitySource = await createClaudeWorkflowActivitySourceForSession({
+        session,
+        logPrefix: '[remote]',
+        // Workflow agent transcripts ride the SAME importer as `Task` sub-agent transcripts: one
+        // follower budget, one dedupe, one `isSidechain`/`sidechainId` marking rule.
+        registerWorkflowAgentTranscript: createWorkflowAgentTranscriptRegistrar({
+            getCollector: () => subagentFileCollectorRef,
+        }),
+        getCurrentClaudeSessionId: () => {
+            const claudeSessionId = session.client.getMetadataSnapshot?.()?.claudeSessionId;
+            return typeof claudeSessionId === 'string' && claudeSessionId.trim().length > 0 ? claudeSessionId.trim() : null;
+        },
+    });
+
+    // Canonical work-state publish path (todo/task families + Claude `/goal` source).
+    // Merges an owned snapshot into session metadata, preserving other source families.
+    const publishWorkStateSnapshot = (snapshot: SessionWorkStateV1) => {
+        // CWF4 coherence: drop any work-state rows the workflow normalizer marked workflow-owned BEFORE
+        // the merge. No-op when no source is wired or it owns nothing.
+        const filtered = workflowActivitySource
+            ? filterWorkflowOwnedWorkStateItems(snapshot, workflowActivitySource.getWorkflowOwnedAgentToolUseIds())
+            : snapshot;
+        const sourceFamilies = resolveWorkStateSourceFamiliesFromSnapshot(filtered);
+        if (sourceFamilies.length === 0) return;
+        // The Claude goal item id (`goal:claude`) is NOT namespaced under its source family
+        // (`goal:derived:claude.goal`), so source-family ownership alone cannot REMOVE it on an empty
+        // (clear) snapshot — the merge only drops existing items whose id matches an owned id/prefix.
+        // Declare the goal item id explicitly so a clear (empty goal snapshot) actually removes it.
+        const ownedItemIds = sourceFamilies.includes(CLAUDE_GOAL_WORK_STATE_SOURCE_FAMILY)
+            ? [CLAUDE_GOAL_WORK_STATE_ITEM_ID]
+            : undefined;
+        updateMetadataBestEffort(
+            session.client,
+            (metadata) => mergeSessionWorkStateIntoMetadata(metadata, {
+                nextOwned: filtered,
+                ownedSourceFamilies: sourceFamilies,
+                ...(ownedItemIds ? { ownedItemIds } : {}),
+            }),
+            '[remote]',
+            'work_state',
+        );
+    };
+
+    // Centralized Claude native `/goal` SOURCE (plan H6). Goal state arrives as a
+    // transcript `attachment` record (`attachment.type === 'goal_status'`) and the
+    // `/goal` capability from the system/init `slash_commands`; both travel on the
+    // transcript stream the remote unified bridge surfaces through `onMessage`. The
+    // same shared source wires the local + unified-standalone launchers (via the
+    // transcript projector), so there is ONE goal-source implementation, not three.
+    const goalWorkStateSource = createClaudeGoalWorkStateSource({
+        backendId: 'claude',
+        agentId: 'claude',
+        publishWorkStateSnapshot,
+        // The CLAUDE transcript session id (NOT the Happier `session.sessionId`) — `goal_status`
+        // attachments carry the Claude session id and the source matches against it. Null until the
+        // metadata snapshot populates; the source self-learns it from the observed transcript rows.
+        getCurrentClaudeSessionId: () => {
+            const claudeSessionId = session.client.getMetadataSnapshot?.()?.claudeSessionId;
+            return typeof claudeSessionId === 'string' && claudeSessionId.trim().length > 0 ? claudeSessionId.trim() : null;
+        },
+        logPrefix: '[remote]',
+    });
+    // G-3/E restart continuity: seed the live-usage accumulator from the last-published Claude goal
+    // item in metadata so a restart continues the running total instead of restarting mid-run usage
+    // from zero (applies to the unified-remote runner, which feeds full raw transcript rows).
+    {
+        const metadataSnapshot = session.client.getMetadataSnapshot?.() as Record<string, unknown> | undefined;
+        const workStateSnapshot = metadataSnapshot?.sessionWorkStateV1;
+        const items = workStateSnapshot && typeof workStateSnapshot === 'object' && Array.isArray((workStateSnapshot as { items?: unknown }).items)
+            ? (workStateSnapshot as { items: readonly unknown[] }).items
+            : null;
+        const goalItem = items?.find((candidate): candidate is Record<string, unknown> =>
+            !!candidate && typeof candidate === 'object' && (candidate as { id?: unknown }).id === CLAUDE_GOAL_WORK_STATE_ITEM_ID) ?? null;
+        goalWorkStateSource.reseedActiveGoalUsageFromPublishedItem(goalItem);
+    }
+
+    // The active remote runner kind, captured from the dispatcher's `onRunnerSelected`. Unified
+    // reports null (only it uses the raw transcript channel `onRawTranscriptValue`), so the workflow
+    // `onMessage` feed and the goal_status tail can avoid double-feeding the shared sources even when
+    // dispatch follows an earlier SDK-stream runner selection.
+    let activeRemoteRunnerKind: ClaudeRemoteRunnerKind | null = null;
+
+    // Agent-SDK goal_status side-tail (plan H7, agent-SDK parity): the SDK `--output-format
+    // stream-json` stream OMITS transcript attachments, so `goal_status` lives ONLY in the persisted
+    // transcript JSONL. The agent-SDK runner has no session scanner (unlike unified/local), so without
+    // this narrow follow the `/goal` work-state never loads in agent-SDK mode. Feeds the SAME goal
+    // source, goal_status-only (workflow activity rides the richer SDK `onMessage` stream instead).
+    const goalStatusTranscriptTail = createClaudeGoalStatusTranscriptTail({
+        onGoalStatusValue: (value) => goalWorkStateSource.observeTranscriptMessage(value),
+        logPrefix: '[remote]',
+    });
+    const maybeStartAgentSdkGoalStatusTail = (transcriptPath: string | null | undefined): void => {
+        if (activeRemoteRunnerKind !== 'agentSdk') return;
+        void goalStatusTranscriptTail.start(transcriptPath ?? session.transcriptPath ?? null);
+    };
+    const reportClaudeSubscriptionAccessTokenRefreshCapability = (runner: ClaudeRemoteRunnerKind): void => {
+        const metadata = session.client.getMetadataSnapshot?.();
+        const sessionId = session.sessionId?.trim();
+        if (!metadata || !sessionId) return;
+        void reportSessionToDaemonIfRunning({
+            sessionId,
+            metadata: {
+                ...metadata,
+                claudeSubscriptionAccessTokenRefreshV1: {
+                    v: 1,
+                    mode: runner === 'agentSdk' ? 'daemon_callback' : 'unavailable',
+                },
+            },
+        }).catch((error) => {
+            logger.debug('[remote]: failed to report Claude OAuth refresh callback capability to daemon (non-fatal)', error);
+        });
+    };
+
+    const providerTaskRuntimeActivityAdapter = session.getProviderTaskRuntimeActivityAdapter();
+    const providerRuntimeActivityEvidence = createClaudeRuntimeActivityEvidence({
+        providerActivityLedger: session.getProviderTaskActivityLedger() ?? undefined,
+    });
+    const observeLegacyProviderActivityHook = (hook: unknown): void => {
+        if (activeRemoteRunnerKind !== 'legacy') return;
+        observeClaudeProviderTaskRuntimeActivityHook({
+            hook,
+            evidence: providerRuntimeActivityEvidence,
+            logger,
+            logPrefix: '[remote:legacy-hook]',
+            runtimeActivityAdapter: providerTaskRuntimeActivityAdapter,
+        });
+    };
+    session.addClaudeSessionHookCallback(observeLegacyProviderActivityHook);
     const taskOutputCollector = new ClaudeRemoteTaskOutputCollector();
     const subagentFileCollector = new ClaudeRemoteSubagentFileCollector({
         emitImported: (body, meta) => {
             messageQueue.enqueue(body, { meta });
         },
+        // Imported subagent JSONL is presentation/recovery data, not a live typed
+        // provider lifecycle producer. Runtime Activity is observed upstream.
+        onSourceActivity: () => {},
         resolveJsonlPathForAgentId: ({ agentId, claudeSessionId }) => {
             const sanitized = String(agentId ?? '').trim();
             if (!sanitized) return null;
@@ -502,7 +745,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             });
         },
     });
-
+    subagentFileCollectorRef = subagentFileCollector;
     // Set up callback to release delayed messages when permission is requested
     permissionHandler.setOnPermissionRequest((toolCallId: string) => {
         void messageQueue.releaseToolCall(toolCallId);
@@ -576,19 +819,52 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     }
 
     function onMessage(message: SDKMessage) {
+        // The Agent SDK owns its live provider-task feed internally and Unified owns the raw JSONL
+        // feed. Legacy stream-json reaches this shared callback, so route only that mode here to
+        // keep one tuple ledger without double publication.
+        if (activeRemoteRunnerKind === 'legacy') {
+            observeClaudeProviderTaskRuntimeActivityRow({
+                row: message,
+                evidence: providerRuntimeActivityEvidence,
+                logger,
+                logPrefix: '[remote:legacy]',
+                runtimeActivityAdapter: providerTaskRuntimeActivityAdapter,
+            });
+        }
+
+        // Claude Dynamic Workflow ACTIVITY source (agent-SDK / legacy runners): these runners deliver
+        // the `Workflow` tool-use anchor + `task_started`/`task_progress` (workflow_progress[]) /
+        // `task_notification` lifecycle through `onMessage`. The gate ensures the unified runner — which
+        // feeds the SAME source via `onRawTranscriptValue` and whose visible-transcript `onMessage`
+        // still carries the `Workflow` anchor — does NOT double-feed it.
+        routeClaudeSdkMessageToWorkflowSource({ message, runnerKind: activeRemoteRunnerKind, workflowActivitySource });
+
+        // Native Claude `/goal` source (agent-SDK path): the UNIFIED-terminal runner
+        // delivers goal_status on the RAW transcript channel (onRawTranscriptValue,
+        // plan H7) because the scanner strips attachments before `onMessage`. This
+        // branch only covers the theoretical agent-SDK case (which emits no
+        // goal_status by design — stream-json omits transcript attachments). Route it
+        // through the shared goal source, then stop: attachment records are control
+        // bookkeeping, never conversation, and must not reach the visible transcript.
+        if ((message as { type?: unknown }).type === 'attachment') {
+            goalWorkStateSource.observeTranscriptMessage(message);
+            return;
+        }
+
+        const effectiveModelId = readClaudeSdkEffectiveModelId(message);
+        if (effectiveModelId) {
+            applyClaudeEffectiveModelUpdate({
+                client: session.client,
+                modelId: effectiveModelId,
+                source: 'sdk',
+                logPrefix: '[remote]',
+            });
+        }
+
         if (message.type === 'system') {
-            updateMetadataBestEffort(
-                session.client,
-                (metadata) => ({
-                    ...metadata,
-                    ...(buildClaudeSessionModelsMetadataWithCurrentModelId({
-                        currentModelId: (message as any).model,
-                        metadata,
-                    }) ?? {}),
-                }),
-                '[remote]',
-                'runtime_model_update',
-            );
+            // H1: the system/init record carries `slash_commands`; gate `/goal`
+            // capability (fail-closed) on the same transcript path goal_status uses.
+            goalWorkStateSource.observeTranscriptMessage(message);
         }
 
         let releaseIds: string[] = [];
@@ -909,8 +1185,61 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         }
     }
 
+    let inFlightSteerAvailabilitySnapshot: ClaudeInFlightSteerAvailabilitySnapshot = {
+        available: false,
+        reason: 'unsafe_window',
+    };
+    let agentSdkInFlightSteerCapabilityPublisher: ReturnType<
+        typeof createClaudeInFlightSteerCapabilityPublisher
+    > | null = null;
+    const disposeAgentSdkInFlightSteerCapabilityPublisher = (
+        publisher: ReturnType<typeof createClaudeInFlightSteerCapabilityPublisher> | null,
+    ) => publisher?.dispose();
+    let refreshInFlightSteerAvailability: (() => Promise<ClaudeInFlightSteerAvailabilitySnapshot>) | null = null;
+    let applyActiveLaunchPermissionMetadata: ReturnType<typeof createClaudeUnifiedTerminalMetadataModeApplier> | null = null;
+    const inputConsumer = createClaudePendingAwareInputConsumer(session, {
+        resolveActiveTurnSteerability: () => (
+            inFlightSteerAvailabilitySnapshot.available ? 'steerable' : 'unsteerable'
+        ),
+        refreshActiveTurnSteerability: async () => {
+            const refresh = refreshInFlightSteerAvailability;
+            if (!refresh) {
+                return inFlightSteerAvailabilitySnapshot.available ? 'steerable' : 'unsteerable';
+            }
+            const snapshot = await refresh();
+            return snapshot.available ? 'steerable' : 'unsteerable';
+        },
+        onMetadataUpdate: async () => {
+            const currentPermissionHandler = permissionHandler;
+            if (!currentPermissionHandler) return;
+            const updated = syncClaudePermissionModeFromMetadata({
+                session,
+                permissionHandler: currentPermissionHandler,
+            });
+            if (!updated) return;
+            logger.debug(`[remote]: Permission mode updated from metadata to: ${updated}`);
+            await applyActiveLaunchPermissionMetadata?.(updated);
+        },
+    });
+
     try {
         let pending: MessageBatch<EnhancedMode, string> | null = null;
+        let activeRuntimeModeKind: NormalizedClaudeRemoteModeKind | null = options.initialMode
+            ? normalizeClaudeRemoteMode(options.initialMode).kind
+            : null;
+
+        const pinBatchToActiveRuntime = (
+            batch: MessageBatch<EnhancedMode, string>,
+        ): MessageBatch<EnhancedMode, string> => {
+            activeRuntimeModeKind ??= normalizeClaudeRemoteMode(batch.mode).kind;
+            const mode = pinClaudeRemoteModeToActiveRuntime(batch.mode, activeRuntimeModeKind);
+            if (mode === batch.mode) return batch;
+            return {
+                ...batch,
+                mode,
+                hash: hashClaudeEnhancedModeForQueue(mode),
+            };
+        };
 
         // Track session ID to detect when it actually changes
         // This prevents context loss when mode changes (permission mode, model, etc.)
@@ -921,8 +1250,33 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         let forceNewSession = false;
         let waitForMessageBeforeNextLaunch = false;
         let consecutiveUnifiedParkRelaunches = 0;
+        let recentPrimaryProviderUnavailableForPromptDelivery: ClaudeUnifiedProviderUnavailablePromptDeliveryWindow | null = null;
+        let usageLimitDialogVisible = false;
         const resetUnifiedParkRelaunchBudget = (): void => {
             consecutiveUnifiedParkRelaunches = 0;
+        };
+        const recordPrimaryProviderUnavailableForPromptDelivery = (details: NormalizedProviderUsageLimitDetailsV1): void => {
+            if (details.sourcedFromSidechain === true) return;
+            const observedAtMs = Date.now();
+            const unavailableUntilMs = resolveClaudeUnifiedProviderUnavailableUntilMs(details, observedAtMs);
+            recentPrimaryProviderUnavailableForPromptDelivery = unavailableUntilMs === null
+                ? null
+                : { unavailableUntilMs };
+        };
+        const surfaceRemoteRateLimitRuntimeIssue = async (details: NormalizedProviderUsageLimitDetailsV1): Promise<void> => {
+            recordPrimaryProviderUnavailableForPromptDelivery(details);
+            await surfaceClaudeRateLimitRuntimeIssue(session, details, '[remote]');
+        };
+        const recordRemoteQuotaEvidence = async (details: NormalizedProviderUsageLimitDetailsV1): Promise<void> => {
+            await recordClaudeRateLimitQuotaEvidence(session, details, '[remote]');
+        };
+        // Initial goal (P1-E4): consumed once from the daemon-provided env so the FIRST unified
+        // launch injects `/goal <objective>`; a park/respawn relaunch must not re-inject it.
+        let pendingInitialGoalObjective = readDaemonInitialGoalFromEnv()?.objective?.trim() || null;
+        const consumeInitialGoalObjectiveForUnified = (): string | undefined => {
+            const objective = pendingInitialGoalObjective;
+            pendingInitialGoalObjective = null;
+            return objective ?? undefined;
         };
         const consumeUnifiedParkRelaunchBudget = (): boolean => {
             consecutiveUnifiedParkRelaunches += 1;
@@ -965,12 +1319,14 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             didUserAbortThisLaunch = false;
             let modeHash: string | null = null;
             let mode: EnhancedMode | null = null;
+            let remoteProviderInputOutcomes: ReturnType<typeof createClaudeRemoteProviderInputOutcomeBridge> | null = null;
             let applyUnifiedTerminalMetadataMode: ((mode: EnhancedMode) => Promise<ClaudeUnifiedRuntimeControlApplyResult>) | null = null;
-            const resumeChoiceBroker = new ClaudeUnifiedResumeChoiceBroker(session);
+            const dialogChoiceBroker = new ClaudeUnifiedDialogChoiceBroker(session);
             const applyUnifiedTerminalPermissionMetadata = createClaudeUnifiedTerminalMetadataModeApplier({
                 getCurrentMode: () => mode,
                 getApplier: () => applyUnifiedTerminalMetadataMode,
             });
+            applyActiveLaunchPermissionMetadata = applyUnifiedTerminalPermissionMetadata;
             let didReplaySeedBootstrap = false;
             let unifiedTerminalLaunchOptionsHash: string | null = null;
             let lastUnifiedTerminalRestartOnlyNoticeHash: string | null = null;
@@ -1049,51 +1405,32 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                 beginReadyNotificationTurn();
                 await recordClaudeRemotePromptTurnStarted();
             };
-            const hasQueuedUnifiedTerminalPrompt = (): boolean =>
-                session.queue.queue.some((item) => item.mode.claudeUnifiedTerminalEnabled === true);
             const isUnifiedTerminalTranscriptActive = (): boolean =>
-                mode?.claudeUnifiedTerminalEnabled === true
-                || pending?.mode.claudeUnifiedTerminalEnabled === true
-                || hasQueuedUnifiedTerminalPrompt();
-            let surfaceUnifiedTerminalRuntimeIssue: (error: unknown) => Promise<boolean> = async () => false;
+                activeRuntimeModeKind === 'unifiedTerminal';
+            let surfaceUnifiedTerminalRuntimeIssue: (
+                error: unknown,
+                options?: Readonly<{ deferAmbiguousRuntimeIssue?: boolean | undefined }>,
+            ) => Promise<ClaudeUnifiedTerminalRuntimeIssueSurfaceResult> = async () => false;
             try {
-                const inputConsumer = createClaudePendingAwareInputConsumer(session, {
-                    onMetadataUpdate: async () => {
-                        const updated = syncClaudePermissionModeFromMetadata({ session, permissionHandler });
-                        if (updated) {
-                            logger.debug(`[remote]: Permission mode updated from metadata to: ${updated}`);
-                            await applyUnifiedTerminalPermissionMetadata(updated);
-                        }
-                    },
-                });
-
                 const waitForNextBatch = async (): Promise<MessageBatch<EnhancedMode, string> | null> => {
-                    return await inputConsumer.waitForNextInput({ abortSignal: controller.signal });
+                    const batch = await inputConsumer.waitForNextInput({ abortSignal: controller.signal });
+                    if (!batch) return null;
+                    const localId = readSinglePendingDeliveryLocalId(batch.userMessageLocalIds);
+                    if (!localId) {
+                        throw new Error('Canonical Pending provider input requires exactly one nonblank localId');
+                    }
+                    return pinBatchToActiveRuntime({ ...batch, userMessageLocalIds: [localId] });
                 };
 
-                // A3-HIGH-1: this launcher confirms provider handoff/acceptance for every consumed
-                // batch (below + the unified runner's onPromptAcceptedByProvider), so the
-                // delivered-watermark must not advance at queue handoff anymore.
-                session.client.deferDeliveredUserMessageWatermarkToProviderAcceptance?.();
-                const takeBatchDeliveryAttributionForProvider = (batch: MessageBatch<EnhancedMode, string>): {
-                    maxUserMessageSeq: number | null;
-                    userMessageLocalIds: readonly string[];
-                } => {
-                    const maxUserMessageSeq = batch.maxUserMessageSeq ?? null;
-                    const userMessageLocalIds = batch.userMessageLocalIds ?? [];
-                    if (batch.mode.claudeUnifiedTerminalEnabled === true) {
-                        // The unified runner owns acceptance; the seq travels with the batch and is
-                        // confirmed by onPromptAcceptedByProvider once the provider accepted it.
-                        return { maxUserMessageSeq, userMessageLocalIds };
-                    }
-                    // SDK/legacy custody is synchronous from here: handing the batch to the provider
-                    // loop is the acceptance seam for this runner family.
-                    session.client.confirmUserMessageDeliveredToProvider?.(maxUserMessageSeq, {
-                        localIds: userMessageLocalIds,
+                const takeBatchDeliveryAttributionForProvider = (batch: MessageBatch<EnhancedMode, string>) =>
+                    readClaudeRemoteProviderPromptAttribution({
+                        message: batch.message,
+                        mode: batch.mode,
+                        maxUserMessageSeq: batch.maxUserMessageSeq,
+                        userMessageLocalIds: batch.userMessageLocalIds,
+                        providerAcceptancePending: batch.providerAcceptancePending,
+                        pendingProviderAction: batch.pendingProviderAction,
                     });
-                    resetUnifiedParkRelaunchBudget();
-                    return { maxUserMessageSeq: null, userMessageLocalIds: [] };
-                };
 
                 if (waitForMessageBeforeNextLaunch) {
                     waitForMessageBeforeNextLaunch = false;
@@ -1123,6 +1460,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     assistantPreviewTracker: turnAssistantPreviewTracker,
                     getPending: () => pending,
                     getQueueSize: () => session.queue.size(),
+                    hasOnlyBlockedPendingWork: () => session.client.hasOnlyBlockedPendingWork?.() === true,
                     accountSettings: session.accountSettings ?? null,
                     settingsSecretsReadKeys: session.accountSettingsSecretsReadKeys,
                     includeAssistantPreviewText:
@@ -1143,39 +1481,62 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         turnInterrupt = handler;
                     },
                     onPromptTurnStarted: () => {
+                        // This callback is emitted only for an accepted new turn. In-flight steers stay attached
+                        // to the already-active turn, so the hook lifecycle bridge remains the serial task owner.
                         session.setThinkingWithoutTaskLifecycle(true);
                     },
                 });
                 recordUnifiedPromptTurnCancelled = unifiedBinding.recordPromptTurnCancelled;
                 await unifiedBinding.seedPersistedPromptEchoes();
-                surfaceUnifiedTerminalRuntimeIssue = async (error: unknown): Promise<boolean> => {
-                    session.onThinkingChange(false);
-                    const surfaced = await surfaceClaudeUnifiedTerminalRuntimeIssue({
+                surfaceUnifiedTerminalRuntimeIssue = async (
+                    error: unknown,
+                    options?: Readonly<{ deferAmbiguousRuntimeIssue?: boolean | undefined }>,
+                ): Promise<ClaudeUnifiedTerminalRuntimeIssueSurfaceResult> =>
+                    handleClaudeUnifiedTerminalRuntimeIssuePendingDeliveryBlock({
                         error,
-                        session: session.client,
-                        onSurfaceError: (surfaceError) => {
-                            logger.debug('[remote]: failed to surface Claude unified terminal runtime issue (non-fatal)', surfaceError);
+                        providerUnavailableWindow: recentPrimaryProviderUnavailableForPromptDelivery,
+                        setProviderUnavailableWindow: (window) => {
+                            recentPrimaryProviderUnavailableForPromptDelivery = window;
+                        },
+                        blockPendingMessageDelivery: session.client.blockPendingMessageDelivery?.bind(session.client),
+                        logPrefix: '[remote]',
+                        logDebug: (message, logError) => logger.debug(message, logError),
+                        deferAmbiguousRuntimeIssue: options?.deferAmbiguousRuntimeIssue,
+                        beforeSurfaceRuntimeIssue: () => session.onThinkingChange(false),
+                        surfaceRuntimeIssue: (runtimeIssueError) =>
+                            surfaceClaudeUnifiedTerminalRuntimeIssue({
+                                error: runtimeIssueError,
+                                session: session.client,
+                                onSurfaceError: (surfaceError) => {
+                                    logger.debug('[remote]: failed to surface Claude unified terminal runtime issue (non-fatal)', surfaceError);
+                                },
+                            }),
+                        onSurfacedRuntimeIssue: async () => {
+                            unifiedBinding.notePromptTurnTerminal();
+                            await session.client.flush().catch((flushError) => {
+                                logger.debug('[remote]: failed to flush Claude unified terminal runtime issue surface (non-fatal)', flushError);
+                            });
                         },
                     });
-                    if (surfaced) {
-                        unifiedBinding.notePromptTurnTerminal();
-                    }
-                    return surfaced;
-                };
                 activeUnifiedTranscriptBinding = {
                     isActive: isUnifiedTerminalTranscriptActive,
                     shouldSuppressTranscriptMessage: unifiedBinding.shouldSuppressTranscriptMessage,
                 };
 
                 const { mcpServers: baseMcpServers, mcpConfigJson: baseMcpConfigJson } = await session.getOrCreateHappierMcpBridge();
+                const claudeSubscriptionAccessTokenRefreshSelection =
+                    resolveClaudeSubscriptionRefreshSelectionFromEnv(process.env);
 
                 // If this is a restarted daemon process resuming an existing agent-team session,
                 // we may not replay transcript history through `onMessage`. Seed team inbox mapping
                 // from the transcript file so unread teammate messages still import correctly.
                 session.adoptExplicitResumeSessionIdFromArgs();
                 await seedTeamInboxFromTranscriptPath(session.sessionId, session.transcriptPath ?? null);
+                const launchAbortSignal = abortController.signal;
 
-                const remoteResult = await claudeRemoteDispatch({
+                const remoteDispatch = await inputConsumer.runProviderInputDispatch({
+                    abortSignal: controller.signal,
+                    dispatch: async () => claudeRemoteDispatch({
                     sessionId: session.sessionId,
                     transcriptPath: session.transcriptPath,
                     path: session.path,
@@ -1185,32 +1546,27 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     jsRuntime: session.jsRuntime,
                     happierMcpServers: baseMcpServers,
                     happierMcpConfigJson: baseMcpConfigJson,
+                    claudeSubscriptionAccessTokenRefreshSelection,
                     streamedTranscriptWriter,
                     setTurnInterrupt: unifiedBinding.sessionOptions.setTurnInterrupt,
                     canCallTool: permissionHandler.handleToolCall,
                     isAborted: (toolCallId: string) => {
                         return permissionHandler.isAborted(toolCallId);
                     },
-                    // A message pulled by the unified runner's input pump during a death/dispose
-                    // unwind must come back to the session queue instead of being dropped into
-                    // the dead host (silent queue-swallow, incident cmq8y3nlx).
-                    returnUnconsumedMessage: ({ message, mode: unconsumedMode, maxUserMessageSeq, userMessageLocalIds }: {
-                        message: string;
-                        mode: EnhancedMode;
-                        maxUserMessageSeq?: number | null;
+                    // Returned canonical Pending input remains server-owned. Missing or plural
+                    // identity is contract-invalid and cannot authorize a local replay.
+                    returnUnconsumedMessage: ({ userMessageLocalIds }: {
                         userMessageLocalIds?: readonly string[] | null;
                     }) => {
-                        try {
-                            // Preserve watermark attribution across the handback (A3-HIGH-1).
-                            session.queue.unshift(message, unconsumedMode, {
-                                userMessageSeq: maxUserMessageSeq ?? null,
-                                userMessageLocalIds: userMessageLocalIds ?? [],
-                            });
-                        } catch (error) {
-                            logger.debug('[remote]: failed to requeue undeliverable unified terminal message', error);
-                        }
+                        blockUndeliverableProviderPrompt({
+                            localIds: userMessageLocalIds,
+                            blockPendingMessageDelivery: session.client.blockPendingMessageDelivery?.bind(session.client),
+                            blockReason: 'runtime_disposed_before_delivery',
+                            logPrefix: '[remote]',
+                        });
                     },
                     nextMessage: async () => {
+                        await session.connectedServiceAuthGroupRequestFence?.waitUntilAvailable(controller.signal);
                         if (pending) {
                             const p = pending;
                             pending = null;
@@ -1220,7 +1576,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                 ? hashClaudeUnifiedTerminalLaunchOptionsForQueue(p.mode)
                                 : null;
                             permissionHandler.handleModeChange(p.mode.permissionMode);
-                            if (!shouldDeferTurnStartUntilTerminalInjection(p.mode)) {
+                            if (p.pendingProviderAction !== 'steer' && !shouldDeferTurnStartUntilTerminalInjection(p.mode)) {
                                 await beginPromptTurn();
                             } else {
                                 unifiedBinding.noteNextInjectedPromptShouldSuppressEcho();
@@ -1266,7 +1622,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             didBootstrap: didReplaySeedBootstrap,
                         });
                         didReplaySeedBootstrap = replaySeedResolution.didBootstrap;
-                        if (!shouldDeferTurnStartUntilTerminalInjection(nextMode)) {
+                        if (msg.pendingProviderAction !== 'steer' && !shouldDeferTurnStartUntilTerminalInjection(nextMode)) {
                             await beginPromptTurn();
                         } else {
                             unifiedBinding.noteNextInjectedPromptShouldSuppressEcho();
@@ -1284,6 +1640,9 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         session.onSessionFound(sessionId, data as any);
                         const transcriptPath = typeof (data as any)?.transcript_path === 'string' ? String((data as any).transcript_path) : null;
                         void seedTeamInboxFromTranscriptPath(sessionId, transcriptPath);
+                        // Agent-SDK only: now that the transcript path is known, follow it for
+                        // goal_status attachments (the SDK stream omits them). No-op for other runners.
+                        maybeStartAgentSdkGoalStatusTail(transcriptPath);
                     },
                     loadCommittedClaudeJsonlMessageBaseline: () =>
                         session.client.fetchCommittedClaudeJsonlMessageBaseline?.()
@@ -1303,6 +1662,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     },
                     onCapabilities: (caps: any) => {
                         if (!caps || typeof caps !== 'object') return;
+                        goalWorkStateSource.applySlashCommands(caps.slashCommands);
                         updateMetadataBestEffort(
                             session.client,
                             (metadata) => {
@@ -1324,21 +1684,30 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     onThinkingChange: session.onThinkingChange,
                     claudeArgs: session.claudeArgs,
                     onMessage,
-                    onWorkStateSnapshot: (snapshot: SessionWorkStateV1) => {
-                        const sourceFamilies = resolveWorkStateSourceFamiliesFromSnapshot(snapshot);
-                        if (sourceFamilies.length === 0) return;
-                        updateMetadataBestEffort(
-                            session.client,
-                            (metadata) => mergeSessionWorkStateIntoMetadata(metadata, {
-                                nextOwned: snapshot,
-                                ownedSourceFamilies: sourceFamilies,
-                            }),
-                            '[remote]',
-                            'work_state',
-                        );
+                    isWorkflowProviderTaskId: (taskId: string) => (
+                        workflowActivitySource?.isWorkflowOwnedProviderTaskId(taskId) === true
+                    ),
+                    // Native Claude `/goal` source (plan H7): on the unified-terminal
+                    // runner the goal_status attachment + system/init slash_commands
+                    // survive only on the RAW transcript channel (the scanner drops
+                    // them before `onMessage`). Feed the centralized goal source from
+                    // here; the agent-SDK/legacy runners ignore this option and emit no
+                    // goal_status by design (stream-json omits transcript attachments).
+                    onRawTranscriptValue: (
+                        value: unknown,
+                        observation: Readonly<{ historicalReplay: boolean }>,
+                    ) => {
+                        goalWorkStateSource.observeTranscriptMessage(value);
+                        // Claude workflow ACTIVITY rides the SAME raw transcript channel as the goal
+                        // source (workflow task_started/task_progress/task_completed rows).
+                        workflowActivitySource?.observeTranscriptMessage(value, observation);
                     },
+                    onWorkStateSnapshot: publishWorkStateSnapshot,
                     onRateLimitEvent: async (details: NormalizedProviderUsageLimitDetailsV1) => {
-                        await surfaceClaudeRateLimitRuntimeIssue(session, details, '[remote]');
+                        await surfaceRemoteRateLimitRuntimeIssue(details);
+                    },
+                    onQuotaEvidence: async (details: NormalizedProviderUsageLimitDetailsV1) => {
+                        await recordRemoteQuotaEvidence(details);
                     },
                     // Unified terminal usage-limit evidence is detected by the hook lifecycle
                     // bridge and surfaced through onUsageLimitDetails (the legacy/agent-SDK
@@ -1346,7 +1715,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     // would silently drop hook-detected usage limits.
                     onUsageLimitDetails: async (details: NormalizedProviderUsageLimitDetailsV1) => {
                         try {
-                            await surfaceClaudeRateLimitRuntimeIssue(session, details, '[remote]');
+                            await surfaceRemoteRateLimitRuntimeIssue(details);
                         } finally {
                             unifiedBinding.notePromptTurnTerminal();
                         }
@@ -1376,6 +1745,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                     logger.debug('[remote]: failed to surface Claude transcript API-error turn failure (non-fatal)', error);
                                     return null;
                                 });
+                            } else if (event.reason === 'failed' && event.providerAcceptanceFailureObserved !== true) {
+                                await surfaceUnifiedTerminalRuntimeIssue(createClaudeUnifiedTerminalUnobservedFailedTurnError());
                             }
                         } finally {
                             // Any non-aborted terminal projection (hook StopFailure, process exit,
@@ -1387,6 +1758,19 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     },
                     onRuntimeAuthFailureEvent: async (error: unknown) => {
                         await surfaceClaudeRuntimeAuthFailure(session, error, '[remote]');
+                    },
+                    runtimeActivityAdapter: session.getProviderTaskRuntimeActivityAdapter(),
+                    providerRuntimeActivityEvidence,
+                    onWorkflowActivityObserverReady: () => workflowActivitySource?.armStartupReconciliation(),
+                    onProviderActivityObservationLost: () => {
+                        if (activeRemoteRunnerKind !== 'legacy') return;
+                        handleClaudeRuntimeActivityLoss({
+                            evidence: providerRuntimeActivityEvidence,
+                            logger,
+                            logPrefix: '[remote:legacy-hook]',
+                            runtimeActivityAdapter: session.getProviderTaskRuntimeActivityAdapter(),
+                            reason: 'claude_legacy_required_hook_failed',
+                        });
                     },
                     onCompletionEvent: (event: ClaudeCompletionEvent) => {
                         logger.debug('[remote]: Completion event', event);
@@ -1403,6 +1787,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             await unifiedBinding.sessionOptions.onReady?.();
                             return;
                         }
+                        await unifiedBinding.recordPromptTurnCompleted();
                         readyHandler(readyTurnContext);
                     },
                     onSubagentFlush: async () => {
@@ -1413,6 +1798,38 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     ) => {
                         await unifiedBinding.sessionOptions.onTerminalPromptInjected?.(acceptedPrompt);
                     },
+                    onPromptAcceptedByProvider: ({ userMessageLocalIds, appliedModelId }: {
+                        maxUserMessageSeq: number | null;
+                        userMessageLocalIds: readonly string[];
+                        appliedModelId?: string;
+                    }) => {
+                        remoteProviderInputOutcomes?.observeAccepted(userMessageLocalIds, appliedModelId);
+                        resetUnifiedParkRelaunchBudget();
+                    },
+                    onPromptTransportFailure: (failure: Readonly<{
+                        kind: 'rejected_before_effect' | 'effect_may_have_occurred';
+                        userMessageLocalIds: readonly string[];
+                    }>) => {
+                        if (failure.kind === 'rejected_before_effect') {
+                            remoteProviderInputOutcomes?.observeRejectedBeforeEffect({
+                                userMessageLocalIds: failure.userMessageLocalIds,
+                                reason: 'provider_unavailable_before_acceptance',
+                            });
+                            return;
+                        }
+                        remoteProviderInputOutcomes?.observeEffectMayHaveOccurred({
+                            userMessageLocalIds: failure.userMessageLocalIds,
+                        });
+                    },
+                    onInFlightSteerAvailabilityChange: (available: boolean) => {
+                        if (activeRemoteRunnerKind !== 'agentSdk') return;
+                        const snapshot: ClaudeInFlightSteerAvailabilitySnapshot = {
+                            available,
+                            reason: available ? null : 'unsafe_window',
+                        };
+                        inFlightSteerAvailabilitySnapshot = snapshot;
+                        agentSdkInFlightSteerCapabilityPublisher?.publish(snapshot);
+                    },
                     onProviderPromptStarted: () => {
                         if (isUnifiedTerminalTranscriptActive()) {
                             return unifiedBinding.sessionOptions.onProviderPromptStarted?.();
@@ -1421,19 +1838,142 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         return undefined;
                     },
                     onTerminalInjectionFailure: surfaceUnifiedTerminalRuntimeIssue,
-                    signal: abortController.signal,
+                    // Capture the selected runner so the workflow `onMessage` feed + goal_status tail
+                    // engage only for the SDK-stream runners (the unified runner explicitly reports null).
+                    onRunnerSelected: (runner: ClaudeRemoteRunnerKind | null) => {
+                        activeRemoteRunnerKind = runner;
+                        disposeAgentSdkInFlightSteerCapabilityPublisher(agentSdkInFlightSteerCapabilityPublisher);
+                        agentSdkInFlightSteerCapabilityPublisher = null;
+                        if (runner === 'agentSdk') {
+                            agentSdkInFlightSteerCapabilityPublisher = createClaudeInFlightSteerCapabilityPublisher({
+                                session: session.client,
+                                isCanonicalTurnActive: () => session.client.hasActiveCanonicalTurn?.() ?? true,
+                                terminalComposerControls: false,
+                            });
+                            inFlightSteerAvailabilitySnapshot = { available: false, reason: 'unsafe_window' };
+                            agentSdkInFlightSteerCapabilityPublisher.publish(inFlightSteerAvailabilitySnapshot);
+                        }
+                        if (runner === null) return;
+                        remoteProviderInputOutcomes = createClaudeRemoteProviderInputOutcomeBridge(session.client);
+                        reportClaudeSubscriptionAccessTokenRefreshCapability(runner);
+                        // Resume sessions know the transcript path up front; new sessions learn it via
+                        // onSessionFound (which also starts the tail). Idempotent for the same path.
+                        maybeStartAgentSdkGoalStatusTail(session.transcriptPath ?? null);
+                    },
+                    signal: launchAbortSignal,
                 }, {
                     claudeUnifiedTerminal: async (dispatchOpts: unknown) => {
+                        const unifiedDispatchOpts = dispatchOpts as ClaudeUnifiedTerminalSessionOptions & Readonly<{
+                            startupLifecycleIntent?: ClaudeUnifiedStartupLifecycleIntent | undefined;
+                        }>;
+                        const providerInputOutcomes = createClaudeRemoteUnifiedProviderInputOutcomeGeneration(
+                            session.client,
+                            { isCurrentRuntimeMode: () => mode?.claudeUnifiedTerminalEnabled === true },
+                        );
+                        const surfaceGenerationUnifiedTerminalRuntimeIssue = async (
+                            error: unknown,
+                        ): Promise<
+                            | void
+                            | Readonly<{ action: 'claimed_pending_delivery' }>
+                            | Readonly<{ action: 'surfaced_runtime_issue' }>
+                        > => {
+                            const effectMayHaveOccurred = isClaudeUnifiedTerminalAmbiguousInjectionFailureError(error);
+                            if (effectMayHaveOccurred) {
+                                providerInputOutcomes.observeEffectMayHaveOccurred({
+                                    userMessageLocalIds: error.userMessageLocalIds,
+                                });
+                                if (isClaudeUnifiedProviderUnavailablePromptDeliveryWindowActive(
+                                    recentPrimaryProviderUnavailableForPromptDelivery,
+                                    Date.now(),
+                                )) {
+                                    return { action: 'surfaced_runtime_issue' };
+                                }
+                            }
+                            const result = await surfaceUnifiedTerminalRuntimeIssue(error, {
+                                deferAmbiguousRuntimeIssue: effectMayHaveOccurred,
+                            });
+                            return result && typeof result === 'object' ? result : undefined;
+                        };
+                        const startupLifecycleIntent =
+                            unifiedDispatchOpts.startupLifecycleIntent ?? { kind: 'new_session' };
+                        const startupLifecycle = await prepareClaudeUnifiedStartupLifecycle({
+                            intent: startupLifecycleIntent,
+                            binding: unifiedBinding,
+                        });
                         // Lane P (O-design Seam A): publish live steer availability (+reason) to agentState.
                         const inFlightSteerCapabilityPublisher = createClaudeInFlightSteerCapabilityPublisher({
                             session: session.client,
                             isCanonicalTurnActive: () => session.client.hasActiveCanonicalTurn?.() ?? true,
                         });
+                        inFlightSteerCapabilityPublisher.publishPendingInputInterruptAndRunLocalId(null);
+                        inFlightSteerAvailabilitySnapshot = { available: false, reason: 'unsafe_window' };
+                        const observeInFlightSteerAvailabilitySnapshot = (
+                            snapshot: ClaudeInFlightSteerAvailabilitySnapshot,
+                        ): void => {
+                            inFlightSteerAvailabilitySnapshot = snapshot;
+                            inFlightSteerCapabilityPublisher.publish(snapshot);
+                        };
+                        const sustainedPendingDeliveryBlockHandler = createClaudeUnifiedSustainedPendingDeliveryBlockHandler({
+                            blockPendingMessageDelivery: session.client.blockPendingMessageDelivery?.bind(session.client),
+                            wakePendingMaterialization: session.client.wakePendingMaterialization?.bind(session.client),
+                            logPrefix: '[remote]',
+                            logDebug: (message, error) => logger.debug(message, error),
+                        });
+                        const observeTerminalScreen = (observation: ClaudeUnifiedTerminalScreenObservation): void => {
+                            if (observation.screenState.usageLimitDialogVisible) {
+                                recentPrimaryProviderUnavailableForPromptDelivery =
+                                    resolveClaudeUnifiedProviderUnavailableWindowForUsageLimitDialog(Date.now());
+                                usageLimitDialogVisible = true;
+                                void sustainedPendingDeliveryBlockHandler.blockForSustainedBlocker({
+                                    localIds: observation.userMessageLocalIds,
+                                    blocker: {
+                                        kind: 'provider_unavailable',
+                                        source: 'readiness',
+                                        detail: 'claude_usage_limit_dialog',
+                                    },
+                                    isCanonicalTurnActive: session.client.hasActiveCanonicalTurn?.() ?? true,
+                                });
+                                return;
+                            }
+                            if (!usageLimitDialogVisible) return;
+                            usageLimitDialogVisible = false;
+                            recentPrimaryProviderUnavailableForPromptDelivery = null;
+                            sustainedPendingDeliveryBlockHandler.wakePendingMaterialization();
+                        };
+                        const sharedTerminalCallbacks = createClaudeUnifiedTerminalSharedCallbacks({
+                            sessionClient: session.client,
+                            observeInFlightSteerAvailabilitySnapshot,
+                            sustainedPendingDeliveryBlockHandler,
+                            dialogChoiceBroker,
+                            tuiRuntimeControlEnabled,
+                            registerStatuslineRuntimeReconciler: (reconcile) =>
+                                session.setClaudeStatuslineRuntimeReconciler(reconcile),
+                            getMetadataRuntimeModeApplier: () => applyUnifiedTerminalMetadataMode,
+                            setMetadataRuntimeModeApplier: (apply) => {
+                                applyUnifiedTerminalMetadataMode = apply;
+                            },
+                            flushPendingMetadataMode: () => applyUnifiedTerminalPermissionMetadata.flushPending(),
+                            logPrefix: '[remote]',
+                            logDebug: (message, error) => logger.debug(message, error),
+                        });
                         try {
                         return await runClaudeUnifiedTerminalSession({
-                            ...(dispatchOpts as ClaudeUnifiedTerminalSessionOptions),
+                            ...unifiedDispatchOpts,
                             happySessionId: session.client.sessionId,
+                            expectedProviderResumeSessionId: startupLifecycleIntent.kind === 'resume_native'
+                                ? startupLifecycleIntent.providerSessionId
+                                : null,
+                            dialogChoiceBroker,
                             statuslineForwarder: session.claudeStatuslineForwarder ?? undefined,
+                            onProviderLaunchStarting: () => startupLifecycle.onProviderLaunchStarting(),
+                            onProviderSessionStarted: () => {
+                                unifiedDispatchOpts.onProviderSessionStarted?.();
+                                startupLifecycle.onProviderSessionStarted();
+                            },
+                            onStartupReady: async () => {
+                                await unifiedDispatchOpts.onStartupReady?.();
+                                await startupLifecycle.onStartupReady();
+                            },
                             // Persist a consumed marker for controller-command echoes the runner
                             // suppresses, so they join the committed baseline and cannot replay as
                             // "new" messages after a respawn (resume-replay leak, 2026-06-11).
@@ -1442,24 +1982,50 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                     suppressedBy: 'control_command_echo',
                                 });
                             },
-                            onInFlightSteerAvailabilitySnapshot: inFlightSteerCapabilityPublisher.publish,
+                            onInFlightSteerAvailabilitySnapshot: observeInFlightSteerAvailabilitySnapshot,
+                            registerInFlightSteerAvailabilityRefresh: (refresh) => {
+                                refreshInFlightSteerAvailability = refresh;
+                                return () => {
+                                    if (refreshInFlightSteerAvailability === refresh) {
+                                        refreshInFlightSteerAvailability = null;
+                                    }
+                                };
+                            },
+                            onTerminalScreenObserved: observeTerminalScreen,
                             // A3-HIGH-1 root fix: the delivered-user-message watermark persists at
                             // provider acceptance, not when the row entered volatile memory.
-                            onPromptAcceptedByProvider: ({ maxUserMessageSeq, userMessageLocalIds }: {
+                            onPromptAcceptedByProvider: ({ userMessageLocalIds, appliedModelId }: {
                                 maxUserMessageSeq: number | null;
                                 userMessageLocalIds: readonly string[];
+                                appliedModelId?: string;
                             }) => {
-                                session.client.confirmUserMessageDeliveredToProvider?.(maxUserMessageSeq, {
-                                    localIds: userMessageLocalIds,
-                                });
+                                providerInputOutcomes.observeAccepted({ userMessageLocalIds, appliedModelId });
                                 resetUnifiedParkRelaunchBudget();
                             },
-                            isPromptDeliveryAccepted: (batch) => session.client.hasUserMessageProviderAcceptance?.({
-                                userMessageSeq: batch.maxUserMessageSeq ?? null,
-                                localIds: batch.userMessageLocalIds ?? [],
-                            }) === true,
+                            resolvePromptDeliveryState: (batch) => {
+                                const localId = readSinglePendingDeliveryLocalId(batch.userMessageLocalIds);
+                                if (localId === null) return 'pending';
+                                if (session.client.hasPendingProviderInputAcceptance?.(localId) === true) return 'accepted';
+                                return session.client.hasCanonicalPendingProviderInputDelivery?.(localId) === false
+                                    ? 'retired'
+                                    : 'pending';
+                            },
+                            onTerminalInjectionFailure: surfaceGenerationUnifiedTerminalRuntimeIssue,
                             registerTerminalComposerClearRuntimeControl: (clearTerminalComposer) =>
                                 session.client.registerSessionRuntimeControls?.({ clearTerminalComposer }) ?? (() => undefined),
+                            onPendingInputInterruptAndRunLocalIdChange:
+                                inFlightSteerCapabilityPublisher.publishPendingInputInterruptAndRunLocalId,
+                            registerPendingInputInterruptAndRunRuntimeControl: (interruptPendingInputAndRun) =>
+                                session.client.registerSessionRuntimeControls?.({ interruptPendingInputAndRun }) ?? (() => undefined),
+                            registerGoalRuntimeControl: (controls) =>
+                                session.client.registerSessionRuntimeControls?.(controls) ?? (() => undefined),
+                            // Claude's live `/goal clear` emits no goal_status, so the clear effector
+                            // deterministically removes the goal work-state item via the goal source.
+                            clearGoalWorkState: () => goalWorkStateSource.clearGoalWorkState(),
+                            // Record the SET epoch when `/goal <objective>` reaches the terminal, so
+                            // re-setting the same objective after a clear is accepted (G2).
+                            recordGoalSetIntent: () => goalWorkStateSource.recordGoalSetIntent(),
+                            initialGoalObjective: consumeInitialGoalObjectiveForUnified(),
                             // C11 (incident cmq8y3nlx): binding-owned registry, seeded from the
                             // persisted prompt store above, so a respawned runner recognizes its
                             // predecessor's leftover composer injection as our own text.
@@ -1467,71 +2033,29 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             // Lane X (incident cmq8y3nlx): one honest notice per starvation
                             // episode — the queued message is blocked by a terminal composer draft.
                             onInFlightSteerUserDraftStarvation: () => {
-                                inFlightSteerCapabilityPublisher.publish({ available: false, reason: 'user_terminal_draft' });
+                                observeInFlightSteerAvailabilitySnapshot({ available: false, reason: 'user_terminal_draft' });
                                 session.client.sendSessionEvent(createTerminalComposerDraftBlockedEvent('in_flight_steer'));
                             },
-                            onDraftGuardStarvation: () => {
-                                inFlightSteerCapabilityPublisher.publish({ available: false, reason: 'user_terminal_draft' });
-                                session.client.sendSessionEvent(createTerminalComposerDraftBlockedEvent('idle_draft_guard'));
-                            },
-                            createStartupDialogResolver: ({ controlPort, startupMode }) =>
-                                createClaudeUnifiedResumeChoiceStartupResolver({
-                                    choice: startupMode.claudeUnifiedTerminalResumeChoice ?? 'ask_every_time',
-                                    broker: resumeChoiceBroker,
-                                    port: controlPort,
-                                    wait: delay,
-                                    settleMs: DEFAULT_CLAUDE_TUI_CONTROL_TIMINGS.commandSettleMs,
-                                }),
+                            ...sharedTerminalCallbacks,
                             subscribeClaudeSessionHooks: (callback) => {
                                 session.addClaudeSessionHookCallback(callback);
                                 return () => {
                                     session.removeClaudeSessionHookCallback(callback);
                                 };
                             },
-                            tuiRuntimeControl: {
-                                featureEnabled: tuiRuntimeControlEnabled,
-                                // sessionMode change-key emission stays gated off until UI/dev consumers ship
-                                // the widened enum (Lane B version-skew); plan-mode rides permissionMode.
-                                emitRuntimeConfigOutcome: (event: ClaudeUnifiedRuntimeConfigOutcomeEvent) => {
-                                    session.client.sendSessionEvent(buildClaudeUnifiedRuntimeConfigOutcomeSessionEvent(event));
-                                },
-                                // F2 (qa/QA-B.md): one honest notice per stuck-unsafe-window episode —
-                                // an idle queued message kept deferring because runtime controls could
-                                // not be applied over a composer draft/dialog on the TUI.
-                                onBlockedApplyStarvation: (info) => {
-                                    if (isClaudeUnifiedRuntimeControlUserDraftBlocker(info.blockedReason)) {
-                                        inFlightSteerCapabilityPublisher.publish({ available: false, reason: 'user_terminal_draft' });
-                                        session.client.sendSessionEvent(createTerminalComposerDraftBlockedEvent('idle_draft_guard'));
-                                        return;
-                                    }
-                                    session.client.sendSessionEvent({
-                                        type: 'message',
-                                        message: 'Your queued message is waiting: the terminal shows a draft or dialog that blocks applying your settings change. Clear the terminal composer (or dismiss the dialog) to deliver it.',
-                                    });
-                                },
-                                // Lane Y: feed statusline-reported effective model/effort into the
-                                // controller's lastVerified through the session statusline applier.
-                                registerStatuslineRuntimeReconciler: (reconcile) =>
-                                    session.setClaudeStatuslineRuntimeReconciler(reconcile),
-                                registerMetadataRuntimeModeApplier: (apply) => {
-                                    applyUnifiedTerminalMetadataMode = apply;
-                                    void applyUnifiedTerminalPermissionMetadata.flushPending().catch((error) => {
-                                        logger.debug('[remote]: failed to flush pending metadata runtime mode after applier registration', error);
-                                    });
-                                    return () => {
-                                        if (applyUnifiedTerminalMetadataMode === apply) {
-                                            applyUnifiedTerminalMetadataMode = null;
-                                        }
-                                    };
-                                },
-                            },
                         });
                         } finally {
-                            resumeChoiceBroker.dispose();
+                            refreshInFlightSteerAvailability = null;
+                            inFlightSteerAvailabilitySnapshot = { available: false, reason: 'unsafe_window' };
+                            await dialogChoiceBroker.dispose();
                             inFlightSteerCapabilityPublisher.dispose();
                         }
                     },
+                    }),
                 });
+                if (remoteDispatch.status === 'cancelled') {
+                    continue;
+                }
 
                 // Consume one-time Claude flags after spawn
                 session.consumeOneTimeFlags();
@@ -1548,28 +2072,56 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     didUserAbortThisLaunch
                     && !exitReason
                     && isClaudeExecutionErrorAfterUserAbort(e);
+                const runtimeTerminationStarted = session.client.hasRuntimeTerminationStarted?.() === true;
+                const exitCode = resolveClaudeCodeExitCode(e);
+                const userAbort = Boolean(
+                    controller.signal.aborted
+                    && didUserAbortThisLaunch
+                    && !exitReason
+                    && (abortError || executionErrorAfterUserAbort),
+                );
                 logger.debug('[remote]: launch error', {
                     ...getLaunchErrorInfo(e),
                     abortError,
                     executionErrorAfterUserAbort,
+                    runtimeTerminationStarted,
                 });
 
-                if (exitReason) {
-                    // Exit already requested (switch/exit).
+                const errorDisposition = resolveClaudeRemoteLaunchErrorDisposition({
+                    exitReason,
+                    runtimeTerminationStarted,
+                    error: e,
+                    exitCode,
+                    userAbort,
+                    sessionIdAtLaunchStart,
+                    currentSessionId: session.sessionId,
+                });
+                if (errorDisposition === 'terminate') {
+                    // The outer runner is terminating. Do not start another provider launch while
+                    // its cleanup owns this session.
+                    exitReason = 'exit';
+                }
+                if (errorDisposition === 'preserve-resume-and-exit') {
+                    session.client.sendSessionEvent({
+                        type: 'message',
+                        message: formatErrorForUi(e, { maxChars: 12_000 }),
+                    });
+                    // A requested resume whose transcript is unavailable cannot consume another
+                    // queued prompt safely. Stop this runner and keep the provider identity intact
+                    // so a later explicit resume can retry the same conversation.
+                    exitReason = 'exit';
+                    continue;
+                }
+                if (errorDisposition === 'ignore' || errorDisposition === 'terminate') {
+                    // The launcher or canonical runner lifecycle already owns teardown.
                 } else if (abortError || executionErrorAfterUserAbort) {
                     if (controller.signal.aborted) {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                     }
-                    // Claude Code sometimes exits in a non-resumable state after a force-abort. If this abort was
-                    // explicitly user-initiated (not a mode switch), clear the stored session ID so the next launch
-                    // doesn't get stuck trying to resume a dead session.
-                    if (
-                        controller.signal.aborted
-                        && didUserAbortThisLaunch
-                        && !exitReason
-                    ) {
-                        forceNewSession = true;
-                        session.clearSessionId();
+                    if (errorDisposition === 'preserve-resume-and-wait') {
+                        // Aborting a resumed turn must not silently replace its conversation. Wait
+                        // for another user action before attempting the same provider identity again.
+                        waitForMessageBeforeNextLaunch = true;
                     }
                     continue;
                 } else {
@@ -1581,7 +2133,6 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         waitForMessageBeforeNextLaunch = true;
                         continue;
                     }
-                    const exitCode = resolveClaudeCodeExitCode(e);
                     if (exitCode === 1) {
                         const artifacts = resolveClaudeCodeArtifacts(e);
                         const tailText = artifacts ? await formatClaudeCodeArtifactsTailForUi(artifacts) : '';
@@ -1590,30 +2141,6 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             ? `${base}\n\n${tailText}`
                             : base;
                         session.client.sendSessionEvent({ type: 'message', message });
-                        if (
-                            controller.signal.aborted
-                            && didUserAbortThisLaunch
-                            && !exitReason
-                        ) {
-                            forceNewSession = true;
-                            session.clearSessionId();
-                        } else if (
-                            // If we attempted to resume an existing Claude Code session and it immediately exited with
-                            // code 1 (common for non-resumable sessions after interrupts/crashes), avoid getting stuck
-                            // in a permanent loop where we keep passing `--resume <dead-session-id>` forever.
-                            //
-                            // In that case, clear the stored session ID so the next launch creates a fresh Claude Code
-                            // session. This is a best-effort recovery path: if the underlying session is resumable, a
-                            // non-aborted run will keep the session id stable and this will not trigger.
-                            !controller.signal.aborted
-                            && typeof sessionIdAtLaunchStart === 'string'
-                            && sessionIdAtLaunchStart.trim().length > 0
-                            && session.sessionId === sessionIdAtLaunchStart
-                            && !exitReason
-                        ) {
-                            forceNewSession = true;
-                            session.clearSessionId();
-                        }
                         waitForMessageBeforeNextLaunch = true;
                         continue;
                     } else {
@@ -1622,8 +2149,20 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     }
                 }
             } finally {
-
                 logger.debug('[remote]: launch finally');
+
+                // A provider launch may finish while its SDK prompt iterator is still waiting for
+                // the next Pending row. End that obsolete wait before the next launch reuses this
+                // session-owned consumer; otherwise MessageQueue2 correctly rejects a competing
+                // waiter and every subsequent relaunch can spin without consuming input.
+                controller.abort('claude-remote-provider-launch-finished');
+                disposeAgentSdkInFlightSteerCapabilityPublisher(agentSdkInFlightSteerCapabilityPublisher);
+                agentSdkInFlightSteerCapabilityPublisher = null;
+                refreshInFlightSteerAvailability = null;
+                inFlightSteerAvailabilitySnapshot = { available: false, reason: 'unsafe_window' };
+                if (applyActiveLaunchPermissionMetadata === applyUnifiedTerminalPermissionMetadata) {
+                    applyActiveLaunchPermissionMetadata = null;
+                }
 
                 // Flush any remaining messages in the queue
                 logger.debug('[remote]: flushing message queue');
@@ -1652,6 +2191,43 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             }
         }
     } finally {
+
+        try {
+            await inputConsumer.closeProviderInputAdmissionAndWaitForDispatches();
+        } finally {
+            session.unregisterProviderInputConsumer(inputConsumer);
+        }
+
+        session.removeClaudeSessionHookCallback(observeLegacyProviderActivityHook);
+
+        // G-6: mark an active-but-unmet Claude goal as interrupted on graceful teardown (status stays
+        // active; the goal may resume) before the goal source stops observing.
+        goalWorkStateSource.finalizeInterruptedGoalOnShutdown();
+
+        // RULING-14: workflow runs, their agents and their `Task` children all live INSIDE the
+        // Claude query, so this teardown is the observation that they are over — resolve them
+        // (`stopped`/`interrupted` + `cancelled` agents, never `failed`) before draining, exactly as
+        // the goal source does three lines above. Without this a run and its agents stay painted as
+        // live forever. Happier execution runs are untouched: they own their own backend and query,
+        // genuinely outlive this process, and are answered by their pid-backed marker registry.
+        if (workflowActivitySource) {
+            try {
+                workflowActivitySource.finalizeInterruptedActivityOnShutdown();
+            } catch (error) {
+                logger.debug('[remote]: failed to resolve interrupted Claude workflow activity (non-fatal)', error);
+            }
+            try {
+                await workflowActivitySource.flush();
+            } catch (error) {
+                logger.debug('[remote]: failed to flush Claude workflow activity (non-fatal)', error);
+            }
+            workflowActivitySource.dispose();
+        }
+
+        // Stop following the transcript for goal_status (agent-SDK side-tail).
+        await goalStatusTranscriptTail.stop().catch((error) => {
+            logger.debug('[remote]: failed to stop Claude goal_status transcript tail (non-fatal)', error);
+        });
 
         // Clean up permission handler
         await permissionHandler.resetAndFlush();

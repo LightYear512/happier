@@ -25,8 +25,9 @@
  * The non-hook settings file is still written in that mode.
  */
 
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { chmodSync, existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { configuration } from '@/configuration';
 import { logger } from '@/ui/logger';
 import { buildMissingJavaScriptRuntimeMessage } from '@/runtime/js/buildMissingJavaScriptRuntimeMessage';
@@ -34,64 +35,37 @@ import { resolveJavaScriptRuntimeExecutable } from '@/runtime/js/resolveJavaScri
 import { isBun } from '@/utils/runtime';
 import { resolveCliRuntimeAssetPath } from '@/runtime/assets/resolveCliRuntimeAssetPath';
 import { resolveReleaseRingScopedBasename } from '@/cli/runtime/publicReleaseChannel';
+import { writeJsonAtomicSync } from '@/utils/fs/writeJsonAtomicSync';
+import { buildEncodedPowerShellCommand } from '@/utils/powerShellCommand';
+import { resolveClaudePermissionHookTimeoutSeconds } from './permissionHookTimeout';
+
+export { DEFAULT_PERMISSION_HOOK_TIMEOUT_SECONDS } from './permissionHookTimeout';
 
 export interface GenerateHookSettingsOptions {
     enableLocalPermissionBridge?: boolean;
     permissionHookSecret?: string;
     /**
+     * Stable identity for the generated hook plugin directory.
+     *
+     * Claude can retain plugin references across `--resume` turns, so daemon-managed
+     * resumes must not use a runner-PID-scoped path that disappears during auth
+     * switches or planned restarts. When provided, the plugin dir is rewritten in
+     * place and retained across runner cleanup; the next runner for the same session
+     * overwrites the hook commands with its current port/secret.
+     */
+    sessionHookPluginId?: string;
+    /**
      * Explicit Claude command-hook `timeout` (seconds) installed on the PermissionRequest /
      * PreToolUse(AskUserQuestion) permission hooks.
      *
-     * This makes the provider-side hook ceiling explicit and aligned with the local permission bridge's
-     * own response timeout (`claudeLocalPermissionBridgeTimeoutSeconds`, default 600s), instead of silently
-     * relying on Claude's undocumented default. The bridge uses the same value as its expiry boundary so a
-     * late UI answer after the ceiling returns a typed expired result instead of a false success.
+     * This makes the provider-side hook ceiling explicit instead of silently relying on Claude's
+     * undocumented default. The shared timeout resolver is also used by the local permission bridge's
+     * expiry boundary so a late UI answer after the ceiling returns a typed expired result instead of a
+     * false success.
      */
     permissionHookTimeoutSeconds?: number;
-}
-
-/**
- * Default explicit permission-hook command timeout in seconds: 7 days.
- *
- * A permission request must survive an operator launching a session before sleeping and answering it on
- * waking, so the installed hook `timeout` is effectively unlimited. Claude honors large `timeout` values
- * without capping (probe §W: it accepts and runs values up to int32-max without error and does not kill
- * the forwarder early). The value stays FINITE on purpose so the local permission bridge can still
- * honestly expire a genuinely-dead forwarder at the same ceiling (see `DEFAULT_PROVIDER_HOOK_CEILING_MS`
- * in `localPermissionBridge.ts`) instead of approving a late answer into a dead socket.
- *
- * Kept aligned with the bridge ceiling so Lane V's answer-time expiry only ever fires on this huge
- * ceiling or a truly-dead forwarder, never an artificial short timeout.
- */
-export const DEFAULT_PERMISSION_HOOK_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;
-
-/**
- * Optional environment override for the installed permission-hook `timeout` (seconds). Lets an operator
- * tune the effectively-unlimited default without threading an account setting through `runClaude`
- * (Lane T territory). An explicit `permissionHookTimeoutSeconds` option still wins over this env value.
- */
-const PERMISSION_HOOK_TIMEOUT_SECONDS_ENV_VAR = 'HAPPIER_CLAUDE_PERMISSION_HOOK_TIMEOUT_SECONDS';
-
-function readPositiveIntEnv(envVarName: string): number | null {
-    const raw = process.env[envVarName];
-    if (typeof raw !== 'string') return null;
-    const parsed = Number(raw.trim());
-    if (Number.isFinite(parsed) && parsed > 0) {
-        return Math.floor(parsed);
-    }
-    return null;
-}
-
-function resolvePermissionHookTimeoutSeconds(options: GenerateHookSettingsOptions): number {
-    const raw = options.permissionHookTimeoutSeconds;
-    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
-        return Math.floor(raw);
-    }
-    const envOverride = readPositiveIntEnv(PERMISSION_HOOK_TIMEOUT_SECONDS_ENV_VAR);
-    if (envOverride !== null) {
-        return envOverride;
-    }
-    return DEFAULT_PERMISSION_HOOK_TIMEOUT_SECONDS;
+    /** Testable hook-launcher platform boundary; production defaults to the current platform. */
+    platform?: NodeJS.Platform;
 }
 
 type ClaudeSettingsOverlay = Readonly<{
@@ -101,6 +75,18 @@ type ClaudeSettingsOverlay = Readonly<{
 }>;
 
 const HOOKS_DISABLED_ENV_VAR = 'HAPPIER_CLAUDE_HOOKS_DISABLED';
+const RETAINED_HOOK_PLUGIN_MARKER_FILE = '.happier-hook-plugin.json';
+const HOOK_RUNTIME_ASSETS_DIR = 'runtime-assets';
+const SESSION_HOOK_FORWARDER_BASENAME = 'session_hook_forwarder.cjs';
+const PERMISSION_HOOK_FORWARDER_BASENAME = 'permission_hook_forwarder.cjs';
+const REQUIRED_RUNTIME_ACTIVITY_SESSION_HOOKS = ['PostToolUse', 'SubagentStart', 'SubagentStop'] as const;
+
+function recordAt(values: readonly unknown[], index: number): Record<string, unknown> | null {
+    const value = values[index];
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
 
 function areHappierHooksDisabled(): boolean {
     const raw = process.env[HOOKS_DISABLED_ENV_VAR];
@@ -146,6 +132,188 @@ function writePrivateFileSync(path: string, contents: string): void {
     chmodIfSupported(path, 0o600);
 }
 
+function validateMaterializedForwarder(path: string, expectedContents: string): void {
+    if (readFileSync(path, 'utf8') !== expectedContents) {
+        throw new Error(`Claude hook forwarder materialization validation failed: ${path}`);
+    }
+}
+
+function materializeHookRuntimeAssets(pluginDir: string): Readonly<{
+    sessionForwarderScript: string;
+    permissionForwarderScript: string;
+}> {
+    const sessionForwarderContents = readFileSync(
+        resolveCliRuntimeAssetPath('scripts', SESSION_HOOK_FORWARDER_BASENAME),
+        'utf8',
+    );
+    const permissionForwarderContents = readFileSync(
+        resolveCliRuntimeAssetPath('scripts', PERMISSION_HOOK_FORWARDER_BASENAME),
+        'utf8',
+    );
+    const assetVersion = createHash('sha256')
+        .update(sessionForwarderContents)
+        .update('\0')
+        .update(permissionForwarderContents)
+        .digest('hex')
+        .slice(0, 24);
+    const runtimeAssetsRoot = join(pluginDir, HOOK_RUNTIME_ASSETS_DIR);
+    const versionedAssetsDir = join(runtimeAssetsRoot, assetVersion);
+    const sessionForwarderScript = join(versionedAssetsDir, SESSION_HOOK_FORWARDER_BASENAME);
+    const permissionForwarderScript = join(versionedAssetsDir, PERMISSION_HOOK_FORWARDER_BASENAME);
+    mkdirPrivateSync(runtimeAssetsRoot);
+
+    if (!existsSync(versionedAssetsDir)) {
+        const stagingDir = join(runtimeAssetsRoot, `.staging-${process.pid}-${randomUUID()}`);
+        try {
+            mkdirPrivateSync(stagingDir);
+            writePrivateFileSync(join(stagingDir, SESSION_HOOK_FORWARDER_BASENAME), sessionForwarderContents);
+            writePrivateFileSync(join(stagingDir, PERMISSION_HOOK_FORWARDER_BASENAME), permissionForwarderContents);
+            validateMaterializedForwarder(join(stagingDir, SESSION_HOOK_FORWARDER_BASENAME), sessionForwarderContents);
+            validateMaterializedForwarder(join(stagingDir, PERMISSION_HOOK_FORWARDER_BASENAME), permissionForwarderContents);
+            try {
+                renameSync(stagingDir, versionedAssetsDir);
+            } catch (error) {
+                if (!existsSync(versionedAssetsDir)) throw error;
+            }
+        } finally {
+            rmSync(stagingDir, { recursive: true, force: true });
+        }
+    }
+
+    validateMaterializedForwarder(sessionForwarderScript, sessionForwarderContents);
+    validateMaterializedForwarder(permissionForwarderScript, permissionForwarderContents);
+    return { sessionForwarderScript, permissionForwarderScript };
+}
+
+function writeHookPluginConfiguration(params: Readonly<{
+    pluginDir: string;
+    port: number;
+    nodeExecutable: string;
+    enableLocalPermissionBridge: boolean;
+    permissionHookTimeoutSeconds?: number;
+    platform: NodeJS.Platform;
+}>): void {
+    const { sessionForwarderScript, permissionForwarderScript } = materializeHookRuntimeAssets(params.pluginDir);
+    const secretFile = join(params.pluginDir, 'permission-hook-secret');
+    const buildForwarderCommand = (scriptPath: string, hookEventName: string): string => {
+        const secretFileExists = existsSync(secretFile);
+        if (params.platform === 'win32') {
+            const args = [params.nodeExecutable, scriptPath, String(params.port), hookEventName];
+            if (secretFileExists) args.push('--secret-file', secretFile);
+            return buildEncodedPowerShellCommand(args);
+        }
+        const secretPart = secretFileExists ? ` --secret-file ${JSON.stringify(secretFile)}` : '';
+        return `${JSON.stringify(params.nodeExecutable)} ${JSON.stringify(scriptPath)} ${params.port} ${JSON.stringify(hookEventName)}${secretPart}`;
+    };
+    const buildSessionHookCommand = (hookEventName: string): string =>
+        buildForwarderCommand(sessionForwarderScript, hookEventName);
+    const buildSessionHook = (hookEventName: string): unknown[] => [{
+        matcher: '',
+        hooks: [{ type: 'command', command: buildSessionHookCommand(hookEventName) }],
+    }];
+    const hooks: Record<string, unknown> = {
+        SessionStart: buildSessionHook('SessionStart'),
+        UserPromptSubmit: buildSessionHook('UserPromptSubmit'),
+        Stop: buildSessionHook('Stop'),
+        StopFailure: buildSessionHook('StopFailure'),
+        SessionEnd: buildSessionHook('SessionEnd'),
+        PostToolUse: buildSessionHook('PostToolUse'),
+        SubagentStart: buildSessionHook('SubagentStart'),
+        SubagentStop: buildSessionHook('SubagentStop'),
+    };
+
+    if (params.enableLocalPermissionBridge) {
+        const buildPermissionCommand = (hookEventName: 'PermissionRequest' | 'PreToolUse'): string =>
+            buildForwarderCommand(permissionForwarderScript, hookEventName);
+        const timeout = resolveClaudePermissionHookTimeoutSeconds({
+            ...(params.permissionHookTimeoutSeconds === undefined
+                ? {}
+                : { permissionHookTimeoutSeconds: params.permissionHookTimeoutSeconds }),
+        });
+        hooks.PermissionRequest = [{
+            matcher: '',
+            hooks: [{ type: 'command', command: buildPermissionCommand('PermissionRequest'), timeout }],
+        }];
+        hooks.PreToolUse = [{
+            matcher: 'AskUserQuestion',
+            hooks: [{ type: 'command', command: buildPermissionCommand('PreToolUse'), timeout }],
+        }];
+    }
+
+    // The versioned asset directory is complete before this one atomic activation point.
+    // A failed refresh therefore leaves Claude's previous complete hook configuration intact.
+    const hooksJsonPath = join(params.pluginDir, 'hooks', 'hooks.json');
+    writeJsonAtomicSync(hooksJsonPath, { hooks });
+
+    // An owned SessionStart/UserPromptSubmit proves Claude loaded this plugin. Pair that live
+    // activation handshake with an exact readback of the activity hooks so supported idle cannot
+    // be published from a partially generated observer configuration.
+    const materialized = JSON.parse(readFileSync(hooksJsonPath, 'utf8')) as { hooks?: Record<string, unknown> };
+    for (const hookName of REQUIRED_RUNTIME_ACTIVITY_SESSION_HOOKS) {
+        const registrations = materialized.hooks?.[hookName];
+        const registration = Array.isArray(registrations) ? recordAt(registrations, 0) : null;
+        const hook = Array.isArray(registration?.hooks) ? recordAt(registration.hooks, 0) : null;
+        if (
+            registration?.matcher !== ''
+            || hook?.type !== 'command'
+            || hook.command !== buildSessionHookCommand(hookName)
+        ) {
+            throw new Error(`Claude runtime activity hook configuration is missing ${hookName}`);
+        }
+    }
+}
+
+export function refreshRetainedClaudeHookPlugin(params: Readonly<{
+    pluginDir: string;
+    port: number;
+    permissionHookTimeoutSeconds?: number;
+    platform?: NodeJS.Platform;
+}>): void {
+    writeHookPluginConfiguration({
+        pluginDir: params.pluginDir,
+        port: params.port,
+        nodeExecutable: resolveNodeExecutable(),
+        enableLocalPermissionBridge: true,
+        platform: params.platform ?? process.platform,
+        ...(params.permissionHookTimeoutSeconds === undefined
+            ? {}
+            : { permissionHookTimeoutSeconds: params.permissionHookTimeoutSeconds }),
+    });
+}
+
+function sanitizeHookPluginId(value: string): string | null {
+    const normalized = value.trim().replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[-_.]+|[-_.]+$/g, '');
+    if (normalized.length === 0) return null;
+    return normalized.slice(0, 96);
+}
+
+function resolveHookPluginIdentity(options: GenerateHookSettingsOptions): Readonly<{
+    id: string;
+    retainAcrossRunnerRestarts: boolean;
+}> {
+    const stableId = typeof options.sessionHookPluginId === 'string'
+        ? sanitizeHookPluginId(options.sessionHookPluginId)
+        : null;
+    if (stableId) {
+        return { id: stableId, retainAcrossRunnerRestarts: true };
+    }
+    return { id: String(process.pid), retainAcrossRunnerRestarts: false };
+}
+
+function shouldRetainHookPluginDir(dirpath: string): boolean {
+    try {
+        const raw = readFileSync(join(dirpath, RETAINED_HOOK_PLUGIN_MARKER_FILE), 'utf8');
+        const parsed = JSON.parse(raw) as unknown;
+        return Boolean(
+            parsed
+            && typeof parsed === 'object'
+            && (parsed as { retainAcrossRunnerRestarts?: unknown }).retainAcrossRunnerRestarts === true,
+        );
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Generate a temporary settings JSON file with non-hook configuration only
  * (currently: MCP change_title allow rules). Hooks are no longer carried here;
@@ -188,7 +356,8 @@ export function generateHookPluginDir(port: number, options: GenerateHookSetting
     }
 
     const pluginsRoot = resolveTmpRoot('hook-plugins');
-    const pluginDir = join(pluginsRoot, `session-${process.pid}`);
+    const pluginIdentity = resolveHookPluginIdentity(options);
+    const pluginDir = join(pluginsRoot, `session-${pluginIdentity.id}`);
     const manifestDir = join(pluginDir, '.claude-plugin');
     const hooksDir = join(pluginDir, 'hooks');
     // hooks.json points at the private permission secret file; keep the whole session plugin dir
@@ -198,7 +367,7 @@ export function generateHookPluginDir(port: number, options: GenerateHookSetting
     mkdirPrivateSync(hooksDir);
 
     const manifest = {
-        name: `happier-session-hooks-${process.pid}`,
+        name: `happier-session-hooks-${pluginIdentity.id}`,
         version: '1.0.0',
         description: 'Happier session-scoped Claude Code hooks.',
         author: {
@@ -206,79 +375,35 @@ export function generateHookPluginDir(port: number, options: GenerateHookSetting
         },
     };
     writePrivateFileSync(join(manifestDir, 'plugin.json'), JSON.stringify(manifest, null, 2));
+    writePrivateFileSync(join(pluginDir, RETAINED_HOOK_PLUGIN_MARKER_FILE), JSON.stringify({
+        v: 1,
+        retainAcrossRunnerRestarts: pluginIdentity.retainAcrossRunnerRestarts,
+    }, null, 2));
 
     const nodeExecutable = resolveNodeExecutable();
     // The secret never rides on the command line (argv is world-visible via `ps`); it is written
     // to an owner-only file inside the 0700 plugin dir and forwarders read it via
     // `--secret-file <path>`. Shared by the session AND permission forwarders (A5-MED-2: the
     // session-start endpoint requires the same secret as the permission endpoint).
-    let secretPart = '';
     if (typeof options.permissionHookSecret === 'string' && options.permissionHookSecret.length > 0) {
         const secretFile = join(pluginDir, 'permission-hook-secret');
         writePrivateFileSync(secretFile, options.permissionHookSecret);
-        secretPart = ` --secret-file ${JSON.stringify(secretFile)}`;
+    } else {
+        const staleSecretFile = join(pluginDir, 'permission-hook-secret');
+        if (existsSync(staleSecretFile)) {
+            unlinkSync(staleSecretFile);
+        }
     }
-    const sessionForwarderScript = resolveCliRuntimeAssetPath('scripts', 'session_hook_forwarder.cjs');
-    const buildSessionHookCommand = (hookEventName: string): string =>
-        `${JSON.stringify(nodeExecutable)} ${JSON.stringify(sessionForwarderScript)} ${port} ${JSON.stringify(hookEventName)}${secretPart}`;
-
-    const buildSessionHook = (hookEventName: string): unknown[] => [
-        {
-            matcher: '',
-            hooks: [
-                {
-                    type: 'command',
-                    command: buildSessionHookCommand(hookEventName),
-                },
-            ],
-        },
-    ];
-
-    const hooks: Record<string, unknown> = {
-        SessionStart: buildSessionHook('SessionStart'),
-        UserPromptSubmit: buildSessionHook('UserPromptSubmit'),
-        Stop: buildSessionHook('Stop'),
-        StopFailure: buildSessionHook('StopFailure'),
-        SessionEnd: buildSessionHook('SessionEnd'),
-        PostToolUse: buildSessionHook('PostToolUse'),
-    };
-
-    if (options.enableLocalPermissionBridge) {
-        const permissionForwarderScript = resolveCliRuntimeAssetPath('scripts', 'permission_hook_forwarder.cjs');
-        const buildPermissionCommand = (hookEventName: 'PermissionRequest' | 'PreToolUse'): string =>
-            `${JSON.stringify(nodeExecutable)} ${JSON.stringify(permissionForwarderScript)} ${port} ${JSON.stringify(hookEventName)}${secretPart}`;
-
-        const permissionHookTimeoutSeconds = resolvePermissionHookTimeoutSeconds(options);
-
-        hooks.PermissionRequest = [
-            {
-                matcher: '',
-                hooks: [
-                    {
-                        type: 'command',
-                        command: buildPermissionCommand('PermissionRequest'),
-                        timeout: permissionHookTimeoutSeconds,
-                    },
-                ],
-            },
-        ];
-        hooks.PreToolUse = [
-            {
-                matcher: 'AskUserQuestion',
-                hooks: [
-                    {
-                        type: 'command',
-                        command: buildPermissionCommand('PreToolUse'),
-                        timeout: permissionHookTimeoutSeconds,
-                    },
-                ],
-            },
-        ];
-    }
-
-    const hooksJson = { hooks };
-    const hooksFile = join(hooksDir, 'hooks.json');
-    writePrivateFileSync(hooksFile, JSON.stringify(hooksJson, null, 2));
+    writeHookPluginConfiguration({
+        pluginDir,
+        port,
+        nodeExecutable,
+        enableLocalPermissionBridge: options.enableLocalPermissionBridge === true,
+        ...(options.permissionHookTimeoutSeconds === undefined
+            ? {}
+            : { permissionHookTimeoutSeconds: options.permissionHookTimeoutSeconds }),
+        platform: options.platform ?? process.platform,
+    });
     logger.debug(`[generateHookSettings] Created hook plugin dir: ${pluginDir}`);
 
     return pluginDir;
@@ -313,9 +438,16 @@ export function cleanupHookSettingsFile(filepath: string): void {
 /**
  * Remove the plugin directory produced by `generateHookPluginDir`.
  */
-export function cleanupHookPluginDir(dirpath: string | null | undefined): void {
+export function cleanupHookPluginDir(
+    dirpath: string | null | undefined,
+    options: Readonly<{ force?: boolean }> = {},
+): void {
     if (typeof dirpath !== 'string' || dirpath.length === 0) return;
     try {
+        if (options.force !== true && shouldRetainHookPluginDir(dirpath)) {
+            logger.debug(`[generateHookSettings] Retaining session-scoped hook plugin dir: ${dirpath}`);
+            return;
+        }
         if (existsSync(dirpath)) {
             rmSync(dirpath, { recursive: true, force: true });
             logger.debug(`[generateHookSettings] Cleaned up hook plugin dir: ${dirpath}`);

@@ -5,7 +5,11 @@ import type {
 } from '@happier-dev/protocol';
 
 import type { InFlightConfigApplyOutcome } from '@/agent/runtime/permission/bindPermissionModeQueue';
-import { resolveClaudeUltracodeForModel } from '@/backends/claude/utils/claudeEffort';
+import {
+  resolveClaudeEffectiveEffortForModel,
+  resolveClaudeUltracodeForModel,
+  resolveModeEffortLevelsForModel,
+} from '@/backends/claude/utils/claudeEffort';
 
 import type { EnhancedMode } from '../loop';
 import { controlResultToChangeOutcome } from './tuiControls/outcome';
@@ -18,6 +22,7 @@ import type {
   RuntimeConfigChangeOutcome,
   RuntimeConfigOutcomeScalar,
 } from './tuiControls';
+import type { ClaudeUnifiedDialogId } from './tuiControls/dialogRegistry';
 
 /**
  * Lane E runtime-control integration bridge.
@@ -130,6 +135,7 @@ export type ClaudeUnifiedRuntimeControlBridge = Readonly<{
    */
   reconcileFromStatusline(metadata: ClaudeStatuslineRuntimeMetadata): void;
   isControlInFlight(): boolean;
+  ownsDialog(dialogId: ClaudeUnifiedDialogId): boolean;
   whenControlIdle(): Promise<void>;
   dispose(): Promise<void>;
 }>;
@@ -166,8 +172,12 @@ export function mapEnhancedModeToDesiredRuntimeConfig(mode: EnhancedMode): Claud
   } = {};
   const model = normalizeNonEmptyString(mode.model);
   if (model !== undefined) desired.model = model;
-  const reasoningEffort = normalizeNonEmptyString(mode.reasoningEffort);
-  if (reasoningEffort !== undefined) desired.reasoningEffort = reasoningEffort;
+  const reasoningEffort = resolveClaudeEffectiveEffortForModel({
+    modelId: mode.model,
+    effort: mode.reasoningEffort,
+    supportedLevels: resolveModeEffortLevelsForModel(mode, mode.model),
+  });
+  if (reasoningEffort !== null) desired.reasoningEffort = reasoningEffort;
   if (typeof mode.permissionMode === 'string') desired.permissionMode = mode.permissionMode;
   if (mode.agentModeId !== undefined) desired.agentModeId = mode.agentModeId ?? null;
   if (typeof mode.claudeRemoteMaxThinkingTokens === 'number') {
@@ -176,7 +186,11 @@ export function mapEnhancedModeToDesiredRuntimeConfig(mode: EnhancedMode): Claud
   if (typeof mode.ultracode === 'boolean') {
     // Capability-gate here so the controller never types `/effort ultracode` at a model
     // that does not offer it (conservative: an unhonorable request resolves to off).
-    desired.ultracode = resolveClaudeUltracodeForModel({ modelId: mode.model, ultracode: mode.ultracode });
+    desired.ultracode = resolveClaudeUltracodeForModel({
+        modelId: mode.model,
+        ultracode: mode.ultracode,
+        supportedLevels: resolveModeEffortLevelsForModel(mode, mode.model),
+    });
   }
   return desired;
 }
@@ -230,6 +244,46 @@ function isEmptyDesired(desired: ClaudeDesiredRuntimeConfig): boolean {
     && desired.maxThinkingTokens === undefined
     && desired.ultracode === undefined
   );
+}
+
+function pickDependentRuntimeConfigDelta(delta: ClaudeDesiredRuntimeConfig): ClaudeDesiredRuntimeConfig {
+  const dependent: {
+    permissionMode?: string;
+    agentModeId?: string | null;
+  } = {};
+  if (delta.permissionMode !== undefined) dependent.permissionMode = delta.permissionMode;
+  if (delta.agentModeId !== undefined) dependent.agentModeId = delta.agentModeId;
+  return dependent;
+}
+
+function pickAmbientRuntimeConfigDelta(delta: ClaudeDesiredRuntimeConfig): ClaudeDesiredRuntimeConfig {
+  const ambient: {
+    model?: string;
+    reasoningEffort?: string;
+    maxThinkingTokens?: number;
+    ultracode?: boolean;
+  } = {};
+  if (delta.model !== undefined) ambient.model = delta.model;
+  if (delta.reasoningEffort !== undefined) ambient.reasoningEffort = delta.reasoningEffort;
+  if (delta.ultracode !== undefined) ambient.ultracode = delta.ultracode;
+  if (delta.maxThinkingTokens !== undefined) ambient.maxThinkingTokens = delta.maxThinkingTokens;
+  return ambient;
+}
+
+function commitRuntimeConfigDelta(
+  committed: ClaudeDesiredRuntimeConfig,
+  desired: ClaudeDesiredRuntimeConfig,
+  delta: ClaudeDesiredRuntimeConfig,
+): ClaudeDesiredRuntimeConfig {
+  return {
+    ...committed,
+    ...(delta.model !== undefined ? { model: desired.model } : {}),
+    ...(delta.reasoningEffort !== undefined ? { reasoningEffort: desired.reasoningEffort } : {}),
+    ...(delta.ultracode !== undefined ? { ultracode: desired.ultracode } : {}),
+    ...(delta.maxThinkingTokens !== undefined ? { maxThinkingTokens: desired.maxThinkingTokens } : {}),
+    ...(delta.permissionMode !== undefined ? { permissionMode: desired.permissionMode } : {}),
+    ...(delta.agentModeId !== undefined ? { agentModeId: desired.agentModeId } : {}),
+  };
 }
 
 function describeGroupEntry(change: ClaudeUnifiedRuntimeConfigOutcomeChange): string {
@@ -357,11 +411,16 @@ export const DEFAULT_BLOCKED_APPLY_STARVATION_THRESHOLD = 6;
 export type BlockedApplyStarvationInfo = Readonly<{
   consecutiveBlockedApplies: number;
   blockedReason?: string | null;
+  isCanonicalTurnActive?: boolean | undefined;
+  userMessageLocalIds?: readonly string[] | undefined;
 }>;
 
 export type BlockedApplyStarvationTracker = Readonly<{
   /** Records one blocked apply; returns the consecutive count. Fires the callback ONCE per episode. */
-  recordBlocked(blockedReason?: string | null): number;
+  recordBlocked(
+    blockedReason?: string | null,
+    context?: Omit<BlockedApplyStarvationInfo, 'blockedReason' | 'consecutiveBlockedApplies'> | undefined,
+  ): number;
   /** A successful (proceeding) apply ends the episode; the next starvation escalates again. */
   reset(): void;
 }>;
@@ -382,11 +441,15 @@ export function createBlockedApplyStarvationTracker(opts: Readonly<{
   let consecutiveBlockedApplies = 0;
   let escalated = false;
   return {
-    recordBlocked(blockedReason?: string | null): number {
+    recordBlocked(
+      blockedReason?: string | null,
+      context?: Omit<BlockedApplyStarvationInfo, 'blockedReason' | 'consecutiveBlockedApplies'> | undefined,
+    ): number {
       consecutiveBlockedApplies += 1;
       if (consecutiveBlockedApplies >= threshold && !escalated) {
         escalated = true;
         opts.onStarvation({
+          ...context,
           consecutiveBlockedApplies,
           ...(blockedReason ? { blockedReason } : {}),
         });
@@ -513,6 +576,9 @@ export function createClaudeUnifiedRuntimeControlBridge(
     if (isEmptyDesired(delta)) {
       return { promptMayProceed: true, attempted: false };
     }
+    if (reason === 'before_prompt') {
+      return await applyDesiredModeBeforePrompt(desired, delta);
+    }
     // F5: the first apply whose desired mode equals the pending startup claim is a VERIFICATION
     // of the launch flag — a confirming already-effective result must stay silent.
     const verifyingStartupModeClaim =
@@ -534,6 +600,70 @@ export function createClaudeUnifiedRuntimeControlBridge(
       attempted: true,
       ...(!outcome.promptMayProceed && blockedReason ? { blockedReason } : {}),
     };
+  }
+
+  async function applyRuntimeConfigDelta(params: Readonly<{
+    delta: ClaudeDesiredRuntimeConfig;
+    reason: 'before_prompt' | 'out_of_band';
+    suppressSilentModeConfirmation?: boolean | undefined;
+    includePending?: boolean | undefined;
+  }>): Promise<RuntimeConfigApplyOutcome> {
+    const outcome = await controller.applyDesiredRuntimeConfig({
+      desired: params.delta,
+      reason: params.reason,
+      ...(params.includePending !== undefined ? { includePending: params.includePending } : {}),
+    });
+    await controller.whenControlIdle();
+    emitOutcome(outcome, {
+      suppressSilentModeConfirmation: params.suppressSilentModeConfirmation === true,
+    });
+    return outcome;
+  }
+
+  async function applyDesiredModeBeforePrompt(
+    desired: ClaudeDesiredRuntimeConfig,
+    delta: ClaudeDesiredRuntimeConfig,
+  ): Promise<ClaudeUnifiedRuntimeControlApplyResult> {
+    const dependentDelta = pickDependentRuntimeConfigDelta(delta);
+    const ambientDelta = pickAmbientRuntimeConfigDelta(delta);
+    const verifyingStartupModeClaim =
+      pendingStartupModeClaim !== null
+      && desired.permissionMode === pendingStartupModeClaim.permissionMode
+      && sameAgentModeId(desired.agentModeId, pendingStartupModeClaim.agentModeId);
+
+    let dependentOutcome: RuntimeConfigApplyOutcome | null = null;
+    if (!isEmptyDesired(dependentDelta)) {
+      dependentOutcome = await applyRuntimeConfigDelta({
+        delta: dependentDelta,
+        reason: 'before_prompt',
+        suppressSilentModeConfirmation: verifyingStartupModeClaim,
+        includePending: false,
+      });
+      if (dependentOutcome.promptMayProceed) {
+        committed = commitRuntimeConfigDelta(committed, desired, dependentDelta);
+        pendingStartupModeClaim = null;
+      }
+    }
+
+    if (!isEmptyDesired(ambientDelta)) {
+      const ambientOutcome = await applyRuntimeConfigDelta({
+        delta: ambientDelta,
+        reason: 'out_of_band',
+      });
+      if (ambientOutcome.promptMayProceed) {
+        committed = commitRuntimeConfigDelta(committed, desired, ambientDelta);
+      }
+    }
+
+    if (dependentOutcome !== null && !dependentOutcome.promptMayProceed) {
+      const blockedReason = resolveBlockedApplyReason(dependentOutcome);
+      return {
+        promptMayProceed: false,
+        attempted: true,
+        ...(blockedReason ? { blockedReason } : {}),
+      };
+    }
+    return { promptMayProceed: true, attempted: true };
   }
 
   return {
@@ -589,6 +719,9 @@ export function createClaudeUnifiedRuntimeControlBridge(
     },
     isControlInFlight(): boolean {
       return controller.isControlInFlight();
+    },
+    ownsDialog(dialogId: ClaudeUnifiedDialogId): boolean {
+      return controller.ownsDialog(dialogId);
     },
     whenControlIdle(): Promise<void> {
       return controller.whenControlIdle();

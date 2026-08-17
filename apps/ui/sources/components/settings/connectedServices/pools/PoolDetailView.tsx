@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams } from 'expo-router';
 import Animated, { useSharedValue } from 'react-native-reanimated';
 import { useUnistyles } from 'react-native-unistyles';
@@ -35,12 +34,15 @@ import {
     removeConnectedServiceAuthGroupMemberV3,
     setConnectedServiceAuthGroupActiveProfileV3,
 } from '@/sync/api/account/apiConnectedServiceAuthGroupsV3';
+import { PoolMembersSelectField, type PoolMembershipCandidate } from './PoolMembersSelectField';
 import { sync } from '@/sync/sync';
 import { useProfile, useSettings } from '@/sync/store/hooks';
 import { t } from '@/text';
 import {
     ConnectedServiceAuthGroupIdSchema,
     ConnectedServiceIdSchema,
+    isConnectedServiceCredentialHealthStatusUsable,
+    normalizeConnectedServiceCredentialHealthStatus,
     type ConnectedServiceAuthGroupPolicyPatchV1,
     type ConnectedServiceAuthGroupPolicyV1,
     type ConnectedServiceAuthGroupV1,
@@ -55,6 +57,7 @@ import {
 import {
     CONNECTED_SERVICE_GROUP_DEFAULT_POLICY,
     normalizeConnectedServiceGroupMember,
+    resolveConnectedServiceGroupMemberCredentialHealthStatus,
     resolveConnectedServiceGroupProbeIfSnapshotOlderThanMs,
     resolveConnectedServiceGroupMemberIdentity,
     resolveConnectedServiceGroupProfileTitle,
@@ -66,7 +69,9 @@ import {
 import { resolveConnectedServiceRuntimeGroupCapability } from '../model/connectedServiceRuntimeFallbackCapability';
 import { resolveConnectedServiceDisplayName } from '../model/resolveConnectedServiceDisplayName';
 import { commitPoolMemberReorder, computePoolMemberPriorities, type ReorderableGroup } from './commitPoolMemberReorder';
+import { commitPoolMembershipBatch } from './commitPoolMembershipBatch';
 import { PoolMembersDropOverlay } from './PoolMembersDropOverlay';
+import { Icon } from '@/components/ui/icons/Icon';
 
 type GroupStrategy = ConnectedServiceAuthGroupPolicyV1['strategy'];
 type GroupRecoveryMode = ConnectedServiceAuthGroupPolicyV1['recoveryMode'];
@@ -133,7 +138,7 @@ function resolveSwitchOnLabel(key: SwitchOnKey): string {
 
 function StrategyCheckmark() {
     const { theme } = useUnistyles();
-    return <Ionicons name="checkmark" size={18} color={theme.colors.accent.blue} />;
+    return <Icon name="check" size={16} color={theme.colors.accent.blue} />;
 }
 
 function buildStrategyItems(currentStrategy: GroupStrategy): DropdownMenuItem[] {
@@ -191,16 +196,9 @@ function readProfileId(profile: ConnectedServiceGroupProfileLike): string {
 }
 
 function isConnectedProfile(profile: ConnectedServiceGroupProfileLike): boolean {
-    return (profile as { status?: unknown }).status === 'connected';
-}
-
-function resolveNextMemberPriority(group: ConnectedServiceAuthGroupV1): number {
-    if (group.members.length === 0) return 100;
-    const maxPriority = group.members.reduce(
-        (max, member) => Math.max(max, Number.isFinite(member.priority) ? member.priority : 0),
-        0,
+    return isConnectedServiceCredentialHealthStatusUsable(
+        normalizeConnectedServiceCredentialHealthStatus((profile as { status?: unknown }).status),
     );
-    return Math.max(100, maxPriority + 100);
 }
 
 /**
@@ -258,17 +256,6 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
         : accountFallbackEnabled
             ? undefined
             : t('connectedServices.detail.groupActions.accountFallbackDisabled');
-    const availableMemberProfiles = React.useMemo(() => {
-        if (!group) return [];
-        const memberProfileIds = new Set(group.members.map((member) => member.profileId));
-        return profiles.filter((candidate) => {
-            const profileId = readProfileId(candidate);
-            return profileId.length > 0
-                && isConnectedProfile(candidate)
-                && !memberProfileIds.has(profileId);
-        });
-    }, [group, profiles]);
-
     // Numeric overlay shared values for the single list-level drop indicator.
     const overlayVisible = useSharedValue(0);
     const overlayKind = useSharedValue<TreeDropOverlayKind>(TREE_DROP_OVERLAY_KIND_NONE);
@@ -501,41 +488,6 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
         }));
     }, [group, runGroupMutation, serviceId]);
 
-    const handleAddMember = React.useCallback(() => {
-        if (!serviceId || !group || availableMemberProfiles.length === 0) return;
-        const priority = resolveNextMemberPriority(group);
-        Modal.alert(
-            t('connectedServices.detail.groupActions.addMember'),
-            t('connectedServices.detail.groupActions.addMemberSubtitle'),
-            [
-                ...availableMemberProfiles.map((profile) => {
-                    const profileId = readProfileId(profile);
-                    const title = resolveConnectedServiceGroupProfileTitle({
-                        serviceId,
-                        profileId,
-                        labelsByKey: settings.connectedServicesProfileLabelByKey,
-                        profiles,
-                    });
-                    return {
-                        text: title,
-                        style: 'default' as const,
-                        onPress: () => {
-                            void runGroupMutation(() => addConnectedServiceAuthGroupMemberV3(ensureCredentials(), {
-                                serviceId,
-                                groupId: group.groupId,
-                                profileId,
-                                priority,
-                                enabled: true,
-                                expectedGeneration: group.generation,
-                            }));
-                        },
-                    };
-                }),
-                { text: t('common.cancel'), style: 'cancel' as const },
-            ],
-        );
-    }, [availableMemberProfiles, group, profiles, runGroupMutation, serviceId, settings.connectedServicesProfileLabelByKey]);
-
     const handleRemoveMember = React.useCallback(async (profileId: string) => {
         if (!serviceId || !group) return;
         const ok = await Modal.confirm(
@@ -552,36 +504,144 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
         }));
     }, [group, runGroupMutation, serviceId]);
 
+    /**
+     * All profiles eligible for pool membership: current members (kept so they can
+     * be unchecked) plus any connectable profile not yet a member. Feeds the
+     * searchable batch membership editor.
+     */
+    const membershipCandidates = React.useMemo<ReadonlyArray<PoolMembershipCandidate>>(() => {
+        if (!group || !serviceId) return [];
+        const memberProfileIds = new Set(group.members.map((member) => member.profileId));
+        return profiles
+            .filter((candidate) => {
+                const profileId = readProfileId(candidate);
+                return profileId.length > 0
+                    && (memberProfileIds.has(profileId) || isConnectedProfile(candidate));
+            })
+            .map((candidate) => {
+                const profileId = readProfileId(candidate);
+                const identity = resolveConnectedServiceGroupMemberIdentity({
+                    serviceId,
+                    profileId,
+                    labelsByKey: settings.connectedServicesProfileLabelByKey,
+                    profiles,
+                });
+                return {
+                    profileId,
+                    title: resolveConnectedServiceGroupProfileTitle({
+                        serviceId,
+                        profileId,
+                        labelsByKey: settings.connectedServicesProfileLabelByKey,
+                        profiles,
+                    }),
+                    subtitle: identity.secondaryLabel ?? undefined,
+                };
+            });
+    }, [group, profiles, serviceId, settings.connectedServicesProfileLabelByKey]);
+
+    /**
+     * Batch-apply a membership diff from the editor: reuse the canonical
+     * add/remove member mutations, threaded through `commitPoolMembershipBatch`
+     * so the bumped `expectedGeneration` chains across the sequential calls (no
+     * batch endpoint exists) and a generation conflict refetches + retries. The
+     * authoritative reconcile happens once at the end via profile + group reload.
+     */
+    const handleCommitMembership = React.useCallback(async (
+        nextSelectedProfileIds: ReadonlyArray<string>,
+    ) => {
+        if (!serviceId || !group) return;
+        const startGroup = group;
+        const toLean = (candidate: ConnectedServiceAuthGroupV1) => ({
+            generation: candidate.generation,
+            members: candidate.members.map((member) => ({ profileId: member.profileId, priority: member.priority })),
+        });
+        try {
+            await commitPoolMembershipBatch({
+                group: toLean(startGroup),
+                nextSelectedProfileIds,
+                addMember: async ({ profileId, priority, expectedGeneration }) => toLean(
+                    await addConnectedServiceAuthGroupMemberV3(ensureCredentials(), {
+                        serviceId,
+                        groupId: startGroup.groupId,
+                        profileId,
+                        priority,
+                        enabled: true,
+                        expectedGeneration,
+                    }),
+                ),
+                removeMember: async ({ profileId, expectedGeneration }) => toLean(
+                    await removeConnectedServiceAuthGroupMemberV3(ensureCredentials(), {
+                        serviceId,
+                        groupId: startGroup.groupId,
+                        profileId,
+                        expectedGeneration,
+                    }),
+                ),
+                refetchGroup: async () => {
+                    const refreshed = await listConnectedServiceAuthGroupsV3(ensureCredentials(), { serviceId });
+                    const next = refreshed.find((candidate) => candidate.groupId === startGroup.groupId);
+                    if (next) {
+                        upsertGroup(next);
+                        return toLean(next);
+                    }
+                    return toLean(startGroup);
+                },
+            });
+            await sync.refreshProfile().catch(() => undefined);
+            await loadGroups().catch(() => undefined);
+        } catch (e: unknown) {
+            await loadGroups().catch(() => undefined);
+            await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(e));
+        }
+    }, [group, loadGroups, serviceId, upsertGroup]);
+
     const handleSetActiveMember = React.useCallback(async (profileId: string) => {
         if (!serviceId || !group || !fallbackControlsEnabled) return;
-        const runSetActiveMember = async (overrideRuntimeCooldown: boolean) => {
-            await runGroupMutation(() => setConnectedServiceAuthGroupActiveProfileV3(ensureCredentials(), {
+        const commitServerActive = (overrideRuntimeCooldown: boolean) =>
+            setConnectedServiceAuthGroupActiveProfileV3(ensureCredentials(), {
                 serviceId,
                 groupId: group.groupId,
                 profileId,
                 expectedGeneration: group.generation,
                 ...(overrideRuntimeCooldown ? { overrideRuntimeCooldown: true } : {}),
-            }));
-        };
-        await runGroupMutation(() => setConnectedServiceAuthGroupActiveProfileV3(ensureCredentials(), {
-            serviceId,
-            groupId: group.groupId,
-            profileId,
-            expectedGeneration: group.generation,
-        }), {
-            onError: async (error) => {
-                if (!isConnectedServiceRuntimeCooldownError(error)) return false;
+            });
+
+        // Phase 1 — server CAS commit. A failure here means NOTHING committed (no divergence): reconcile
+        // to server truth and surface generically. Runtime-cooldown offers an explicit override retry.
+        let serverGroup: ConnectedServiceAuthGroupV1;
+        try {
+            serverGroup = await commitServerActive(false);
+        } catch (error) {
+            if (isConnectedServiceRuntimeCooldownError(error)) {
                 const prompt = resolveConnectedServiceRuntimeCooldownOverridePrompt(error);
                 const ok = await Modal.confirm(prompt.title, prompt.body, {
                     confirmText: prompt.confirmText,
                     cancelText: prompt.cancelText,
                 });
-                if (!ok) return true;
-                await runSetActiveMember(true);
-                return true;
-            },
-        });
-    }, [fallbackControlsEnabled, group, runGroupMutation, serviceId]);
+                if (!ok) return;
+                try {
+                    serverGroup = await commitServerActive(true);
+                } catch (retryError) {
+                    await loadGroups().catch(() => undefined);
+                    await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(retryError));
+                    return;
+                }
+            } else {
+                await loadGroups().catch(() => undefined);
+                await Modal.alert(t('common.error'), resolveConnectedServiceSettingsErrorMessage(error));
+                return;
+            }
+        }
+
+        // The server CAS is the sole user-action owner. Its account projection is consumed durably by
+        // every daemon, including daemons that are offline now and reconnect later. The UI must never
+        // add a second best-effort delivery path to one currently reachable machine.
+        upsertGroup(serverGroup);
+        await Promise.all([
+            sync.refreshProfile().catch(() => undefined),
+            loadGroups().catch(() => undefined),
+        ]);
+    }, [fallbackControlsEnabled, group, loadGroups, serviceId, upsertGroup]);
 
     /**
      * Commit a new member fallback order. Threads the bumped `expectedGeneration`
@@ -676,6 +736,11 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
         () => sortedMembers.map((member) => ({ id: member.profileId })),
         [sortedMembers],
     );
+    /** Authoritative membership, in fallback order — the multi-select's baseline. */
+    const memberProfileIds = React.useMemo(
+        () => sortedMembers.map((member) => member.profileId),
+        [sortedMembers],
+    );
 
     const reorder = useListInlineReorder({
         items: memberItems,
@@ -756,7 +821,6 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
         .map((item) => sortedMembers.find((member) => member.profileId === item.id))
         .filter((member): member is (typeof sortedMembers)[number] => member != null);
     const memberCount = orderedMembers.length;
-    const canAddMember = availableMemberProfiles.length > 0;
 
     return (
         <ItemList testID="connected-services-pool-detail">
@@ -765,7 +829,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                     testID="connected-services-pool-detail:name"
                     title={t('connectedServices.detail.groupDetail.nameTitle')}
                     subtitle={label}
-                    icon={<Ionicons name="pencil-outline" size={22} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="pencil" size={20} color={theme.colors.accent.blue} />}
                     onPress={() => void handleEditName()}
                 />
                 <Item
@@ -777,6 +841,15 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                     })}
                     showChevron={false}
                 />
+                {group.activeProfileId ? (
+                    <Item
+                        testID="connected-services-pool-detail:server-active-status"
+                        title={t('connectedServices.pools.detail.serverActiveStatusTitle')}
+                        subtitle={t('connectedServices.pools.detail.serverActiveStatusSubtitle')}
+                        icon={<Icon name="cloud-check" size={20} color={theme.colors.accent.blue} />}
+                        showChevron={false}
+                    />
+                ) : null}
             </ItemGroup>
 
             <ItemGroup
@@ -810,6 +883,11 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             profiles,
                         });
                         const isActive = memberModel.profileId === group.activeProfileId;
+                        const memberHealthStatus = resolveConnectedServiceGroupMemberCredentialHealthStatus({
+                            member: memberModel,
+                            profiles,
+                        });
+                        const canSetActiveMember = !isActive && fallbackControlsEnabled;
                         // Bind the inline-reorder pan gesture for this row. The gesture
                         // is created once per row here and handed to `AccountBlock`,
                         // which renders the GestureDetector INLINE (mirroring
@@ -822,14 +900,14 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             {
                                 id: `connected-services-pool:${group.groupId}:member:${memberModel.profileId}:action:move-up`,
                                 title: t('connectedServices.pools.detail.moveUp'),
-                                icon: 'arrow-up-outline',
+                                icon: 'arrow-up',
                                 disabled: index === 0,
                                 onPress: index === 0 ? undefined : () => handleMoveMember(memberModel.profileId, -1),
                             },
                             {
                                 id: `connected-services-pool:${group.groupId}:member:${memberModel.profileId}:action:move-down`,
                                 title: t('connectedServices.pools.detail.moveDown'),
-                                icon: 'arrow-down-outline',
+                                icon: 'arrow-down',
                                 disabled: index === memberCount - 1,
                                 onPress: index === memberCount - 1 ? undefined : () => handleMoveMember(memberModel.profileId, 1),
                             },
@@ -838,19 +916,21 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                                 title: isActive
                                     ? t('connectedServices.detail.groupActions.activeMember')
                                     : t('connectedServices.detail.groupActions.makeActive'),
-                                subtitle: !isActive && !fallbackControlsEnabled
-                                    ? fallbackDisabledSubtitle ?? t('connectedServices.detail.groupActions.accountFallbackDisabled')
+                                subtitle: !isActive
+                                    ? !fallbackControlsEnabled
+                                        ? fallbackDisabledSubtitle ?? t('connectedServices.detail.groupActions.accountFallbackDisabled')
+                                        : undefined
                                     : undefined,
-                                icon: isActive ? 'radio-button-on-outline' : 'radio-button-off-outline',
-                                disabled: isActive || !fallbackControlsEnabled,
-                                onPress: isActive || !fallbackControlsEnabled
-                                    ? undefined
-                                    : () => void handleSetActiveMember(memberModel.profileId),
+                                icon: isActive ? 'radio-button' : 'circle',
+                                disabled: !canSetActiveMember,
+                                onPress: canSetActiveMember
+                                    ? () => void handleSetActiveMember(memberModel.profileId)
+                                    : undefined,
                             },
                             {
                                 id: `connected-services-pool:${group.groupId}:member:${memberModel.profileId}:action:remove`,
                                 title: t('connectedServices.detail.groupActions.removeMember'),
-                                icon: 'remove-circle-outline',
+                                icon: 'minus-circle',
                                 destructive: true,
                                 onPress: () => void handleRemoveMember(memberModel.profileId),
                             },
@@ -868,13 +948,13 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                                     profileId={memberModel.profileId}
                                     title={memberTitle}
                                     identityLabel={memberIdentity.secondaryLabel ?? null}
-                                    status={memberModel.blocker?.kind === 'auth_invalid' ? 'needs_reauth' : 'connected'}
+                                    status={memberHealthStatus}
                                     variant="poolMember"
                                     groupId={group.groupId}
                                     enabled={memberModel.enabled}
                                     onToggleEnabled={(next) => void handleSetMemberEnabled(memberModel.profileId, next)}
                                     isActive={isActive}
-                                    onSetActive={!isActive && fallbackControlsEnabled
+                                    onSetActive={canSetActiveMember
                                         ? () => void handleSetActiveMember(memberModel.profileId)
                                         : undefined}
                                     actions={memberActions}
@@ -898,15 +978,11 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             showChevron={false}
                         />
                     )}
-                <Item
-                    testID="connected-services-pool-detail:add-member"
-                    title={t('connectedServices.detail.groupActions.addMember')}
-                    subtitle={canAddMember
-                        ? t('connectedServices.detail.groupActions.addMemberSubtitle')
-                        : t('connectedServices.detail.groupActions.noProfilesAvailable')}
-                    icon={<Ionicons name="add-circle-outline" size={22} color={theme.colors.accent.blue} />}
-                    disabled={!canAddMember}
-                    onPress={canAddMember ? handleAddMember : undefined}
+                <PoolMembersSelectField
+                    testID="connected-services-pool-detail:members-select"
+                    candidates={membershipCandidates}
+                    selectedProfileIds={memberProfileIds}
+                    onCommit={(next) => { void handleCommitMembership(next); }}
                 />
             </ItemGroup>
 
@@ -915,7 +991,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                     testID="connected-services-pool-detail:auto-switch"
                     title={t('connectedServices.detail.groupDetail.autoSwitchTitle')}
                     subtitle={autoSwitchSubtitle}
-                    icon={<Ionicons name="swap-horizontal-outline" size={22} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="arrows-left-right" size={20} color={theme.colors.accent.blue} />}
                     disabled={!fallbackControlsEnabled}
                     rightElement={(
                         <Switch
@@ -938,7 +1014,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                     itemTrigger={{
                         title: t('connectedServices.detail.groupDetail.strategyTitle'),
                         subtitle: resolveStrategyTitle(group.policy.strategy),
-                        icon: <Ionicons name="options-outline" size={22} color={theme.colors.accent.blue} />,
+                        icon: <Icon name="sliders-horizontal" size={20} color={theme.colors.accent.blue} />,
                         showSelectedDetail: false,
                         showSelectedSubtitle: false,
                         itemProps: {
@@ -953,7 +1029,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                     testID="connected-services-pool-detail:soft-switch-threshold"
                     title={t('connectedServices.detail.groupDetail.softSwitchThresholdTitle')}
                     subtitle={fallbackDisabledSubtitle ?? t('connectedServices.detail.groupDetail.softSwitchThresholdSubtitle', { percent: String(softSwitchRemainingPercent) })}
-                    icon={<Ionicons name="speedometer-outline" size={22} color={theme.colors.accent.indigo} />}
+                    icon={<Icon name="speedometer" size={20} color={theme.colors.accent.indigo} />}
                     disabled={!fallbackControlsEnabled}
                     onPress={fallbackControlsEnabled ? () => void handleEditSoftSwitchRemainingPercent() : undefined}
                 />
@@ -970,10 +1046,10 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             {...state.headerProps}
                             title={t('connectedServices.pools.detail.advancedTitle')}
                             subtitle={t('connectedServices.pools.detail.advancedSubtitle')}
-                            icon={<Ionicons name="construct-outline" size={22} color={theme.colors.text.secondary} />}
+                            icon={<Icon name="wrench" size={20} color={theme.colors.text.secondary} />}
                             rightElement={(
-                                <Ionicons
-                                    name={state.expanded ? 'chevron-down' : 'chevron-forward'}
+                                <Icon
+                                    name={state.expanded ? 'caret-down' : 'caret-right'}
                                     size={16}
                                     color={theme.colors.text.secondary}
                                 />
@@ -987,7 +1063,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             testID="connected-services-pool-detail:auto-restore-primary"
                             title={t('connectedServices.pools.behavior.autoRestorePrimaryTitle')}
                             subtitle={t('connectedServices.pools.behavior.autoRestorePrimarySubtitle')}
-                            icon={<Ionicons name="refresh-outline" size={22} color={theme.colors.accent.indigo} />}
+                            icon={<Icon name="arrow-clockwise" size={20} color={theme.colors.accent.indigo} />}
                             disabled={!fallbackControlsEnabled}
                             rightElement={(
                                 <Switch
@@ -1007,7 +1083,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                                 testID={`connected-services-pool-detail:switch-on:${key}`}
                                 title={resolveSwitchOnLabel(key)}
                                 subtitle={t('connectedServices.pools.behavior.switchOnGroupSubtitle')}
-                                icon={<Ionicons name="git-branch-outline" size={22} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="git-branch" size={20} color={theme.colors.text.secondary} />}
                                 disabled={!fallbackControlsEnabled}
                                 rightElement={(
                                     <Switch
@@ -1026,7 +1102,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             testID="connected-services-pool-detail:stale-probe-after"
                             title={t('connectedServices.detail.groupDetail.staleProbeTitle')}
                             subtitle={fallbackDisabledSubtitle ?? t('connectedServices.detail.groupDetail.staleProbeSubtitle', { minutes: staleProbeMinutes })}
-                            icon={<Ionicons name="refresh-circle-outline" size={22} color={theme.colors.accent.indigo} />}
+                            icon={<Icon name="arrows-clockwise" size={20} color={theme.colors.accent.indigo} />}
                             disabled={!fallbackControlsEnabled}
                             onPress={fallbackControlsEnabled ? () => void handleEditProbeIfSnapshotOlderThan() : undefined}
                         />
@@ -1037,7 +1113,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                                 perTurn: String(switchBudget.perTurn),
                                 perHour: String(switchBudget.perSessionHour),
                             })}
-                            icon={<Ionicons name="repeat-outline" size={22} color={theme.colors.text.secondary} />}
+                            icon={<Icon name="repeat" size={20} color={theme.colors.text.secondary} />}
                             showChevron={false}
                         />
                         <DropdownMenu
@@ -1049,7 +1125,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             itemTrigger={{
                                 title: t('connectedServices.detail.groupDetail.recoveryModeTitle'),
                                 subtitle: resolveRecoveryModeSubtitle(recoveryMode),
-                                icon: <Ionicons name="medkit-outline" size={22} color={theme.colors.text.secondary} />,
+                                icon: <Icon name="first-aid-kit" size={20} color={theme.colors.text.secondary} />,
                                 showSelectedDetail: false,
                                 showSelectedSubtitle: false,
                                 itemProps: {
@@ -1064,7 +1140,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                             testID="connected-services-pool-detail:recovery-prompt"
                             title={t('connectedServices.detail.groupDetail.recoveryPromptTitle')}
                             subtitle={t('connectedServices.detail.groupDetail.recoveryPromptSubtitle')}
-                            icon={<Ionicons name="chatbubble-ellipses-outline" size={22} color={theme.colors.text.secondary} />}
+                            icon={<Icon name="chat-circle-dots" size={20} color={theme.colors.text.secondary} />}
                             showChevron={false}
                         />
                     </ItemGroup>
@@ -1076,7 +1152,7 @@ export const PoolDetailView = React.memo(function PoolDetailView() {
                     testID="connected-services-pool-detail:delete"
                     title={t('connectedServices.pools.delete.title')}
                     subtitle={t('connectedServices.pools.delete.subtitle')}
-                    icon={<Ionicons name="trash-outline" size={22} color={theme.colors.state.danger.foreground} />}
+                    icon={<Icon name="trash" size={20} color={theme.colors.state.danger.foreground} />}
                     destructive
                     onPress={() => void handleDeletePool()}
                 />

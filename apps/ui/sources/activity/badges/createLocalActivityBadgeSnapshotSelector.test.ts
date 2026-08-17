@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { deriveActivityAttentionFlags } from '@/activity/attention/activityAttentionSessions';
 import { createStorageStoreMock } from '@/dev/testkit/mocks/storage';
 import { registerStorageStateReader } from '@/sync/domains/state/storageStateReaderBridge';
 import type { Message } from '@/sync/domains/messages/messageTypes';
@@ -20,6 +21,12 @@ function createStorageState(overrides: Partial<StorageState>): StorageState {
         sessions: {},
         sessionListRenderables: {},
         sessionMessages: {},
+        sessionListRenderableDelta: {
+            revision: 0,
+            changedSessionIds: [],
+            removedSessionIds: [],
+            rebuiltSessionListViewData: false,
+        },
         isDataReady: true,
         ...overrides,
     }).getState();
@@ -221,6 +228,210 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         expect(second.count).toBe(0);
     });
 
+    it('uses the session-list delta to avoid sorting or re-reading unchanged sessions', () => {
+        const selector = createLocalActivityBadgeSnapshotSelector({
+            badgesEnabled: true,
+            friendRequestCount: 0,
+            hasNonNumericInboxAttention: false,
+            sessionOptions: {
+                showPendingPermissionRequests: true,
+                showPendingUserActionRequests: true,
+                showUnread: true,
+            },
+        });
+        let unchangedSeqReads = 0;
+        const unchanged = createRenderable({
+            id: 'unchanged',
+            hasUnreadMessages: true,
+        });
+        Object.defineProperty(unchanged, 'seq', {
+            configurable: true,
+            enumerable: true,
+            get: () => {
+                unchangedSeqReads += 1;
+                return 1;
+            },
+        });
+        const changed = createRenderable({
+            id: 'changed',
+            hasUnreadMessages: false,
+        });
+        const first = selector(createStorageState({
+            sessionListRenderables: { unchanged, changed },
+            sessionListRenderableDelta: {
+                revision: 1,
+                changedSessionIds: ['unchanged', 'changed'],
+                removedSessionIds: [],
+                rebuiltSessionListViewData: true,
+            },
+        }));
+        const unchangedSeqReadsAfterFirstSelection = unchangedSeqReads;
+        const sortSpy = vi.spyOn(Array.prototype, 'sort');
+
+        const second = selector(createStorageState({
+            sessionListRenderables: {
+                unchanged,
+                changed: createRenderable({
+                    id: 'changed',
+                    hasUnreadMessages: true,
+                }),
+            },
+            sessionListRenderableDelta: {
+                revision: 2,
+                changedSessionIds: ['changed'],
+                removedSessionIds: [],
+                rebuiltSessionListViewData: false,
+            },
+        }));
+
+        expect(second).not.toBe(first);
+        expect(second.count).toBe(2);
+        expect(unchangedSeqReads).toBe(unchangedSeqReadsAfterFirstSelection);
+        expect(sortSpy).not.toHaveBeenCalled();
+    });
+
+    it('does no per-session derivation work on a delta tick that changes no session', () => {
+        const selector = createLocalActivityBadgeSnapshotSelector({
+            badgesEnabled: true,
+            friendRequestCount: 0,
+            hasNonNumericInboxAttention: false,
+            sessionOptions: {
+                showPendingPermissionRequests: true,
+                showPendingUserActionRequests: true,
+                showUnread: true,
+            },
+        });
+        let sessionFieldReads = 0;
+        const renderable = createRenderable({
+            id: 'session1',
+            hasUnreadMessages: true,
+        });
+        Object.defineProperty(renderable, 'seq', {
+            configurable: true,
+            enumerable: true,
+            get: () => {
+                sessionFieldReads += 1;
+                return 1;
+            },
+        });
+        const first = selector(createStorageState({
+            sessionListRenderables: { session1: renderable },
+            sessionListRenderableDelta: {
+                revision: 1,
+                changedSessionIds: ['session1'],
+                removedSessionIds: [],
+                rebuiltSessionListViewData: true,
+            },
+        }));
+        const readsAfterFirst = sessionFieldReads;
+
+        // A subsequent wave that touched no session (empty changed/removed) with
+        // the same renderable identity must take the delta fast path and perform
+        // zero per-session derivation while returning the memoized snapshot.
+        const second = selector(createStorageState({
+            sessionListRenderables: { session1: renderable },
+            sessionListRenderableDelta: {
+                revision: 2,
+                changedSessionIds: [],
+                removedSessionIds: [],
+                rebuiltSessionListViewData: false,
+            },
+        }));
+
+        expect(second).toEqual(first);
+        expect(second.count).toBe(1);
+        // The observable performance contract: the empty delta re-derived no
+        // session, so the guarded per-session field was never read again.
+        expect(sessionFieldReads).toBe(readsAfterFirst);
+    });
+
+    it('returns the same snapshot instance when a delta tick leaves the badge unchanged', () => {
+        const selector = createLocalActivityBadgeSnapshotSelector({
+            badgesEnabled: true,
+            friendRequestCount: 0,
+            hasNonNumericInboxAttention: false,
+            sessionOptions: {
+                showPendingPermissionRequests: true,
+                showPendingUserActionRequests: true,
+                showUnread: true,
+            },
+        });
+        const renderable = createRenderable({ id: 'session1', hasUnreadMessages: true });
+        const first = selector(createStorageState({
+            sessionListRenderables: { session1: renderable },
+            sessionListRenderableDelta: {
+                revision: 1,
+                changedSessionIds: ['session1'],
+                removedSessionIds: [],
+                rebuiltSessionListViewData: true,
+            },
+        }));
+
+        const second = selector(createStorageState({
+            sessionListRenderables: { session1: renderable },
+            sessionListRenderableDelta: {
+                revision: 2,
+                changedSessionIds: ['session1'],
+                removedSessionIds: [],
+                rebuiltSessionListViewData: false,
+            },
+        }));
+
+        expect(second.count).toBe(1);
+        // Identity, not equality: this selector is the badge's React subscription,
+        // so an equal-but-new object is a wasted render for every delta tick.
+        expect(second).toBe(first);
+    });
+
+    it('costs nothing when a store notification moves none of the badge inputs', () => {
+        const selector = createLocalActivityBadgeSnapshotSelector({
+            badgesEnabled: true,
+            friendRequestCount: 0,
+            hasNonNumericInboxAttention: false,
+            sessionOptions: {
+                showPendingPermissionRequests: true,
+                showPendingUserActionRequests: true,
+                showUnread: true,
+            },
+        });
+        let renderableFieldReads = 0;
+        const renderable = createRenderable({ id: 'session1', hasUnreadMessages: true });
+        Object.defineProperty(renderable, 'seq', {
+            configurable: true,
+            enumerable: true,
+            get: () => {
+                renderableFieldReads += 1;
+                return 1;
+            },
+        });
+        const sessions = { session1: createSession({ id: 'session1' }) };
+        const sessionMessages = {};
+        const sessionListRenderables = { session1: renderable };
+        const sessionListRenderableDelta = {
+            revision: 1,
+            changedSessionIds: ['session1'],
+            removedSessionIds: [],
+            rebuiltSessionListViewData: true,
+        };
+        const first = selector(createStorageState({
+            sessions,
+            sessionMessages,
+            sessionListRenderables,
+            sessionListRenderableDelta,
+        }));
+        const readsAfterFirst = renderableFieldReads;
+
+        const second = selector(createStorageState({
+            sessions,
+            sessionMessages,
+            sessionListRenderables,
+            sessionListRenderableDelta,
+        }));
+
+        expect(second).toBe(first);
+        expect(renderableFieldReads).toBe(readsAfterFirst);
+    });
+
     it('computes badge snapshots without Object.values over store session records', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_500);
@@ -269,7 +480,7 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         });
     });
 
-    it('invalidates the badge snapshot when projected pending session update time changes', () => {
+    it('leaves the badge subscription untouched when only a projected session update time changes', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         const selector = createLocalActivityBadgeSnapshotSelector({
@@ -313,8 +524,11 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         }));
 
         expect(first.count).toBe(1);
-        expect(second).not.toBe(first);
         expect(second.count).toBe(1);
+        // `updatedAt` is part of the session activity signature, so the snapshot is
+        // re-derived — but the derived badge did not move, and this selector is the
+        // badge's React subscription, so it must not hand back a new instance.
+        expect(second).toBe(first);
     });
 
     it('counts transcript-only pending permissions from the selector state', () => {
@@ -537,5 +751,56 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         expect(first.count).toBe(1);
         expect(second).not.toBe(first);
         expect(second.count).toBe(0);
+    });
+
+    it('counts a session once even when several attention reasons are active at the same time', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000_000);
+        const selector = createLocalActivityBadgeSnapshotSelector({
+            badgesEnabled: true,
+            friendRequestCount: 2,
+            hasNonNumericInboxAttention: false,
+            sessionOptions: {
+                showPendingPermissionRequests: true,
+                showPendingUserActionRequests: true,
+                showUnread: true,
+            },
+        });
+        const renderable = createRenderable({
+            id: 'session1',
+            active: true,
+            activeAt: 1_000_000,
+            presence: 'online',
+            latestTurnStatus: 'in_progress',
+            latestTurnStatusObservedAt: 1_000_000,
+            hasUnreadMessages: true,
+            hasPendingPermissionRequests: true,
+            hasPendingUserActionRequests: true,
+            pendingRequestObservedAt: 1_000_000,
+            pendingBlockedCount: 1,
+        });
+
+        // Guard the fixture: "counts once" is vacuous unless several distinct
+        // attention reasons really are live on this single session.
+        expect(deriveActivityAttentionFlags(renderable, {
+            showPendingPermissionRequests: true,
+            showPendingUserActionRequests: true,
+            showUnread: true,
+            sessionMessagesById: {},
+            nowMs: 1_000_000,
+        })).toMatchObject({
+            hasUnread: true,
+            hasPendingPermissionRequests: true,
+            hasPendingUserActionRequests: true,
+            hasBlockedPendingDelivery: true,
+        });
+
+        const snapshot = selector(createStorageState({
+            sessionListRenderables: { session1: renderable },
+        }));
+
+        // One session contributes exactly 1, never one per reason; the other 2
+        // are the friend requests.
+        expect(snapshot.count).toBe(3);
     });
 });

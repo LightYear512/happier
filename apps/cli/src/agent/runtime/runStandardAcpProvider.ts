@@ -3,10 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { render } from 'ink';
 import React from 'react';
 import { resolveAgentIdFromFlavor } from '@happier-dev/agents';
-import type { BackendTargetRefV1 } from '@happier-dev/protocol';
+import { readPendingLocalId, type BackendTargetRefV1 } from '@happier-dev/protocol';
 
 import type { ApiClient } from '@/api/api';
-import type { ApiSessionClient } from '@/api/session/sessionClient';
+import type {
+  ApiSessionClient,
+  SessionProviderInputOutcomeObserver,
+  SessionProviderInputOutcomeProducer,
+} from '@/api/session/sessionClient';
 import { connectionState } from '@/api/offline/serverConnectionErrors';
 import type { MachineMetadata, Metadata, PermissionMode } from '@/api/types';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/createProviderEnforcedPermissionHandler';
@@ -14,7 +18,13 @@ import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/Prov
 import { cleanupBackendRunResources } from '@/agent/runtime/cleanupBackendRunResources';
 import { createRuntimeOverrideSynchronizers } from '@/agent/runtime/createRuntimeOverrideSynchronizers';
 import { createPermissionModeQueueState } from '@/agent/runtime/createPermissionModeQueueState';
-import { resolveSessionPendingQueueMaxPopPerWake } from '@/agent/runtime/sessionInput/pendingQueueDrainPolicy';
+import {
+  resolveRuntimeAwarePendingForegroundSteerability,
+  resolveSessionPendingQueueDeliveryTiming,
+  resolveSessionPendingQueueMaxPopPerWake,
+} from '@/agent/runtime/sessionInput/pendingQueueDrainPolicy';
+import { createSessionProviderInputConsumer } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 import { createSessionMetadata, type CreateSessionMetadataOptions } from '@/agent/runtime/createSessionMetadata';
 import { createStartupMetadataOverrides } from '@/agent/runtime/createStartupMetadataOverrides';
 import { initializeBackendApiContext } from '@/agent/runtime/initializeBackendApiContext';
@@ -34,9 +44,11 @@ import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { logger } from '@/ui/logger';
 import { resolvePermissionModeSeedForAgentStart } from '@/settings/permissions/permissionModeSeed';
 import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
+import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { resolveCliMemoryRecallGuidanceEnabled } from '@/agent/promptLibrary/resolveCliMemoryRecallGuidanceEnabled';
 import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
+import type { AgentToolsDeliveryAvailabilityResolver } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
 import { resolveAttachedRunRuntimeContext } from '@/agent/runtime/resolveAttachedRunRuntimeContext';
 import { archiveAndCloseRuntimeSession } from '@/session/services/archiveAndCloseRuntimeSession';
 import { resolveTerminationArchiveDecision } from '@/agent/runtime/terminationArchivePolicy';
@@ -45,6 +57,7 @@ import { configuration } from '@/configuration';
 type RuntimeForLoop = {
   beginTurn: () => void;
   startOrLoad: (opts: { resumeId?: string }) => Promise<unknown>;
+  drainPendingAfterStartOrLoad?: () => Promise<void>;
   sendPrompt: (message: string) => Promise<void>;
   compactContext?: (command: string) => Promise<void>;
   refreshGoal?: () => Promise<unknown>;
@@ -122,9 +135,11 @@ export type StandardAcpProviderConfig = {
     mcpServers: Record<string, import('@/agent').McpServerConfig>;
     permissionHandler: ProviderEnforcedPermissionHandler;
     getPermissionMode: () => PermissionMode;
+    getAbortSignal: () => AbortSignal;
     setThinking: (value: boolean) => void;
     memoryRecallGuidanceEnabled: boolean;
     pendingQueueDrainMaxPopPerWake?: number;
+    providerInputConsumer: SessionProviderInputConsumer<unknown, unknown>;
     turnAssistantPreviewTracker: TurnAssistantPreviewTracker;
     startupOverrides?: {
       mode?: { modeId: string; updatedAt?: number } | null;
@@ -145,6 +160,7 @@ export type StandardAcpProviderConfig = {
   onTerminalDisplayControllerReady?: (controller: TerminalDisplayController) => void;
   shouldRenderTerminalDisplay?: (params: { opts: StandardAcpProviderRunOptions; session: ApiSessionClient; metadata: Metadata }) => boolean;
   resolveKeepAliveMode?: () => KeepAliveMode;
+  resolveToolsDeliveryAvailability?: AgentToolsDeliveryAvailabilityResolver;
 };
 
 type StandardAcpProviderDeps = {
@@ -154,6 +170,7 @@ type StandardAcpProviderDeps = {
   resolveRunnerMcpServersFn?: typeof resolveRunnerMcpServers;
   createProviderEnforcedPermissionHandlerFn?: typeof createProviderEnforcedPermissionHandler;
   createPermissionModeQueueStateFn?: typeof createPermissionModeQueueState;
+  createSessionProviderInputConsumerFn?: typeof createSessionProviderInputConsumer;
   runPermissionModePromptLoopFn?: typeof runPermissionModePromptLoop;
   sendReadyWithPushNotificationFn?: typeof sendReadyWithPushNotification;
   registerKillSessionHandlerFn?: typeof registerKillSessionHandler;
@@ -173,6 +190,7 @@ export async function runStandardAcpProvider(
   const resolveRunnerMcpServersFn = deps.resolveRunnerMcpServersFn ?? resolveRunnerMcpServers;
   const createProviderEnforcedPermissionHandlerFn = deps.createProviderEnforcedPermissionHandlerFn ?? createProviderEnforcedPermissionHandler;
   const createPermissionModeQueueStateFn = deps.createPermissionModeQueueStateFn ?? createPermissionModeQueueState;
+  const createSessionProviderInputConsumerFn = deps.createSessionProviderInputConsumerFn ?? createSessionProviderInputConsumer;
   const runPermissionModePromptLoopFn = deps.runPermissionModePromptLoopFn ?? runPermissionModePromptLoop;
   const sendReadyWithPushNotificationFn = deps.sendReadyWithPushNotificationFn ?? sendReadyWithPushNotification;
   const registerKillSessionHandlerFn = deps.registerKillSessionHandlerFn ?? registerKillSessionHandler;
@@ -218,8 +236,22 @@ export async function runStandardAcpProvider(
   config.beforeInitializeSession?.({ metadata, opts });
 
   let session: ApiSessionClient;
+  let providerInputOutcomeObserver: SessionProviderInputOutcomeObserver | null = null;
+  const bindProviderInputOutcomeProducer = (targetSession: ApiSessionClient): void => {
+    const producer = Object.freeze({
+      providerId: policyAgentId,
+      mode: 'acp',
+      matchesCurrentSession: ({ metadata: currentMetadata }) => (
+        currentMetadata !== null
+        && typeof currentMetadata === 'object'
+        && (currentMetadata as Record<string, unknown>).flavor === config.flavor
+      ),
+    }) satisfies SessionProviderInputOutcomeProducer;
+    providerInputOutcomeObserver = targetSession.bindProviderInputOutcomeProducer(producer);
+  };
   let permissionHandler: ProviderEnforcedPermissionHandler;
   let rebindPermissionModeQueueSession: ((session: ApiSessionClient) => void) | null = null;
+  let rebindOverrideSynchronizerSession: ((session: ApiSessionClient) => Promise<void>) | null = null;
   let pendingPermissionModeQueueSessionSwap: ApiSessionClient | null = null;
   // Used by the message-queue binding to optionally steer additional user input into an in-flight turn.
   // This is late-bound because the queue binding is initialized before the runtime is created.
@@ -234,6 +266,7 @@ export async function runStandardAcpProvider(
     startupMetadataOverrides: createStartupMetadataOverrides(opts),
     onSessionSwap: async (newSession) => {
       session = newSession;
+      bindProviderInputOutcomeProducer(newSession);
       if (permissionHandler) {
         permissionHandler.updateSession(newSession);
       }
@@ -245,15 +278,33 @@ export async function runStandardAcpProvider(
       if (runtimeForInFlightSteer) {
         newSession.setSessionRuntimeControls?.(runtimeForInFlightSteer);
       }
-      await config.onSessionSwap?.({ session: newSession });
+      const swapFailures: unknown[] = [];
+      try {
+        await rebindOverrideSynchronizerSession?.(newSession);
+      } catch (error) {
+        swapFailures.push(error);
+        logger.debug(`${config.uiLogPrefix} Failed to rebind runtime override synchronizers after session swap (non-fatal)`, error);
+      }
+      try {
+        await config.onSessionSwap?.({ session: newSession });
+      } catch (error) {
+        swapFailures.push(error);
+        logger.debug(`${config.uiLogPrefix} Provider session-swap hook failed (non-fatal)`, error);
+      }
+      if (swapFailures.length === 1) {
+        throw swapFailures[0];
+      }
+      if (swapFailures.length > 1) {
+        throw new AggregateError(swapFailures, `${config.uiLogPrefix} Session-swap hooks failed`);
+      }
     },
     onAttachMetadataSnapshotMissing: config.onAttachMetadataSnapshotMissing,
     onAttachMetadataSnapshotError: config.onAttachMetadataSnapshotError,
   });
 
   session = initializedSession.session;
+  bindProviderInputOutcomeProducer(session);
   const reconnectionHandle = initializedSession.reconnectionHandle;
-
   let abortRequestedCallback: (() => void | Promise<void>) | null = null;
   permissionHandler = createProviderEnforcedPermissionHandlerFn({
     session,
@@ -274,11 +325,35 @@ export async function runStandardAcpProvider(
       if (!runtime?.steerPrompt) {
         throw new Error('in-flight steer is not available');
       }
-      if (identity === undefined) {
-        await runtime.steerPrompt(text);
-        return;
+      const outcome = await providerInputConsumer.runProviderInputDispatch({
+        abortSignal: abortController.signal,
+        dispatch: async () => {
+          if (identity === undefined) {
+            await runtime.steerPrompt!(text);
+            return;
+          }
+          await runtime.steerPrompt!(text, identity);
+          const localIds = [...new Set([
+            ...(identity.localId === undefined ? [] : [identity.localId]),
+            ...(identity.localIds ?? []),
+          ].map(readPendingLocalId).filter((value): value is string => value !== null))];
+          if (localIds.length === 1) {
+            providerInputOutcomeObserver?.({ kind: 'accepted', localId: localIds[0] });
+          }
+        },
+      });
+      if (outcome.status === 'cancelled') {
+        const error = new Error('Provider input admission closed');
+        error.name = 'AbortError';
+        throw error;
       }
-      await runtime.steerPrompt(text, identity);
+    },
+    cancelActiveTurn: async () => {
+      const runtime = runtimeForInFlightSteer;
+      if (!runtime) {
+        throw new Error('active-turn cancellation is not available');
+      }
+      await runtime.cancel();
     },
   };
 
@@ -364,10 +439,23 @@ export async function runStandardAcpProvider(
   keepAliveInterval.unref?.();
 
   const runtimeDirectory = runtimeContext.runtimeDirectory;
-  const supportsMcpServers = (config.supportsMcpServers ?? true) && resolveAgentToolsDelivery(policyAgentId) === 'native_mcp';
+  const toolDelivery = resolveAgentToolsDelivery(policyAgentId, {
+    directory: runtimeDirectory,
+    environmentVariables: process.env,
+  }, config.resolveToolsDeliveryAvailability);
+  const supportsMcpServers = (config.supportsMcpServers ?? true) && toolDelivery === 'native_mcp';
+  const mcpSession = applyRunnerMcpSessionContext(session, {
+    getPermissionMode: () => permissionModeState.getCurrentPermissionMode() ?? 'default',
+    getBackendTarget: () => opts.backendTarget ?? null,
+    getCurrentSessionLocation: () => ({
+      path: runtimeDirectory,
+      host: config.machineMetadata.host,
+      machineId,
+    }),
+  });
   const { happierMcpServer, mcpServers } = supportsMcpServers
     ? await resolveRunnerMcpServersFn({
-      session,
+      session: mcpSession,
       credentials: opts.credentials,
       accountSettings: opts.accountSettingsContext?.settings ?? null,
       machineId,
@@ -376,6 +464,21 @@ export async function runStandardAcpProvider(
     })
     : { happierMcpServer: { url: '', stop: () => {} }, mcpServers: {} };
   const memoryRecallGuidanceEnabled = await resolveCliMemoryRecallGuidanceEnabled();
+  const providerInputConsumer = createSessionProviderInputConsumerFn({
+    messageQueue,
+    session,
+    pendingDrainMaxPopPerWake: pendingQueueDrainMaxPopPerWake,
+    resolvePendingQueueDeliveryTiming: () => resolveSessionPendingQueueDeliveryTiming(
+      opts.accountSettingsContext?.settings ?? null,
+    ),
+    resolveActiveTurnSteerability: () => {
+      const runtime = runtimeForInFlightSteer;
+      return resolveRuntimeAwarePendingForegroundSteerability({
+        hasActiveProviderTurn: runtime?.isTurnInFlight?.() === true,
+        canSteerPrompt: runtime?.supportsInFlightSteer?.() === true && typeof runtime.steerPrompt === 'function',
+      });
+    },
+  });
   const runtime = config.createRuntime({
     directory: runtimeDirectory,
     metadata: runtimeMetadata,
@@ -385,50 +488,96 @@ export async function runStandardAcpProvider(
     mcpServers,
     permissionHandler,
     getPermissionMode: () => permissionModeState.getCurrentPermissionMode() ?? 'default',
+    getAbortSignal: () => abortController.signal,
     setThinking: setThinkingState,
     memoryRecallGuidanceEnabled,
     pendingQueueDrainMaxPopPerWake,
+    providerInputConsumer: providerInputConsumer as SessionProviderInputConsumer<unknown, unknown>,
     turnAssistantPreviewTracker,
   });
+  runtime.drainPendingAfterStartOrLoad = async () => {
+    await providerInputConsumer.drainPending({ reason: 'standard-acp-start-or-load' });
+  };
   runtimeForInFlightSteer = runtime;
   session.setSessionRuntimeControls?.(runtime);
 
-  let cleanupRan = false;
-  const cleanupOnce = async () => {
-    if (cleanupRan) return;
-    cleanupRan = true;
+  let cleanupPromise: Promise<void> | null = null;
+  let explicitAbortPromise: Promise<void> | null = null;
+  let providerInputDispatchDrain: Promise<void> | null = null;
+  const closeProviderInputAdmission = (): Promise<void> => {
+    providerInputDispatchDrain ??= providerInputConsumer.closeProviderInputAdmissionAndWaitForDispatches();
+    return providerInputDispatchDrain;
+  };
+  let apiSessionClosedForCleanup = false;
+  const closeApiSessionForCleanup = async () => {
+    if (apiSessionClosedForCleanup) return;
+    apiSessionClosedForCleanup = true;
     try {
-      await permissionHandler.abortPendingRequestsAndFlush('Session ended');
+      await session.close();
     } catch (error) {
-      logger.debug(`${config.uiLogPrefix} Failed to clean up pending permissions during session cleanup (non-fatal)`, error);
+      logger.debug(`${config.uiLogPrefix} Failed to close API session during session cleanup (non-fatal)`, error);
     }
-    await cleanupBackendRunResourcesFn({
-      keepAliveInterval,
-      reconnectionHandle,
-      stopMcpServer: () => happierMcpServer.stop(),
-      resetRuntime: () => runtime.reset(),
-      unmountUi: unmountTerminalDisplay,
-    });
-    await config.onDispose?.({ session, runtime });
+  };
+  const cleanupOnce = (): Promise<void> => {
+    cleanupPromise ??= (async () => {
+      await closeProviderInputAdmission();
+      // The provider loop can unwind as soon as explicit Stop closes input admission. Join the
+      // already-started typed provider cancellation before closing the API or disposing the
+      // backend, otherwise cleanup can reject that same turn as a provider failure.
+      await explicitAbortPromise;
+      try {
+        await permissionHandler.abortPendingRequestsAndFlush('Session ended');
+      } catch (error) {
+        logger.debug(`${config.uiLogPrefix} Failed to clean up pending permissions during session cleanup (non-fatal)`, error);
+      }
+      await closeApiSessionForCleanup();
+      await initializedSession.disposeRuntimeActivity?.().catch((error) => {
+        logger.debug(`${config.uiLogPrefix} Failed to dispose runtime Activity during session cleanup (non-fatal)`, error);
+      });
+      await cleanupBackendRunResourcesFn({
+        keepAliveInterval,
+        reconnectionHandle,
+        stopMcpServer: () => happierMcpServer.stop(),
+        resetRuntime: () => runtime.reset(),
+        unmountUi: unmountTerminalDisplay,
+      });
+      await config.onDispose?.({ session, runtime });
+    })();
+    return cleanupPromise;
   };
 
-  const handleAbort = async () => {
-    logger.debug(`${config.uiLogPrefix} Abort requested`);
-    await permissionHandler.abortPendingRequestsAndFlush('Aborted by user');
-    session.sendAgentMessage(config.agentMessageType, { type: 'turn_aborted', id: randomUUID() });
-    try {
+  const handleAbort = (): Promise<void> => {
+    if (explicitAbortPromise) return explicitAbortPromise;
+    const operation = (async () => {
+      logger.debug(`${config.uiLogPrefix} Abort requested`);
+      await permissionHandler.abortPendingRequestsAndFlush('Aborted by user');
+      session.sendAgentMessage(config.agentMessageType, { type: 'turn_aborted', id: randomUUID() });
       abortController.abort();
-      abortController = new AbortController();
-      await runtime.cancel();
-    } catch (error) {
-      logger.debug(`${config.uiLogPrefix} Failed to cancel current operation (non-fatal)`, error);
-    }
+      try {
+        await runtime.cancel();
+      } catch (error) {
+        logger.debug(`${config.uiLogPrefix} Failed to cancel current operation (non-fatal)`, error);
+      } finally {
+        abortController = new AbortController();
+      }
+    })();
+    explicitAbortPromise = operation;
+    const clearExplicitAbort = (): void => {
+      if (explicitAbortPromise === operation) explicitAbortPromise = null;
+    };
+    void operation.then(clearExplicitAbort, clearExplicitAbort);
+    return operation;
   };
   abortRequestedCallback = handleAbort;
 
   const terminationHandlers = registerRunnerTerminationHandlers({
     process,
     exit: (code) => process.exit(code),
+    sessionExitReport: { sessionId: session.sessionId },
+    onTerminationRequested: () => {
+      session.beginRuntimeTermination?.();
+      void closeProviderInputAdmission();
+    },
     onTerminate: async (event, outcome) => {
       shouldExit = true;
       await handleAbort();
@@ -440,6 +589,7 @@ export async function runStandardAcpProvider(
       try {
         if (archiveDecision.archive) {
           await archiveAndCloseRuntimeSessionFn(session, opts.credentials, archiveDecision.archiveReason);
+          apiSessionClosedForCleanup = true;
         }
       } finally {
         await cleanupOnce();
@@ -482,7 +632,6 @@ export async function runStandardAcpProvider(
     });
 
   const initialResumeId = typeof opts.resume === 'string' ? opts.resume.trim() : '';
-  const toolDelivery = resolveAgentToolsDelivery(policyAgentId);
   const toolDeliverySessionId = toolDelivery === 'shell_bridge'
     ? session.sessionId
     : runtime.getSessionId();
@@ -490,17 +639,24 @@ export async function runStandardAcpProvider(
   try {
     await runPermissionModePromptLoopFn({
       providerName: config.providerName,
+      providerId: policyAgentId,
       agentMessageType: config.agentMessageType,
       explicitPermissionMode,
       session,
+      providerInputOutcomeObserver: (outcome) => providerInputOutcomeObserver?.(outcome),
       messageQueue,
+      inputConsumer: providerInputConsumer,
       permissionHandler,
       runtime,
-      createOverrideSynchronizer: (isStarted) => createRuntimeOverrideSynchronizers({
-        session,
-        runtime,
-        isStarted,
-      }),
+      createOverrideSynchronizer: (isStarted) => {
+        const synchronizer = createRuntimeOverrideSynchronizers({
+          session,
+          runtime,
+          isStarted,
+        });
+        rebindOverrideSynchronizerSession = synchronizer.rebindSession;
+        return synchronizer;
+      },
       messageBuffer,
       shouldExit: () => shouldExit,
       getAbortSignal: () => abortController.signal,
@@ -540,4 +696,19 @@ export async function runStandardAcpProvider(
     terminationHandlers.dispose();
     await cleanupOnce();
   }
+}
+type SessionControlTerminalFailure =
+  | Readonly<{ kind: 'model'; requested: string; error: unknown }>
+  | Readonly<{ kind: 'config'; configId: string; requested: string; error: unknown }>;
+
+export function reportSessionControlTerminalFailure(params: Readonly<{
+  failure: SessionControlTerminalFailure;
+  provider: Parameters<ApiSessionClient['sendAgentMessage']>[0];
+  session: Pick<ApiSessionClient, 'sendAgentMessage'>;
+  messageBuffer: Pick<MessageBuffer, 'addMessage'>;
+  formatError: (error: unknown) => string;
+}>): void {
+  const message = params.formatError(params.failure.error);
+  params.session.sendAgentMessage(params.provider, { type: 'message', message });
+  params.messageBuffer.addMessage(message, 'status');
 }

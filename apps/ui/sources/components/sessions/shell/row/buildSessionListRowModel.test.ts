@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { SessionListViewItem } from '@/sync/domains/session/listing/sessionListViewData';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import {
+    EMPTY_AGENT_ACTIVITY_COUNTS,
+    type AgentActivityCounts,
+} from '@/sync/domains/session/agentActivity/deriveAgentActivityCounts';
 import type { SessionMessages } from '@/sync/store/domains/messages';
 import type { SessionPending } from '@/sync/store/domains/pending';
 import { createReducer } from '@/sync/reducer/reducer';
@@ -107,6 +111,22 @@ function createPending(createdAtValues: readonly number[] = []): SessionPending 
     };
 }
 
+function createBlockedPending(createdAt: number): SessionPending {
+    return {
+        messages: [{
+            id: 'pending-blocked',
+            localId: null,
+            createdAt,
+            updatedAt: createdAt,
+            text: 'blocked pending',
+            rawRecord: null,
+            pendingDeliveryStatus: 'blocked',
+        }],
+        discarded: [],
+        isLoaded: true,
+    };
+}
+
 function createSettings(
     overrides: Partial<SessionListRowPresentationSettings> = {},
 ): SessionListRowPresentationSettings {
@@ -122,6 +142,7 @@ function createSettings(
         hideInactiveSessions: false,
         showServerBadge: false,
         showPinnedServerBadge: true,
+        agentActivityCountEnabled: false,
         tagsEnabled: true,
         sessionTagsByKey: {},
         allKnownTags: [],
@@ -213,6 +234,55 @@ describe('buildSessionListRowModel', () => {
         expect((model.session as SessionListRenderableSession).meaningfulActivityAt).toBe(900);
     });
 
+    it('preserves row-only blocked pending state when merging the store renderable overlay', () => {
+        const rowSession = createRenderable('s1', {
+            pendingCount: 2,
+            pendingBlockedCount: 1,
+        });
+        const storeRenderable = createRenderable('s1', {
+            pendingCount: 2,
+        });
+
+        const model = buildSessionListRowModel({
+            item: createSessionItem(rowSession),
+            state: { renderable: storeRenderable },
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings(),
+        });
+
+        expect(model.pendingBlockedCount).toBe(1);
+        expect((model.session as SessionListRenderableSession).pendingBlockedCount).toBe(1);
+        expect(model.attention.listState).toBe('action_required');
+    });
+
+    it('treats explicit store-renderable blocked pending zero as authoritative over stale row state', () => {
+        const rowSession = createRenderable('s1', {
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+        });
+        const storeRenderable = createRenderable('s1', {
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+        });
+
+        const model = buildSessionListRowModel({
+            item: createSessionItem(rowSession),
+            state: { renderable: storeRenderable },
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings(),
+        });
+
+        expect(model.pendingBlockedCount).toBe(0);
+        expect((model.session as SessionListRenderableSession).pendingBlockedCount).toBe(0);
+        expect(model.attention.listState).toBe('pending');
+    });
+
     it('derives date-group row activity from the raw updated-at timestamp', () => {
         const session = createRenderable('s1', {
             createdAt: NOW_MS - 900_000,
@@ -257,6 +327,279 @@ describe('buildSessionListRowModel', () => {
         expect(model.attention.rowState).toBe('working');
         expect(model.presentation.secondaryLine).toBe('status');
         expect(model.status.state).toBe('thinking');
+    });
+
+    it('presents retained working placement as a paused working row', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: NOW_MS - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
+            }), { groupKind: 'working', workingPlacementReason: 'working-retained' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        // Live signals are stale, so the raw status is not working — but the
+        // placement retains the session in the working group, and the row
+        // presents that as a PAUSED working indicator instead of nothing.
+        expect(model.status.state).not.toBe('thinking');
+        expect(model.attention.rowState).toBe('working');
+        expect(model.workingIndicatorPaused).toBe(true);
+        expect(model.presentation.attentionIndicator).toBe('working');
+        // The status line must not imply live activity under the paused
+        // indicator — the dedicated retained status text is used instead.
+        expect(model.presentation.statusTextKey).toBe('status.workingRetained');
+    });
+
+    it('does not pause the indicator for live working sessions in the working group', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - 10,
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: NOW_MS - 10,
+            }), { groupKind: 'working', workingPlacementReason: 'working' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.attention.rowState).toBe('working');
+        expect(model.workingIndicatorPaused).toBe(false);
+    });
+
+    it('does not override alerting attention states for retained working placement', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                presence: 'online',
+                activeAt: NOW_MS - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
+                latestTurnStatus: 'failed',
+                latestTurnStatusObservedAt: NOW_MS - 10,
+                lastRuntimeIssue: {
+                    v: 1,
+                    scope: 'primary_session',
+                    status: 'failed',
+                    code: 'auth_error',
+                    source: 'auth_error',
+                    occurredAt: NOW_MS - 10,
+                } as any,
+            }), { groupKind: 'working', workingPlacementReason: 'working-retained' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.attention.rowState).toBe('failed');
+        expect(model.workingIndicatorPaused).toBe(false);
+    });
+
+    it('presents background activity with the normal working indicator and precise neutral secondary copy', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - 10_000,
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: null,
+                latestTurnStatusObservedAt: null,
+                lastViewedSessionSeq: 9,
+                hasUnreadMessages: true,
+                pendingCount: 2,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: NOW_MS - 1_000,
+                runtimeActivityRevision: 1,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.status.state).toBe('background_active');
+        expect(model.status.statusColor).toBe('default-token');
+        expect(model.status.statusDotColor).toBe('default-token');
+        expect(model.attention.listState).toBe('pending');
+        expect(model.attention.rowState).toBe('pending');
+        expect(model.hasUnreadMessages).toBe(true);
+        expect(model.pendingCount).toBe(2);
+        expect(model.presentation.attentionIndicator).toBe('working');
+        expect(model.presentation.secondaryLine).toBe('status');
+        expect(model.presentation.backgroundActivityStatusLine).toBe(true);
+        expect(model.presentation.statusTextKey).toBeUndefined();
+        expect(model.workingIndicatorPaused).toBe(false);
+    });
+
+    it('keeps disconnected row presentation ahead of background activity', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: false,
+                presence: 0,
+                thinking: false,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: NOW_MS - 5_000,
+                lastViewedSessionSeq: 10,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: NOW_MS - 1_000,
+                runtimeActivityRevision: 1,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.status.state).toBe('disconnected');
+        expect(model.presentation.backgroundActivityStatusLine).toBeUndefined();
+    });
+
+    it('keeps explicit unknown activity quiet', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: false,
+                thinking: false,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: NOW_MS - 5_000,
+                lastViewedSessionSeq: 10,
+                runtimeActivityState: 'unknown',
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: NOW_MS - 1_000,
+                runtimeActivityRevision: 9,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.attention.rowState).toBe('quiet');
+        expect(model.presentation.attentionIndicator).toBe('none');
+        expect(model.presentation.titleTone).toBe('quiet');
+        expect(model.presentation.secondaryLine).toBe('path');
+        expect(model.presentation.statusTextKey).toBeUndefined();
+        expect(model.workingIndicatorPaused).toBe(false);
+    });
+
+    it('schedules exactly one clock refresh for detached activity: the instant its evidence expires', () => {
+        // Was: "does not schedule a clock refresh for detached activity". Background activity can
+        // now go quiet, so the row that shows it has to be woken when it does — otherwise the
+        // freshness gate only takes effect the next time something unrelated re-renders, which is
+        // how a dead session kept saying "running in background" forever. One wake, on the newest
+        // witness, not one per signal.
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - 15_000,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: NOW_MS - 1_000,
+                runtimeActivityRevision: 4,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.nextRuntimeFreshnessAtMs).toBe(NOW_MS - 1_000 + 120_000);
+    });
+
+    it('does not schedule a clock refresh once nothing witnesses the detached activity', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - 300_000,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: NOW_MS - 300_000,
+                runtimeActivityRevision: 4,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.nextRuntimeFreshnessAtMs).toBeNull();
+    });
+
+    it('keeps foreground working presentation when detached runtime activity overlaps an active turn', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - 1_000,
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: 'in_progress',
+                latestTurnStatusObservedAt: NOW_MS - 2_000,
+                runtimeActivityState: 'active',
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: NOW_MS - 1_000,
+                runtimeActivityRevision: 1,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.status.state).toBe('thinking');
+        expect(model.attention.rowState).toBe('working');
+        expect(model.presentation.attentionIndicator).toBe('working');
+    });
+
+    it('leaves rows idle when runtime activity count is zero', () => {
+        const model = buildSessionListRowModel({
+            item: createSessionItem(createRenderable('s1', {
+                active: true,
+                activeAt: NOW_MS - 10_000,
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: 'completed',
+                latestTurnStatusObservedAt: NOW_MS - 5_000,
+                lastViewedSessionSeq: 10,
+                runtimeActivityState: 'idle',
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: NOW_MS - 1_000,
+                runtimeActivityRevision: 1,
+            }), { groupKind: 'date' }),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings({ runtimeNowMs: NOW_MS }),
+        });
+
+        expect(model.status.state).toBe('waiting');
+        expect(model.attention.rowState).toBe('quiet');
+        expect(model.presentation.attentionIndicator).toBe('none');
     });
 
     it('schedules runtime freshness from fresh active heartbeat when an in-progress observation is stale', () => {
@@ -442,5 +785,142 @@ describe('buildSessionListRowModel', () => {
         expect(model.folder.depth).toBe(2);
         expect(model.tags).toEqual(['review', 'urgent']);
         expect(model.adjacency).toEqual({ isFirst: false, isLast: true, isSingle: false });
+    });
+
+    it('promotes blocked pending delivery to action-required row attention from the server aggregate', () => {
+        const session = createRenderable('s-blocked', {
+            pendingCount: 2,
+            pendingBlockedCount: 1,
+        });
+        const model = buildSessionListRowModel({
+            item: createSessionItem(session),
+            state: {},
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings(),
+        });
+
+        expect(model.pendingCount).toBe(2);
+        expect(model.pendingBlockedCount).toBe(1);
+        expect(model.attention.listState).toBe('action_required');
+    });
+
+    it('promotes blocked pending delivery to action-required row attention from loaded pending details', () => {
+        const session = createRenderable('s-blocked-detail', {
+            pendingCount: 1,
+        });
+        const model = buildSessionListRowModel({
+            item: createSessionItem(session),
+            state: { pending: createBlockedPending(NOW_MS - 50_000) },
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings(),
+        });
+
+        expect(model.pendingBlockedCount).toBe(1);
+        expect(model.attention.listState).toBe('action_required');
+    });
+
+    it('uses the server blocked-pending aggregate over stale loaded pending details', () => {
+        const blockedAggregateSession = createRenderable('s-blocked-aggregate-authoritative', {
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+        });
+        const blockedModel = buildSessionListRowModel({
+            item: createSessionItem(blockedAggregateSession),
+            state: { pending: createPending([NOW_MS - 50_000]) },
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings(),
+        });
+
+        expect(blockedModel.pendingBlockedCount).toBe(1);
+        expect(blockedModel.attention.listState).toBe('action_required');
+
+        const unblockedAggregateSession = createRenderable('s-unblocked-aggregate-authoritative', {
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+        });
+        const unblockedModel = buildSessionListRowModel({
+            item: createSessionItem(unblockedAggregateSession),
+            state: { pending: createBlockedPending(NOW_MS - 50_000) },
+            dataIndex: 0,
+            isFirst: true,
+            isLast: true,
+            isSingle: true,
+            settings: createSettings(),
+        });
+
+        expect(unblockedModel.pendingBlockedCount).toBe(0);
+        expect(unblockedModel.attention.listState).toBe('pending');
+    });
+
+    /**
+     * A list row never holds a session's real metadata, only the narrow renderable projection, so
+     * the count has to travel on that projection. A test that fed a full `Session` here would pass
+     * while every real virtualized row silently reported zero.
+     */
+    describe('agent activity count (R-8)', () => {
+        function renderableWithCounts(counts: Partial<AgentActivityCounts>): SessionListRenderableSession {
+            const base = createRenderable('s-agents');
+            return {
+                ...base,
+                metadata: {
+                    ...base.metadata!,
+                    agentActivityCounts: { ...EMPTY_AGENT_ACTIVITY_COUNTS, ...counts },
+                },
+            };
+        }
+
+        function buildWithSetting(enabled: boolean, counts: Partial<AgentActivityCounts>) {
+            return buildSessionListRowModel({
+                item: createSessionItem(renderableWithCounts(counts)),
+                dataIndex: 0,
+                isFirst: true,
+                isLast: true,
+                isSingle: true,
+                settings: createSettings({ agentActivityCountEnabled: enabled }),
+            });
+        }
+
+        it('says nothing while the opt-in setting is off, which is the default', () => {
+            expect(createSettings().agentActivityCountEnabled).toBe(false);
+            expect(buildWithSetting(false, { live: 3, liveSubagents: 3 }).agentActivityLabel).toBeNull();
+        });
+
+        it('names the session\'s live agents once the setting is on', () => {
+            expect(buildWithSetting(true, { live: 3, liveSubagents: 3 }).agentActivityLabel)
+                .toBe('3 subagents working');
+        });
+
+        /**
+         * RULING-10 at the row.
+         *
+         * The row understated a five-agent workflow exactly as the chip did — one number through one
+         * noun, "1 agent working" — because it read a scalar rather than the description. It now
+         * composes through the same owner as the chip, so the two cannot disagree about the same
+         * session.
+         */
+        it('states a workflow and its agent complement, exactly as the composer chip does', () => {
+            expect(buildWithSetting(true, { live: 1, liveWorkflowRuns: 1, liveWorkflowAgents: 5 }).agentActivityLabel)
+                .toBe('1 workflow, 5 agents');
+        });
+
+        it('says nothing for a session with no published activity', () => {
+            expect(buildSessionListRowModel({
+                item: createSessionItem(createRenderable('s-quiet')),
+                dataIndex: 0,
+                isFirst: true,
+                isLast: true,
+                isSingle: true,
+                settings: createSettings({ agentActivityCountEnabled: true }),
+            }).agentActivityLabel).toBeNull();
+        });
     });
 });

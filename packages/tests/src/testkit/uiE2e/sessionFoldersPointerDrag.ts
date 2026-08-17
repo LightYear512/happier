@@ -15,19 +15,13 @@ async function dispatchSessionTreePointerDrag(page: Page, params: Readonly<{
   scrollDuringDrag?: 'target-into-view' | 'autoscroll-bottom';
 }>): Promise<DragDispatchResult> {
   await page.getByTestId(params.sourceTestId).scrollIntoViewIfNeeded();
-  await page.getByTestId(params.sourceTestId).hover();
+  await page.getByTestId(params.sourceTestId).hover().catch(() => undefined);
 
   if (!params.scrollDuringDrag) {
     await page.getByTestId(params.targetTestId).scrollIntoViewIfNeeded();
   }
 
-  const result = await page.evaluate(async ({
-    sourceTestId,
-    sourceChildTestId,
-    targetTestId,
-    targetEdge,
-    scrollDuringDrag,
-  }) => {
+  const scrollMetricsBefore = await page.evaluate((sourceTestId) => {
     const byTestId = (testId: string): HTMLElement | null => (
       document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
     );
@@ -39,84 +33,164 @@ async function dispatchSessionTreePointerDrag(page: Page, params: Readonly<{
       }
       return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
     };
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const dispatchPointer = (
-      target: EventTarget,
-      type: string,
-      point: Readonly<{ x: number; y: number }>,
-      buttons: number,
-    ) => {
-      target.dispatchEvent(new PointerEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        pointerId: 77,
-        pointerType: 'mouse',
-        isPrimary: true,
-        button: 0,
-        buttons,
-        clientX: point.x,
-        clientY: point.y,
-        screenX: point.x,
-        screenY: point.y,
-      }));
-    };
-    const pointForTarget = (element: HTMLElement, edge: 'top' | 'middle' | 'bottom') => {
-      const rect = element.getBoundingClientRect();
-      const y = edge === 'top'
-        ? rect.top + 4
-        : edge === 'bottom'
-          ? rect.bottom - 4
-          : rect.top + rect.height / 2;
-      return {
-        x: rect.left + Math.min(Math.max(rect.width * 0.5, 8), Math.max(rect.width - 8, 8)),
-        y,
-      };
-    };
-
     const sourceContainer = byTestId(sourceTestId);
-    if (!sourceContainer) return { ok: false, scrollTopBefore: null, scrollTopAfter: null, error: `missing ${sourceTestId}` };
-    const source = sourceChildTestId
-      ? sourceContainer.querySelector<HTMLElement>(`[data-testid="${CSS.escape(sourceChildTestId)}"]`)
-      : sourceContainer;
-    if (!source) return { ok: false, scrollTopBefore: null, scrollTopAfter: null, error: `missing ${sourceChildTestId ?? sourceTestId}` };
+    const scrollable = sourceContainer ? findScrollableAncestor(sourceContainer) : null;
+    const rect = scrollable?.getBoundingClientRect() ?? null;
+    return {
+      scrollTop: scrollable?.scrollTop ?? null,
+      rect: rect
+        ? { left: rect.left, width: rect.width, bottom: rect.bottom }
+        : null,
+    };
+  }, params.sourceTestId);
 
-    const scrollable = findScrollableAncestor(sourceContainer);
-    const scrollTopBefore = scrollable?.scrollTop ?? null;
-    const sourcePoint = pointForTarget(source, 'middle');
-    dispatchPointer(source, 'pointerdown', sourcePoint, 1);
-    await wait(35);
-    dispatchPointer(window, 'pointermove', { x: sourcePoint.x + 2, y: sourcePoint.y + 10 }, 1);
-    await wait(35);
+  const sourceContainer = page.getByTestId(params.sourceTestId);
+  const source = params.sourceChildTestId
+    ? sourceContainer.getByTestId(params.sourceChildTestId)
+    : sourceContainer;
+  const sourceBox = await source.boundingBox();
+  if (!sourceBox) {
+    return {
+      ok: false,
+      scrollTopBefore: scrollMetricsBefore.scrollTop,
+      scrollTopAfter: scrollMetricsBefore.scrollTop,
+      error: `missing ${params.sourceChildTestId ?? params.sourceTestId}`,
+    };
+  }
 
-    if (scrollDuringDrag === 'target-into-view') {
-      const targetBeforeScroll = byTestId(targetTestId);
-      targetBeforeScroll?.scrollIntoView({ block: 'center', inline: 'nearest' });
-      await wait(80);
-    } else if (scrollDuringDrag === 'autoscroll-bottom' && scrollable) {
-      const rect = scrollable.getBoundingClientRect();
-      dispatchPointer(window, 'pointermove', { x: rect.left + rect.width / 2, y: rect.bottom - 6 }, 1);
-      await wait(900);
+  const pointForBox = (
+    box: NonNullable<Awaited<ReturnType<typeof source.boundingBox>>>,
+    edge: 'top' | 'middle' | 'bottom',
+    outsideEdges: boolean = false,
+  ) => {
+    const y = outsideEdges && edge === 'top'
+      ? box.y - 4
+      : outsideEdges && edge === 'bottom'
+        ? box.y + box.height + 4
+        : edge === 'top'
+          ? box.y + 1
+          : edge === 'bottom'
+            ? box.y + box.height - 1
+            : box.y + box.height / 2;
+    return {
+      x: box.x + Math.min(Math.max(box.width * 0.5, 8), Math.max(box.width - 8, 8)),
+      y,
+    };
+  };
+
+  const folderDragRowTestIdFromHeaderTestId = (testId: string): string | null => {
+    const prefix = 'session-folder-header-';
+    return testId.startsWith(prefix)
+      ? `session-folder-drag-row-${testId.slice(prefix.length)}`
+      : null;
+  };
+
+  const resolveTargetBox = async (
+    targetTestId: string,
+  ): Promise<NonNullable<Awaited<ReturnType<typeof source.boundingBox>>> | null> => {
+    const folderDragRowTestId = folderDragRowTestIdFromHeaderTestId(targetTestId);
+    if (!folderDragRowTestId) {
+      return page.getByTestId(targetTestId).boundingBox();
     }
+    const folderDragRow = page.getByTestId(folderDragRowTestId);
+    const rowBox = await folderDragRow.boundingBox().catch(() => null);
+    if (rowBox) return rowBox;
+    return page.evaluate((testId) => {
+      const element = document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`);
+      const row = element?.parentElement ?? element;
+      const rect = row?.getBoundingClientRect();
+      if (!rect) return null;
+      return {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      };
+    }, targetTestId);
+  };
 
-    const target = byTestId(targetTestId);
-    if (!target) {
-      dispatchPointer(window, 'pointerup', sourcePoint, 0);
-      return { ok: false, scrollTopBefore, scrollTopAfter: scrollable?.scrollTop ?? null, error: `missing ${targetTestId}` };
-    }
-    const targetPoint = pointForTarget(target, targetEdge);
-    for (const fraction of [0.35, 0.7, 1]) {
-      dispatchPointer(window, 'pointermove', {
-        x: sourcePoint.x + (targetPoint.x - sourcePoint.x) * fraction,
-        y: sourcePoint.y + (targetPoint.y - sourcePoint.y) * fraction,
-      }, 1);
-      await wait(45);
-    }
-    dispatchPointer(window, 'pointerup', targetPoint, 0);
-    await wait(160);
-    return { ok: true, scrollTopBefore, scrollTopAfter: scrollable?.scrollTop ?? null };
-  }, params);
+  const sourcePoint = pointForBox(sourceBox, 'middle');
+  await page.mouse.move(sourcePoint.x, sourcePoint.y);
+  await page.mouse.down({ button: 'left' });
+  await page.waitForTimeout(35);
+  await page.mouse.move(sourcePoint.x + 2, sourcePoint.y + 10);
+  await page.waitForTimeout(35);
 
-  if (!result.ok) throw new Error(result.error ?? 'drag dispatch failed');
+  if (params.scrollDuringDrag === 'target-into-view') {
+    await page.getByTestId(params.targetTestId).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(80);
+  } else if (params.scrollDuringDrag === 'autoscroll-bottom' && scrollMetricsBefore.rect) {
+    await page.mouse.move(
+      scrollMetricsBefore.rect.left + scrollMetricsBefore.rect.width / 2,
+      scrollMetricsBefore.rect.bottom - 6,
+    );
+    await page.waitForTimeout(900);
+  }
+
+  const targetBox = await resolveTargetBox(params.targetTestId);
+  if (!targetBox) {
+    await page.mouse.up({ button: 'left' });
+    const scrollTopAfter = await page.evaluate((sourceTestId) => {
+      const byTestId = (testId: string): HTMLElement | null => (
+        document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
+      );
+      const findScrollableAncestor = (element: HTMLElement): HTMLElement | null => {
+        let current: HTMLElement | null = element.parentElement;
+        while (current) {
+          if (current.scrollHeight > current.clientHeight + 8) return current;
+          current = current.parentElement;
+        }
+        return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
+      };
+      const sourceContainer = byTestId(sourceTestId);
+      return sourceContainer ? findScrollableAncestor(sourceContainer)?.scrollTop ?? null : null;
+    }, params.sourceTestId);
+    return {
+      ok: false,
+      scrollTopBefore: scrollMetricsBefore.scrollTop,
+      scrollTopAfter,
+      error: `missing ${params.targetTestId}`,
+    };
+  }
+
+  const targetPoint = pointForBox(
+    targetBox,
+    params.targetEdge,
+    params.sourceTestId.startsWith('session-folder-drag-row-')
+      && params.targetTestId.startsWith('session-folder-header-'),
+  );
+  for (const fraction of [0.35, 0.7, 1]) {
+    await page.mouse.move(
+      sourcePoint.x + (targetPoint.x - sourcePoint.x) * fraction,
+      sourcePoint.y + (targetPoint.y - sourcePoint.y) * fraction,
+    );
+    await page.waitForTimeout(45);
+  }
+  await page.mouse.up({ button: 'left' });
+  await page.waitForTimeout(160);
+
+  const scrollTopAfter = await page.evaluate((sourceTestId) => {
+    const byTestId = (testId: string): HTMLElement | null => (
+      document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
+    );
+    const findScrollableAncestor = (element: HTMLElement): HTMLElement | null => {
+      let current: HTMLElement | null = element.parentElement;
+      while (current) {
+        if (current.scrollHeight > current.clientHeight + 8) return current;
+        current = current.parentElement;
+      }
+      return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
+    };
+    const sourceContainer = byTestId(sourceTestId);
+    return sourceContainer ? findScrollableAncestor(sourceContainer)?.scrollTop ?? null : null;
+  }, params.sourceTestId);
+
+  const result = {
+    ok: true,
+    scrollTopBefore: scrollMetricsBefore.scrollTop,
+    scrollTopAfter,
+  };
+
   await page.waitForTimeout(250);
   return result;
 }
@@ -141,11 +215,13 @@ export async function dragFolderToTarget(page: Page, params: Readonly<{
   targetTestId: string;
   targetEdge: 'top' | 'middle' | 'bottom';
 }>): Promise<void> {
-  await dispatchSessionTreePointerDrag(page, {
-    sourceTestId: `session-folder-header-${params.sourceFolderId}`,
+  const result = await dispatchSessionTreePointerDrag(page, {
+    sourceTestId: `session-folder-drag-row-${params.sourceFolderId}`,
+    sourceChildTestId: `session-folder-reorder-handle-${params.sourceFolderId}`,
     targetTestId: params.targetTestId,
     targetEdge: params.targetEdge,
   });
+  if (!result.ok) throw new Error(result.error ?? 'folder drag dispatch failed');
 }
 
 /** A DOM rect captured inside the browser (`getBoundingClientRect` shape). */
@@ -206,15 +282,14 @@ export async function dragSessionWithGeometryProbe(page: Page, params: Readonly<
 }>): Promise<DragGeometryProbe> {
   const sourceTestId = `session-list-item-${params.sessionId}`;
   await page.getByTestId(sourceTestId).scrollIntoViewIfNeeded();
+  await page.getByTestId(sourceTestId).hover();
   if (params.preScroll === 'target-into-view') {
     await page.getByTestId(params.targetTestId).scrollIntoViewIfNeeded();
     await page.getByTestId(sourceTestId).scrollIntoViewIfNeeded();
-  } else {
-    await page.getByTestId(params.targetTestId).scrollIntoViewIfNeeded();
+    await page.getByTestId(sourceTestId).hover();
   }
-  await page.getByTestId(sourceTestId).hover();
 
-  const probe = await page.evaluate(async ({ sourceTestId, targetTestId, targetEdge }) => {
+  const scrollTopBefore = await page.evaluate((sourceTestId) => {
     const byTestId = (testId: string): HTMLElement | null => (
       document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
     );
@@ -226,27 +301,138 @@ export async function dragSessionWithGeometryProbe(page: Page, params: Readonly<
       }
       return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
     };
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const dispatchPointer = (
-      target: EventTarget,
-      type: string,
-      point: Readonly<{ x: number; y: number }>,
-      buttons: number,
-    ) => {
-      target.dispatchEvent(new PointerEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        pointerId: 77,
-        pointerType: 'mouse',
-        isPrimary: true,
-        button: 0,
-        buttons,
-        clientX: point.x,
-        clientY: point.y,
-        screenX: point.x,
-        screenY: point.y,
-      }));
+    const sourceContainer = byTestId(sourceTestId);
+    return sourceContainer ? findScrollableAncestor(sourceContainer)?.scrollTop ?? null : null;
+  }, sourceTestId);
+
+  const sourceHandle = page
+    .getByTestId(sourceTestId)
+    .getByTestId('session-item-reorder-handle');
+  const sourceBox = await sourceHandle.boundingBox();
+  if (!sourceBox) {
+    return {
+      ok: false,
+      pointer: null,
+      overlayLine: null,
+      overlayOutline: null,
+      targetRect: null,
+      scrollTopBefore,
+      scrollTopAfter: scrollTopBefore,
+      error: 'missing session-item-reorder-handle',
     };
+  }
+
+  const pointForBox = (
+    box: NonNullable<typeof sourceBox>,
+    edge: 'top' | 'middle' | 'bottom',
+    outsideEdges: boolean = false,
+  ) => {
+    const y = outsideEdges && edge === 'top'
+      ? box.y - 4
+      : outsideEdges && edge === 'bottom'
+        ? box.y + box.height + 4
+        : edge === 'top'
+          ? box.y + 1
+          : edge === 'bottom'
+            ? box.y + box.height - 1
+            : box.y + box.height / 2;
+    return {
+      x: box.x + Math.min(Math.max(box.width * 0.5, 8), Math.max(box.width - 8, 8)),
+      y,
+    };
+  };
+
+  const folderDragRowTestIdFromHeaderTestId = (testId: string): string | null => {
+    const prefix = 'session-folder-header-';
+    return testId.startsWith(prefix)
+      ? `session-folder-drag-row-${testId.slice(prefix.length)}`
+      : null;
+  };
+
+  const resolveTargetBox = async (
+    targetTestId: string,
+  ): Promise<NonNullable<typeof sourceBox> | null> => {
+    const folderDragRowTestId = folderDragRowTestIdFromHeaderTestId(targetTestId);
+    if (!folderDragRowTestId) {
+      return page.getByTestId(targetTestId).boundingBox();
+    }
+    const folderDragRow = page.getByTestId(folderDragRowTestId);
+    const rowBox = await folderDragRow.boundingBox().catch(() => null);
+    if (rowBox) return rowBox;
+    return page.evaluate((testId) => {
+      const element = document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`);
+      const row = element?.parentElement ?? element;
+      const rect = row?.getBoundingClientRect();
+      if (!rect) return null;
+      return {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      };
+    }, targetTestId);
+  };
+
+  const sourcePoint = pointForBox(sourceBox, 'middle');
+  await page.mouse.move(sourcePoint.x, sourcePoint.y);
+  await page.mouse.down({ button: 'left' });
+  await page.waitForTimeout(40);
+  await page.mouse.move(sourcePoint.x + 2, sourcePoint.y + 12);
+  await page.waitForTimeout(40);
+
+  // Scroll the target into view AFTER the drag lifts so the probe matches the
+  // real pointer-drag contract used by the committed outcome helper.
+  await page.getByTestId(params.targetTestId).scrollIntoViewIfNeeded();
+  await page.waitForTimeout(80);
+
+  const targetBox = await resolveTargetBox(params.targetTestId);
+  if (!targetBox) {
+    await page.mouse.up({ button: 'left' });
+    return {
+      ok: false,
+      pointer: null,
+      overlayLine: null,
+      overlayOutline: null,
+      targetRect: null,
+      scrollTopBefore,
+      scrollTopAfter: await page.evaluate((sourceTestId) => {
+        const byTestId = (testId: string): HTMLElement | null => (
+          document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
+        );
+        const findScrollableAncestor = (element: HTMLElement): HTMLElement | null => {
+          let current: HTMLElement | null = element.parentElement;
+          while (current) {
+            if (current.scrollHeight > current.clientHeight + 8) return current;
+            current = current.parentElement;
+          }
+          return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
+        };
+        const sourceContainer = byTestId(sourceTestId);
+        return sourceContainer ? findScrollableAncestor(sourceContainer)?.scrollTop ?? null : null;
+      }, sourceTestId),
+      error: `missing ${params.targetTestId}`,
+    };
+  }
+
+  const pointer = pointForBox(
+    targetBox,
+    params.targetEdge,
+    false,
+  );
+  for (const fraction of [0.35, 0.7, 1]) {
+    await page.mouse.move(
+      sourcePoint.x + (pointer.x - sourcePoint.x) * fraction,
+      sourcePoint.y + (pointer.y - sourcePoint.y) * fraction,
+    );
+    await page.waitForTimeout(50);
+  }
+  await page.mouse.move(pointer.x, pointer.y);
+  await page.waitForTimeout(220);
+
+  const probe = await page.evaluate(({ targetTestId }) => {
+    const byTestId = (testId: string): HTMLElement | null => (
+      document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
+    );
     // A `getBoundingClientRect()` is only meaningful for an indicator that is
     // actually painted. The overlay keeps both the line and the outline
     // mounted and carries `opacity:0` on whichever one is not the active drop
@@ -274,68 +460,6 @@ export async function dragSessionWithGeometryProbe(page: Page, params: Readonly<
       top: number; bottom: number; left: number; right: number;
     }>;
 
-    const sourceContainer = byTestId(sourceTestId);
-    if (!sourceContainer) {
-      return {
-        ok: false, pointer: null, overlayLine: null, overlayOutline: null,
-        targetRect: null, scrollTopBefore: null, scrollTopAfter: null,
-        error: `missing ${sourceTestId}`,
-      };
-    }
-    const handle = sourceContainer.querySelector<HTMLElement>('[data-testid="session-item-reorder-handle"]');
-    if (!handle) {
-      return {
-        ok: false, pointer: null, overlayLine: null, overlayOutline: null,
-        targetRect: null, scrollTopBefore: null, scrollTopAfter: null,
-        error: 'missing session-item-reorder-handle',
-      };
-    }
-
-    const scrollable = findScrollableAncestor(sourceContainer);
-    const scrollTopBefore = scrollable?.scrollTop ?? null;
-
-    const handleRect = handle.getBoundingClientRect();
-    const sourcePoint = {
-      x: handleRect.left + handleRect.width / 2,
-      y: handleRect.top + handleRect.height / 2,
-    };
-    dispatchPointer(handle, 'pointerdown', sourcePoint, 1);
-    await wait(40);
-    // First small move past the activation threshold to lift the drag.
-    dispatchPointer(window, 'pointermove', { x: sourcePoint.x + 2, y: sourcePoint.y + 12 }, 1);
-    await wait(40);
-
-    const target = byTestId(targetTestId);
-    if (!target) {
-      dispatchPointer(window, 'pointerup', sourcePoint, 0);
-      return {
-        ok: false, pointer: null, overlayLine: null, overlayOutline: null,
-        targetRect: null, scrollTopBefore, scrollTopAfter: scrollable?.scrollTop ?? null,
-        error: `missing ${targetTestId}`,
-      };
-    }
-    const targetRectRaw = target.getBoundingClientRect();
-    const pointer = {
-      x: targetRectRaw.left + Math.min(Math.max(targetRectRaw.width * 0.5, 8), Math.max(targetRectRaw.width - 8, 8)),
-      y: targetEdge === 'top'
-        ? targetRectRaw.top + 4
-        : targetEdge === 'bottom'
-          ? targetRectRaw.bottom - 4
-          : targetRectRaw.top + targetRectRaw.height / 2,
-    };
-    // Glide toward the target so autoscroll / hit-testing engage naturally.
-    for (const fraction of [0.35, 0.7, 1]) {
-      dispatchPointer(window, 'pointermove', {
-        x: sourcePoint.x + (pointer.x - sourcePoint.x) * fraction,
-        y: sourcePoint.y + (pointer.y - sourcePoint.y) * fraction,
-      }, 1);
-      await wait(50);
-    }
-    // Hold at the target: let the overlay glide settle, then capture it
-    // BEFORE the drop tears the overlay down.
-    dispatchPointer(window, 'pointermove', pointer, 1);
-    await wait(220);
-
     const overlayLine = captureRect(byTestId('session-list-drop-overlay-line'));
     const overlayOutline = captureRect(byTestId('session-list-drop-overlay-outline'));
     // Re-read the target rect at hold time (it may have shifted under scroll).
@@ -348,22 +472,41 @@ export async function dragSessionWithGeometryProbe(page: Page, params: Readonly<
       } satisfies CapturedRect;
     })() : null;
 
-    dispatchPointer(window, 'pointerup', pointer, 0);
-    await wait(180);
-
     return {
-      ok: true,
-      pointer,
       overlayLine,
       overlayOutline,
       targetRect,
-      scrollTopBefore,
-      scrollTopAfter: scrollable?.scrollTop ?? null,
     };
-  }, { sourceTestId, targetTestId: params.targetTestId, targetEdge: params.targetEdge });
+  }, { targetTestId: params.targetTestId });
+
+  await page.mouse.up({ button: 'left' });
+  await page.waitForTimeout(180);
+  const scrollTopAfter = await page.evaluate((sourceTestId) => {
+    const byTestId = (testId: string): HTMLElement | null => (
+      document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`)
+    );
+    const findScrollableAncestor = (element: HTMLElement): HTMLElement | null => {
+      let current: HTMLElement | null = element.parentElement;
+      while (current) {
+        if (current.scrollHeight > current.clientHeight + 8) return current;
+        current = current.parentElement;
+      }
+      return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
+    };
+    const sourceContainer = byTestId(sourceTestId);
+    return sourceContainer ? findScrollableAncestor(sourceContainer)?.scrollTop ?? null : null;
+  }, sourceTestId);
 
   await page.waitForTimeout(250);
-  return probe;
+  return {
+    ok: true,
+    pointer,
+    overlayLine: probe.overlayLine,
+    overlayOutline: probe.overlayOutline,
+    targetRect: probe.targetRect,
+    scrollTopBefore,
+    scrollTopAfter,
+  };
 }
 
 /** Long-task timing summary captured around an interaction. */
@@ -495,110 +638,57 @@ export async function beginSteppedSessionDrag(page: Page, params: Readonly<{
   await page.getByTestId(sourceTestId).scrollIntoViewIfNeeded();
   await page.getByTestId(sourceTestId).hover();
 
-  await page.evaluate(async ({ sourceTestId }) => {
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const dispatchPointer = (
-      target: EventTarget,
-      type: string,
-      point: Readonly<{ x: number; y: number }>,
-      buttons: number,
-    ) => {
-      target.dispatchEvent(new PointerEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        pointerId: 77,
-        pointerType: 'mouse',
-        isPrimary: true,
-        button: 0,
-        buttons,
-        clientX: point.x,
-        clientY: point.y,
-        screenX: point.x,
-        screenY: point.y,
-      }));
-    };
-    const sourceContainer = document.querySelector<HTMLElement>(
-      `[data-testid="${CSS.escape(sourceTestId)}"]`,
-    );
-    if (!sourceContainer) throw new Error(`missing ${sourceTestId}`);
-    const handle = sourceContainer.querySelector<HTMLElement>('[data-testid="session-item-reorder-handle"]');
-    if (!handle) throw new Error('missing session-item-reorder-handle');
+  const sourceHandle = page
+    .getByTestId(sourceTestId)
+    .getByTestId('session-item-reorder-handle');
+  const sourceBox = await sourceHandle.boundingBox();
+  if (!sourceBox) throw new Error('missing session-item-reorder-handle');
 
-    const rect = handle.getBoundingClientRect();
-    const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    const w = window as unknown as { __happierDragPoint?: { x: number; y: number } };
-    w.__happierDragPoint = point;
-    dispatchPointer(handle, 'pointerdown', point, 1);
-    await wait(40);
-    // Move past the activation threshold so the drag lifts and the snapshot
-    // freezes.
-    dispatchPointer(window, 'pointermove', { x: point.x + 2, y: point.y + 12 }, 1);
-    await wait(60);
-  }, { sourceTestId });
+  const pointForBox = (
+    box: NonNullable<typeof sourceBox>,
+    edge: 'top' | 'middle' | 'bottom',
+  ) => ({
+    x: box.x + Math.min(Math.max(box.width * 0.5, 8), Math.max(box.width - 8, 8)),
+    y: edge === 'top'
+      ? box.y + 1
+      : edge === 'bottom'
+        ? box.y + box.height - 1
+        : box.y + box.height / 2,
+  });
+
+  const sourcePoint = pointForBox(sourceBox, 'middle');
+  await page.mouse.move(sourcePoint.x, sourcePoint.y);
+  await page.mouse.down({ button: 'left' });
+  await page.waitForTimeout(40);
+  // Move past the activation threshold so the drag lifts and the snapshot
+  // freezes.
+  await page.mouse.move(sourcePoint.x + 2, sourcePoint.y + 12);
+  await page.waitForTimeout(60);
   await page.waitForTimeout(80);
+
+  let currentPoint = { x: sourcePoint.x + 2, y: sourcePoint.y + 12 };
 
   return {
     moveOverTarget: async (targetTestId, edge) => {
-      await page.evaluate(async ({ targetTestId, edge }) => {
-        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-        const dispatchPointer = (point: Readonly<{ x: number; y: number }>) => {
-          window.dispatchEvent(new PointerEvent('pointermove', {
-            bubbles: true,
-            cancelable: true,
-            pointerId: 77,
-            pointerType: 'mouse',
-            isPrimary: true,
-            button: 0,
-            buttons: 1,
-            clientX: point.x,
-            clientY: point.y,
-            screenX: point.x,
-            screenY: point.y,
-          }));
-        };
-        const target = document.querySelector<HTMLElement>(
-          `[data-testid="${CSS.escape(targetTestId)}"]`,
+      await page.getByTestId(targetTestId).scrollIntoViewIfNeeded();
+      const targetBox = await page.getByTestId(targetTestId).boundingBox();
+      if (!targetBox) throw new Error(`missing ${targetTestId}`);
+
+      const point = pointForBox(targetBox, edge);
+      for (const fraction of [0.5, 1]) {
+        await page.mouse.move(
+          currentPoint.x + (point.x - currentPoint.x) * fraction,
+          currentPoint.y + (point.y - currentPoint.y) * fraction,
         );
-        if (!target) throw new Error(`missing ${targetTestId}`);
-        const rect = target.getBoundingClientRect();
-        const point = {
-          x: rect.left + Math.min(Math.max(rect.width * 0.5, 8), Math.max(rect.width - 8, 8)),
-          y: edge === 'top'
-            ? rect.top + 4
-            : edge === 'bottom'
-              ? rect.bottom - 4
-              : rect.top + rect.height / 2,
-        };
-        const w = window as unknown as { __happierDragPoint?: { x: number; y: number } };
-        w.__happierDragPoint = point;
-        // Two moves so hit-testing + the overlay glide engage.
-        dispatchPointer({ x: point.x, y: point.y - 3 });
-        await wait(45);
-        dispatchPointer(point);
-        await wait(140);
-      }, { targetTestId, edge });
+        await page.waitForTimeout(45);
+      }
+      currentPoint = point;
+      await page.waitForTimeout(140);
       await page.waitForTimeout(80);
     },
     drop: async () => {
-      await page.evaluate(async () => {
-        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-        const w = window as unknown as { __happierDragPoint?: { x: number; y: number } };
-        const point = w.__happierDragPoint ?? { x: 0, y: 0 };
-        window.dispatchEvent(new PointerEvent('pointerup', {
-          bubbles: true,
-          cancelable: true,
-          pointerId: 77,
-          pointerType: 'mouse',
-          isPrimary: true,
-          button: 0,
-          buttons: 0,
-          clientX: point.x,
-          clientY: point.y,
-          screenX: point.x,
-          screenY: point.y,
-        }));
-        await wait(180);
-      });
+      await page.mouse.up({ button: 'left' });
+      await page.waitForTimeout(180);
       await page.waitForTimeout(250);
     },
   };

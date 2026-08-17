@@ -1,12 +1,13 @@
 import { logger } from '@/ui/logger';
 import type { Credentials } from '@/persistence';
 import { parseOptionalBooleanEnv } from '@happier-dev/protocol';
+import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
 import {
-  AGENT_IDS,
-  supportsAgentTerminalPromptInjection,
-  type AgentId,
-} from '@happier-dev/agents';
-import { resolveCatalogAgentIdForCliSubcommand } from '@/backends/catalog';
+  hasTerminalAttachmentControlDescriptorThroughCatalog,
+  resolveCatalogAgentIdForCliSubcommand,
+} from '@/backends/catalog';
+import type { AgentId } from '@/agent/core';
+import { CATALOG_AGENT_IDS } from '@/backends/types';
 import { buildSessionRunnerRespawnDescriptorV1FromSpawnOptions } from '../processSupervision/sessionRunnerRespawnDescriptor';
 import {
   buildSpawnSessionOptionsFromRespawnDescriptorV1,
@@ -23,10 +24,14 @@ import {
   clearSessionMarkerConnectedServiceRestartIntent,
   hashProcessCommand,
   listSessionMarkers,
-  removeSessionMarker,
   writeSessionMarker,
   type DaemonSessionMarker,
 } from '../sessionRegistry';
+import { extractResumeIdFromCommand } from './extractResumeIdFromCommand';
+import {
+  readTerminalAttachmentState,
+} from '@/terminal/attachment/terminalAttachmentInfo';
+import type { DisconnectedTerminalHostCandidate } from './disconnectedTerminalHostSupervision';
 
 function extractExistingSessionIdFromCommand(command: string): string | null {
   const match = /(?:^|\s)--existing-session(?:=|\s+)(\S+)/.exec(command);
@@ -38,6 +43,12 @@ function normalizeSessionId(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeMarkerAgentId(value: unknown): AgentId | null {
+  return typeof value === 'string' && (CATALOG_AGENT_IDS as readonly string[]).includes(value)
+    ? value as AgentId
+    : null;
+}
+
 function readRuntimeSnapshotMetadata(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -46,12 +57,6 @@ function readRuntimeSnapshotMetadata(value: unknown): Record<string, unknown> | 
 
 function shouldRecoverMarkerlessDaemonSpawnedSessions(env: NodeJS.ProcessEnv = process.env): boolean {
   return parseOptionalBooleanEnv(env.HAPPIER_DAEMON_MARKERLESS_REATTACH_ENABLED) !== false;
-}
-
-function extractResumeIdFromCommand(command: string): string | null {
-  const match = /(?:^|\s)--resume(?:=|\s+)(\S+)/.exec(command);
-  const resumeId = typeof match?.[1] === 'string' ? match[1].trim() : '';
-  return resumeId || null;
 }
 
 function indicatesDaemonStartedSessionCommand(command: string): boolean {
@@ -124,26 +129,6 @@ function applyRecoveredRuntimeSnapshot(params: Readonly<{
     persistedMetadata: readRuntimeSnapshotMetadata(params.metadata),
     trackedVendorResumeId: params.vendorResumeId ?? null,
   }).spawnOptions;
-}
-
-function readBuiltInAgentId(spawnOptions: SpawnSessionOptions | undefined): AgentId | null {
-  const agentId = spawnOptions?.backendTarget?.kind === 'builtInAgent'
-    ? spawnOptions.backendTarget.agentId
-    : null;
-  return typeof agentId === 'string' && (AGENT_IDS as readonly string[]).includes(agentId)
-    ? agentId as AgentId
-    : null;
-}
-
-export function shouldRestartTerminalPromptInjectionRuntime(
-  spawnOptions: SpawnSessionOptions | undefined,
-  vendorResumeId?: string | null,
-): boolean {
-  const agentId = readBuiltInAgentId(spawnOptions);
-  const spawnResume = typeof spawnOptions?.resume === 'string' ? spawnOptions.resume.trim() : '';
-  const markerResume = typeof vendorResumeId === 'string' ? vendorResumeId.trim() : '';
-  const resume = spawnResume || markerResume;
-  return !!agentId && !!resume && supportsAgentTerminalPromptInjection(agentId);
 }
 
 function parseRecoveredRespawnDescriptor(respawn: unknown): SessionRunnerRespawnDescriptorV1 | null {
@@ -310,11 +295,13 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       metadata: incompleteMarker?.metadata,
       vendorResumeId,
     });
+    const processInstanceFingerprint = readProcessInstanceFingerprintSync(processInfo.pid) ?? undefined;
     const trackedSession: TrackedSession = {
       startedBy: 'daemon',
       happySessionId,
       pid: processInfo.pid,
       processCommandHash,
+      ...(processInstanceFingerprint ? { processInstanceFingerprint } : {}),
       processCommand: processInfo.command,
       reattachedFromDiskMarker: true,
       ...(vendorResumeId ? { vendorResumeId } : {}),
@@ -334,6 +321,9 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       startedBy: 'daemon',
       ...(spawnOptions?.directory ? { cwd: spawnOptions.directory } : {}),
       processCommandHash,
+      ...(trackedSession.processInstanceFingerprint
+        ? { processInstanceFingerprint: trackedSession.processInstanceFingerprint }
+        : {}),
       processCommand: processInfo.command,
       ...(respawn ? { respawn } : {}),
       ...(incompleteMarker?.connectedServiceRestartIntent
@@ -367,26 +357,67 @@ async function includePidSpecificProcessesForAliveMarkers(params: Readonly<{
 type OrphanedDeadDaemonSession = Readonly<{
   sessionId: string;
   pid: number;
+  activeTurnId?: string;
 }>;
 
 export type ReattachTrackedSessionsFromMarkersResult = Readonly<{
   orphanedDeadDaemonSessions: ReadonlyArray<OrphanedDeadDaemonSession>;
+  /** Live session runners recovered into this daemon and requiring control binding to its final machine id. */
+  recoveredLiveSessionIds?: ReadonlyArray<string>;
+  disconnectedTerminalHostCandidates?: ReadonlyArray<DisconnectedTerminalHostCandidate>;
+  /** Sessions whose persisted terminal topology exists but cannot be safely reconstructed. */
+  unresolvedTerminalHostSessionIds?: ReadonlyArray<string>;
   connectedServiceRestartIntents: ReadonlyArray<never>;
 }>;
+
+function buildReattachResult(params: Readonly<{
+  orphanedDeadDaemonSessions: ReadonlyArray<OrphanedDeadDaemonSession>;
+  recoveredLiveSessionIds: ReadonlySet<string>;
+  disconnectedTerminalHostCandidates?: ReadonlyArray<DisconnectedTerminalHostCandidate>;
+  unresolvedTerminalHostSessionIds?: ReadonlyArray<string>;
+}>): ReattachTrackedSessionsFromMarkersResult {
+  const orphanedDeadDaemonSessions = Array.from(
+    new Map(
+      params.orphanedDeadDaemonSessions
+        .filter((session) => !params.recoveredLiveSessionIds.has(session.sessionId))
+        .map((session) => [`${session.sessionId}\u0000${session.activeTurnId ?? ''}`, session] as const),
+    ).values(),
+  );
+  return {
+    orphanedDeadDaemonSessions,
+    ...(params.recoveredLiveSessionIds.size > 0
+      ? { recoveredLiveSessionIds: Array.from(params.recoveredLiveSessionIds).sort() }
+      : {}),
+    ...(params.disconnectedTerminalHostCandidates?.length
+      ? { disconnectedTerminalHostCandidates: params.disconnectedTerminalHostCandidates }
+      : {}),
+    ...(params.unresolvedTerminalHostSessionIds?.length
+      ? { unresolvedTerminalHostSessionIds: Array.from(new Set(params.unresolvedTerminalHostSessionIds)) }
+      : {}),
+    connectedServiceRestartIntents: [],
+  };
+}
 
 export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
   pidToTrackedSession: Map<number, TrackedSession>;
   credentials?: Credentials | null;
+  // Retained as an ignored compatibility input for existing callers/tests. Cold
+  // startup never probes or mutates terminal hosts for dead runner markers.
+  terminalHostAdapters?: unknown;
+  hasTerminalAttachmentControlDescriptor?: (
+    agentId: AgentId | null | undefined,
+    input: Readonly<{ happyHomeDir: string; sessionId: string }>,
+  ) => Promise<boolean>;
 }>): Promise<ReattachTrackedSessionsFromMarkersResult> {
   const { pidToTrackedSession, credentials } = params;
   const orphanedDeadDaemonSessions: OrphanedDeadDaemonSession[] = [];
+  const disconnectedTerminalHostCandidates: DisconnectedTerminalHostCandidate[] = [];
+  const unresolvedTerminalHostSessionIds: string[] = [];
   // On daemon restart, reattach to still-running sessions via disk markers (stack-scoped by HAPPIER_HOME_DIR).
   try {
     const markers = await listSessionMarkers();
-    const happyProcesses = await findAllHappyProcesses();
     logger.debug('[DAEMON RUN] Startup reattach inputs collected', {
       markerCount: markers.length,
-      happyProcessCount: happyProcesses.length,
     });
     const aliveMarkers = [];
     for (const marker of markers) {
@@ -395,19 +426,59 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
         aliveMarkers.push(marker);
       } catch {
         const sessionId = normalizeSessionId(marker.happySessionId);
+        const markerAgentId = normalizeMarkerAgentId(marker.respawn?.backendTarget?.kind === 'builtInAgent'
+          ? marker.respawn.backendTarget.agentId
+          : marker.flavor);
+        // Immutable terminal attachment identity is independent of provider hook/MCP control.
+        // Read it first so a missing provider descriptor remains a supervised, recoverable host
+        // instead of being collapsed into an ordinary dead-runner orphan.
+        const attachmentState = marker.startedBy === 'daemon' && sessionId
+          ? await readTerminalAttachmentState({ happyHomeDir: marker.happyHomeDir, sessionId })
+          : { status: 'absent' as const };
+        if (
+          attachmentState.status === 'unreadable'
+          || (attachmentState.status === 'present' && attachmentState.info.version !== 2)
+        ) {
+          unresolvedTerminalHostSessionIds.push(sessionId);
+          continue;
+        }
+        const attachment = attachmentState.status === 'present' ? attachmentState.info : null;
+        const hasExactControlDescriptor = attachment?.version === 2
+          ? await (params.hasTerminalAttachmentControlDescriptor
+              ?? hasTerminalAttachmentControlDescriptorThroughCatalog)(markerAgentId, {
+                happyHomeDir: marker.happyHomeDir,
+                sessionId,
+                attachmentId: attachment.attachmentId,
+              })
+          : false;
+        if (attachment?.version === 2) {
+          disconnectedTerminalHostCandidates.push({
+            sessionId,
+            pid: marker.pid,
+            ...(marker.activeTurnId ? { activeTurnId: marker.activeTurnId } : {}),
+            happyHomeDir: marker.happyHomeDir,
+            attachmentId: attachment.attachmentId,
+            handle: attachment.handle,
+            controlDescriptorAvailable: hasExactControlDescriptor,
+          });
+          continue;
+        }
         if (marker.startedBy === 'daemon' && sessionId) {
           orphanedDeadDaemonSessions.push({
             sessionId,
             pid: marker.pid,
+            ...(marker.activeTurnId ? { activeTurnId: marker.activeTurnId } : {}),
           });
         }
-        await removeSessionMarker(marker.pid);
         continue;
       }
     }
     logger.debug('[DAEMON RUN] Startup reattach alive marker scan finished', {
       aliveMarkerCount: aliveMarkers.length,
     });
+    const markerlessRecoveryEnabled = shouldRecoverMarkerlessDaemonSpawnedSessions();
+    const shouldRunFullProcessScan = markerlessRecoveryEnabled;
+    const happyProcesses = shouldRunFullProcessScan ? await findAllHappyProcesses() : [];
     const happyProcessesForReattach = await includePidSpecificProcessesForAliveMarkers({
       happyProcesses,
       aliveMarkers,
@@ -457,7 +528,7 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
           },
         ] as const),
     );
-    const recoveredMarkerlessCount = shouldRecoverMarkerlessDaemonSpawnedSessions()
+    const recoveredMarkerlessCount = markerlessRecoveryEnabled
       ? await recoverMarkerlessDaemonSpawnedSessions({
           happyProcesses: happyProcessesForReattach,
           incompleteMarkerByPid,
@@ -497,16 +568,12 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
         logger.debug('[DAEMON RUN] Failed to clear stale connected-service restart intent during startup reattach reconciliation', error);
       });
     }
-    return {
-      orphanedDeadDaemonSessions: Array.from(
-        new Map(
-          orphanedDeadDaemonSessions
-            .filter((session) => !recoveredLiveSessionIds.has(session.sessionId))
-            .map((session) => [session.sessionId, session] as const),
-        ).values(),
-      ),
-      connectedServiceRestartIntents: [],
-    };
+    return buildReattachResult({
+      orphanedDeadDaemonSessions,
+      recoveredLiveSessionIds,
+      disconnectedTerminalHostCandidates,
+      unresolvedTerminalHostSessionIds,
+    });
   } catch (e) {
     logger.debug('[DAEMON RUN] Failed to reattach sessions from disk markers', e);
   }
@@ -518,14 +585,10 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
       .map((sessionId) => sessionId.trim()),
   );
 
-  return {
-    orphanedDeadDaemonSessions: Array.from(
-      new Map(
-        orphanedDeadDaemonSessions
-          .filter((session) => !recoveredLiveSessionIds.has(session.sessionId))
-        .map((session) => [session.sessionId, session] as const),
-      ).values(),
-    ),
-    connectedServiceRestartIntents: [],
-  };
+  return buildReattachResult({
+    orphanedDeadDaemonSessions,
+    recoveredLiveSessionIds,
+    disconnectedTerminalHostCandidates,
+    unresolvedTerminalHostSessionIds,
+  });
 }

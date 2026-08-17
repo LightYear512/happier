@@ -2,6 +2,7 @@ import {
     ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,
     ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema,
     type ConnectedServiceId,
+    type ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1,
     type ConnectedServiceQuotaRecoveryCreditConsumeResponseV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -23,11 +24,13 @@ export type ConnectedServiceQuotaRecoveryCreditConsumeInput = Readonly<{
 function failure(
     errorCode: string,
     error: unknown = errorCode,
+    receipt?: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1,
 ): ConnectedServiceQuotaRecoveryCreditConsumeResponseV1 {
     return {
         ok: false,
         errorCode,
         error: sanitizeEndpointErrorMessage(error) ?? t('common.error'),
+        ...(receipt ? { receipt } : {}),
     };
 }
 
@@ -52,7 +55,7 @@ function buildRecoveryCreditConsumeIdempotencyKey(input: Readonly<{
         : null;
     const selector = providerCreditId.length > 0
         ? `credit:${providerCreditId}`
-        : `snapshot:${snapshotFetchedAtMs ?? 'unknown'}`;
+        : `aggregate:${snapshotFetchedAtMs ?? 'unknown'}`;
     const key = `connected-service-quota-recovery-credit:v1:${input.serviceId}:${input.profileId}:${selector}`;
     return key.length <= 256
         ? key
@@ -91,7 +94,9 @@ export async function connectedServiceQuotaRecoveryCreditConsume(
         });
         const parsedResponse = ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema.safeParse(response);
         if (!parsedResponse.success) return failure('unsupported_response', 'unsupported_response');
-        if (!parsedResponse.data.ok) return failure(parsedResponse.data.errorCode, parsedResponse.data.error);
+        if (!parsedResponse.data.ok) {
+            return failure(parsedResponse.data.errorCode, parsedResponse.data.error, parsedResponse.data.receipt);
+        }
         return parsedResponse.data;
     } catch (error) {
         return failure(readRpcErrorCode(error) ?? 'machine_rpc_failed', error);

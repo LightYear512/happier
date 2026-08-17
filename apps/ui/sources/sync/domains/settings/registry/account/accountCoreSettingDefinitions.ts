@@ -1,6 +1,8 @@
 import {
+    DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
     DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE,
     DEFAULT_USAGE_LIMIT_RECOVERY_SETTINGS_V1,
+    SessionPendingQueueDeliveryTimingSchema,
     DEFAULT_WINDOWS_TERMINAL_WINDOW_NAME,
     SessionPendingQueueDrainModeSchema,
     UsageLimitRecoverySettingsV1Schema as ProtocolUsageLimitRecoverySettingsV1Schema,
@@ -135,6 +137,13 @@ export const ACCOUNT_CORE_SETTING_DEFINITIONS = defineSettingDefinitions({
         storageScope: 'account',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     },
+    sessionComposerRememberBannerVisibility: {
+        schema: z.boolean(),
+        default: false,
+        description: 'Remember collapsed composer banners globally across sessions instead of per session view',
+        storageScope: 'account',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
+    },
     agentInputHistoryScope: {
         schema: z.enum(['perSession', 'global']),
         default: 'perSession',
@@ -181,6 +190,15 @@ export const ACCOUNT_CORE_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: SessionListIdentityDisplaySchema,
         default: 'agentLogo',
         description: 'Session list identity marker: generated avatar, agent logo, or none',
+        storageScope: 'account',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
+    },
+    sessionHeaderIdentityDisplay: {
+        // Same three choices, same schema as the session list's marker: the in-session header asks
+        // the user the identical question, so it must not invent a second vocabulary for it.
+        schema: SessionListIdentityDisplaySchema,
+        default: 'avatar',
+        description: 'In-session header identity marker: generated avatar, agent logo, or none',
         storageScope: 'account',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     },
@@ -296,6 +314,13 @@ export const ACCOUNT_CORE_SETTING_DEFINITIONS = defineSettingDefinitions({
         storageScope: 'account',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     },
+    sessionListSeparateBackgroundWork: {
+        schema: z.boolean(),
+        default: false,
+        description: 'Show live detached background work in a separate session list group',
+        storageScope: 'account',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
+    },
     sessionMessageSendMode: {
         schema: SessionMessageSendModeSchema,
         default: 'server_pending',
@@ -321,6 +346,13 @@ export const ACCOUNT_CORE_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: SessionPendingQueueDrainModeSchema,
         default: DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE,
         description: 'How many pending queue messages a running session should materialize at the next agent-ready boundary',
+        storageScope: 'account',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
+    },
+    sessionPendingQueueDeliveryTiming: {
+        schema: SessionPendingQueueDeliveryTimingSchema,
+        default: DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
+        description: 'Whether queued pending messages wait for foreground readiness or all tracked runtime activity to become idle',
         storageScope: 'account',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     },

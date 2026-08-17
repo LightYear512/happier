@@ -19,9 +19,16 @@ const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'pla
 type TerminalLaunchSpecFixture = Readonly<{
   command?: string;
   args?: string[];
+  windowsVerbatimArguments?: boolean;
   cwd?: string;
   env?: Record<string, string>;
   envPassthroughKeys?: string[];
+  cleanupPaths?: string[];
+  diagnostics?: {
+    sessionId?: string;
+    logsDir?: string;
+    sessionExitDir?: string;
+  };
 }>;
 
 async function withPatchedEnv<T>(
@@ -102,6 +109,64 @@ describe('buildClaudeUnifiedTerminalSpawn', () => {
     expect(launchArgs).not.toContain('bypassPermissions');
   });
 
+  it('writes per-session runner diagnostics paths into the launch spec when a happy session id is available', async () => {
+    const spawn = await buildClaudeUnifiedTerminalSpawn({
+      path: '/workspace/project',
+      happySessionId: 'happy-session-id',
+      first: {
+        message: 'hello',
+        mode: {
+          permissionMode: 'default',
+        },
+      },
+      deps: {
+        resolveClaudeCliPath: () => '/usr/local/bin/claude',
+        isClaudeCliJavaScriptFile: () => false,
+        ensureClaudeJsRuntimeExecutable: async () => '/managed/node',
+        claudeLocalLauncherPath: '/happier/scripts/claude_local_launcher.cjs',
+        terminalLaunchSpecRunnerPath: '/happier/scripts/terminal_launch_spec_runner.cjs',
+        resolveCommandInvocation: ({ command, args }) => ({ command, args: [...args] }),
+      },
+    });
+
+    const launchSpec = await readLaunchSpecFromSpawn(spawn);
+    expect(launchSpec.diagnostics).toMatchObject({
+      sessionId: 'happy-session-id',
+    });
+    expect(launchSpec.diagnostics?.logsDir).toContain('/logs/terminal-runner');
+    expect(launchSpec.diagnostics?.sessionExitDir).toContain('/logs/session-exit');
+  });
+
+  it('preserves Windows verbatim argument handling from the resolved Claude invocation', async () => {
+    const spawn = await buildClaudeUnifiedTerminalSpawn({
+      path: 'C:\\workspace\\project',
+      first: {
+        message: 'hello',
+        mode: {
+          permissionMode: 'default',
+        },
+      },
+      deps: {
+        resolveClaudeCliPath: () => 'C:\\Users\\alice\\AppData\\Roaming\\npm\\claude.cmd',
+        isClaudeCliJavaScriptFile: () => false,
+        ensureClaudeJsRuntimeExecutable: async () => 'C:\\happier\\runtime.exe',
+        claudeLocalLauncherPath: 'C:\\happier\\scripts\\claude_local_launcher.cjs',
+        terminalLaunchSpecRunnerPath: 'C:\\happier\\scripts\\terminal_launch_spec_runner.cjs',
+        resolveCommandInvocation: () => ({
+          command: 'C:\\Windows\\System32\\cmd.exe',
+          args: ['/d', '/s', '/c', '"C:\\Users\\alice\\AppData\\Roaming\\npm\\claude.cmd"'],
+          windowsVerbatimArguments: true,
+        }),
+      },
+    });
+
+    const launchSpec = await readLaunchSpecFromSpawn(spawn);
+    expect(launchSpec).toMatchObject({
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      windowsVerbatimArguments: true,
+    });
+  });
+
   it('starts yolo sessions in bypass mode while still deduping the managed allow flag', async () => {
     const spawn = await buildClaudeUnifiedTerminalSpawn({
       path: '/workspace/project',
@@ -129,9 +194,62 @@ describe('buildClaudeUnifiedTerminalSpawn', () => {
       '--permission-mode',
       'bypassPermissions',
     ]);
+    const settingsIndex = launchArgs.indexOf('--settings');
+    expect(settingsIndex).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(launchArgs[settingsIndex + 1]!)).toMatchObject({
+      skipDangerousModePermissionPrompt: true,
+    });
+  });
+
+  it('does not let bare --resume consume a following permission flag', async () => {
+    const spawn = await buildClaudeUnifiedTerminalSpawn({
+      path: '/workspace/project',
+      first: {
+        message: 'hello',
+        mode: {
+          permissionMode: 'yolo',
+        },
+      },
+      claudeArgs: ['--resume', '--permission-mode', 'bypassPermissions'],
+      hookPluginDir: '/tmp/hook-plugin',
+      deps: {
+        resolveClaudeCliPath: () => '/usr/local/bin/claude',
+        isClaudeCliJavaScriptFile: () => false,
+        ensureClaudeJsRuntimeExecutable: async () => '/managed/node',
+        claudeLocalLauncherPath: '/happier/scripts/claude_local_launcher.cjs',
+        terminalLaunchSpecRunnerPath: '/happier/scripts/terminal_launch_spec_runner.cjs',
+        resolveCommandInvocation: ({ command, args }) => ({ command, args: [...args] }),
+      },
+    });
+
+    const launchSpec = await readLaunchSpecFromSpawn(spawn);
+    const launchArgs = launchSpec.args ?? [];
+    const permissionIndexes = launchArgs
+      .map((arg, index) => arg === '--permission-mode' ? index : -1)
+      .filter((index) => index >= 0);
+
+    expect(permissionIndexes).toHaveLength(1);
+    expect(launchArgs[permissionIndexes[0]! + 1]).toBe('bypassPermissions');
+    expect(launchArgs.indexOf('--resume')).toBeLessThan(permissionIndexes[0]!);
+    expect(launchArgs.slice(launchArgs.indexOf('--plugin-dir'), launchArgs.indexOf('--plugin-dir') + 2)).toEqual([
+      '--plugin-dir',
+      '/tmp/hook-plugin',
+    ]);
+    const settingsIndex = launchArgs.indexOf('--settings');
+    expect(JSON.parse(launchArgs[settingsIndex + 1]!)).toMatchObject({
+      skipDangerousModePermissionPrompt: true,
+    });
   });
 
   it('uses the managed JavaScript runtime wrapper when the resolved Claude CLI is a JavaScript file', async () => {
+    const mcpConfigJson = JSON.stringify({
+      mcpServers: {
+        connected: {
+          command: 'mcp-server',
+          env: { API_TOKEN: 'synthetic-sensitive-value' },
+        },
+      },
+    });
     const spawn = await buildClaudeUnifiedTerminalSpawn({
       path: '/workspace/project',
       first: {
@@ -143,7 +261,7 @@ describe('buildClaudeUnifiedTerminalSpawn', () => {
       claudeArgs: ['--model', 'sonnet', '--permission-mode', 'bypassPermissions'],
       hookPluginDir: '/tmp/plugin',
       hookSettingsPath: '/tmp/settings.json',
-      happierMcpConfigJson: '{"mcpServers":{}}',
+      happierMcpConfigJson: mcpConfigJson,
       deps: {
         resolveClaudeCliPath: () => '/opt/claude/cli.js',
         isClaudeCliJavaScriptFile: () => true,
@@ -162,7 +280,19 @@ describe('buildClaudeUnifiedTerminalSpawn', () => {
     expect(launchSpec.args?.[0]).toBe('/happier/scripts/claude_local_launcher.cjs');
     expect(launchSpec.args).toContain('/tmp/plugin');
     expect(launchSpec.args).toContain('/tmp/settings.json');
-    expect(launchSpec.args).toContain('{"mcpServers":{}}');
+    expect(JSON.stringify(launchSpec.args)).not.toContain('synthetic-sensitive-value');
+    const mcpConfigIndex = launchSpec.args?.indexOf('--mcp-config') ?? -1;
+    expect(mcpConfigIndex).toBeGreaterThanOrEqual(0);
+    const mcpConfigPath = launchSpec.args?.[mcpConfigIndex + 1];
+    expect(typeof mcpConfigPath).toBe('string');
+    expect(mcpConfigPath).not.toBe(mcpConfigJson);
+    await expect(readFile(mcpConfigPath!, 'utf8')).resolves.toBe(mcpConfigJson);
+    if (process.platform !== 'win32') {
+      await expect(stat(mcpConfigPath!)).resolves.toMatchObject({ mode: expect.any(Number) });
+      expect((await stat(mcpConfigPath!)).mode & 0o777).toBe(0o600);
+    }
+    expect(launchSpec.cleanupPaths).toContain(mcpConfigPath);
+    await rm(mcpConfigPath!, { force: true });
     expect(launchSpec.args).toContain('--permission-mode');
     expect(launchSpec.args).toContain('dontAsk');
     expect(launchSpec.args).not.toContain('bypassPermissions');
@@ -220,8 +350,48 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
       const args = launchSpec.args ?? [];
       const overlay = await readOverlayFromArgs(args, hookSettingsPath);
       expect(overlay.ultracode).toBe(true);
+      expect(overlay).not.toHaveProperty('skipDangerousModePermissionPrompt');
       // The hook settings content survives the merge.
       expect(overlay.permissions).toEqual({ allow: ['mcp__happier__change_title'] });
+    } finally {
+      await rm(settingsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges yolo acknowledgement into the trusted launch overlay without changing the source settings', async () => {
+    const { mkdtemp, readFile, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const settingsDir = await mkdtemp(join(tmpdir(), 'happier-yolo-settings-'));
+    const hookSettingsPath = join(settingsDir, 'settings.json');
+    const sourceSettings = { permissions: { allow: ['mcp__happier__change_title'] } };
+    await writeFile(hookSettingsPath, JSON.stringify(sourceSettings));
+
+    try {
+      const spawn = await buildClaudeUnifiedTerminalSpawn({
+        path: '/workspace/project',
+        first: {
+          message: 'hello',
+          mode: { permissionMode: 'yolo' },
+        },
+        hookSettingsPath,
+        deps: {
+          resolveClaudeCliPath: () => '/usr/local/bin/claude',
+          isClaudeCliJavaScriptFile: () => false,
+          ensureClaudeJsRuntimeExecutable: async () => '/managed/node',
+          claudeLocalLauncherPath: '/happier/scripts/claude_local_launcher.cjs',
+          terminalLaunchSpecRunnerPath: '/happier/scripts/terminal_launch_spec_runner.cjs',
+          resolveCommandInvocation: ({ command, args }) => ({ command, args: [...args] }),
+        },
+      });
+
+      const launchSpec = await readLaunchSpecFromSpawn(spawn);
+      const overlay = await readOverlayFromArgs(launchSpec.args ?? [], hookSettingsPath);
+      expect(overlay).toMatchObject({
+        ...sourceSettings,
+        skipDangerousModePermissionPrompt: true,
+      });
+      expect(JSON.parse(await readFile(hookSettingsPath, 'utf8'))).toEqual(sourceSettings);
     } finally {
       await rm(settingsDir, { recursive: true, force: true });
     }
@@ -613,7 +783,7 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
     ]);
   });
 
-  it('skips Claude Code onboarding so terminal-injected prompts reach the chat input on fresh hosts', async () => {
+  it('does not bypass Claude workspace trust because untrusted demo-mode sessions suppress plugin hooks', async () => {
     const spawn = await buildClaudeUnifiedTerminalSpawn({
       path: '/workspace/project',
       first: {
@@ -633,14 +803,13 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
     });
 
     const launchSpec = await readLaunchSpecFromSpawn(spawn);
-    expect(launchSpec.env?.IS_DEMO).toBe('1');
+    expect(launchSpec.env?.IS_DEMO).toBeUndefined();
   });
 
   it('keeps unified terminal spawn env compact while preserving Claude auth and explicit child env keys', async () => {
     await withPatchedEnv({
       ANTHROPIC_API_KEY: 'sk-ant-test',
       CLAUDE_CONFIG_DIR: '/tmp/claude-config',
-      HAPPIER_DAEMON_INITIAL_PROMPT: 'x'.repeat(200_000),
       HUGE_UNRELATED_ENV: 'y'.repeat(200_000),
       MY_EXPLICIT_CHILD_ENV: 'kept',
       [HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR]: JSON.stringify(['MY_EXPLICIT_CHILD_ENV']),
@@ -674,10 +843,8 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
       expect(launchSpec.env?.DISABLE_AUTOUPDATER).toBe('1');
       expect(launchSpec.envPassthroughKeys).toContain('ANTHROPIC_API_KEY');
       expect(spawn.spawnEnv.ANTHROPIC_API_KEY).toBe('sk-ant-test');
-      expect(spawn.spawnEnv.HAPPIER_DAEMON_INITIAL_PROMPT).toBeUndefined();
       expect(spawn.spawnEnv.HUGE_UNRELATED_ENV).toBeUndefined();
       expect(spawn.spawnEnv[HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR]).toBeUndefined();
-      expect(launchSpec.env?.HAPPIER_DAEMON_INITIAL_PROMPT).toBeUndefined();
       expect(launchSpec.env?.HUGE_UNRELATED_ENV).toBeUndefined();
       expect(launchSpec.env?.[HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR]).toBeUndefined();
     });
@@ -739,7 +906,7 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
         first: {
           message: 'hello',
           mode: {
-            permissionMode: 'default',
+            permissionMode: 'yolo',
           },
         },
         deps: {
@@ -761,6 +928,11 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
       expect(spawn.spawnEnv.CLAUDE_CODE_SETUP_TOKEN).toBeUndefined();
       expect(spawn.spawnEnv[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]).toBeUndefined();
       expect(spawn.spawnEnv[HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY]).toBeUndefined();
+      const launchArgs = launchSpec.args ?? [];
+      const settingsIndex = launchArgs.indexOf('--settings');
+      expect(JSON.parse(launchArgs[settingsIndex + 1]!)).toMatchObject({
+        skipDangerousModePermissionPrompt: true,
+      });
     });
   });
 
@@ -846,11 +1018,17 @@ async function readOverlayFromArgs(args: readonly string[], hookSettingsPath: st
       }
       expect(launchSpec.command).toBe('/usr/local/bin/claude');
       expect(launchSpec.args).toContain('--append-system-prompt');
-      expect(launchSpec.args).toContain(longMcpConfigJson);
+      expect(launchSpec.args).not.toContain(longMcpConfigJson);
+      const mcpConfigIndex = launchSpec.args?.indexOf('--mcp-config') ?? -1;
+      expect(mcpConfigIndex).toBeGreaterThanOrEqual(0);
+      const mcpConfigPath = launchSpec.args?.[mcpConfigIndex + 1];
+      await expect(readFile(mcpConfigPath!, 'utf8')).resolves.toBe(longMcpConfigJson);
+      expect(launchSpec.cleanupPaths).toContain(mcpConfigPath);
       expect(launchSpec.cwd).toBe('/workspace/project');
       expect(launchSpec.env?.DISABLE_AUTOUPDATER).toBe('1');
 
       await rm(dirname(specPath!), { recursive: true, force: true });
+      await rm(mcpConfigPath!, { force: true });
     });
   });
 

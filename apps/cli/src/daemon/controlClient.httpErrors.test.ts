@@ -1,14 +1,16 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { reloadConfiguration } from '@/configuration';
-import { writeDaemonState, clearDaemonState } from '@/persistence';
+import { writeDaemonState, clearDaemonStateForTests } from '@/persistence';
 import * as controlClient from '@/daemon/controlClient';
 import {
+  DaemonConnectedServiceRefreshError,
   notifyDaemonConnectedServiceTurnLifecycle,
   requestDaemonSessionConnectedServiceAuthSwitch,
   resolveDaemonSpawnSessionByNonce,
   spawnDaemonSession,
 } from '@/daemon/controlClient';
+import { deriveConnectedServiceBrokerRefreshToken } from '@/daemon/connectedServices/broker/brokerRefreshCapabilityToken';
 import type { SpawnDaemonSessionRequest } from '@/rpc/handlers/spawnSessionOptionsContract';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -17,7 +19,6 @@ const LEGACY_SPAWN_ALLOWLIST_FIELDS = [
   'directory',
   'sessionId',
   'existingSessionId',
-  'initialPrompt',
   'backendTarget',
   'experimentalCodexAcp',
   'environmentVariables',
@@ -67,13 +68,57 @@ describe('daemon control client (HTTP error responses)', () => {
   let tmpHomeDir: string | null = null;
 
   afterEach(async () => {
-    await clearDaemonState();
+    await clearDaemonStateForTests();
     envScope.restore();
     envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
     reloadConfiguration();
     if (tmpHomeDir) {
       await removeTempDir(tmpHomeDir);
       tmpHomeDir = null;
+    }
+  });
+
+  it('settles an in-flight control request when the caller aborts', async () => {
+    let requestObserved: (() => void) | null = null;
+    const observed = new Promise<void>((resolve) => {
+      requestObserved = resolve;
+    });
+    const server = http.createServer((_req, _res) => {
+      requestObserved?.();
+      // Keep the response open so only the caller signal can settle this request.
+    });
+
+    try {
+      const { port } = await listen(server);
+      tmpHomeDir = await createTempDir('happier-daemon-client-abort-');
+      envScope.patch({ HAPPIER_HOME_DIR: tmpHomeDir });
+      reloadConfiguration();
+      writeDaemonState({
+        pid: process.pid,
+        httpPort: port,
+        startedAt: Date.now(),
+        startedWithCliVersion: 'test',
+        controlToken: 'test-token',
+      });
+
+      const controller = new AbortController();
+      const request = notifyDaemonConnectedServiceTurnLifecycle({
+        sessionId: 'sess_1',
+        event: 'assistant_message_end',
+        terminalStatus: 'completed',
+      }, {
+        signal: controller.signal,
+        timeoutMs: 60_000,
+      });
+
+      await observed;
+      controller.abort();
+
+      await expect(request).resolves.toEqual({
+        error: expect.stringMatching(/aborted|aborterror/i),
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
@@ -139,9 +184,9 @@ describe('daemon control client (HTTP error responses)', () => {
     }
   });
 
-  it('posts connected-service turn lifecycle events to the daemon control route', async () => {
+  it('posts exact prompt authorization fields while preserving old-body terminal notifications', async () => {
     let observedUrl: string | undefined;
-    let observedBody: Record<string, unknown> | null = null;
+    const observedBodies: Array<Record<string, unknown>> = [];
 
     const server = http.createServer((req, res) => {
       observedUrl = req.url;
@@ -151,10 +196,19 @@ describe('daemon control client (HTTP error responses)', () => {
         rawBody += chunk;
       });
       req.on('end', () => {
-        observedBody = JSON.parse(rawBody) as Record<string, unknown>;
+        observedBodies.push(JSON.parse(rawBody) as Record<string, unknown>);
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ ok: true, result: { ok: true } }));
+        res.end(JSON.stringify({
+          ok: true,
+          result: {
+            status: 'continue',
+            turnCustody: {
+              status: 'ignored_missing_exact_turn',
+              activeTurnId: null,
+            },
+          },
+        }));
       });
     });
 
@@ -175,15 +229,35 @@ describe('daemon control client (HTTP error responses)', () => {
       await expect(notifyDaemonConnectedServiceTurnLifecycle({
         sessionId: 'sess_1',
         event: 'prompt_or_steer',
+        requestedAction: { v: 1, kind: 'steer_if_active' },
+        activeTurnId: 'session-turn:exact-1',
       })).resolves.toEqual({
-        ok: true,
-        result: { ok: true },
+        status: 'continue',
+        turnCustody: {
+          status: 'ignored_missing_exact_turn',
+          activeTurnId: null,
+        },
       });
 
       expect(observedUrl).toBe('/connected-service-turn-lifecycle');
-      expect(observedBody).toEqual({
+      expect(observedBodies[0]).toEqual({
         sessionId: 'sess_1',
         event: 'prompt_or_steer',
+        requestedAction: { v: 1, kind: 'steer_if_active' },
+        activeTurnId: 'session-turn:exact-1',
+      });
+
+      await expect(notifyDaemonConnectedServiceTurnLifecycle({
+        sessionId: 'sess_1',
+        event: 'assistant_message_end',
+        terminalStatus: 'completed',
+        turnId: 'session-turn:exact-1',
+      })).resolves.toMatchObject({ status: 'continue' });
+      expect(observedBodies[1]).toEqual({
+        sessionId: 'sess_1',
+        event: 'assistant_message_end',
+        terminalStatus: 'completed',
+        turnId: 'session-turn:exact-1',
       });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -389,7 +463,10 @@ describe('daemon control client (HTTP error responses)', () => {
         directory: '/tmp',
         spawnNonce: 'spawn-nonce-legacy-compat',
         backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-        initialPrompt: 'keep initial prompt behavior',
+        pendingFirstInput: {
+          text: 'commit through Pending after session creation',
+          localId: 'spawn-first:legacy-compat',
+        },
         transcriptStorage: 'direct',
         mcpSelection: {
           v: 1,
@@ -411,13 +488,15 @@ describe('daemon control client (HTTP error responses)', () => {
         directory: '/tmp',
         spawnNonce: 'spawn-nonce-legacy-compat',
         backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-        initialPrompt: 'keep initial prompt behavior',
+        pendingFirstInput: {
+          text: 'commit through Pending after session creation',
+          localId: 'spawn-first:legacy-compat',
+        },
         transcriptStorage: 'direct',
       }));
       expect(parsedLegacyBody).toEqual({
         directory: '/tmp',
         backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-        initialPrompt: 'keep initial prompt behavior',
       });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -460,8 +539,11 @@ describe('daemon control client (HTTP error responses)', () => {
 
   it('posts Codex ChatGPT refresh bridge requests to daemon control server', async () => {
     let observedBody: Record<string, unknown> | null = null;
+    let observedAuthToken: string | undefined;
     const server = http.createServer((req, res) => {
       if (req.method === 'POST' && req.url === '/connected-service-auth/openai-codex/chatgpt-auth-tokens/refresh') {
+        const rawAuthToken = req.headers['x-happier-daemon-token'];
+        observedAuthToken = Array.isArray(rawAuthToken) ? rawAuthToken.join(',') : rawAuthToken;
         let rawBody = '';
         req.setEncoding('utf8');
         req.on('data', (chunk) => {
@@ -528,6 +610,177 @@ describe('daemon control client (HTTP error responses)', () => {
           profileId: 'work',
         },
         chatgptPlanType: 'plus',
+      });
+      expect(observedAuthToken).toBe('test-token');
+      expect(observedAuthToken).not.toBe(deriveConnectedServiceBrokerRefreshToken('test-token'));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('preserves reconnect-required credential health from the daemon refresh bridge', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/connected-service-auth/openai-codex/chatgpt-auth-tokens/refresh') {
+        req.resume();
+        res.statusCode = 409;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({
+          ok: false,
+          errorCode: 'connected_service_credential_reconnect_required',
+          credentialHealthStatus: 'needs_reauth',
+        }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    try {
+      const { port } = await listen(server);
+      tmpHomeDir = await createTempDir('happier-daemon-client-refresh-health-test-');
+      envScope.patch({ HAPPIER_HOME_DIR: tmpHomeDir });
+      reloadConfiguration();
+      writeDaemonState({
+        pid: process.pid,
+        httpPort: port,
+        startedAt: Date.now(),
+        startedWithCliVersion: 'test',
+        controlToken: 'test-token',
+      });
+
+      await expect(controlClient.refreshDaemonOpenAiCodexChatGptAuthTokensForBridge({
+        sessionId: 'sess_1',
+        selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'work' },
+        chatgptPlanType: 'plus',
+      })).rejects.toMatchObject({
+        name: DaemonConnectedServiceRefreshError.name,
+        errorCode: 'connected_service_credential_reconnect_required',
+        credentialHealthStatus: 'needs_reauth',
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('posts forced Claude subscription refresh bridge requests to daemon control server', async () => {
+    let observedBody: Record<string, unknown> | null = null;
+    let observedAuthToken: string | undefined;
+    const server = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/connected-service-auth/claude-subscription/anthropic-auth-tokens/refresh') {
+        const rawAuthToken = req.headers['x-happier-daemon-token'];
+        observedAuthToken = Array.isArray(rawAuthToken) ? rawAuthToken.join(',') : rawAuthToken;
+        let rawBody = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk) => {
+          rawBody += chunk;
+        });
+        req.on('end', () => {
+          observedBody = JSON.parse(rawBody) as Record<string, unknown>;
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            result: {
+              accessToken: 'fresh-claude-access',
+              anthropicAccountId: 'acct_123',
+              expiresAt: 123_456,
+            },
+          }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    try {
+      const { port } = await listen(server);
+      tmpHomeDir = await createTempDir('happier-daemon-client-test-');
+      envScope.patch({ HAPPIER_HOME_DIR: tmpHomeDir });
+      reloadConfiguration();
+      writeDaemonState({
+        pid: process.pid,
+        httpPort: port,
+        startedAt: Date.now(),
+        startedWithCliVersion: 'test',
+        controlToken: 'test-token',
+      });
+
+      const refresh = (controlClient as {
+        refreshDaemonClaudeSubscriptionAnthropicAuthTokensForBridge?: (input: Readonly<{
+          sessionId: string;
+          selection: Readonly<{ kind: 'profile'; serviceId: 'claude-subscription'; profileId: string }>;
+          forceRefresh?: boolean;
+        }>) => Promise<unknown>;
+      }).refreshDaemonClaudeSubscriptionAnthropicAuthTokensForBridge;
+      expect(typeof refresh).toBe('function');
+      await expect(refresh!({
+        sessionId: 'sess_1',
+        selection: {
+          kind: 'profile',
+          serviceId: 'claude-subscription',
+          profileId: 'work',
+        },
+        forceRefresh: true,
+      })).resolves.toEqual({
+        accessToken: 'fresh-claude-access',
+        anthropicAccountId: 'acct_123',
+        expiresAt: 123_456,
+      });
+      expect(observedBody).toEqual({
+        sessionId: 'sess_1',
+        selection: {
+          kind: 'profile',
+          serviceId: 'claude-subscription',
+          profileId: 'work',
+        },
+        forceRefresh: true,
+      });
+      expect(observedAuthToken).toBe('test-token');
+      expect(observedAuthToken).not.toBe(deriveConnectedServiceBrokerRefreshToken('test-token'));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('preserves reconnect-required credential health from the Claude daemon refresh bridge', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/connected-service-auth/claude-subscription/anthropic-auth-tokens/refresh') {
+        req.resume();
+        res.statusCode = 409;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({
+          ok: false,
+          errorCode: 'connected_service_credential_reconnect_required',
+          credentialHealthStatus: 'needs_reauth',
+        }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    try {
+      const { port } = await listen(server);
+      tmpHomeDir = await createTempDir('happier-daemon-client-claude-refresh-health-test-');
+      envScope.patch({ HAPPIER_HOME_DIR: tmpHomeDir });
+      reloadConfiguration();
+      writeDaemonState({
+        pid: process.pid,
+        httpPort: port,
+        startedAt: Date.now(),
+        startedWithCliVersion: 'test',
+        controlToken: 'test-token',
+      });
+
+      await expect(controlClient.refreshDaemonClaudeSubscriptionAnthropicAuthTokensForBridge({
+        sessionId: 'sess_1',
+        selection: { kind: 'profile', serviceId: 'claude-subscription', profileId: 'work' },
+        forceRefresh: true,
+      })).rejects.toMatchObject({
+        name: DaemonConnectedServiceRefreshError.name,
+        errorCode: 'connected_service_credential_reconnect_required',
+        credentialHealthStatus: 'needs_reauth',
       });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

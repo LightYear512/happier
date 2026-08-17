@@ -2,14 +2,17 @@ import { readFileSync } from 'fs';
 
 import type { ApiMachineClient } from '@/api/apiMachine';
 import type { DaemonLocallyPersistedState } from '@/persistence';
-import { readDaemonState, writeDaemonState } from '@/persistence';
+import { readDaemonState, writeDaemonStateIfLockOwned } from '@/persistence';
 import { projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { gcExecutionRunMarkers } from '@/daemon/executionRunRegistry';
 import { findHappyProcessByPid } from '@/daemon/doctor';
 import { resolveComparableCliVersion } from '@/daemon/resolveComparableCliVersion';
-import { spawnDetachedDaemonStartSync } from '@/daemon/runtime/spawnDetachedDaemonStartSync';
 import { configuration } from '@/configuration';
+import {
+  readDaemonRestartVerifyPollMs,
+  readDaemonRestartVerifyTimeoutMs,
+} from '@/daemon/startupWaitDefaults';
 import {
   gcWorkspaceReplicationCas,
   gcWorkspaceReplicationJobs,
@@ -20,12 +23,16 @@ import { recoverSessionHandoffPrepareTargetJobsAfterRestart } from '@/session/ha
 import type { TrackedSession } from '../types';
 import { cleanupPidSessionResources } from '../sessions/cleanupPidSessionResources';
 import { createOnChildExited } from '../sessions/onChildExited';
+import { readSessionMarkerForPid } from '../sessionRegistry';
 import {
   isValidProcessCommandHash,
   readSessionRunnerProcessIdentity as readSessionRunnerProcessIdentityDefault,
-  storedProcessHashProvesPidReuse,
+  storedProcessIdentityProvesPidReuse,
   type SessionRunnerProcessIdentity,
 } from '../sessionRunnerProcessIdentity';
+import { requestDaemonSelfRestart } from './requestDaemonSelfRestart';
+
+type RequestDaemonSelfRestart = typeof requestDaemonSelfRestart;
 
 function parsePositiveInt(rawValue: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(rawValue ?? '', 10);
@@ -63,40 +70,18 @@ function hasLiveDaemonChildProcessHandle(
 
 export function getTrackedSessionHeartbeatPruneReason(params: Readonly<{
   isPidAlive: boolean;
-  trackedSession: Pick<TrackedSession, 'startedBy' | 'pid' | 'childProcess' | 'processCommandHash'>;
+  trackedSession: Pick<TrackedSession, 'startedBy' | 'pid' | 'childProcess' | 'processCommandHash' | 'processInstanceFingerprint'>;
   currentIdentity?: SessionRunnerProcessIdentity;
 }>): TrackedSessionHeartbeatPruneReason | null {
   if (!params.isPidAlive) return 'process-missing';
   if (!params.currentIdentity) return null;
-  const processHashProvesPidReuse = storedProcessHashProvesPidReuse({
-    storedProcessCommandHash: params.trackedSession.processCommandHash,
+  const processIdentityProvesPidReuse = storedProcessIdentityProvesPidReuse({
+    storedProcessInstanceFingerprint: params.trackedSession.processInstanceFingerprint,
     currentIdentity: params.currentIdentity,
   });
-  if (!processHashProvesPidReuse) return null;
+  if (!processIdentityProvesPidReuse) return null;
   if (hasLiveDaemonChildProcessHandle(params.trackedSession)) return null;
   return 'process-reused';
-}
-
-async function waitForReplacementDaemon(params: Readonly<{
-  ownPid: number;
-  expectedCliVersion: string;
-  timeoutMs: number;
-  pollMs: number;
-}>): Promise<boolean> {
-  const { ownPid, expectedCliVersion, timeoutMs, pollMs } = params;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const daemonState = await readDaemonState();
-    if (
-      daemonState &&
-      daemonState.pid !== ownPid &&
-      daemonState.startedWithCliVersion === expectedCliVersion
-    ) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  }
-  return false;
 }
 
 export function startDaemonHeartbeatLoop(params: Readonly<{
@@ -104,13 +89,14 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
   spawnResourceCleanupByPid: Map<number, () => void>;
   sessionAttachCleanupByPid: Map<number, () => Promise<void>>;
   getApiMachineForSessions: () => ApiMachineClient | null;
-  onChildExited?: (pid: number, exit: Readonly<{ reason: string; code: number | null; signal: string | null }>) => void;
+  onChildExited?: (pid: number, exit: Readonly<{ reason: string; code: number | null; signal: string | null }>) => void | Promise<void>;
   controlPort: number;
   fileState: DaemonLocallyPersistedState;
   currentCliVersion: string;
   requestShutdown: (source: 'happier-app' | 'happier-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
   isShuttingDown?: () => boolean;
   readSessionRunnerProcessIdentity?: ReadSessionRunnerProcessIdentity;
+  requestSelfRestart?: RequestDaemonSelfRestart;
 }>): NodeJS.Timeout {
   const {
     pidToTrackedSession,
@@ -124,6 +110,7 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
     requestShutdown,
     isShuttingDown,
     readSessionRunnerProcessIdentity,
+    requestSelfRestart = requestDaemonSelfRestart,
   } = params;
   const readSessionRunnerProcessIdentityForHeartbeat =
     readSessionRunnerProcessIdentity ?? readSessionRunnerProcessIdentityDefault;
@@ -143,8 +130,8 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
   // 3. If outdated, restart with latest version
   // 4. Write heartbeat
   const heartbeatIntervalMs = parsePositiveInt(process.env.HAPPIER_DAEMON_HEARTBEAT_INTERVAL, 60000);
-  const restartVerifyTimeoutMs = parsePositiveInt(process.env.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS, 10000);
-  const restartVerifyPollMs = parsePositiveInt(process.env.HAPPIER_DAEMON_RESTART_VERIFY_POLL_MS, 250);
+  const restartVerifyTimeoutMs = readDaemonRestartVerifyTimeoutMs();
+  const restartVerifyPollMs = readDaemonRestartVerifyPollMs();
   const executionRunTerminalTtlMs = parseNonNegativeInt(
     process.env.HAPPIER_DAEMON_EXECUTION_RUN_TERMINAL_TTL_MS,
     6 * 60 * 60 * 1000,
@@ -224,7 +211,10 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
       // Prune stale sessions
       for (const [pid, tracked] of pidToTrackedSession.entries()) {
         const isPidAlive = isPidAliveBestEffort(pid);
-        const currentIdentity = isPidAlive && isValidProcessCommandHash(tracked.processCommandHash)
+        const currentIdentity = isPidAlive && (
+          isValidProcessCommandHash(tracked.processCommandHash)
+          || Boolean(tracked.processInstanceFingerprint)
+        )
           ? await readSessionRunnerProcessIdentityForHeartbeat({ pid }).catch(() => ({ kind: 'unknown' as const }))
           : undefined;
         const pruneReason = getTrackedSessionHeartbeatPruneReason({
@@ -238,8 +228,14 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
               pruneReason === 'process-missing' ? 'process no longer exists' : 'PID was reused by another process'
             })`,
           );
-          onChildExitedForPrune(pid, { reason: pruneReason, code: null, signal: null });
+          await onChildExitedForPrune(pid, { reason: pruneReason, code: null, signal: null });
           continue;
+        }
+        if (tracked.happySessionId) {
+          const marker = await readSessionMarkerForPid(pid).catch(() => null);
+          if (marker?.happySessionId === tracked.happySessionId) {
+            tracked.terminalHostHealth = marker.terminalHostHealth;
+          }
         }
       }
 
@@ -312,47 +308,23 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
       if (projectVersion && projectVersion !== currentCliVersion) {
         logger.debug('[DAEMON RUN] Daemon is outdated, triggering self-restart with latest version');
 
-        let spawnStarted = false;
-        try {
-          const spawned = await spawnDetachedDaemonStartSync({
-            startupSource: 'self-restart',
-            env: fileState.runtimeId
-              ? {
-                ...process.env,
-                HAPPIER_DAEMON_RUNTIME_ID: fileState.runtimeId,
-              }
-              : process.env,
-          });
-          spawned.unref?.();
-          spawnStarted = true;
-        } catch (error) {
-          logger.debug(
-            '[DAEMON RUN] Failed to spawn new daemon, this is quite likely to happen during integration tests as we are cleaning out dist/ directory',
-            error,
-          );
-        }
-
-        if (spawnStarted) {
-          const replacementConfirmed = await waitForReplacementDaemon({
-            ownPid: process.pid,
-            expectedCliVersion: projectVersion,
-            timeoutMs: restartVerifyTimeoutMs,
-            pollMs: restartVerifyPollMs,
-          });
-          if (replacementConfirmed) {
-            logger.debug('[DAEMON RUN] Replacement daemon confirmed. Exiting outdated daemon process.');
-            process.exit(0);
-          }
-          logger.debug('[DAEMON RUN] Replacement daemon was not confirmed before timeout. Keeping current daemon alive.');
-        }
+        await requestSelfRestart({
+          runtimeId: fileState.runtimeId,
+          expectedCliVersion: projectVersion,
+          ownPid: process.pid,
+          timeoutMs: restartVerifyTimeoutMs,
+          pollMs: restartVerifyPollMs,
+          takeover: true,
+        });
       }
 
-      // Before recklessly overwriting the daemon state file, we should check if we are the ones who own it
-      // Race condition is possible, but thats okay for the time being :D
+      // Observe an already-published successor before constructing this heartbeat. The subsequent
+      // owner-gated write closes the lock handoff race between this read and publication.
       const daemonState = await readDaemonState();
       if (daemonState && daemonState.pid !== process.pid) {
         logger.debug('[DAEMON RUN] Somehow a different daemon was started without killing us. We should kill ourselves.');
         requestShutdown('exception', 'A different daemon was started without killing us. We should kill ourselves.');
+        return;
       }
 
       // Heartbeat
@@ -374,7 +346,10 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
           daemonLogPath: fileState.daemonLogPath,
           controlToken: fileState.controlToken,
         };
-        writeDaemonState(updatedState);
+        if (!writeDaemonStateIfLockOwned(updatedState)) {
+          requestShutdown('exception', 'Daemon lifecycle lock ownership changed before heartbeat publication.');
+          return;
+        }
         if (process.env.DEBUG) {
           logger.debug(
             `[DAEMON RUN] Health check completed at ${new Date(updatedState.lastHeartbeatAt ?? Date.now()).toISOString()}`,

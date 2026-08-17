@@ -6,7 +6,7 @@ import { open as openFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { clonePlainObjectToNullProto, cloneStringKeyedRecordToNullProto } from '@/api/session/agentStateRecords';
 import { resolveAgentRequestKind } from '@/agent/permissions/requestKind';
-import { AgentStateRequestStore } from '@/agent/permissions/agentStateRequestStore';
+import { AgentStateRequestStore, hasPermissionResponseClaimV1 } from '@/agent/permissions/agentStateRequestStore';
 import { createPermissionRequestCoordinator } from '@/agent/permissions/permissionRequestCoordinator';
 import type { PermissionRequestCoordinatorStore } from '@/agent/permissions/permissionRequestCoordinator';
 
@@ -21,6 +21,7 @@ import { isToolAllowedForSession } from '@/agent/permissions/permissionToolIdent
 import { applyAllowedToolsToAllowlist, applyUpdatedPermissionsToAllowlist, seedAllowlistFromCompletedRequests } from '@/agent/permissions/applyPermissionAllowlistUpdates';
 import { resolvePermissionIntentFromMetadataSnapshot } from '@/agent/runtime/permission/permissionModeFromMetadata';
 import { normalizePermissionModeToIntent } from '@/agent/runtime/permission/permissionModeCanonical';
+import { waitForSessionMetadataRetryBackoff } from '@/agent/runtime/sessionMetadataWaitRetryBackoff';
 import { isDefaultWriteLikeToolName } from '@/agent/permissions/writeLikeToolNameHeuristics';
 import { shouldSuppressProviderPermissionForHappierApproval } from '@/agent/tools/happierTools/resolveHappierActionForMcpToolName';
 import {
@@ -29,7 +30,19 @@ import {
     isClaudeLocalPermissionBridgeAgentStateRequest,
 } from '@happier-dev/agents';
 import { isChangeTitleToolLikeName } from '@happier-dev/protocol/tools/v2';
+import { isAskUserQuestionToolName } from '@happier-dev/protocol';
 import { withAskUserQuestionUiFreeformDefault } from './askUserQuestionFreeformDefault';
+import { buildAskUserQuestionAnswersForClaude } from '../utils/askUserQuestionAnswersForClaude';
+import {
+    normalizeLegacyStructuredQuestionAnswers,
+    normalizeStructuredQuestionAnswersV1,
+    type StructuredQuestionLike,
+} from '@/agent/questions/normalizeStructuredQuestionAnswersV1';
+import { normalizeAskUserQuestionInputForPublication } from '@/agent/questions/normalizeAskUserQuestionInput';
+import { resolveClaudePermissionHookTimeoutMs } from '../utils/permissionHookTimeout';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+
+export { DEFAULT_PROVIDER_HOOK_CEILING_MS } from '../utils/permissionHookTimeout';
 
 type PendingPermissionRequest = {
     id: string;
@@ -67,40 +80,6 @@ type ClaudeToolHookData = Readonly<{
 }>;
 
 const DEFAULT_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
-/**
- * Default provider-side permission hook ceiling: 7 days, in milliseconds.
- *
- * Claude kills the permission hook forwarder once its installed command `timeout` elapses, after which
- * the forwarder is dead and a late UI answer can no longer reach Claude. This ceiling MUST stay aligned
- * with the installed hook `timeout` (`generateHookSettings` `DEFAULT_PERMISSION_HOOK_TIMEOUT_SECONDS`,
- * also 7 days) so the bridge's answer-time expiry only ever fires when the forwarder is genuinely dead,
- * never on an artificially short timeout.
- *
- * It is INDEPENDENT of the bridge's own `responseTimeoutMs`: even in wait-indefinitely mode (no Happier
- * waiter) the provider still enforces the hook timeout, so the bridge must expire past-ceiling answers
- * rather than approving them into a dead socket. Effectively unlimited so an operator can launch a
- * session before sleeping and answer the permission on waking, while staying finite so a genuinely-dead
- * forwarder is still honestly expired.
- */
-export const DEFAULT_PROVIDER_HOOK_CEILING_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * Optional environment override (seconds) for the default provider hook ceiling. Mirrors the
- * `HAPPIER_CLAUDE_PERMISSION_HOOK_TIMEOUT_SECONDS` override read by `generateHookSettings`, so overriding
- * the installed hook `timeout` keeps the bridge ceiling aligned without threading an account setting
- * through `runClaude`. An explicit `providerHookCeilingMs` / finite `responseTimeoutMs` still wins.
- */
-const PROVIDER_HOOK_CEILING_ENV_VAR = 'HAPPIER_CLAUDE_PERMISSION_HOOK_TIMEOUT_SECONDS';
-
-function readProviderHookCeilingEnvMs(): number | null {
-    const raw = process.env[PROVIDER_HOOK_CEILING_ENV_VAR];
-    if (typeof raw !== 'string') return null;
-    const seconds = Number(raw.trim());
-    if (Number.isFinite(seconds) && seconds > 0) {
-        return Math.floor(seconds) * 1000;
-    }
-    return null;
-}
 const PERMISSION_TIMED_OUT_REASON = 'Timed out waiting for permission response';
 const PERMISSION_EXPIRED_REASON = 'Provider hook timeout elapsed before a response was delivered';
 const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
@@ -155,7 +134,7 @@ export class ClaudeLocalPermissionBridge {
         } else {
             // Wait-indefinitely mode (no finite response timeout): use the env-overridable default, kept
             // aligned with the installed hook `timeout` so expiry only fires on a genuinely-dead forwarder.
-            this.providerHookCeilingMs = readProviderHookCeilingEnvMs() ?? DEFAULT_PROVIDER_HOOK_CEILING_MS;
+            this.providerHookCeilingMs = resolveClaudePermissionHookTimeoutMs();
         }
         this.requestStore = new AgentStateRequestStore({
             session: this.session.client,
@@ -170,6 +149,7 @@ export class ClaudeLocalPermissionBridge {
     }
 
     activate(): void {
+        this.retireStaleSourceOwnedRequests();
         this.session.getOrCreatePermissionRpcRouter().registerConsumer({
             name: 'claude-local-permission-bridge',
             tryHandlePermissionRpc: (payload) => this.tryHandlePermissionRpc(payload),
@@ -177,6 +157,18 @@ export class ClaudeLocalPermissionBridge {
         this.seedAllowlistFromAgentState();
         this.syncPermissionModeFromMetadataSnapshot();
         this.startMetadataWatcher();
+    }
+
+    private retireStaleSourceOwnedRequests(): void {
+        const requests = this.session.client.getAgentStateSnapshot?.()?.requests ?? {};
+        for (const [requestId, request] of Object.entries(requests)) {
+            if (!isClaudeLocalPermissionBridgeAgentStateRequest(request)) continue;
+            void this.requestStore.completeRequest({
+                requestId,
+                status: 'canceled',
+                reason: CLAUDE_LOCAL_PERMISSION_BRIDGE_STOPPED_REASON,
+            });
+        }
     }
 
     dispose(): void {
@@ -225,11 +217,18 @@ export class ClaudeLocalPermissionBridge {
         }
 
         const toolName = this.resolveToolName(data);
-        const toolInput = this.resolveToolInput(data);
+        const toolInput = normalizeAskUserQuestionInputForPublication(
+            toolName,
+            this.resolveToolInput(data),
+        );
         const permissionSuggestions = this.resolvePermissionSuggestions(data);
         const existing = this.pendingRequests.get(requestId);
         const hookEventName = existing?.hookEventName ?? readPermissionHookEventName(data);
         const createdAt = existing?.createdAt ?? Date.now();
+
+        if (this.requestStore.isOutstandingRequestClaimed(requestId)) {
+            throw new Error(`Permission request ${requestId} is reserved by a newer runtime`);
+        }
 
         // If we already have an allowlist rule for this tool call, respond immediately without surfacing a prompt.
         // This mirrors Claude Code's "don't ask again" behavior, but is enforced by Happier for reliability.
@@ -299,17 +298,18 @@ export class ClaudeLocalPermissionBridge {
             });
         }
 
+        const coordinatorToolInput = withAskUserQuestionUiFreeformDefault(toolName, toolInput);
         const waiter = this.createLocalWaiter({
             requestId,
             toolName,
-            toolInput,
+            toolInput: coordinatorToolInput,
             createdAt,
         });
 
         const coordinatorDecision = this.permissionCoordinator.requestDecision({
             requestId,
             toolName,
-            toolInput,
+            toolInput: coordinatorToolInput,
             createdAt,
             kind: resolveAgentRequestKind(toolName),
             source: CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
@@ -477,13 +477,13 @@ export class ClaudeLocalPermissionBridge {
             publishRequest: (params) => {
                 this.requestStore.publishRequest({
                     ...params,
-                    toolInput: withAskUserQuestionUiFreeformDefault(params.toolName, params.toolInput),
                     source: CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
                     updateState: (state) => ({
                         ...state,
                         capabilities: {
                             ...(state.capabilities ?? {}),
                             askUserQuestionAnswersInPermission: true,
+                            structuredQuestionAnswersV1Supported: true,
                             localPermissionBridgeInLocalMode: true,
                             permissionsInUiWhileLocal: true,
                         },
@@ -494,9 +494,14 @@ export class ClaudeLocalPermissionBridge {
                 this.requestStore.completeRequest(params);
             },
             cancelAllRequests: (params) => {
-        this.cancelLocalOutstandingRequests(params.reason);
+                this.cancelLocalOutstandingRequests(params.reason);
             },
             hasOutstandingRequest: (requestId) => this.readLocalOutstandingRequest(requestId) !== null,
+            isOutstandingRequestClaimed: (requestId) => {
+                const rawRequest = this.session.client.getAgentStateSnapshot?.()?.requests?.[requestId] ?? null;
+                return isClaudeLocalPermissionBridgeAgentStateRequest(rawRequest)
+                    && this.requestStore.isOutstandingRequestClaimed(requestId);
+            },
             readOutstandingRequest: (requestId) => this.readLocalOutstandingRequest(requestId),
         };
     }
@@ -582,31 +587,7 @@ export class ClaudeLocalPermissionBridge {
         this.metadataWatcherAbort = controller;
         const signal = controller.signal;
         const waitForAbortOrBackoff = async (): Promise<void> => {
-            const backoffMs = 250;
-            if (signal.aborted) return;
-            await new Promise<void>((resolve) => {
-                let settled = false;
-                const timer = setTimeout(() => {
-                    if (settled) return;
-                    settled = true;
-                    cleanup(onAbort);
-                    resolve();
-                }, backoffMs);
-                timer.unref?.();
-
-                const cleanup = (onAbort: () => void) => {
-                    signal.removeEventListener('abort', onAbort);
-                    clearTimeout(timer);
-                };
-
-                const onAbort = () => {
-                    if (settled) return;
-                    settled = true;
-                    cleanup(onAbort);
-                    resolve();
-                };
-                signal.addEventListener('abort', onAbort, { once: true });
-            });
+            await waitForSessionMetadataRetryBackoff({ abortSignal: signal });
         };
 
         void (async () => {
@@ -805,6 +786,25 @@ export class ClaudeLocalPermissionBridge {
             }
         }
 
+        const hasStructuredAnswers = payload.answers !== undefined || payload.structuredAnswersV1 !== undefined;
+        const structuredContext = hasStructuredAnswers
+            ? this.permissionCoordinator.getLocallyOwnedLiveResponseContext(requestId)
+            : null;
+        const isAskUserQuestion = isAskUserQuestionToolName(pending?.toolName);
+        if (hasStructuredAnswers && (!pending || !structuredContext || !isAskUserQuestion)) return false;
+        const structuredAnswersV1 = hasStructuredAnswers && structuredContext
+            ? payload.structuredAnswersV1 !== undefined
+                ? normalizeStructuredQuestionAnswersV1(
+                    payload.structuredAnswersV1,
+                    this.readStructuredQuestions(structuredContext.toolInput),
+                )
+                : normalizeLegacyStructuredQuestionAnswers({
+                    answers: payload.answers!,
+                    questions: this.readStructuredQuestions(structuredContext.toolInput),
+                })
+            : undefined;
+        const normalizedPayload = structuredAnswersV1 ? { ...payload, structuredAnswersV1 } : payload;
+
         const allowedTools = Array.isArray(payload.allowedTools ?? payload.allowTools)
             ? [...(payload.allowedTools ?? payload.allowTools)!]
             : undefined;
@@ -819,14 +819,14 @@ export class ClaudeLocalPermissionBridge {
             buildCompletion: (context) => {
                 resolvedToolName = context.toolName;
                 const updatedPermissions = this.resolveResponseUpdatedPermissions({
-                    payload,
+                    payload: normalizedPayload,
                     toolName: context.toolName,
                     resolvedMode,
                 });
                 const hookResponse = this.buildHookResponse({
-                    payload,
+                    payload: normalizedPayload,
                     toolName: context.toolName,
-                    toolInput: context.toolInput,
+                    toolInput: this.pendingRequests.get(requestId)?.toolInput ?? context.toolInput,
                     updatedPermissions,
                     hookEventName: this.pendingRequests.get(requestId)?.hookEventName ?? 'PermissionRequest',
                 });
@@ -840,6 +840,9 @@ export class ClaudeLocalPermissionBridge {
                         mode: resolvedMode,
                         allowedTools,
                         updatedPermissions,
+                        ...(normalizedPayload.structuredAnswersV1
+                            ? { extraCompletedFields: { structuredAnswersV1: normalizedPayload.structuredAnswersV1 } }
+                            : {}),
                     },
                 };
             },
@@ -849,7 +852,7 @@ export class ClaudeLocalPermissionBridge {
 
         this.pendingRequests.delete(requestId);
         if (shouldApplySideEffects) {
-            this.applyPermissionRpcState(payload, {
+            this.applyPermissionRpcState(normalizedPayload, {
                 allowedTools,
                 resolvedMode,
                 excludeRequestId: requestId,
@@ -857,6 +860,12 @@ export class ClaudeLocalPermissionBridge {
             });
         }
         return true;
+    }
+
+    private readStructuredQuestions(toolInput: unknown): readonly StructuredQuestionLike[] {
+        if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return [];
+        const questions = (toolInput as { questions?: unknown }).questions;
+        return Array.isArray(questions) ? questions as readonly StructuredQuestionLike[] : [];
     }
 
     /**
@@ -965,15 +974,13 @@ export class ClaudeLocalPermissionBridge {
         const { payload, toolName, toolInput, updatedPermissions } = params;
         if (payload.approved) {
             const updatedInput =
-                (toolName === 'AskUserQuestion' || toolName === 'ask_user_question')
-                && payload.answers
-                && typeof payload.answers === 'object'
-                && !Array.isArray(payload.answers)
+                isAskUserQuestionToolName(toolName)
+                && payload.structuredAnswersV1
                     ? {
                         ...(toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)
                             ? toolInput as Record<string, unknown>
                             : {}),
-                        answers: payload.answers,
+                        answers: buildAskUserQuestionAnswersForClaude(payload.structuredAnswersV1),
                     }
                     : undefined;
             return this.buildAllowHookResponse({
@@ -992,8 +999,7 @@ export class ClaudeLocalPermissionBridge {
 
     private isInteractiveTool(toolName: string): boolean {
         return (
-            toolName === 'AskUserQuestion' ||
-            toolName === 'ask_user_question' ||
+            isAskUserQuestionToolName(toolName) ||
             toolName === 'ExitPlanMode' ||
             toolName === 'exit_plan_mode'
         );
@@ -1083,6 +1089,7 @@ export class ClaudeLocalPermissionBridge {
         updatedPermissions?: unknown;
         hookResponse: PermissionHookResponse;
     }): void {
+        if (this.requestStore.isOutstandingRequestClaimed(params.requestId)) return;
         const handledByCoordinator = this.permissionCoordinator.handleResponse({
             requestId: params.requestId,
             buildCompletion: () => ({
@@ -1128,6 +1135,7 @@ export class ClaudeLocalPermissionBridge {
 
                 for (const [id, request] of Object.entries(requests)) {
                     if (!isClaudeLocalPermissionBridgeAgentStateRequest(request)) continue;
+                    if (hasPermissionResponseClaimV1(request)) continue;
                     delete requests[id];
                     const completedEntry = clonePlainObjectToNullProto(request) ?? Object.create(null);
                     completedEntry.completedAt = now;
@@ -1158,11 +1166,7 @@ export class ClaudeLocalPermissionBridge {
 
     private resolveRequestId(data: ClaudeToolHookData): string | null {
         const id = data.tool_use_id ?? data.toolUseId;
-        if (typeof id !== 'string') {
-            return null;
-        }
-        const trimmed = id.trim();
-        return trimmed.length > 0 ? trimmed : null;
+        return readNonBlankOpaqueIdentifier(id);
     }
 
     private resolveToolName(data: ClaudeToolHookData): string {

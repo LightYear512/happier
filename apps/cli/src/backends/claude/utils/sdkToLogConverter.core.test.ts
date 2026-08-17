@@ -95,7 +95,7 @@ describe('SDKToLogConverter core conversion', () => {
     it('preserves SDK uuid when present so transcript dedupe remains stable', () => {
       const sdkMessage: SDKAssistantMessage = {
         type: 'assistant',
-        uuid: 'sdk_uuid_1',
+        uuid: ' sdk_uuid_1\n',
         message: {
           role: 'assistant',
           content: [{ type: 'text', text: 'x' }],
@@ -103,7 +103,7 @@ describe('SDKToLogConverter core conversion', () => {
       } as any;
 
       const logMessage = converter.convert(sdkMessage);
-      expect(logMessage?.uuid).toBe('sdk_uuid_1');
+      expect(logMessage?.uuid).toBe(' sdk_uuid_1\n');
     });
 
     it('marks sidechain assistant messages with sidechainId', () => {
@@ -385,6 +385,32 @@ describe('SDKToLogConverter core conversion', () => {
       const logMessage = converter.convert({
         type: 'rate_limit_event',
         rate_limit_info: { status: 'allowed' },
+      } as any);
+
+      expect(logMessage).toBeNull();
+    });
+
+    it.each([
+      ['last-prompt', { type: 'last-prompt', lastPrompt: 'hi', leafUuid: 'leaf-1' }],
+      ['mode', { type: 'mode', mode: 'default' }],
+      ['pr-link', { type: 'pr-link', url: 'https://example.test/pr/1' }],
+      ['tool_progress', {
+        type: 'tool_progress',
+        tool_name: 'Bash',
+        tool_use_id: 'tool-1',
+        elapsed_time_seconds: 30,
+        heartbeat: true,
+      }],
+    ])('does not convert %s records (internal session state, not transcript content)', (_label, sdkMessage) => {
+      // Boundary cast: these are raw internal SDK records outside the SDKMessage union by design.
+      expect(converter.convert(sdkMessage as any)).toBeNull();
+    });
+
+    it('does not convert attachment records (context injection, not transcript content)', () => {
+      // Boundary cast: raw attachment record shape is outside the typed SDKMessage union.
+      const logMessage = converter.convert({
+        type: 'attachment',
+        attachment: { type: 'hook_success', hookEvent: 'SessionStart', stdout: '{}' },
       } as any);
 
       expect(logMessage).toBeNull();

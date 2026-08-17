@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { useNavigation, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -17,6 +16,7 @@ import { CONNECTED_SERVICES_REGISTRY, getConnectedServiceRegistryEntry } from '@
 import { AGENT_IDS, getAgentCore } from '@/agents/catalog/catalog';
 import {
     ConnectedServicesProviderStateSharingSettingsV1Schema,
+    isConnectedServiceCredentialHealthStatusUsable,
     type ConnectedServiceId,
 } from '@happier-dev/protocol';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
@@ -26,11 +26,16 @@ import { connectedServiceProfileKey, resolveConnectedServiceDefaultProfileId } f
 import { resolveConnectedServiceBrandIconXml } from '@/agents/registry/resolveConnectedServiceBrandIconXml';
 import { deriveAccountHealth, type AccountHealth } from '@/sync/domains/connectedServices/deriveAccountHealth';
 import { resolveConnectedServiceCredentialHealthStatus } from '@/sync/domains/connectedServices/resolveConnectedServiceCredentialHealthStatus';
+import {
+  readConnectedServiceProfileKindFromServices,
+  resolveConnectedServiceProfileActionRoute,
+} from '@/sync/domains/connectedServices/resolveConnectedServiceProfileActionRoute';
 import { resolveAccountHealthDotColor } from './account/accountBlockModel';
 import { resolveConnectedServiceDisplayName } from './model/resolveConnectedServiceDisplayName';
 import { ConnectedServicesDefaultAuthRow } from './ConnectedServicesDefaultAuthRow';
 import { ConnectedServicesProviderStateSharingDefaultsGroup } from './ConnectedServicesProviderStateSharingSettings';
 import { SettingsHeaderAddButton } from '../navigation/SettingsHeaderAddButton';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const BRAND_ICON_SIZE = 24;
 
@@ -88,6 +93,14 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
     useSettingMutable('connectedServicesProviderStateSharingSettingsV1');
   const [defaultAuthSettings, setDefaultAuthSettings] =
     useSettingMutable('connectedServicesDefaultAuthByAgentIdV1');
+  const [poolAdoptionDismissedByKey, setPoolAdoptionDismissedByKey] =
+    useSettingMutable('connectedServicesDefaultAuthPoolAdoptionDismissedByKey');
+  const dismissPoolAdoptionSuggestion = React.useCallback((key: string) => {
+    setPoolAdoptionDismissedByKey({
+      ...(poolAdoptionDismissedByKey ?? {}),
+      [key]: true,
+    });
+  }, [poolAdoptionDismissedByKey, setPoolAdoptionDismissedByKey]);
   const router = useRouter();
   const navigation = useNavigation();
   const connectedServicesEnabled = useFeatureEnabled('connectedServices');
@@ -109,7 +122,9 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
     for (const serviceId of allServiceIds) {
       const svc = services.find((s) => s.serviceId === serviceId) ?? null;
       const profiles = svc?.profiles ?? [];
-      const connectedIds = profiles.filter((p) => p.status === 'connected').map((p) => p.profileId);
+      const connectedIds = profiles
+        .filter((p) => isConnectedServiceCredentialHealthStatusUsable(resolveConnectedServiceCredentialHealthStatus(p.status)))
+        .map((p) => p.profileId);
       const effectiveProfileId = resolveConnectedServiceDefaultProfileId({
         serviceId,
         connectedProfileIds: connectedIds,
@@ -143,7 +158,9 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
       const entry = getConnectedServiceRegistryEntry(serviceId);
       const label = resolveConnectedServiceDisplayName(serviceId, t);
       const profiles = svc?.profiles ?? [];
-      const connected = profiles.filter((p) => p.status === 'connected');
+      const connected = profiles.filter((p) =>
+        isConnectedServiceCredentialHealthStatusUsable(resolveConnectedServiceCredentialHealthStatus(p.status))
+      );
       const connectedIds = connected.map((p) => p.profileId);
       const effectiveProfileId = resolveConnectedServiceDefaultProfileId({
         serviceId,
@@ -231,7 +248,7 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
 
   return (
     <ItemList>
-      <ItemGroup title={t('connectedServices.title')}>
+      <ItemGroup title={t('connectedServices.title')} columns={2}>
         {services.length === 0 && serviceRows.length === 0 ? (
           <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
             <Text style={{ color: theme.colors.text.secondary }}>{t('connectedServices.list.empty')}</Text>
@@ -245,7 +262,7 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
             <View style={styles.iconBox}>
               {brandXml
                 ? <SvgXml xml={brandXml} width={BRAND_ICON_SIZE} height={BRAND_ICON_SIZE} />
-                : <Ionicons name="key-outline" size={22} color={theme.colors.text.primary} />}
+                : <Icon name="key" size={20} color={theme.colors.text.primary} />}
               {hasProfiles ? (
                 <StatusDot
                   testID={`connected-services-index:${serviceId}:health-dot`}
@@ -295,10 +312,19 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
                 pathname: '/settings/connected-services/[serviceId]',
                 params: { serviceId },
               })}
-              onReconnectConnectedServiceProfile={(serviceId, profileId) => router.push({
-                pathname: '/settings/connected-services/profile',
-                params: { serviceId, profileId },
-              })}
+              onReconnectConnectedServiceProfile={(serviceId, profileId) => router.push(
+                resolveConnectedServiceProfileActionRoute({
+                  serviceId,
+                  profileId,
+                  profileKind: readConnectedServiceProfileKindFromServices({
+                    connectedServicesV2: services,
+                    serviceId,
+                    profileId,
+                  }),
+                }),
+              )}
+              dismissedPoolAdoptionSuggestionKeys={poolAdoptionDismissedByKey}
+              onDismissPoolAdoptionSuggestion={dismissPoolAdoptionSuggestion}
             />
           );
         })}

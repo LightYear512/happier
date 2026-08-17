@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import {
     GestureDetector,
     type ComposedGesture,
@@ -33,6 +32,7 @@ import { t } from '@/text';
 
 import { resolveAccountCapacityRings, type AccountUsageRow } from './accountBlockModel';
 import { ConnectedServiceCapacityAvatar, CONNECTED_SERVICE_GAUGE_BOX, CONNECTED_SERVICE_GAUGE_SIZE } from '../ConnectedServiceCapacityAvatar';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export type AccountBlockVariant = 'detail' | 'poolMember';
 
@@ -46,6 +46,8 @@ export type AccountBlockQuotaView = Readonly<{
     loading: boolean;
     hasSnapshot: boolean;
     isStale: boolean;
+    /** Whether refresh updates the same source currently displayed in this block. */
+    canRefresh: boolean;
     /** True while a force-refresh is in flight (drives the refreshing indicator). */
     isRefreshing: boolean;
     /** Latest action/load error (consume failure, load failure) for inline display. */
@@ -302,6 +304,10 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
     // number is the overall capacity. No brand glyph/dot — every row here is the
     // same provider, so the logo would be noise.
     const capacityRings = resolveAccountCapacityRings(quota?.usageRows ?? []);
+    // A first snapshot that is still loading (no cached value yet) must read as
+    // "loading" on the gauge, not as an empty "no usage" ring. This mirrors the
+    // body skeleton's `loading && !hasSnapshot` signal so the avatar and body agree.
+    const quotaFirstLoad = quota != null && quota.loading && !quota.hasSnapshot;
     // While a force-refresh is in flight, the capacity gauge is replaced by a
     // spinner in place (the live USAGE/RESETS below dim) — so the user sees the
     // refresh working and then the new values land directly when it resolves.
@@ -313,6 +319,7 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
         <ConnectedServiceCapacityAvatar
             testID={`${testID}:avatar`}
             rings={capacityRings}
+            loading={quotaFirstLoad}
             centerLabel={quota?.capacityPct != null ? String(Math.round(quota.capacityPct)) : null}
             accessibilityLabel={props.title}
         />
@@ -326,10 +333,10 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
         <View style={styles.titleRow}>
             <Text style={styles.titleText} numberOfLines={1}>{props.title}</Text>
             {!isPoolMember && props.isDefault ? (
-                <Ionicons
+                <Icon
                     testID={`${testID}:default-star`}
                     name="star"
-                    size={13}
+                    size={14}
                     color={theme.colors.button.primary.background}
                 />
             ) : null}
@@ -357,7 +364,7 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
         <View style={styles.metaRow}>
             {quota && quota.resetAvailableCount > 0 ? (
                 <View testID={`${testID}:resets`} style={styles.metaCount}>
-                    <Ionicons name="refresh" size={11} color={theme.colors.text.tertiary} />
+                    <Icon name="arrow-clockwise" size={11} color={theme.colors.text.tertiary} />
                     <Text style={styles.metaCountText}>
                         {t('connectedServices.quota.recoveryCreditBadge', { count: quota.resetAvailableCount })}
                     </Text>
@@ -365,7 +372,7 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
             ) : null}
             {!isPoolMember && poolsCount > 0 ? (
                 <View testID={`${testID}:pools-count`} style={styles.metaCount}>
-                    <Ionicons name="git-branch-outline" size={11} color={theme.colors.text.tertiary} />
+                    <Icon name="git-branch" size={11} color={theme.colors.text.tertiary} />
                     <Text style={styles.metaCountText}>
                         {t('connectedServices.account.poolsCount', { count: poolsCount })}
                     </Text>
@@ -390,15 +397,15 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
                     }}
                     accessibilityRole="radio"
                     accessibilityState={{
-                        selected: props.isActive ?? false,
+                        checked: props.isActive ?? false,
                         disabled: (props.isActive ?? false) || props.onSetActive == null,
                     }}
                     accessibilityLabel={t(props.isActive
                         ? 'connectedServices.account.activeMemberA11y'
                         : 'connectedServices.account.setActiveA11y')}
                 >
-                    <Ionicons
-                        name={props.isActive ? 'radio-button-on' : 'radio-button-off'}
+                    <Icon
+                        name={props.isActive ? 'radio-button' : 'circle'}
                         size={20}
                         color={props.isActive ? theme.colors.button.primary.background : theme.colors.text.tertiary}
                     />
@@ -426,14 +433,15 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
                         ? 'connectedServices.detail.actions.unsetDefault'
                         : 'connectedServices.detail.actions.setDefault')}
                 >
-                    <Ionicons
-                        name={props.isDefault ? 'star' : 'star-outline'}
-                        size={18}
+                    <Icon
+                        name="star"
+                        size={16}
                         color={props.isDefault ? theme.colors.button.primary.background : theme.colors.text.secondary}
+                        weight={props.isDefault ? 'fill' : 'regular'}
                     />
                 </Pressable>
             ) : null}
-            {!isPoolMember && quota ? (
+            {!isPoolMember && quota?.canRefresh ? (
                 // Dedicated force-refresh control: pulls a fresh quota snapshot
                 // (server refresh + poll) and the row's gauge/USAGE/RESETS update
                 // directly when it lands. This is the ONLY refresh affordance — the
@@ -454,7 +462,7 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
                     {quota.isRefreshing ? (
                         <ActivitySpinner size={16} />
                     ) : (
-                        <Ionicons name="reload" size={17} color={theme.colors.text.secondary} />
+                        <Icon name="arrow-clockwise" size={16} color={theme.colors.text.secondary} />
                     )}
                 </Pressable>
             ) : null}
@@ -489,16 +497,16 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
                         onPointerCancel={isWeb ? suppressNextHeaderPress : undefined}
                         style={styles.reorderHandle}
                     >
-                        <Ionicons
-                            name="reorder-three-outline"
+                        <Icon
+                            name="list"
                             size={20}
                             color={theme.colors.text.tertiary}
                         />
                     </View>
                 </GestureDetector>
             ) : null}
-            <Ionicons
-                name={isExpanded ? 'chevron-down' : 'chevron-forward'}
+            <Icon
+                name={isExpanded ? 'caret-down' : 'caret-right'}
                 size={CHEVRON_SIZE}
                 color={theme.colors.text.secondary}
             />
@@ -516,6 +524,7 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
     const hasInteractiveTrailing = (isPoolMember && props.onToggleEnabled != null)
         || (isPoolMember && props.onSetActive != null)
         || props.onToggleDefault != null
+        || (!isPoolMember && quota?.canRefresh === true)
         || actions.length > 0
         || (isPoolMember && props.reorderGesture != null);
 
@@ -569,19 +578,21 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
                                         accessibilityRole="button"
                                         accessibilityLabel={row.label}
                                     >
-                                        <Ionicons
-                                            name={quota.pinnedMeterIds.includes(row.meterId) ? 'bookmark' : 'bookmark-outline'}
+                                        <Icon
+                                            name="bookmark"
                                             size={16}
                                             color={quota.pinnedMeterIds.includes(row.meterId)
                                                 ? theme.colors.text.primary
                                                 : theme.colors.text.secondary}
-                                        />
+                                            />
                                     </Pressable>
                                 </View>
                                 <MeterBar
                                     testID={`${testID}:meter:${row.meterId}`}
                                     tone={row.tone}
-                                    value={row.remaining}
+                                    // Remaining-first fill: matches the row's "% left" label and the
+                                    // capacity rings (battery model — see accountBlockModel).
+                                    fillFraction={row.remaining}
                                     caption={row.detailLabel}
                                 />
                             </View>
@@ -595,9 +606,11 @@ export const AccountBlockView = React.memo<AccountBlockViewProps>((props) => {
                     {!quota.canConsume ? (
                         // Explain WHY "Use" is inert (the reachable disabled cause is
                         // no resolvable target machine) instead of a silent dead button.
-                        <Eyebrow testID={`${testID}:resets-hint`} style={styles.resetsHint}>
-                            {t('connectedServices.quota.recoveryCreditMachineUnavailable')}
-                        </Eyebrow>
+                        <ItemGroupColumn span={2}>
+                            <Eyebrow testID={`${testID}:resets-hint`} style={styles.resetsHint}>
+                                {t('connectedServices.quota.recoveryCreditMachineUnavailable')}
+                            </Eyebrow>
+                        </ItemGroupColumn>
                     ) : null}
                     {quota.resetRows.map((row) => {
                         const rowPending = quota.consumeRecoveryCreditPendingTarget !== null

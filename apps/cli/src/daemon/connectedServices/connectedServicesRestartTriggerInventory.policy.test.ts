@@ -18,6 +18,11 @@
  *                      bindings through the FSM. This is the D7 seam for pure
  *                      refresh/reconnect where no target generation is known.
  *
+ *   passive_apply    — applies an already-selected/current auth generation in
+ *                      place. This path may run during passive current-truth
+ *                      reconciliation, but it cannot restart, spawn, resume,
+ *                      continue, or admit provider work by itself.
+ *
  *   bypass_known     — currently bypasses BOTH the FSM and the gated primitive
  *                      (e.g. a raw SIGTERM with no deferral/reachability). Each
  *                      must name the plan phase that tracks the fix.
@@ -40,7 +45,7 @@
  *     await requestConnectedServiceRestartWithDeferral({ ... });
  *
  * The marker grammar is:  K5:<class>(<phase>?) <free text>
- *   - <class>  is one of fsm_switch | gated_restart | bypass_known
+ *   - <class>  is one of fsm_switch | gated_restart | passive_apply | bypass_known
  *   - (<phase>) is OPTIONAL free text (e.g. a plan phase like K2/K3) — for
  *     bypass_known it is REQUIRED so a reviewer can find the tracked fix.
  *
@@ -139,17 +144,27 @@ const DURABLE_CONNECTED_SERVICE_RESTART_INTENT_DEFINITION_BASENAMES: ReadonlySet
   'sessionRegistry.ts',
 ]);
 
-const DURABLE_RUNTIME_AUTH_RECOVERY_REPLAY_PATTERN =
-  /\b(runtime-auth-recovery\.json|runtimeAuthRecoveryScheduler\.hydrate\s*\(\s*\)|store\?:\s*DurableRecoveryStore<RuntimeAuthRecoveryIntent>|hydrate\s*\(\s*\):\s*ReadonlyArray<RuntimeAuthRecoveryIntent>)/;
+const EFFECTFUL_RUNTIME_AUTH_RECOVERY_REPLAY_PATTERN =
+  /\bruntimeAuthRecoveryScheduler\.hydrate\s*\(\s*\)/;
+
+const EFFECTFUL_RUNTIME_AUTH_RECOVERY_REPLAY_DEFINITION_BASENAMES: ReadonlySet<string> = new Set([
+  'runtimeAuthFailureReportOutboxDrain.ts',
+]);
+
+const MARKER_DERIVED_STARTUP_RESTART_REPLAY_PATTERN =
+  /\bopencode_dead_daemon_marker_restart\b/;
+
+const PLANNED_CONNECTED_SERVICE_RESTART_PATTERN =
+  /\brequestPlannedRunnerRestart\s*\(\s*\{[\s\S]*?\breason:\s*['"]connected_service_switch['"][\s\S]*?\}\s*\)/g;
 
 // ---------------------------------------------------------------------------
 // Marker grammar
 // ---------------------------------------------------------------------------
 
-type TriggerClassification = 'fsm_switch' | 'gated_restart' | 'bypass_known';
+type TriggerClassification = 'fsm_switch' | 'gated_restart' | 'passive_apply' | 'bypass_known';
 
 const MARKER_PATTERN =
-  /\/\/\s*K5:(fsm_switch|gated_restart|bypass_known)\b([^\n]*)/;
+  /\/\/\s*K5:(fsm_switch|gated_restart|passive_apply|bypass_known)\b([^\n]*)/;
 
 type ParsedMarker = Readonly<{
   classification: TriggerClassification;
@@ -296,7 +311,7 @@ async function collectDurableConnectedServiceRestartIntentRuntimeSites(): Promis
   return findings;
 }
 
-async function collectDurableRuntimeAuthRecoveryReplaySites(): Promise<string[]> {
+async function collectEffectfulRuntimeAuthRecoveryReplaySites(): Promise<string[]> {
   const [daemonFiles, backendFiles, sessionFiles, agentFiles, rpcFiles] = await Promise.all([
     listSourceFiles(daemonDir),
     listSourceFiles(backendsDir),
@@ -306,11 +321,41 @@ async function collectDurableRuntimeAuthRecoveryReplaySites(): Promise<string[]>
   ]);
   const findings: string[] = [];
   for (const file of [...daemonFiles, ...backendFiles, ...sessionFiles, ...agentFiles, ...rpcFiles]) {
+    if (EFFECTFUL_RUNTIME_AUTH_RECOVERY_REPLAY_DEFINITION_BASENAMES.has(basename(file))) continue;
     const source = await readFile(file, 'utf8');
     const lines = source.split('\n');
     for (let index = 0; index < lines.length; index += 1) {
-      if (!DURABLE_RUNTIME_AUTH_RECOVERY_REPLAY_PATTERN.test(lines[index] ?? '')) continue;
+      if (!EFFECTFUL_RUNTIME_AUTH_RECOVERY_REPLAY_PATTERN.test(lines[index] ?? '')) continue;
       findings.push(`${scopedPathOf(file)}:${index + 1}`);
+    }
+  }
+  return findings;
+}
+
+async function collectMarkerDerivedStartupRestartReplaySites(): Promise<string[]> {
+  const daemonFiles = await listSourceFiles(daemonDir);
+  const findings: string[] = [];
+  for (const file of daemonFiles) {
+    const source = await readFile(file, 'utf8');
+    const lines = source.split('\n');
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!MARKER_DERIVED_STARTUP_RESTART_REPLAY_PATTERN.test(lines[index] ?? '')) continue;
+      findings.push(`${scopedPathOf(file)}:${index + 1}`);
+    }
+  }
+  return findings;
+}
+
+async function collectConnectedServicePlannedRestartCallsMissingFinalActivityGate(): Promise<string[]> {
+  const daemonFiles = await listSourceFiles(daemonDir);
+  const findings: string[] = [];
+  for (const file of daemonFiles) {
+    const source = await readFile(file, 'utf8');
+    for (const match of source.matchAll(PLANNED_CONNECTED_SERVICE_RESTART_PATTERN)) {
+      const callSource = match[0] ?? '';
+      if (/\bcanSignal\s*:/.test(callSource)) continue;
+      const lineNumber = source.slice(0, match.index ?? 0).split('\n').length;
+      findings.push(`${scopedPathOf(file)}:${lineNumber}`);
     }
   }
   return findings;
@@ -332,7 +377,7 @@ describe('connected-services restart/switch trigger inventory (K5 bypass guard)'
       unmarked,
       `UNMARKED restart/switch trigger call sites detected.\n`
       + `Add an inline marker on (or directly above) each call site:\n`
-      + `  // K5:fsm_switch | gated_restart | bypass_known <reason>\n`
+      + `  // K5:fsm_switch | gated_restart | passive_apply | bypass_known <reason>\n`
       + `Unmarked call sites:\n${unmarked.map((p) => `  ${p}`).join('\n')}`,
     ).toEqual([]);
 
@@ -342,7 +387,7 @@ describe('connected-services restart/switch trigger inventory (K5 bypass guard)'
 
   it('uses a valid classification on every marked trigger call site', async () => {
     const callSites = await collectTriggerCallSites();
-    const valid: ReadonlyArray<TriggerClassification> = ['fsm_switch', 'gated_restart', 'bypass_known'];
+    const valid: ReadonlyArray<TriggerClassification> = ['fsm_switch', 'gated_restart', 'passive_apply', 'bypass_known'];
     const invalid = callSites
       .filter((site) => site.marker !== null && !valid.includes(site.marker.classification))
       .map((site) => `${site.scopedPath}:${site.lineNumber}`);
@@ -383,14 +428,34 @@ describe('connected-services restart/switch trigger inventory (K5 bypass guard)'
     ).toEqual([]);
   });
 
-  it('does not re-drive runtime-auth recovery from durable daemon-restart state', async () => {
-    const findings = await collectDurableRuntimeAuthRecoveryReplaySites();
+  it('does not automatically re-drive passively hydrated runtime-auth recovery after daemon replacement', async () => {
+    const findings = await collectEffectfulRuntimeAuthRecoveryReplaySites();
 
     expect(
       findings,
-      `Runtime-auth recovery may retry while the daemon is alive, but daemon restart must not re-drive old recovery intents.\n`
-      + `Do not wire product runtime paths to runtime-auth-recovery.json or hydrate runtime-auth recovery on daemon start.\n`
+      `Runtime-auth recovery may reconstruct durable state after daemon replacement, but startup must remain passive.\n`
+      + `Do not call the effectful hydrate() path from product runtime startup; only hydratePassive() is permitted.\n`
       + `Runtime references:\n${findings.map((finding) => `  ${finding}`).join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('does not reintroduce marker-derived startup restart replay', async () => {
+    const findings = await collectMarkerDerivedStartupRestartReplaySites();
+
+    expect(
+      findings,
+      `Daemon startup reconstruction must remain passive; dead disk markers must not define marker-derived restart reasons.\n`
+      + `Runtime references:\n${findings.map((finding) => `  ${finding}`).join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('runs the final activity gate for connected-service planned runner restarts', async () => {
+    const findings = await collectConnectedServicePlannedRestartCallsMissingFinalActivityGate();
+
+    expect(
+      findings,
+      `Connected-service planned runner restarts must pass canSignal so final pre-signal activity checks cannot be bypassed.\n`
+      + `Missing canSignal:\n${findings.map((finding) => `  ${finding}`).join('\n')}`,
     ).toEqual([]);
   });
 

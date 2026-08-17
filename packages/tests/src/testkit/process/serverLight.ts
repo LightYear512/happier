@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   renderPrismaCompatibleSqliteDatabaseUrl,
   resolvePrismaSqliteDatabaseUrlOptionsFromEnv,
+  resolveServerLightSqliteDatabaseUrlOptionsFromEnv,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 
 import { repoRootDir } from '../paths';
@@ -255,7 +256,7 @@ export function resolveServerLightSqliteDatabaseUrl(params: Readonly<{
   return renderPrismaCompatibleSqliteDatabaseUrl({
     dbPath: join(params.dataDir, 'happier-server-light.sqlite'),
     platform: params.platform ?? process.platform,
-    sqlite: resolvePrismaSqliteDatabaseUrlOptionsFromEnv(params.env),
+    sqlite: resolveServerLightSqliteDatabaseUrlOptionsFromEnv(params.env),
   });
 }
 
@@ -569,8 +570,21 @@ export function resolveServerStartLaunchSpec(params: {
   provider: TestDbProvider;
   env: NodeJS.ProcessEnv;
   rootDir?: string;
+  useDevLightMigrationOwner?: boolean;
 }): ServerStartLaunchSpec {
   const rootDir = params.rootDir ?? repoRootDir();
+
+  if (params.useDevLightMigrationOwner === true) {
+    if (params.provider !== 'sqlite' && params.provider !== 'pglite') {
+      throw new Error('The production light migration-plan owner supports only sqlite and pglite');
+    }
+    return {
+      command: yarnCommand(),
+      args: ['-s', 'workspace', resolveServerAppWorkspaceName(), 'dev:light'],
+      cwd: rootDir,
+      env: { TSX_TSCONFIG_PATH: resolveServerTsconfigPath(rootDir) },
+    };
+  }
 
   if (shouldUseServerSourceEntrypoint(params.env)) {
     const sourceEntrypoint = resolveServerSourceEntrypoint({ rootDir, provider: params.provider });
@@ -837,6 +851,10 @@ async function ensureServerGeneratedProviders(params: { testDir: string; env: No
 
 export async function startServerLight(params: {
   testDir: string;
+  /** Distinguishes logs when multiple real servers intentionally share one test directory. */
+  instanceLabel?: string;
+  /** Launch through apps/server/scripts/dev.light.ts so migrate-mode behavior matches stack reloads. */
+  useDevLightMigrationOwner?: boolean;
   extraEnv?: NodeJS.ProcessEnv;
   dbProvider?: TestDbProvider;
   preserveExistingDataDir?: boolean;
@@ -862,10 +880,6 @@ export async function startServerLight(params: {
     CI: '1',
     // Avoid global port conflicts during test runs.
     METRICS_ENABLED: 'false',
-    // Auth token seed compatibility derivation can be surprisingly expensive on some machines.
-    // In UI e2e we always generate a fresh HANDY_MASTER_SECRET, so the first (or second) attempt
-    // should succeed; keep the attempt budget tight to avoid stalling server boot past /health timeouts.
-    HAPPIER_AUTH_SEED_COMPAT_ATTEMPTS: mergedEnv.HAPPIER_AUTH_SEED_COMPAT_ATTEMPTS ?? '2',
     // Core E2E assumes a fresh auth key can always mint an account token unless a test explicitly disables it.
     AUTH_ANONYMOUS_SIGNUP_ENABLED: mergedEnv.AUTH_ANONYMOUS_SIGNUP_ENABLED ?? 'true',
     // Core E2E suite expects public file storage to work without extra services (Minio/S3).
@@ -959,8 +973,12 @@ export async function startServerLight(params: {
     const launchSpec = resolveServerStartLaunchSpec({
       provider: dbProvider,
       env,
+      useDevLightMigrationOwner: params.useDevLightMigrationOwner,
     });
 
+    const logPrefix = params.instanceLabel?.trim()
+      ? `server.${params.instanceLabel.trim().replaceAll(/[^a-zA-Z0-9_-]/g, '-')}`
+      : 'server';
     const proc = spawnLoggedProcess({
       command: launchSpec.command,
       args: launchSpec.args,
@@ -969,8 +987,8 @@ export async function startServerLight(params: {
         ...env,
         ...(launchSpec.env ?? {}),
       },
-      stdoutPath: resolve(params.testDir, 'server.stdout.log'),
-      stderrPath: resolve(params.testDir, 'server.stderr.log'),
+      stdoutPath: resolve(params.testDir, `${logPrefix}.stdout.log`),
+      stderrPath: resolve(params.testDir, `${logPrefix}.stderr.log`),
     });
 
     await registerProcessOwnershipLease({

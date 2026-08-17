@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { SessionListViewItem } from '@/sync/domains/state/storage';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import type { SessionFoldersV1 } from '@/sync/domains/session/folders';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { SessionOrganizationProjection } from '@/sync/domains/session/organization';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 
 function makeRenderableSession(id: string, overrides: Partial<SessionListRenderableSession> = {}): SessionListRenderableSession {
@@ -58,11 +59,13 @@ const sourceData = vi.hoisted(() => ({
     sessionFolderViewModeV1: 'off' as 'off' | 'tree',
     sessionFoldersV1: { v: 1, folders: [] } as SessionFoldersV1,
     sessionFolderAssignmentsBySessionKey: {} as Record<string, string | null>,
+    sessionOrganizationProjection: null as SessionOrganizationProjection | null,
     openApprovalSessionIds: [] as ReadonlyArray<string>,
     openApprovalSessionIdCalls: 0,
     sessionFolderAssignmentSubscriptions: 0,
     settingMutableKeys: [] as string[],
     fetchAndApplySessionFolderAssignments: vi.fn(async () => undefined),
+    deprecatedFetchAndApplySessionFolderAssignments: vi.fn(async () => undefined),
     getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token-a', secret: 'secret-a' })),
 }));
 
@@ -87,6 +90,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
                 sourceData.sessionFolderAssignmentSubscriptions += 1;
                 return sourceData.sessionFolderAssignmentsBySessionKey;
             },
+            useSessionOrganizationProjection: () => sourceData.sessionOrganizationProjection,
             useSetting: (key: string) => {
                 if (key === 'hideInactiveSessions') return sourceData.hideInactiveSessions;
                 if (key === 'sessionListAttentionPromotionModeV1') return sourceData.sessionListAttentionPromotionMode;
@@ -140,12 +144,24 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
     },
 }));
 
-vi.mock('@/sync/ops/sessionFolders', () => ({
+vi.mock('@/sync/ops/sessionOrganization', () => ({
     fetchAndApplySessionFolderAssignments: sourceData.fetchAndApplySessionFolderAssignments,
 }));
 
+vi.mock('@/sync/ops/sessionFolders', () => ({
+    fetchAndApplySessionFolderAssignments: sourceData.deprecatedFetchAndApplySessionFolderAssignments,
+}));
+
+vi.mock('@/sync/store/hooks', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/sync/store/hooks')>();
+    return {
+        ...original,
+        buildSessionListShellViewItemSignature: vi.fn(original.buildSessionListShellViewItemSignature),
+    };
+});
+
 describe('useVisibleSessionListViewData', () => {
-    afterEach(() => {
+    afterEach(async () => {
         sourceData.hideInactiveSessions = false;
         sourceData.sessionListAttentionPromotionMode = 'off';
         sourceData.sessionListWorkingPlacementMode = 'off';
@@ -175,16 +191,19 @@ describe('useVisibleSessionListViewData', () => {
         sourceData.sessionFolderViewModeV1 = 'off';
         sourceData.sessionFoldersV1 = { v: 1, folders: [] };
         sourceData.sessionFolderAssignmentsBySessionKey = {};
+        sourceData.sessionOrganizationProjection = null;
         sourceData.groupOrder = {};
         sourceData.openApprovalSessionIds = [];
         sourceData.openApprovalSessionIdCalls = 0;
         sourceData.sessionFolderAssignmentSubscriptions = 0;
         sourceData.settingMutableKeys = [];
         sourceData.fetchAndApplySessionFolderAssignments.mockClear();
+        sourceData.deprecatedFetchAndApplySessionFolderAssignments.mockClear();
         sourceData.getCredentialsForServerUrl.mockClear();
         vi.useRealTimers();
         syncPerformanceTelemetry.configure({ enabled: false });
         syncPerformanceTelemetry.reset();
+        vi.mocked((await import('@/sync/store/hooks')).buildSessionListShellViewItemSignature).mockClear();
         standardCleanup();
     });
 
@@ -196,6 +215,99 @@ describe('useVisibleSessionListViewData', () => {
         const second = await hook.rerender();
 
         expect(second).toBe(first);
+        await hook.unmount();
+    });
+
+    it('skips visible-row signature scans when recomputing to the same visible row references', async () => {
+        const { buildSessionListShellViewItemSignature } = await import('@/sync/store/hooks');
+        const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+        let activeSessionId = 'session-a';
+        const hook = await renderHook(() => useVisibleSessionListViewData('all', { activeSessionId }));
+        const first = hook.getCurrent();
+        vi.mocked(buildSessionListShellViewItemSignature).mockClear();
+
+        activeSessionId = 'session-b';
+        const second = await hook.rerender();
+
+        expect(second).toBe(first);
+        expect(buildSessionListShellViewItemSignature).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('uses organization pins and order instead of legacy pinned settings', async () => {
+        const groupKey = 'server:server-a:active:project:repo';
+        sourceData.pinnedKeys = ['server-a:legacy-pinned'];
+        sourceData.groupOrder = {
+            [groupKey]: ['server-a:legacy-first'],
+        };
+        sourceData.activeData = [
+            {
+                type: 'header',
+                title: 'Active',
+                headerKind: 'active',
+                serverId: 'server-a',
+            },
+            {
+                type: 'header',
+                title: '~/repo',
+                headerKind: 'project',
+                groupKey,
+                serverId: 'server-a',
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('org-pinned'),
+                section: 'active',
+                groupKey,
+                groupKind: 'project',
+                serverId: 'server-a',
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('org-first'),
+                section: 'active',
+                groupKey,
+                groupKind: 'project',
+                serverId: 'server-a',
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('legacy-pinned'),
+                section: 'active',
+                groupKey,
+                groupKind: 'project',
+                serverId: 'server-a',
+            },
+        ];
+        sourceData.sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 2,
+            pinnedSessionIds: ['org-pinned'],
+            pinsBySessionId: {},
+            foldersById: {},
+            folderAssignmentsBySessionId: {},
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            labelsByLabelKey: {},
+            orderEntriesByScopeKey: {
+                'server-a:group:server:server-a:active:project:repo': [
+                    { scopeKind: 'group', scopeKey: groupKey, itemKind: 'session', itemKey: 'server-a:org-first', sortKey: 'a' },
+                    { scopeKind: 'group', scopeKey: groupKey, itemKind: 'session', itemKey: 'server-a:legacy-pinned', sortKey: 'b' },
+                ],
+            },
+        };
+
+        const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+        const hook = await renderHook(() => useVisibleSessionListViewData());
+
+        expect(hook.getCurrent()?.map((item) => item.type === 'session' ? item.session.id : `${item.headerKind}:${item.title}`)).toEqual([
+            'pinned:Pinned',
+            'org-pinned',
+            'active:Active',
+            'project:~/repo',
+            'org-first',
+            'legacy-pinned',
+        ]);
         await hook.unmount();
     });
 
@@ -298,6 +410,66 @@ describe('useVisibleSessionListViewData', () => {
         const second = await hook.rerender();
 
         expect(second).toBe(first);
+        await hook.unmount();
+    });
+
+    it('rebuilds the visible list without signature scans when a push replaces rows around unchanged sessions', async () => {
+        const { buildSessionListShellViewItemSignature } = await import('@/sync/store/hooks');
+        const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+        const hook = await renderHook(() => useVisibleSessionListViewData());
+        const first = hook.getCurrent();
+        vi.mocked(buildSessionListShellViewItemSignature).mockClear();
+
+        // A session-list rebuild replaces every row object while unchanged sessions keep their
+        // renderable identity, which is what the store hands consumers on a server push.
+        sourceData.activeData = sourceData.activeData.map((item) => ({ ...item }));
+        const second = await hook.rerender();
+
+        expect(second).toBe(first);
+        expect(buildSessionListShellViewItemSignature).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('scans only the changed row when a push rebuilds many rows and one session changes', async () => {
+        sourceData.activeData = [
+            {
+                type: 'header',
+                title: 'Today',
+                headerKind: 'date',
+                groupKey: 'server:server-a:day:2026-05-04',
+                serverId: 'server-a',
+            },
+            ...['session-a', 'session-b', 'session-c', 'session-d'].map((id): SessionListViewItem => ({
+                type: 'session',
+                session: makeRenderableSession(id),
+                section: 'inactive',
+                groupKey: 'server:server-a:day:2026-05-04',
+                groupKind: 'date',
+                serverId: 'server-a',
+            })),
+        ];
+        const { buildSessionListShellViewItemSignature } = await import('@/sync/store/hooks');
+        const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+        const hook = await renderHook(() => useVisibleSessionListViewData());
+        const first = hook.getCurrent();
+        expect(first).toHaveLength(5);
+        vi.mocked(buildSessionListShellViewItemSignature).mockClear();
+
+        sourceData.activeData = sourceData.activeData.map((item) => (
+            item.type === 'session' && item.session.id === 'session-c'
+                ? { ...item, session: { ...item.session, pendingCount: 3 } }
+                : { ...item }
+        ));
+        const second = await hook.rerender();
+
+        expect(second).not.toBe(first);
+        expect(second?.[0]).toBe(first?.[0]);
+        expect(second?.[1]).toBe(first?.[1]);
+        expect(second?.[2]).toBe(first?.[2]);
+        expect(second?.[3]).not.toBe(first?.[3]);
+        expect(second?.[4]).toBe(first?.[4]);
+        // Only the row that actually changed is worth a signature comparison.
+        expect(vi.mocked(buildSessionListShellViewItemSignature).mock.calls).toHaveLength(2);
         await hook.unmount();
     });
 
@@ -635,6 +807,47 @@ describe('useVisibleSessionListViewData', () => {
                 updatedAt: 1,
             }],
         };
+        sourceData.sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 3,
+            pinnedSessionIds: [],
+            pinsBySessionId: {},
+            foldersById: {
+                'folder-a': {
+                    folderId: 'folder-a',
+                    folderKey: 'folder-a',
+                    parentFolderId: null,
+                    parentFolderKey: null,
+                    sortKey: 'a',
+                    display: {
+                        t: 'plain',
+                        v: {
+                            name: 'Planning',
+                            workspace: {
+                                t: 'workspaceScope',
+                                serverId: 'server-a',
+                                machineId: 'machine-a',
+                                rootPath: '/repo',
+                            },
+                        },
+                    },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            },
+            folderAssignmentsBySessionId: {
+                'assigned-session': 'folder-a',
+            },
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            labelsByLabelKey: {},
+            orderEntriesByScopeKey: {
+                'server-a:group:server:server-a:active:project:repo': [
+                    { scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo', itemKind: 'folder', itemKey: 'folder-a', sortKey: 'a' },
+                ],
+            },
+        };
         sourceData.activeData = [
             {
                 type: 'header',
@@ -685,6 +898,52 @@ describe('useVisibleSessionListViewData', () => {
         expect(hook.getCurrent()?.some((item) => item.type === 'header' && item.headerKind === 'folder'))
             .toBe(false);
         expect(sourceData.fetchAndApplySessionFolderAssignments).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('refreshes visible folder assignments through the organization op', async () => {
+        sourceData.sessionFoldersEnabled = true;
+        sourceData.sessionFolderViewModeV1 = 'tree';
+        sourceData.activeData = [
+            {
+                type: 'header',
+                title: 'Project',
+                headerKind: 'project',
+                groupKey: 'server:server-a:active:project:repo',
+                serverId: 'server-a',
+                workspaceKey: 'wl_repo',
+                workspaceScopeHint: {
+                    serverId: 'server-a',
+                    machineId: 'machine-a',
+                    rootPath: '/repo',
+                },
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('persisted-session', {
+                    active: true,
+                    metadata: { path: '/repo', host: 'machine-a' },
+                }),
+                section: 'active',
+                groupKey: 'server:server-a:active:project:repo',
+                groupKind: 'project',
+                serverId: 'server-a',
+            },
+        ];
+
+        const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+        const hook = await renderHook(() => useVisibleSessionListViewData());
+
+        await vi.waitFor(() => {
+            expect(sourceData.fetchAndApplySessionFolderAssignments).toHaveBeenCalledWith(expect.objectContaining({
+                credentials: { token: 'token-a', secret: 'secret-a' },
+                serverId: 'server-a',
+                serverUrl: 'https://server-a.test',
+                sessionIds: ['persisted-session'],
+                fetchPolicy: 'missing',
+            }));
+        });
+        expect(sourceData.deprecatedFetchAndApplySessionFolderAssignments).not.toHaveBeenCalled();
         await hook.unmount();
     });
 
@@ -892,6 +1151,47 @@ describe('useVisibleSessionListViewData', () => {
                 createdAt: 1,
                 updatedAt: 1,
             }],
+        };
+        sourceData.sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 3,
+            pinnedSessionIds: [],
+            pinsBySessionId: {},
+            foldersById: {
+                'folder-a': {
+                    folderId: 'folder-a',
+                    folderKey: 'folder-a',
+                    parentFolderId: null,
+                    parentFolderKey: null,
+                    sortKey: 'a',
+                    display: {
+                        t: 'plain',
+                        v: {
+                            name: 'Planning',
+                            workspace: {
+                                t: 'workspaceScope',
+                                serverId: 'server-a',
+                                machineId: 'machine-a',
+                                rootPath: '/repo',
+                            },
+                        },
+                    },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            },
+            folderAssignmentsBySessionId: {
+                'assigned-session': 'folder-a',
+            },
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            labelsByLabelKey: {},
+            orderEntriesByScopeKey: {
+                'server-a:group:server:server-a:active:project:repo': [
+                    { scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo', itemKind: 'folder', itemKey: 'folder-a', sortKey: 'a' },
+                ],
+            },
         };
         sourceData.activeData = [
             {
@@ -1488,6 +1788,153 @@ describe('useVisibleSessionListViewData', () => {
         await hook.unmount();
     });
 
+    it('does not promote background activity into non-live global working placement', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000_000);
+        sourceData.sessionListWorkingPlacementMode = 'global';
+        sourceData.activeData = [
+            {
+                type: 'header',
+                title: 'Today',
+                headerKind: 'date',
+                groupKey: 'server:server-a:day:2026-05-04',
+                serverId: 'server-a',
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('runtime-active-session', {
+                    active: false,
+                    activeAt: 1_000_000,
+                    presence: 0,
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: 999_000,
+                    runtimeActivityState: 'active',
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: 999_000,
+                    runtimeActivityRevision: 1,
+                }),
+                section: 'active',
+                groupKey: 'server:server-a:day:2026-05-04',
+                groupKind: 'date',
+                serverId: 'server-a',
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('normal-session', {
+                    active: true,
+                }),
+                section: 'active',
+                groupKey: 'server:server-a:day:2026-05-04',
+                groupKind: 'date',
+                serverId: 'server-a',
+            },
+        ];
+
+        const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+        const hook = await renderHook(() => useVisibleSessionListViewData());
+
+        expect(hook.getCurrent()?.map((item) => item.type === 'header'
+            ? `header:${item.headerKind ?? 'unknown'}`
+            : `session:${item.session.id}:${item.groupKind ?? 'unknown'}:${item.workingPlacementReason ?? 'none'}`
+        )).toEqual([
+            'header:date',
+            'session:runtime-active-session:date:none',
+            'session:normal-session:date:none',
+        ]);
+
+        await flushHookEffects({ cycles: 1, advanceTimersMs: 60_001 });
+
+        expect(hook.getCurrent()?.map((item) => item.type === 'header'
+            ? `header:${item.headerKind ?? 'unknown'}`
+            : `session:${item.session.id}:${item.groupKind ?? 'unknown'}:${item.workingPlacementReason ?? 'none'}`
+        )).toEqual([
+            'header:date',
+            'session:runtime-active-session:date:none',
+            'session:normal-session:date:none',
+        ]);
+        await hook.unmount();
+    });
+
+    it('recomputes pane-state placement from the shared runtime clock when working freshness expires', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000_000);
+        sourceData.sessionListWorkingPlacementMode = 'global';
+        sourceData.activeData = [
+            {
+                type: 'header',
+                title: 'Today',
+                headerKind: 'date',
+                groupKey: 'server:server-a:day:2026-05-04',
+                serverId: 'server-a',
+            },
+            {
+                type: 'session',
+                session: makeRenderableSession('working-session', {
+                    active: true,
+                    activeAt: 999_000,
+                    latestTurnStatus: 'in_progress',
+                    latestTurnStatusObservedAt: 1_000_000,
+                }),
+                section: 'active',
+                groupKey: 'server:server-a:day:2026-05-04',
+                groupKind: 'date',
+                serverId: 'server-a',
+            },
+        ];
+
+        const { useVisibleSessionListPaneState } = await import('./useVisibleSessionListViewData');
+        const hook = await renderHook(() => useVisibleSessionListPaneState('all'));
+
+        const readShape = () => hook.getCurrent().sessionListViewData?.map((item) => item.type === 'header'
+            ? `header:${item.headerKind ?? 'unknown'}`
+            : `session:${item.session.id}:${item.groupKind ?? 'unknown'}:${item.workingPlacementReason ?? 'none'}`);
+
+        expect(readShape()).toEqual([
+            'header:working',
+            'session:working-session:working:working',
+        ]);
+
+        // The working freshness window expires at observedAt + 120s. The
+        // pane-state surface (tablet sidebar) must recompute placement from
+        // the shared clock wake — previously it never re-evaluated and kept
+        // presenting live 'working' placement indefinitely.
+        await flushHookEffects({ advanceTimersMs: 121_000, cycles: 1, turns: 2 });
+
+        expect(readShape()).toEqual([
+            'header:working',
+            'session:working-session:working:working-retained',
+        ]);
+
+        await hook.unmount();
+    });
+
+    it('renders the visible list without a Node stdout stream', async () => {
+        const stdoutDescriptor = Object.getOwnPropertyDescriptor(process, 'stdout');
+        Object.defineProperty(process, 'stdout', {
+            configurable: true,
+            value: undefined,
+        });
+
+        let hook: Awaited<ReturnType<typeof renderHook<SessionListViewItem[] | null>>> | null = null;
+        try {
+            const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
+            hook = await renderHook(() => useVisibleSessionListViewData());
+
+            expect(hook.getCurrent()?.map((item) => item.type === 'header'
+                ? `header:${item.headerKind ?? 'unknown'}`
+                : `session:${item.session.id}`
+            )).toEqual([
+                'header:date',
+                'session:session-a',
+            ]);
+        } finally {
+            if (hook) await hook.unmount();
+            if (stdoutDescriptor) {
+                Object.defineProperty(process, 'stdout', stdoutDescriptor);
+            }
+        }
+    });
+
     it('uses a retained visible-list seed after the pane-state hook remounts', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
@@ -1552,7 +1999,9 @@ describe('useVisibleSessionListViewData', () => {
             : `session:${item.session.id}:${item.groupKind ?? 'unknown'}:${item.workingPlacementReason ?? 'none'}`
         )).toEqual([
             'header:working',
-            'session:working-session:working:working',
+            // Signals are stale at the remount time, so the seed retains the
+            // session in the working group with the distinct retained reason.
+            'session:working-session:working:working-retained',
             'header:date',
             'session:normal-session:date:none',
         ]);
@@ -1577,6 +2026,47 @@ describe('useVisibleSessionListViewData', () => {
                 createdAt: 1,
                 updatedAt: 1,
             }],
+        };
+        sourceData.sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 3,
+            pinnedSessionIds: [],
+            pinsBySessionId: {},
+            foldersById: {
+                'folder-a': {
+                    folderId: 'folder-a',
+                    folderKey: 'folder-a',
+                    parentFolderId: null,
+                    parentFolderKey: null,
+                    sortKey: 'a',
+                    display: {
+                        t: 'plain',
+                        v: {
+                            name: 'Planning',
+                            workspace: {
+                                t: 'workspaceScope',
+                                serverId: 'server-a',
+                                machineId: 'machine-a',
+                                rootPath: '/repo',
+                            },
+                        },
+                    },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            },
+            folderAssignmentsBySessionId: {
+                'assigned-session': 'folder-a',
+            },
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            labelsByLabelKey: {},
+            orderEntriesByScopeKey: {
+                'server-a:group:server:server-a:active:project:repo': [
+                    { scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo', itemKind: 'folder', itemKey: 'folder-a', sortKey: 'a' },
+                ],
+            },
         };
         sourceData.activeData = [
             {
@@ -1611,12 +2101,6 @@ describe('useVisibleSessionListViewData', () => {
                 serverId: 'server-a',
             },
         ];
-        sourceData.groupOrder = {
-            'server:server-a:active:project:repo': ['server-a:assigned-session'],
-        };
-        sourceData.sessionFolderAssignmentsBySessionKey = {
-            'server-a:assigned-session': 'folder-a',
-        };
 
         const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
         const hook = await renderHook(() => useVisibleSessionListViewData('persisted'));
@@ -1652,6 +2136,48 @@ describe('useVisibleSessionListViewData', () => {
                 createdAt: 1,
                 updatedAt: 1,
             }],
+        };
+        sourceData.sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 3,
+            pinnedSessionIds: [],
+            pinsBySessionId: {},
+            foldersById: {
+                'folder-a': {
+                    folderId: 'folder-a',
+                    folderKey: 'folder-a',
+                    parentFolderId: null,
+                    parentFolderKey: null,
+                    sortKey: 'a',
+                    display: {
+                        t: 'plain',
+                        v: {
+                            name: 'Planning',
+                            workspace: {
+                                t: 'workspaceScope',
+                                serverId: 'server-a',
+                                machineId: 'machine-a',
+                                rootPath: '/repo',
+                            },
+                        },
+                    },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            },
+            folderAssignmentsBySessionId: {
+                'assigned-session': 'folder-a',
+            },
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            labelsByLabelKey: {},
+            orderEntriesByScopeKey: {
+                'server-a:group:server:server-a:active:project:repo': [
+                    { scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo', itemKind: 'session', itemKey: 'root-session', sortKey: 'a' },
+                    { scopeKind: 'group', scopeKey: 'server:server-a:active:project:repo', itemKind: 'folder', itemKey: 'folder-a', sortKey: 'b' },
+                ],
+            },
         };
         sourceData.activeData = [
             {
@@ -1697,12 +2223,6 @@ describe('useVisibleSessionListViewData', () => {
                 serverId: 'server-a',
             },
         ];
-        sourceData.groupOrder = {
-            'server:server-a:active:project:repo': ['server-a:root-session', 'folder:folder-a'],
-        };
-        sourceData.sessionFolderAssignmentsBySessionKey = {
-            'server-a:assigned-session': 'folder-a',
-        };
 
         const { useVisibleSessionListViewData } = await import('./useVisibleSessionListViewData');
         const hook = await renderHook(() => useVisibleSessionListViewData('persisted'));

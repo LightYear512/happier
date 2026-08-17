@@ -6,6 +6,7 @@ import {
     pickLocalOnlyAccountSettings,
     stripLocalOnlyAccountSettings,
 } from '@/sync/domains/settings/localOnlyAccountSettings';
+import { stripMigratedSessionOrganizationSettings } from '@/sync/domains/settings/parse/accountSettingsLegacyCleanup';
 import {
     areAccountSettingsScopesEqual,
     type AccountSettingsScope,
@@ -49,6 +50,13 @@ import {
     removeCommittedPendingSettings,
 } from './writeback/accountSettingsRawDeltaMerge';
 import { areAccountSettingsRawObjectsEqual } from './writeback/accountSettingsRawEquality';
+import { fetchSessionOrganizationSnapshot } from '@/sync/api/session/sessionOrganizationApi';
+import { importLegacySessionOrganization as importLegacySessionOrganizationOp } from '@/sync/ops/sessionOrganization/importLegacySessionOrganization';
+import {
+    buildLegacySessionOrganizationImportPlan,
+    hasCompletedLegacySessionOrganizationImport,
+    markLegacySessionOrganizationImportComplete,
+} from './legacySessionOrganizationImport';
 
 export type SyncSettingsParams = {
     credentials: AuthCredentials;
@@ -58,6 +66,9 @@ export type SyncSettingsParams = {
     clearPendingSettings: (nextPendingSettings: Partial<Settings>) => void;
     settingsSecretsKey?: Uint8Array | null;
     settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
+    onLegacySessionOrganizationImported?: (result: Readonly<{
+        pinnedSessionIds: readonly string[];
+    }>) => void | Promise<void>;
 };
 
 export async function syncSettings(params: SyncSettingsParams): Promise<void> {
@@ -73,9 +84,26 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
     const maxRetries = 3;
     let retryCount = 0;
     let lastVersionMismatch: { expectedVersion: number; currentVersion: number; pendingKeys: string[] } | null = null;
-    const pendingServerSettings = stripLocalOnlyAccountSettings(pendingSettings);
+    const pendingServerSettings = stripMigratedSessionOrganizationSettings(
+        stripLocalOnlyAccountSettings(pendingSettings) as Record<string, unknown>,
+    ) as Partial<Settings>;
 
-    const encryptionMode = await fetchAccountEncryptionMode(credentials);
+    // `/v1/account/encryption` and the account-settings GET are independent reads. The mode decides
+    // how the fetched document is *opened* and written — `openSettingsContent` branches on the
+    // envelope's own `t`, not on the mode — so nothing about the read depends on it. Awaiting the
+    // mode before issuing the GET cost a measured 124 ms on every account-change foreground; both
+    // requests are now in flight together, with the mode still awaited before anything opens.
+    const encryptionModeResult = fetchAccountEncryptionMode(credentials);
+    let pendingSettingsV2Fetch: Promise<{ content: AccountSettingsStoredContentEnvelope | null; version: number }> | null =
+        fetchSettingsV2();
+    // The first baseline read consumes it; keep the rejection observed until then.
+    pendingSettingsV2Fetch.catch(() => undefined);
+    function consumeSettingsV2Fetch(): Promise<{ content: AccountSettingsStoredContentEnvelope | null; version: number }> {
+        const prefetched = pendingSettingsV2Fetch;
+        pendingSettingsV2Fetch = null;
+        return prefetched ?? fetchSettingsV2();
+    }
+    const encryptionMode = await encryptionModeResult;
     const accountMode = encryptionMode.mode === 'plain' ? 'plain' : 'e2ee';
 
     function isSettingsScopeActive(): boolean {
@@ -294,7 +322,7 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
 
     async function fetchAccountSettingsBaseline(options?: { requireReadable?: boolean }): Promise<AccountSettingsServerBaseline> {
         try {
-            const fetched = await fetchSettingsV2();
+            const fetched = await consumeSettingsV2Fetch();
             const raw = await openSettingsContent(fetched.content, options);
             const migrated = migrateRawServerIdentityKeys(raw);
             return {
@@ -360,19 +388,24 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
         raw: Settings | Record<string, unknown>;
         mode: 'plain' | 'e2ee';
     }): { value: Record<string, unknown>; changed: boolean } {
-        const stripped = stripLocalOnlyAccountSettings(params.raw);
+        const strippedLocalOnly = stripLocalOnlyAccountSettings(params.raw);
+        const stripped = stripMigratedSessionOrganizationSettings(strippedLocalOnly as Record<string, unknown>);
+        const migratedOrganizationStripped = !areAccountSettingsRawObjectsEqual(
+            strippedLocalOnly as Record<string, unknown>,
+            stripped,
+        );
         if (params.mode === 'plain') {
             const unsealed = unsealSecretsDeepWithKeys(stripped, settingsSecretsReadKeys) as Record<string, unknown>;
-            return { value: unsealed, changed: unsealed !== stripped };
+            return { value: unsealed, changed: migratedOrganizationStripped || unsealed !== stripped };
         }
         if (!settingsSecretsKey) {
-            return { value: stripped as Record<string, unknown>, changed: false };
+            return { value: stripped as Record<string, unknown>, changed: migratedOrganizationStripped };
         }
         const resealed = resealSecretsDeep(stripped, {
             readKeys: settingsSecretsReadKeys,
             writeKey: settingsSecretsKey,
         });
-        return { value: resealed.value as Record<string, unknown>, changed: resealed.changed };
+        return { value: resealed.value as Record<string, unknown>, changed: migratedOrganizationStripped || resealed.changed };
     }
 
     function createSettingsContentForWrite(raw: Record<string, unknown>): {
@@ -401,8 +434,11 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
             ? normalizeSettingsForLocalStorage({ raw: params.raw, mode: accountMode })
             : { ...settingsDefaults };
         const remainingServerPending = stripLocalOnlyAccountSettings(params.remainingPendingSettings ?? {});
-        const mergedWithPending = Object.keys(remainingServerPending).length > 0
-            ? applySettings(parsedSettings, remainingServerPending)
+        const cleanedRemainingServerPending = stripMigratedSessionOrganizationSettings(
+            remainingServerPending as Record<string, unknown>,
+        ) as Partial<Settings>;
+        const mergedWithPending = Object.keys(cleanedRemainingServerPending).length > 0
+            ? applySettings(parsedSettings, cleanedRemainingServerPending)
             : parsedSettings;
         const nextSettings = applySettings(
             mergedWithPending,
@@ -418,9 +454,60 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
 
     function clearCommittedPendingSettings(submittedPendingSettings: Partial<Settings>): Partial<Settings> {
         const currentPendingSettings = loadPendingSettingsForCapturedScope();
-        const nextPendingSettings = removeCommittedPendingSettings(currentPendingSettings, submittedPendingSettings);
+        const nextPendingSettings = stripMigratedSessionOrganizationSettings(
+            removeCommittedPendingSettings(currentPendingSettings, submittedPendingSettings) as Record<string, unknown>,
+        ) as Partial<Settings>;
         clearPendingSettings(nextPendingSettings);
         return nextPendingSettings;
+    }
+
+    async function maybeImportLegacySessionOrganization(rawSettings: Record<string, unknown> | null): Promise<void> {
+        if (!settingsScope || !rawSettings) return;
+        if (hasCompletedLegacySessionOrganizationImport(settingsScope)) return;
+
+        try {
+            const initialPlan = buildLegacySessionOrganizationImportPlan({
+                serverId: settingsScope.serverId,
+                rawSettings,
+            });
+            if (!initialPlan.hasLegacyOrganizationSettings) return;
+
+            const existing = await fetchSessionOrganizationSnapshot({
+                credentials,
+                serverUrl: activeServerUrl,
+                request: {
+                    includeFolders: true,
+                    includeTags: true,
+                    includeLabels: true,
+                    includeAllFolderAssignments: true,
+                    includeAllTagAssignments: true,
+                },
+            });
+            const plan = buildLegacySessionOrganizationImportPlan({
+                serverId: settingsScope.serverId,
+                rawSettings,
+                existingSnapshot: existing.snapshot,
+            });
+            if (plan.hasImportableLegacyOrganization) {
+                await importLegacySessionOrganizationOp({
+                    credentials,
+                    serverId: settingsScope.serverId,
+                    serverUrl: activeServerUrl,
+                    request: plan.request,
+                });
+            }
+            markLegacySessionOrganizationImportComplete(settingsScope);
+            if (plan.hasImportableLegacyOrganization && plan.request.pins.length > 0) {
+                await params.onLegacySessionOrganizationImported?.({
+                    pinnedSessionIds: plan.request.pins.map((pin) => pin.sessionId),
+                });
+            }
+        } catch (error) {
+            dbgSettings('syncSettings: legacy session organization import skipped', {
+                endpoint: activeServerUrl,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
     }
 
     // Apply pending settings
@@ -527,6 +614,7 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
 
     const fetched = await fetchAccountSettingsBaseline();
     const decryptedSettings = fetched.raw;
+    await maybeImportLegacySessionOrganization(decryptedSettings);
 
     const parsedSettings = decryptedSettings
         ? normalizeSettingsForLocalStorage({ raw: decryptedSettings, mode: accountMode })
@@ -547,7 +635,9 @@ export async function syncSettings(params: SyncSettingsParams): Promise<void> {
     // - Pending settings are persisted for crash safety; reload from disk so in-flight sync calls
     //   don't miss deltas when the Sync instance replaces the pending object reference.
     const pendingLatest = loadPendingSettingsForCapturedScope();
-    const pendingLatestForServer = stripLocalOnlyAccountSettings(pendingLatest);
+    const pendingLatestForServer = stripMigratedSessionOrganizationSettings(
+        stripLocalOnlyAccountSettings(pendingLatest) as Record<string, unknown>,
+    ) as Partial<Settings>;
 
     const mergedWithPending =
         Object.keys(pendingLatestForServer).length > 0
@@ -726,7 +816,9 @@ export function applySettingsLocalDelta(params: {
     });
     storage.getState().applySettingsLocal(delta);
 
-    const deltaForServer = stripLocalOnlyAccountSettings(delta);
+    const deltaForServer = stripMigratedSessionOrganizationSettings(
+        stripLocalOnlyAccountSettings(delta) as Record<string, unknown>,
+    ) as Partial<Settings>;
     if (Object.keys(deltaForServer).length === 0) {
         dbgSettings('applySettings: local-only delta (no pending sync)', {
             delta: summarizeSettingsDelta(delta),

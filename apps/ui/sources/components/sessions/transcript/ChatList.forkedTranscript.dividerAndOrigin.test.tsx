@@ -116,6 +116,28 @@ afterEach(() => {
     standardCleanup();
 });
 
+// ChatListInternal reads session-screen navigation focus for the S-E reveal
+// revalidation; keep this host suite navigation-context-free.
+vi.mock('@/components/sessions/shell/useSessionScreenIsFocused', () => ({
+    useSessionScreenIsFocused: () => true,
+}));
+
+// This suite documents flash_v2 semantics (N2c row decomposition, FlashList fill
+// loop) and reads the captured FlashList props; pin the FlashList escape hatch like
+// the monolith regression lane now that default composition is Legend. Without the
+// pin the suite mounted the REAL @legendapp/list package (requestAnimationFrame
+// crash) — the documented stale-mock class from the 2026-07-10 review.
+vi.mock('@/sync/runtime/syncTuning', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/runtime/syncTuning')>();
+    return {
+        ...actual,
+        loadSyncTuning: () => ({
+            ...actual.loadSyncTuning(),
+            transcriptLegendListSpikeSurface: 'flashList' as const,
+        }),
+    };
+});
+
 vi.mock('@/components/ui/lists/flashListCompat/FlashListCompat', async () => {
     const { createCapturingFlashListMock } = await import('@/dev/testkit/mocks/flashList');
     const flashListMock = createCapturingFlashListMock({ renderItems: true });
@@ -321,8 +343,8 @@ vi.mock('@/components/sessions/transcript/scroll/JumpToBottomButton', () => ({
   JumpToBottomButton: () => null,
 }));
 
-vi.mock('@/components/sessions/transcript/scroll/transcriptScrollPinController', async () => {
-  const actual = await vi.importActual<any>('@/components/sessions/transcript/scroll/transcriptScrollPinController');
+vi.mock('@/components/sessions/transcript/scroll/transcriptBottomFollowMode', async () => {
+  const actual = await vi.importActual<any>('@/components/sessions/transcript/scroll/transcriptBottomFollowMode');
   return actual;
 });
 
@@ -338,21 +360,12 @@ vi.mock('@/sync/domains/state/agentStateCapabilities', () => ({
   getPermissionsInUiWhileLocal: () => ({}),
 }));
 
-vi.mock('@/sync/sync', () => ({
-  sync: {
-    loadOlderMessages: vi.fn(),
+vi.mock('@/sync/sync', async () =>
+  (await import('@/dev/testkit/harness/chatListHarness')).createFlashListChatListSyncModuleMock({
     loadOlderMessagesForkAware: vi.fn(),
-    loadNewerMessages: vi.fn(),
     hasDeferredNewerMessages: () => false,
-    getSyncTuning: () => ({
-      transcriptForwardPrefetchThresholdPx: 0,
-      transcriptBackwardPrefetchThresholdPx: 0,
-      transcriptFlashListEstimatedItemSize: 120,
-      transcriptWebInitialPinStabilizeMs: 3000,
-      transcriptWebInitialPinRetryIntervalMs: 250,
-    }),
-  },
-}));
+  }),
+);
 
 describe('ChatList (forked transcript)', () => {
     async function renderChatList() {
@@ -479,10 +492,11 @@ describe('ChatList (forked transcript)', () => {
         expect(useMessageMock).toHaveBeenCalledWith('parent-1', 'p1');
         expect(useMessageMock).toHaveBeenCalledWith('child-1', 'c1');
 
-        const firstMessageView = capturedMessageViewProps[0];
-        expect(firstMessageView).toBeTruthy();
-        expect(firstMessageView.sessionId).toBe('parent-1');
-        expect(firstMessageView.interaction).toEqual(
+        const ancestorMessageView = capturedMessageViewProps.find((props) => (
+            props?.sessionId === 'parent-1' && props?.message?.id === 'p1'
+        ));
+        expect(ancestorMessageView).toBeTruthy();
+        expect(ancestorMessageView.interaction).toEqual(
             expect.objectContaining({
                 canSendMessages: false,
                 canApprovePermissions: false,
@@ -509,7 +523,7 @@ describe('ChatList (forked transcript)', () => {
             await flushHookEffects({ cycles: 2, turns: 3 });
         });
 
-        expect(loadOlderForkAware).toHaveBeenCalledWith('child-1');
+        expect(loadOlderForkAware).toHaveBeenCalledWith('child-1', { limit: 64 });
 
         await screen.unmount();
     });

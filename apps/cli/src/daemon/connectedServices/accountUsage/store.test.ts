@@ -1,0 +1,252 @@
+import {
+  buildProviderAccountUsageRecordId,
+  type ConnectedServiceUsageSourceV1,
+  type ProviderAccountUsageRecordKeyV1,
+  type ProviderAccountUsageSnapshotV1,
+} from '@happier-dev/protocol';
+import { describe, expect, it } from 'vitest';
+
+type ProviderAccountUsageStore = Readonly<{
+  recordSnapshot(
+    snapshot: ProviderAccountUsageSnapshotV1,
+    observation?: Readonly<{
+      sources?: readonly ConnectedServiceUsageSourceV1[];
+    }>,
+  ): Readonly<{
+    status: 'snapshot_advanced' | 'source_linked' | 'duplicate' | 'older';
+    recordId: string;
+    snapshotAdvanced: boolean;
+    sourceLinked: boolean;
+  }>;
+  resolveRecordId(recordId: string): ProviderAccountUsageSnapshotV1 | null;
+  resolveBySource(source: ConnectedServiceUsageSourceV1): ProviderAccountUsageSnapshotV1 | null;
+  listSnapshots(): readonly ProviderAccountUsageSnapshotV1[];
+}>;
+
+type StoreModule = Readonly<{
+  createProviderAccountUsageStore(): ProviderAccountUsageStore;
+  isProviderAccountUsageStoreMutationAccepted(result: Readonly<{
+    status: 'snapshot_advanced' | 'source_linked' | 'duplicate' | 'older';
+    recordId: string;
+    snapshotAdvanced: boolean;
+    sourceLinked: boolean;
+  }>): boolean;
+}>;
+
+async function loadStoreModule(): Promise<StoreModule | null> {
+  return await import('./store').catch(() => null) as StoreModule | null;
+}
+
+function createKey(accountSubjectId: string): ProviderAccountUsageRecordKeyV1 {
+  return {
+    providerId: 'claude',
+    accountSubjectId,
+    subjectKind: accountSubjectId.startsWith('provisional:') ? 'unknown' : 'subscription',
+    quotaScope: 'account',
+  };
+}
+
+function createSnapshot(overrides: Partial<ProviderAccountUsageSnapshotV1> = {}): ProviderAccountUsageSnapshotV1 {
+  const recordKey = overrides.recordKey ?? createKey('sub_stable_1');
+  return {
+    v: 1,
+    recordId: buildProviderAccountUsageRecordId(recordKey),
+    recordKey,
+    providerId: recordKey.providerId,
+    accountSubject: {
+      kind: recordKey.accountSubjectId.startsWith('provisional:')
+        ? 'provisionalLocalSubject'
+        : 'providerSubject',
+      id: recordKey.accountSubjectId,
+    },
+    observedAtMs: 1_000,
+    fetchedAtMs: 1_000,
+    staleAfterMs: 300_000,
+    source: 'runtimeSignal',
+    confidence: 'confirmed',
+    state: 'loaded_data',
+    planLabel: 'Team',
+    accountLabel: 'same visible label',
+    meters: [],
+    ...overrides,
+  };
+}
+
+describe('provider account usage store', () => {
+  it('uses the typed status as the only mutation-acceptance authority', async () => {
+    const module = await loadStoreModule();
+    expect(module).not.toBeNull();
+    const recordId = createSnapshot().recordId;
+    expect(module!.isProviderAccountUsageStoreMutationAccepted({
+      status: 'duplicate',
+      recordId,
+      snapshotAdvanced: true,
+      sourceLinked: true,
+    })).toBe(false);
+    expect(module!.isProviderAccountUsageStoreMutationAccepted({
+      status: 'snapshot_advanced',
+      recordId,
+      snapshotAdvanced: false,
+      sourceLinked: false,
+    })).toBe(true);
+  });
+
+  it('records one stable provider-subject snapshot and resolves explicit sources without exposing alias lookup', async () => {
+    const module = await loadStoreModule();
+    expect(module).not.toBeNull();
+    const store = module!.createProviderAccountUsageStore();
+    const stableSnapshot = createSnapshot();
+    const firstProvisionalKey = createKey('provisional:native');
+    const secondProvisionalKey = createKey('provisional:connected');
+
+    expect(store.recordSnapshot(stableSnapshot, {
+      sources: [{
+        serviceId: 'anthropic',
+        profileId: 'work',
+        bindingKind: 'profile',
+      }],
+    })).toEqual({
+      status: 'snapshot_advanced',
+      recordId: stableSnapshot.recordId,
+      snapshotAdvanced: true,
+      sourceLinked: true,
+    });
+    store.recordSnapshot(createSnapshot({
+      recordKey: firstProvisionalKey,
+      recordId: buildProviderAccountUsageRecordId(firstProvisionalKey),
+      accountSubject: { kind: 'provisionalLocalSubject', id: firstProvisionalKey.accountSubjectId },
+      accountLabel: 'same@example.com',
+    }));
+    store.recordSnapshot(createSnapshot({
+      recordKey: secondProvisionalKey,
+      recordId: buildProviderAccountUsageRecordId(secondProvisionalKey),
+      accountSubject: { kind: 'provisionalLocalSubject', id: secondProvisionalKey.accountSubjectId },
+      accountLabel: 'same@example.com',
+    }));
+
+    expect('resolveByAlias' in store).toBe(false);
+    expect(store.resolveBySource({
+      serviceId: 'anthropic',
+      profileId: 'work',
+      bindingKind: 'profile',
+    })?.recordId).toBe(stableSnapshot.recordId);
+    expect(store.listSnapshots().map((snapshot) => snapshot.recordKey.accountSubjectId).sort()).toEqual([
+      'provisional:connected',
+      'provisional:native',
+      'sub_stable_1',
+    ]);
+  });
+
+  it('uses connected-service group generation when resolving group-member sources for policy', async () => {
+    const module = await loadStoreModule();
+    expect(module).not.toBeNull();
+    const store = module!.createProviderAccountUsageStore();
+    const snapshot = createSnapshot();
+    store.recordSnapshot(snapshot, {
+      sources: [{
+        serviceId: 'anthropic',
+        profileId: 'work',
+        bindingKind: 'group_member',
+        groupId: 'team',
+        groupGeneration: 7,
+      }],
+    });
+
+    expect(store.resolveBySource({
+      serviceId: 'anthropic',
+      profileId: 'work',
+      bindingKind: 'group_member',
+      groupId: 'team',
+      groupGeneration: 7,
+    })?.recordId).toBe(snapshot.recordId);
+    expect(store.resolveBySource({
+      serviceId: 'anthropic',
+      profileId: 'work',
+      bindingKind: 'group_member',
+      groupId: 'team',
+      groupGeneration: 6,
+    })).toBeNull();
+  });
+
+  it('does not derive source lookup authority without an explicit source link', async () => {
+    const module = await loadStoreModule();
+    expect(module).not.toBeNull();
+    const store = module!.createProviderAccountUsageStore();
+    const snapshot = createSnapshot();
+
+    store.recordSnapshot(snapshot);
+
+    expect(store.resolveBySource({
+      serviceId: 'anthropic',
+      profileId: 'alias-only',
+      bindingKind: 'profile',
+    })).toBeNull();
+  });
+
+  it('classifies effective snapshot revisions, new source edges, duplicates, and older delivery', async () => {
+    const module = await loadStoreModule();
+    expect(module).not.toBeNull();
+    const store = module!.createProviderAccountUsageStore();
+    const sourceA: ConnectedServiceUsageSourceV1 = {
+      serviceId: 'anthropic',
+      profileId: 'work',
+      bindingKind: 'profile',
+    };
+    const sourceB: ConnectedServiceUsageSourceV1 = {
+      serviceId: 'anthropic',
+      profileId: 'work',
+      bindingKind: 'group_member',
+      groupId: 'team',
+      groupGeneration: 7,
+    };
+    const initial = createSnapshot({ fetchedAtMs: 2_000, observedAtMs: 2_000 });
+
+    expect(store.recordSnapshot(initial, { sources: [sourceA] })).toEqual({
+      status: 'snapshot_advanced',
+      recordId: initial.recordId,
+      snapshotAdvanced: true,
+      sourceLinked: true,
+    });
+    expect(store.recordSnapshot(initial, { sources: [sourceA] })).toEqual({
+      status: 'duplicate',
+      recordId: initial.recordId,
+      snapshotAdvanced: false,
+      sourceLinked: false,
+    });
+    expect(store.recordSnapshot(createSnapshot({
+      fetchedAtMs: 1_000,
+      observedAtMs: 1_000,
+      planLabel: 'outdated',
+    }))).toEqual({
+      status: 'older',
+      recordId: initial.recordId,
+      snapshotAdvanced: false,
+      sourceLinked: false,
+    });
+    expect(store.recordSnapshot(createSnapshot({
+      fetchedAtMs: 1_000,
+      observedAtMs: 1_000,
+      planLabel: 'outdated',
+    }), { sources: [sourceB] })).toEqual({
+      status: 'source_linked',
+      recordId: initial.recordId,
+      snapshotAdvanced: false,
+      sourceLinked: true,
+    });
+    expect(store.resolveBySource(sourceB)).toEqual(initial);
+
+    const correctedAtSameTimestamp = createSnapshot({
+      fetchedAtMs: 2_000,
+      observedAtMs: 2_000,
+      planLabel: 'Enterprise',
+    });
+    expect(store.recordSnapshot(correctedAtSameTimestamp, { sources: [sourceA, sourceB] })).toEqual({
+      status: 'snapshot_advanced',
+      recordId: initial.recordId,
+      snapshotAdvanced: true,
+      sourceLinked: false,
+    });
+    expect(store.resolveRecordId(initial.recordId)?.planLabel).toBe('Enterprise');
+  });
+
+});

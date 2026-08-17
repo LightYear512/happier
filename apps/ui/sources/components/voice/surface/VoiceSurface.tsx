@@ -2,7 +2,6 @@ import * as React from 'react';
 import { Platform, Pressable, ScrollView, View } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 
-import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { Typography } from '@/constants/Typography';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -12,7 +11,7 @@ import { VoiceBars } from '@/components/ui/status/VoiceBars';
 import { PrimaryCircleIconButton } from '@/components/ui/buttons/PrimaryCircleIconButton';
 import { useSetting } from '@/sync/domains/state/storage';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
-import { useAllSessions, useSession } from '@/sync/store/hooks';
+import { useAllSessions, useSessionMetadata } from '@/sync/store/hooks';
 import { t } from '@/text';
 import { useVoiceActivityStore } from '@/voice/activity/voiceActivityStore';
 import { voiceActivityController } from '@/voice/activity/voiceActivityController';
@@ -34,6 +33,7 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { isHiddenSystemSession } from '@happier-dev/protocol';
 import { getVoiceAgentSessionTeleportAvailability } from '@/voice/agent/getVoiceAgentSessionTeleportAvailability';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
+import { Icon } from '@/components/ui/icons/Icon';
 
 
 export type VoiceSurfaceVariant = 'sidebar' | 'session';
@@ -63,14 +63,16 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
   const activityFeedAutoExpandOnStart = voice?.ui?.activityFeedAutoExpandOnStart === true;
 
   const sessionSurfaceSessionId = typeof props.sessionId === 'string' ? props.sessionId.trim() : '';
-  const currentSession = useSession(sessionSurfaceSessionId);
+  // Subscription width: the surface only reads metadata (hidden-system check below and the
+  // target label). Subscribing to the whole session re-rendered it on every turn-lifecycle
+  // field a send touches.
+  const currentSessionMetadata = useSessionMetadata(sessionSurfaceSessionId);
 
   const feedSessionId = props.variant === 'session' && typeof props.sessionId === 'string' ? props.sessionId : null;
   const lastFocusedSessionId = useVoiceTargetStore((s) => s.lastFocusedSessionId);
   const primaryActionSessionId = useVoiceTargetStore((s) => s.primaryActionSessionId);
-  const primaryActionSession = useSession(
-    typeof primaryActionSessionId === 'string' ? primaryActionSessionId.trim() : '',
-  );
+  const primaryActionSessionKey = typeof primaryActionSessionId === 'string' ? primaryActionSessionId.trim() : '';
+  const primaryActionSessionMetadata = useSessionMetadata(primaryActionSessionKey);
   const voiceScope = useVoiceTargetStore((s) => s.scope);
   const routeSessionId = props.variant === 'sidebar' ? resolveSessionIdFromPathname(pathname) : null;
   const startSessionId =
@@ -201,7 +203,7 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
   const showSurface =
     providerId !== 'off' &&
     locationAllowsVariant &&
-    !(props.variant === 'session' && isHiddenSystemSession({ metadata: currentSession?.metadata ?? null }));
+    !(props.variant === 'session' && isHiddenSystemSession({ metadata: currentSessionMetadata }));
   if (!showSurface) return null;
 
   const statusInfo = (() => {
@@ -244,7 +246,9 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
   const targetLabel =
     props.variant === 'sidebar' && voiceScope === 'global' && primaryActionSessionId
       ? (
-        (primaryActionSession ? getSessionName(primaryActionSession) : null)
+        (primaryActionSessionMetadata
+          ? getSessionName({ id: primaryActionSessionKey, metadata: primaryActionSessionMetadata })
+          : null)
         ?? resolveVoiceSessionLabel(primaryActionSessionId, {
           voiceShareSessionSummary: voicePrivacy.shareSessionSummary,
           voiceShareFilePaths: voicePrivacy.shareFilePaths,
@@ -302,12 +306,12 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
               ]}
             >
               <StatusDot color={statusInfo.dot} isPulsing={snap.status === 'connecting'} size={7} style={styles.dot as any} />
-              <Ionicons name="mic-off-outline" size={13} color={theme.colors.text.primary} style={styles.micIcon as any} />
+              <Icon name="microphone-slash" size={14} color={theme.colors.text.primary} style={styles.micIcon as any} />
             </Pressable>
           ) : (
             <View style={[styles.micBadge, { backgroundColor: theme.colors.surface.inset, borderColor: theme.colors.border.default }]}>
               <StatusDot color={statusInfo.dot} isPulsing={snap.status === 'connecting'} size={7} style={styles.dot as any} />
-              <Ionicons name={snap.mode === 'listening' ? 'mic' : 'mic-off-outline'} size={13} color={theme.colors.text.primary} style={styles.micIcon as any} />
+              <Icon name={snap.mode === 'listening' ? 'microphone' : 'microphone-slash'} size={14} color={theme.colors.text.primary} style={styles.micIcon as any} />
             </View>
           )}
           <View style={styles.statusTextCol}>
@@ -341,7 +345,7 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
               }}
               style={({ pressed }) => [{ opacity: pressed ? 0.72 : 1 }, styles.iconAction as any]}
             >
-              <Ionicons name="close-circle-outline" size={18} color={theme.colors.text.secondary} />
+              <Icon name="x-circle" size={16} color={theme.colors.text.secondary} />
             </Pressable>
           ) : null}
 
@@ -377,7 +381,7 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
               }}
               style={({ pressed }) => [{ opacity: pressed ? 0.72 : 1 }, styles.iconAction as any]}
             >
-              <Ionicons name="chatbubble-ellipses-outline" size={18} color={theme.colors.text.secondary} />
+              <Icon name="chat-circle-dots" size={16} color={theme.colors.text.secondary} />
             </Pressable>
           ) : null}
 
@@ -392,7 +396,7 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
               }}
               style={({ pressed }) => [{ opacity: pressed ? 0.72 : 1 }, styles.iconAction as any]}
             >
-              <Ionicons name="navigate-outline" size={18} color={theme.colors.text.secondary} />
+              <Icon name="navigation-arrow" size={16} color={theme.colors.text.secondary} />
             </Pressable>
           ) : null}
 
@@ -404,7 +408,7 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
             accessibilityLabel={canStop ? t('voiceAssistant.tapToEnd') : t('voiceAssistant.label')}
           >
             {canStop ? (
-              <Ionicons name="stop-circle" size={22} color={theme.colors.button?.primary?.tint ?? theme.colors.text.primary} />
+              <Icon name="stop-circle" size={20} color={theme.colors.button?.primary?.tint ?? theme.colors.text.primary} />
             ) : (
               <Image
                 source={require('@/assets/images/icon-voice-white.png')}
@@ -425,7 +429,7 @@ export function VoiceSurface(props: Readonly<{ variant: VoiceSurfaceVariant; ses
                 accessibilityLabel={t('voiceSurface.a11y.toggleActivity')}
                 style={({ pressed }) => [{ opacity: pressed ? 0.72 : 1 }, styles.feedHeaderLeft as any]}
               >
-              <Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={14} color={theme.colors.text.secondary} />
+              <Icon name={expanded ? 'caret-down' : 'caret-right'} size={14} color={theme.colors.text.secondary} />
               <Text style={[styles.feedTitle, { color: theme.colors.text.secondary }]}>
                 {t('voiceActivity.title')}
               </Text>

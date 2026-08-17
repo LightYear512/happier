@@ -1,34 +1,21 @@
 import type { AgentId } from '@/agents/catalog/catalog';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
-import {
-    LEGACY_ACP_CONFIG_OPTIONS_STATE_KEY,
-    LEGACY_ACP_CONFIG_OPTION_OVERRIDES_KEY,
-    LEGACY_ACP_SESSION_MODELS_STATE_KEY,
-    LEGACY_ACP_SESSION_MODES_STATE_KEY,
-    readMetadataAliasValue,
-    SESSION_CONFIG_OPTIONS_STATE_KEY,
-    SESSION_CONFIG_OPTION_OVERRIDES_KEY,
-    SESSION_MODELS_STATE_KEY,
-    SESSION_MODES_STATE_KEY,
-} from '@happier-dev/agents';
 
 import {
-    parseSessionConfigOptionsState,
-    parseSessionConfigOptionOverridesState,
-    parseSessionModelsState,
-    parseSessionModesState,
-} from './schema';
+    readSessionConfigOptionOverridesState,
+    readSessionConfigOptionsState,
+    readSessionModelsState,
+    readSessionModesState,
+} from './readSessionControlMetadata';
+import {
+    readNonBlankSessionControlIdentifier,
+    readSessionControlValueId,
+} from './opaqueIdentifiers';
 
 export type SessionConfigOptionValueId = string;
 
 function normalizeValueId(raw: unknown): SessionConfigOptionValueId | null {
-    if (typeof raw === 'string') {
-        const trimmed = raw.trim();
-        return trimmed.length > 0 ? trimmed : null;
-    }
-    if (typeof raw === 'boolean') return raw ? 'true' : 'false';
-    if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
-    return null;
+    return readSessionControlValueId(raw);
 }
 
 function normalizeConfigOptionChoiceDisplayName(params: Readonly<{
@@ -111,6 +98,60 @@ function resolveRequestedValue(
     return requestedValue;
 }
 
+export function normalizeSessionConfigOptionsArray(raw: unknown): SessionConfigOption[] | null {
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+
+    const parsed: SessionConfigOption[] = [];
+    type RawConfigOptionChoice = Record<string, unknown>;
+    for (const entry of raw) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const rec = entry as Record<string, unknown>;
+        const id = readNonBlankSessionControlIdentifier(rec.id) ?? '';
+        const name = typeof rec.name === 'string' ? rec.name.trim() : '';
+        const type = typeof rec.type === 'string' ? rec.type.trim() : '';
+        if (!id || !name || !type) continue;
+
+        const currentValue = normalizeValueId(rec.currentValue);
+        if (!currentValue) continue;
+
+        const options = Array.isArray(rec.options)
+            ? rec.options
+                .filter((option: unknown): option is RawConfigOptionChoice =>
+                    Boolean(option && typeof option === 'object' && !Array.isArray(option))
+                )
+                .map((option: RawConfigOptionChoice) => {
+                    const value = normalizeValueId(option.value);
+                    const optionName = typeof option.name === 'string' ? option.name.trim() : '';
+                    if (!value || !optionName) return null;
+                    const description = typeof option.description === 'string' ? option.description.trim() : '';
+                    return {
+                        value,
+                        name: normalizeConfigOptionChoiceDisplayName({ optionId: id, value, name: optionName }),
+                        ...(description ? { description } : {}),
+                    };
+                })
+                .filter(
+                    (option: NonNullable<SessionConfigOption['options']>[number] | null): option is NonNullable<SessionConfigOption['options']>[number] =>
+                        option !== null
+                )
+            : undefined;
+
+        const description = typeof rec.description === 'string' ? rec.description.trim() : '';
+        const category = typeof rec.category === 'string' ? rec.category.trim() : '';
+        parsed.push({
+            id,
+            name,
+            type,
+            currentValue,
+            ...(description ? { description } : {}),
+            ...(category ? { category } : {}),
+            ...(options && options.length > 0 ? { options } : {}),
+        } satisfies SessionConfigOption);
+    }
+
+    return parsed.length > 0 ? parsed : null;
+}
+
 export function isBooleanConfigOptionType(type: string): boolean {
     return type === 'boolean' || type === 'bool' || type === 'toggle';
 }
@@ -183,7 +224,7 @@ function buildSessionConfigOptionControls(params: Readonly<{
     const controls: SessionConfigOptionControl[] = [];
 
     for (const entry of params.configOptions) {
-        const id = entry.id.trim();
+        const id = readNonBlankSessionControlIdentifier(entry.id) ?? '';
         const name = entry.name.trim();
         const type = entry.type.trim();
         if (!id || !name || !type) continue;
@@ -238,27 +279,19 @@ export function computeSessionConfigOptionControls(params: {
     agentId: AgentId;
     metadata: Metadata | null | undefined;
 }): SessionConfigOptionControl[] | null {
-    const state = parseSessionConfigOptionsState(
-        readMetadataAliasValue((params.metadata as any) ?? {}, SESSION_CONFIG_OPTIONS_STATE_KEY, LEGACY_ACP_CONFIG_OPTIONS_STATE_KEY),
-    );
+    const state = readSessionConfigOptionsState(params.metadata);
     if (!state) return null;
     if (state.provider !== params.agentId) return null;
     if (state.configOptions.length === 0) return null;
 
-    const sessionModes = parseSessionModesState(
-        readMetadataAliasValue((params.metadata as any) ?? {}, SESSION_MODES_STATE_KEY, LEGACY_ACP_SESSION_MODES_STATE_KEY),
-    );
+    const sessionModes = readSessionModesState(params.metadata);
     const hasDedicatedModeControl = sessionModes?.provider === params.agentId && sessionModes.availableModes.length > 0;
 
-    const sessionModels = parseSessionModelsState(
-        readMetadataAliasValue((params.metadata as any) ?? {}, SESSION_MODELS_STATE_KEY, LEGACY_ACP_SESSION_MODELS_STATE_KEY),
-    );
+    const sessionModels = readSessionModelsState(params.metadata);
     const hasDedicatedModelControl =
         sessionModels?.provider === params.agentId && sessionModels.availableModels.length > 0;
 
-    const overrides = parseSessionConfigOptionOverridesState(
-        readMetadataAliasValue((params.metadata as any) ?? {}, SESSION_CONFIG_OPTION_OVERRIDES_KEY, LEGACY_ACP_CONFIG_OPTION_OVERRIDES_KEY),
-    );
+    const overrides = readSessionConfigOptionOverridesState(params.metadata);
     return buildSessionConfigOptionControls({
         providerId: params.agentId,
         provider: state.provider,

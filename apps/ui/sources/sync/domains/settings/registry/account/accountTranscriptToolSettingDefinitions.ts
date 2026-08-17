@@ -203,20 +203,6 @@ export const ACCOUNT_TRANSCRIPT_TOOL_SETTING_DEFINITIONS = defineSettingDefiniti
             serializeCurrent: serializeBucketCount(400, 600),
         },
     },
-    transcriptPendingQueueReorderRowHeightPx: {
-        schema: z.number(),
-        default: 72,
-        description: 'Row height (px) used by drag reorder in the pending queue transcript block',
-        storageScope: 'account',
-        analytics: {
-            trackCurrentState: true,
-            trackChanges: true,
-            valueKind: 'bucket',
-            privacy: 'bucketed',
-            identityScope: 'person',
-            serializeCurrent: serializeBucketCount(60, 80),
-        },
-    },
     transcriptPendingMessageCollapseThresholdChars: {
         schema: z.number(),
         default: 160,
@@ -331,7 +317,7 @@ export const ACCOUNT_TRANSCRIPT_TOOL_SETTING_DEFINITIONS = defineSettingDefiniti
     },
     transcriptListImplementation: {
         schema: z.enum(['flash_v2', 'flatlist_legacy', 'flash_v2_inverted']),
-        default: 'flash_v2_inverted',
+        default: 'flash_v2',
         description: 'Which transcript list implementation to use',
         storageScope: 'account',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },

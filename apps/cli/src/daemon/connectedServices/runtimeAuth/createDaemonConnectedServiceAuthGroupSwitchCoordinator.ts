@@ -1,8 +1,10 @@
 import {
   ConnectedServiceIdSchema,
+  isConnectedServiceCredentialHealthStatusReconnectRequired,
   type ConnectedServiceAuthGroupV1,
   type ConnectedServiceAuthGroupMemberStateV1,
   type ConnectedServiceCredentialHealthStatusV1,
+  type ConnectedServiceCredentialRevisionV1,
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
 
@@ -14,9 +16,21 @@ import {
   type ConnectedServiceAuthGroupSwitchEvent,
 } from '../accountGroups/switching/ConnectedServiceAuthGroupSwitchCoordinator';
 import { evaluatePredictiveSoftSwitchSessionApplyPolicy } from '../accountGroups/switching/predictiveSoftSwitchPolicy';
-import { buildConnectedServiceAuthGroupSwitchState } from '../accountGroups/switching/buildConnectedServiceAuthGroupSwitchState';
+import {
+  buildConnectedServiceAuthGroupSwitchState,
+  buildConnectedServiceAuthGroupSwitchStateFromPersistedMemberState,
+} from '../accountGroups/switching/buildConnectedServiceAuthGroupSwitchState';
+import {
+  buildConnectedServiceAuthGroupSwitchStateFromAccountUsage,
+  type AccountUsageStoreForAuthGroupSwitchState,
+} from '../accountGroups/switching/buildConnectedServiceAuthGroupSwitchStateFromAccountUsage';
+import { buildObservedFailureMemberRuntimeState } from '../accountGroups/memberRuntimeState';
+import type { AcceptedConnectedServiceAccountVerificationByServiceId } from '../accountTransitions/acceptedConnectedServiceAccountVerification';
 import { createConnectedServiceAuthGenerationApplyFailureError } from './connectedServiceAuthGenerationApplyFailure';
 import type { ConnectedServiceSessionAuthSwitchReason } from './connectedServiceSessionAuthSwitchCore';
+import { ConnectedServiceAuthGroupRuntimeStateRevisionConflictError } from '@/api/connectedServices/connectedServiceCredentialApi';
+import type { ConnectedServiceAuthGroupCandidatePreparationResult } from '../refresh/prepareConnectedServiceAuthGroupCandidateForSwitch';
+import type { ConnectedServiceGroupQuotaProbeResult } from '../quotas/ConnectedServiceQuotasCoordinator';
 
 type AuthGroupApi = Readonly<{
   getConnectedServiceAuthGroup(input: Readonly<{
@@ -34,6 +48,7 @@ type AuthGroupApi = Readonly<{
     serviceId: ConnectedServiceId;
     groupId: string;
     expectedGeneration: number;
+    expectedRuntimeStateRevision: number;
     memberStates: ReadonlyArray<Readonly<{
       profileId: string;
       state: ConnectedServiceAuthGroupMemberStateV1;
@@ -51,26 +66,6 @@ type AuthGroupApi = Readonly<{
 function readNonNegativeNumber(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
   return Math.trunc(value);
-}
-
-function resolveLimiterRetryAtMs(input: Readonly<{
-  loaded: ConnectedServiceAuthGroupSwitchState;
-  retryAtMs: number | null;
-  observedAtMs: number;
-}>): number | null {
-  if (input.retryAtMs !== null) return input.retryAtMs;
-  const cooldownMs = readNonNegativeNumber(input.loaded.policy.cooldownMs);
-  return cooldownMs === null ? null : input.observedAtMs + cooldownMs;
-}
-
-function resolveAuthFailureRetryAtMs(input: Readonly<{
-  loaded: ConnectedServiceAuthGroupSwitchState;
-  retryAtMs: number | null;
-  observedAtMs: number;
-}>): number | null {
-  if (input.retryAtMs !== null) return input.retryAtMs;
-  const cooldownMs = readNonNegativeNumber(input.loaded.policy.cooldownMs);
-  return cooldownMs === null ? null : input.observedAtMs + cooldownMs;
 }
 
 function assertPredictiveSoftSwitchSessionApplyAllowed(input: Readonly<{
@@ -93,6 +88,15 @@ function assertPredictiveSoftSwitchSessionApplyAllowed(input: Readonly<{
   });
 }
 
+function assertExactConnectedServiceCredentialRevision(
+  credentialRevision: ConnectedServiceCredentialRevisionV1 | null | undefined,
+): asserts credentialRevision is ConnectedServiceCredentialRevisionV1 {
+  if (credentialRevision != null) return;
+  throw createConnectedServiceAuthGenerationApplyFailureError({
+    errorCode: 'credential_revision_missing',
+  });
+}
+
 function mapConnectedServiceAuthGenerationActionToApplyMode(
   action: string | undefined,
 ): 'hot_apply' | 'restart_resume' | 'spawn_next_turn' | null {
@@ -108,49 +112,15 @@ function mapConnectedServiceAuthGenerationActionToApplyMode(
   }
 }
 
-function buildObservedFailureMemberState(input: Readonly<{
-  loaded: ConnectedServiceAuthGroupSwitchState;
-  profileId: string;
-  reason: string;
-  retryAtMs: number | null;
-  planType: string | null | undefined;
-  observedAtMs: number;
-}>): ConnectedServiceAuthGroupMemberStateV1 {
-  const existing = input.loaded.memberStatesByProfileId.get(input.profileId) ?? {};
-  const state: ConnectedServiceAuthGroupMemberStateV1 = {
-    ...(existing.cooldownUntilMs === undefined ? {} : { cooldownUntilMs: existing.cooldownUntilMs }),
-    ...(existing.exhaustedUntilMs === undefined ? {} : { exhaustedUntilMs: existing.exhaustedUntilMs }),
-    ...(existing.quotaExhaustedUntilMs === undefined ? {} : { quotaExhaustedUntilMs: existing.quotaExhaustedUntilMs }),
-    ...(existing.rateLimitedUntilMs === undefined ? {} : { rateLimitedUntilMs: existing.rateLimitedUntilMs }),
-    ...(existing.capacityLimitedUntilMs === undefined ? {} : { capacityLimitedUntilMs: existing.capacityLimitedUntilMs }),
-    ...(existing.authInvalidUntilMs === undefined ? {} : { authInvalidUntilMs: existing.authInvalidUntilMs }),
-    ...(existing.planUnavailableUntilMs === undefined ? {} : { planUnavailableUntilMs: existing.planUnavailableUntilMs }),
-    ...(existing.validationBlockedUntilMs === undefined ? {} : { validationBlockedUntilMs: existing.validationBlockedUntilMs }),
-    lastFailureKind: input.reason,
-    lastObservedAtMs: input.observedAtMs,
-    ...(input.planType ? { lastObservedPlanType: input.planType } : {}),
-  };
-  switch (input.reason) {
-    case 'usage_limit':
-      return { ...state, quotaExhaustedUntilMs: resolveLimiterRetryAtMs(input) };
-    case 'rate_limit':
-      return { ...state, rateLimitedUntilMs: resolveLimiterRetryAtMs(input) };
-    case 'capacity':
-      return { ...state, capacityLimitedUntilMs: resolveLimiterRetryAtMs(input) };
-    case 'auth_expired':
-    case 'refresh_failed':
-    case 'account_disabled':
-      return {
-        ...state,
-        authInvalidUntilMs: resolveAuthFailureRetryAtMs(input),
-      };
-    case 'plan':
-      return { ...state, planUnavailableUntilMs: input.retryAtMs };
-    case 'validation':
-      return { ...state, validationBlockedUntilMs: input.retryAtMs };
-    default:
-      return state;
+function mergeCredentialHealthStatus(input: Readonly<{
+  existing?: ConnectedServiceCredentialHealthStatusV1 | null;
+  profileListStatus: ConnectedServiceCredentialHealthStatusV1;
+}>): ConnectedServiceCredentialHealthStatusV1 {
+  void input.existing;
+  if (isConnectedServiceCredentialHealthStatusReconnectRequired(input.profileListStatus)) {
+    return input.profileListStatus;
   }
+  return input.profileListStatus;
 }
 
 function resolveRetryAtMs(input: Readonly<{
@@ -178,7 +148,6 @@ function resolveApiAuthGroupGenerationConflict(error: unknown): number | null {
 // usage-limit switch (observed across several sessions during a server-timeout window).
 const AUTH_GROUP_LOAD_RETRY_ATTEMPTS = 2;
 const AUTH_GROUP_LOAD_RETRY_BASE_DELAY_MS = 250;
-const DEFAULT_GROUP_QUOTA_PROBE_TIMEOUT_MS = 8_000;
 
 function defaultSwitchCoordinatorSleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -210,48 +179,10 @@ async function loadConnectedServiceAuthGroupWithRetry(input: Readonly<{
   }
 }
 
-function resolveGroupQuotaProbeTimeoutMs(value: number | null | undefined): number | null {
-  if (value === null) return null;
-  if (value === undefined) return DEFAULT_GROUP_QUOTA_PROBE_TIMEOUT_MS;
-  if (!Number.isFinite(value)) return DEFAULT_GROUP_QUOTA_PROBE_TIMEOUT_MS;
-  const normalized = Math.trunc(value);
-  return normalized > 0 ? normalized : null;
-}
-
-async function runQuotaSnapshotProbeWithTimeout(input: Readonly<{
-  timeoutMs: number | null;
-  probe: () => Promise<void>;
-}>): Promise<void> {
-  if (input.timeoutMs === null) {
-    await input.probe();
-    return;
-  }
-
-  const timeoutMs = input.timeoutMs;
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const probePromise = input.probe().then(
-    () => ({ status: 'completed' as const }),
-    (error) => ({ status: 'failed' as const, error }),
-  );
-  const timeoutPromise = new Promise<Readonly<{ status: 'timed_out' }>>((resolve) => {
-    timeoutHandle = setTimeout(() => {
-      resolve({ status: 'timed_out' });
-    }, timeoutMs);
-    (timeoutHandle as unknown as { unref?: () => void })?.unref?.();
-  });
-
-  const result = await Promise.race([probePromise, timeoutPromise]);
-  if (timeoutHandle) {
-    clearTimeout(timeoutHandle);
-  }
-  timeoutHandle = null;
-  if (result.status === 'timed_out') return;
-  if (result.status === 'failed') throw result.error;
-}
-
 export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: Readonly<{
   api: AuthGroupApi;
   runtimeQuotaSnapshots: ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore;
+  accountUsageStore?: AccountUsageStoreForAuthGroupSwitchState | null;
   leases?: InMemoryConnectedServiceAuthGroupSwitchLeaseRegistry;
   quotaFreshnessMs: number;
   nowMs: () => number;
@@ -262,6 +193,7 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
     groupId: string;
     activeProfileId: string | null;
     generation: number;
+    credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
     reason?: string;
   }>) => Promise<void>;
   applyConnectedServiceAuthGeneration?: (input: Readonly<{
@@ -270,33 +202,50 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
     groupId: string;
     activeProfileId: string | null;
     generation: number;
+    credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
     reason: string;
     switchReason: ConnectedServiceSessionAuthSwitchReason;
     fromProfileId?: string | null;
-  }>) => Promise<Readonly<{ ok: boolean; action?: string; errorCode?: string; diagnostics?: unknown }>>;
+  }>) => Promise<Readonly<{
+    ok: boolean;
+    action?: string;
+    errorCode?: string;
+    diagnostics?: unknown;
+    verificationByServiceId?: AcceptedConnectedServiceAccountVerificationByServiceId;
+  }>>;
   preflightConnectedServiceAuthGeneration?: (input: Readonly<{
     sessionId: string;
     serviceId: ConnectedServiceId;
     groupId: string;
     activeProfileId: string | null;
     generation: number;
+    credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
     reason: string;
     switchReason: ConnectedServiceSessionAuthSwitchReason;
     fromProfileId?: string | null;
   }>) => Promise<Readonly<{ ok: boolean; action?: string; errorCode?: string; diagnostics?: unknown }>>;
   switchReasonForApplyGeneration?: ConnectedServiceSessionAuthSwitchReason;
-  hydratePersistedQuotaSnapshotsForGroup?: (input: Readonly<{
-    serviceId: ConnectedServiceId;
-    groupId: string;
-    profileIds: ReadonlyArray<string>;
-  }>) => Promise<void>;
   probeQuotaSnapshotsForGroup?: (input: Readonly<{
     serviceId: ConnectedServiceId;
     groupId: string;
     profileIds: ReadonlyArray<string>;
     reason: string;
-  }>) => Promise<void>;
-  quotaProbeTimeoutMs?: number | null;
+    deadlineAtMs?: number;
+  }>) => Promise<ConnectedServiceGroupQuotaProbeResult | void>;
+  resolveCredentialRevision?: (
+    serviceId: ConnectedServiceId,
+    profileId: string | null,
+  ) => ConnectedServiceCredentialRevisionV1 | null;
+  resolveCurrentCredentialRevision: (
+    serviceId: ConnectedServiceId,
+    profileId: string | null,
+  ) => Promise<ConnectedServiceCredentialRevisionV1 | null>;
+  prepareCandidateForSwitch?: (input: Readonly<{
+    serviceId: ConnectedServiceId;
+    groupId: string;
+    profileId: string;
+    reason: string;
+  }>) => Promise<ConnectedServiceAuthGroupCandidatePreparationResult>;
   onCommittedSwitch?: (input: Readonly<{
     serviceId: ConnectedServiceId;
     groupId: string;
@@ -321,16 +270,35 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
         sleepMs: params.sleepMs ?? defaultSwitchCoordinatorSleepMs,
       });
       if (!group) throw new Error(`Connected service auth group not found (${input.serviceId}/${input.groupId})`);
-      await params.hydratePersistedQuotaSnapshotsForGroup?.({
-        serviceId,
-        groupId: input.groupId,
-        profileIds: group.members.map((member) => member.profileId),
-      });
-      const state = buildConnectedServiceAuthGroupSwitchState({
-        group,
-        runtimeQuotaSnapshots: params.runtimeQuotaSnapshots,
-        nowMs: params.nowMs(),
-      });
+      // CLOSE-11 contract: when the account-usage store exists, only an explicitly SOURCE-BACKED
+      // result carries canonical authority; a provisional result (store present but cold) is the
+      // persisted-member-state projection and must never masquerade as source-backed evidence.
+      // The raw runtimeQuotaSnapshots pre_turn fallback survives ONLY for the legacy store-absent
+      // deployment shape.
+      const accountUsageSwitchState = params.accountUsageStore
+        ? buildConnectedServiceAuthGroupSwitchStateFromAccountUsage({
+          group,
+          accountUsageStore: params.accountUsageStore,
+        })
+        : null;
+      const unresolvedState = params.accountUsageStore
+        ? (accountUsageSwitchState?.kind === 'source_backed'
+          ? accountUsageSwitchState.state
+          : buildConnectedServiceAuthGroupSwitchStateFromPersistedMemberState({ group }))
+        : input.trigger === 'pre_turn'
+          ? buildConnectedServiceAuthGroupSwitchState({
+            group,
+            runtimeQuotaSnapshots: params.runtimeQuotaSnapshots,
+            nowMs: params.nowMs(),
+          })
+          : buildConnectedServiceAuthGroupSwitchStateFromPersistedMemberState({ group });
+      const state: ConnectedServiceAuthGroupSwitchState = {
+        ...unresolvedState,
+        credentialRevision: params.resolveCredentialRevision?.(
+          serviceId,
+          unresolvedState.activeProfileId,
+        ) ?? null,
+      };
       if (typeof params.api.listConnectedServiceProfiles !== 'function') return state;
       const profiles = await params.api.listConnectedServiceProfiles({ serviceId }).catch(() => null);
       if (!profiles) return state;
@@ -339,9 +307,13 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
       for (const member of state.members) {
         const healthStatus = healthByProfileId.get(member.profileId);
         if (!healthStatus) continue;
+        const existing = memberStatesByProfileId.get(member.profileId) ?? {};
         memberStatesByProfileId.set(member.profileId, {
-          ...(memberStatesByProfileId.get(member.profileId) ?? {}),
-          credentialHealthStatus: healthStatus,
+          ...existing,
+          credentialHealthStatus: mergeCredentialHealthStatus({
+            existing: existing.credentialHealthStatus,
+            profileListStatus: healthStatus,
+          }),
         });
       }
       return {
@@ -365,25 +337,46 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
         generation: group.generation,
         ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
       });
-      return buildConnectedServiceAuthGroupSwitchState({
-        group,
-        runtimeQuotaSnapshots: params.runtimeQuotaSnapshots,
-        nowMs: params.nowMs(),
-      });
+      // CLOSE-11 contract: same rule as the loader above — provisional (cold PAU) results must not
+      // masquerade as source-backed; they intentionally degrade to persisted member state.
+      const refreshedAccountUsageSwitchState = params.accountUsageStore
+        ? buildConnectedServiceAuthGroupSwitchStateFromAccountUsage({
+          group,
+          accountUsageStore: params.accountUsageStore,
+        })
+        : null;
+      const unresolvedState = refreshedAccountUsageSwitchState?.kind === 'source_backed'
+        ? refreshedAccountUsageSwitchState.state
+        : buildConnectedServiceAuthGroupSwitchStateFromPersistedMemberState({ group });
+      const credentialRevision = await params.resolveCurrentCredentialRevision(
+        serviceId,
+        unresolvedState.activeProfileId,
+      ).catch(() => null);
+      return {
+        ...unresolvedState,
+        credentialRevision,
+      };
     },
+    ...(params.prepareCandidateForSwitch ? {
+      prepareCandidateForSwitch: async (input) => await params.prepareCandidateForSwitch?.({
+        serviceId: ConnectedServiceIdSchema.parse(input.serviceId),
+        groupId: input.groupId,
+        profileId: input.profileId,
+        reason: input.reason,
+      }) ?? { status: 'ready' as const },
+    } : {}),
     ...(params.probeQuotaSnapshotsForGroup ? {
       probeQuotaSnapshotsForGroup: async (input) => {
         const serviceId = ConnectedServiceIdSchema.parse(input.serviceId);
-        await runQuotaSnapshotProbeWithTimeout({
-          timeoutMs: resolveGroupQuotaProbeTimeoutMs(params.quotaProbeTimeoutMs),
-          probe: async () => {
-            await params.probeQuotaSnapshotsForGroup?.({
-              serviceId,
-              groupId: input.groupId,
-              profileIds: input.profileIds,
-              reason: input.reason,
-            });
-          },
+        // The quota coordinator already owns bounded provider fetches, leases, and credential
+        // refresh. A shorter outer race detached that still-mutating owner from the selection
+        // which depended on it, allowing a stale revision to be committed.
+        return await params.probeQuotaSnapshotsForGroup?.({
+          serviceId,
+          groupId: input.groupId,
+          profileIds: input.profileIds,
+          reason: input.reason,
+          deadlineAtMs: input.deadlineAtMs,
         });
       },
     } : {}),
@@ -397,6 +390,7 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
           groupId: input.groupId,
           activeProfileId: input.activeProfileId,
           generation: input.generation,
+          ...(input.credentialRevision === undefined ? {} : { credentialRevision: input.credentialRevision }),
           reason: input.reason ?? 'unknown',
           switchReason: params.switchReasonForApplyGeneration ?? 'automatic_runtime_failure',
           fromProfileId: input.fromProfileId ?? null,
@@ -419,7 +413,12 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
         });
       },
     } : {}),
+    resolvePostApplyCredentialRevision: async (input) => await params.resolveCurrentCredentialRevision(
+      ConnectedServiceIdSchema.parse(input.serviceId),
+      input.activeProfileId,
+    ).catch(() => null),
     applyGeneration: async (input) => {
+      assertExactConnectedServiceCredentialRevision(input.credentialRevision);
       if (input.sessionId && params.applyConnectedServiceAuthGeneration) {
         const applied = await params.applyConnectedServiceAuthGeneration({
           sessionId: input.sessionId,
@@ -427,6 +426,7 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
           groupId: input.groupId,
           activeProfileId: input.activeProfileId,
           generation: input.generation,
+          ...(input.credentialRevision === undefined ? {} : { credentialRevision: input.credentialRevision }),
           reason: input.reason ?? 'unknown',
           switchReason: params.switchReasonForApplyGeneration ?? 'automatic_runtime_failure',
           fromProfileId: input.fromProfileId ?? null,
@@ -445,6 +445,9 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
           // the reactive switch-attempt telemetry that reads it) is not all-null.
           return {
             ...(mode === null ? {} : { mode }),
+            ...(applied.verificationByServiceId
+              ? { verificationByServiceId: applied.verificationByServiceId }
+              : {}),
             ...(applied.diagnostics === undefined ? {} : { diagnostics: applied.diagnostics }),
           };
         }
@@ -464,6 +467,7 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
         groupId: input.groupId,
         activeProfileId: input.activeProfileId,
         generation: input.generation,
+        ...(input.credentialRevision === undefined ? {} : { credentialRevision: input.credentialRevision }),
         ...(input.reason ? { reason: input.reason } : {}),
       });
       return { mode: 'restart_resume' as const };
@@ -475,27 +479,50 @@ export function createDaemonConnectedServiceAuthGroupSwitchCoordinator(params: R
         : input.loaded.activeProfileId;
       if (!observedProfileId) return;
       const serviceId = ConnectedServiceIdSchema.parse(input.serviceId);
-      await params.api.updateConnectedServiceAuthGroupRuntimeState({
-        serviceId,
-        groupId: input.groupId,
-        expectedGeneration: input.loaded.generation,
-        memberStates: [{
-          profileId: observedProfileId,
-          state: buildObservedFailureMemberState({
-            loaded: input.loaded,
-            profileId: observedProfileId,
-            reason: input.reason,
-            retryAtMs: resolveRetryAtMs({
-              retryAtMs: input.retryAtMs,
-              retryAfterMs: input.retryAfterMs,
-              resetsAtMs: input.resetsAtMs,
-              nowMs: params.nowMs(),
-            }),
-            planType: input.planType,
-            observedAtMs: params.nowMs(),
-          }),
-        }],
-      });
+      let generation = input.loaded.generation;
+      let runtimeStateRevision = input.loaded.runtimeStateRevision;
+      let existingState = input.loaded.memberStatesByProfileId.get(observedProfileId) ?? null;
+      let policy = input.loaded.policy;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await params.api.updateConnectedServiceAuthGroupRuntimeState({
+            serviceId,
+            groupId: input.groupId,
+            expectedGeneration: generation,
+            expectedRuntimeStateRevision: runtimeStateRevision,
+            memberStates: [{
+              profileId: observedProfileId,
+              state: buildObservedFailureMemberRuntimeState({
+                existing: existingState,
+                policy,
+                reason: input.reason,
+                retryAtMs: resolveRetryAtMs({
+                  retryAtMs: input.retryAtMs,
+                  retryAfterMs: input.retryAfterMs,
+                  resetsAtMs: input.resetsAtMs,
+                  nowMs: params.nowMs(),
+                }),
+                planType: input.planType,
+                observedAtMs: params.nowMs(),
+              }),
+            }],
+          });
+          return;
+        } catch (error) {
+          if (!(error instanceof ConnectedServiceAuthGroupRuntimeStateRevisionConflictError) || attempt === 1) throw error;
+          const group = await params.api.getConnectedServiceAuthGroup({
+            serviceId,
+            groupId: input.groupId,
+          });
+          if (!group || group.generation !== input.loaded.generation) return;
+          const member = group.members.find((candidate) => candidate.profileId === observedProfileId);
+          if (!member) return;
+          generation = group.generation;
+          runtimeStateRevision = group.runtimeStateRevision;
+          existingState = member.state;
+          policy = buildConnectedServiceAuthGroupSwitchStateFromPersistedMemberState({ group }).policy;
+        }
+      }
     },
     ...(params.emitEvent ? { emitEvent: params.emitEvent } : {}),
   });

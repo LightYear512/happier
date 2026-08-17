@@ -1,61 +1,51 @@
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { isPidAlive } from './pids.mjs';
-
-function parseLockOwner(lockPath) {
+async function loadWorkspaceBundleLockModule() {
   try {
-    const raw = readFileSync(lockPath, 'utf8').trim();
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
+    const packageModule = await import('@happier-dev/cli-common/workspaceBundleLock');
+    if (typeof packageModule.WORKSPACE_BUNDLE_LOCK_TIMEOUT_ERROR_CODE === 'string') {
+      return packageModule;
+    }
+  } catch (packageImportError) {
+    // Source-dev upgrades may execute this stack file before the mounted cli-common copy has been
+    // refreshed with a newly-added export. Fall back only to the canonical source module; packed
+    // stacks resolve the bundled package export above.
+    const sourceModulePath = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../../packages/cli-common/workspaceBundleLock.mjs',
+    );
+    if (!existsSync(sourceModulePath)) throw packageImportError;
   }
+  const sourceModulePath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../../packages/cli-common/workspaceBundleLock.mjs',
+  );
+  if (!existsSync(sourceModulePath)) {
+    throw new Error('The workspace bundle lock module does not expose its timeout contract');
+  }
+  return await import(pathToFileURL(sourceModulePath).href);
 }
 
-function serializeLockOwner(nowMs) {
-  return JSON.stringify({
-    pid: process.pid,
-    createdAtMs: nowMs,
-    updatedAtMs: nowMs,
-  });
-}
+const {
+  WORKSPACE_BUNDLE_LOCK_TIMEOUT_ERROR_CODE,
+  isWorkspaceBundleLockActive,
+  resolveWorkspaceBundleLockPath,
+  withWorkspaceBundleLock,
+} = await loadWorkspaceBundleLockModule();
 
-function describeLockOwner(lockPath, nowMs) {
-  const owner = parseLockOwner(lockPath);
-  if (!owner) return 'owner=unknown';
-  const ageMs = Math.max(0, nowMs - Number(owner.updatedAtMs ?? owner.createdAtMs ?? nowMs));
-  return `pid=${String(owner.pid ?? 'unknown')} ageMs=${ageMs}`;
-}
+export { WORKSPACE_BUNDLE_LOCK_TIMEOUT_ERROR_CODE };
 
-function shouldReclaimLock(lockPath, staleAfterMs, nowMs) {
-  let stats;
-  try {
-    stats = statSync(lockPath);
-  } catch {
-    return false;
-  }
-  const owner = parseLockOwner(lockPath);
-  const ownerPid = Number(owner?.pid);
-  if (Number.isFinite(ownerPid) && ownerPid > 1 && !isPidAlive(ownerPid)) {
-    return true;
-  }
-  const updatedAtMs = Number(owner?.updatedAtMs ?? owner?.createdAtMs ?? stats.mtimeMs ?? 0);
-  return updatedAtMs > 0 && nowMs - updatedAtMs > staleAfterMs;
+export function resolveCliDistBuildLockPath(repoRoot) {
+  return resolveWorkspaceBundleLockPath(repoRoot);
 }
 
 export function isCliDistBuildLockActive(lockPath, options = {}) {
-  const staleAfterMs = options.staleAfterMs ?? 240_000;
-  const nowMs = options.nowMs ?? Date.now();
-  try {
-    statSync(lockPath);
-  } catch {
-    return false;
-  }
-  return !shouldReclaimLock(lockPath, staleAfterMs, nowMs);
+  return isWorkspaceBundleLockActive(lockPath, {
+    staleAfterMs: options.staleAfterMs ?? 240_000,
+    nowMs: options.nowMs ?? Date.now(),
+  });
 }
 
 export async function withCliDistBuildLock(fn, options = {}) {
@@ -63,67 +53,31 @@ export async function withCliDistBuildLock(fn, options = {}) {
   if (!lockPath) {
     throw new Error('withCliDistBuildLock requires options.lockPath');
   }
-  const onWait = typeof options.onWait === 'function' ? options.onWait : null;
-
-  mkdirSync(dirname(lockPath), { recursive: true });
 
   const timeoutMs = options.timeoutMs ?? 240_000;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const staleAfterMs = options.staleAfterMs ?? timeoutMs;
-  const startedAt = Date.now();
 
-  let fd = null;
-  let heartbeat = null;
-  let waited = false;
-  while (true) {
-    try {
-      fd = openSync(lockPath, 'wx');
-      writeFileSync(fd, serializeLockOwner(Date.now()), 'utf8');
-      break;
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      if (shouldReclaimLock(lockPath, staleAfterMs, Date.now())) {
-        try {
-          rmSync(lockPath, { force: true });
-        } catch {}
-        continue;
-      }
-      if (Date.now() - startedAt > timeoutMs) {
-        throw new Error(`Timed out waiting for CLI dist build lock: ${lockPath} (${describeLockOwner(lockPath, Date.now())})`);
-      }
-      waited = true;
-      if (onWait) {
-        try {
-          onWait({
-            lockPath,
-            owner: parseLockOwner(lockPath),
-            staleAfterMs,
-            timeoutMs,
-            waitedMs: Date.now() - startedAt,
-          });
-        } catch {}
-      }
-      await delay(pollIntervalMs);
-    }
-  }
-
-  try {
-    heartbeat = setInterval(() => {
-      try {
-        writeFileSync(lockPath, serializeLockOwner(Date.now()), 'utf8');
-      } catch {}
-    }, Math.max(500, Math.min(5_000, Math.floor(staleAfterMs / 4))));
-    return await fn({ waited });
-  } finally {
-    if (heartbeat) clearInterval(heartbeat);
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {}
-      fd = null;
-      try {
-        unlinkSync(lockPath);
-      } catch {}
-    }
-  }
+  return withWorkspaceBundleLock(
+    ({ waited, heldLockValue, inherited }) => fn({ waited, heldLockValue, inherited }),
+    {
+      lockPath,
+      heldLockValue: options.heldLockValue
+        ?? options.heldLockPath
+        ?? options.env?.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD,
+      timeoutMs,
+      pollIntervalMs,
+      staleAfterMs,
+      errorLabel: 'CLI dist build lock',
+      onWait: typeof options.onWait === 'function'
+        ? (event) => options.onWait({
+          lockPath,
+          owner: event.owner,
+          staleAfterMs,
+          timeoutMs,
+          waitedMs: event.waitedMs,
+        })
+        : undefined,
+    },
+  );
 }

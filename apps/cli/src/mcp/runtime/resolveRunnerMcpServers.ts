@@ -30,6 +30,7 @@ export async function resolveRunnerMcpServers(params: Readonly<{
   tmpDir?: string | null;
   commandMode?: NonNullable<Parameters<typeof createHappierMcpBridge>[1]>['commandMode'];
   includeConfiguredMcpServers?: boolean;
+  requestedBuiltInMcpPort?: number;
 }>): Promise<Readonly<{
   happierMcpServer: { url: string; stop: () => void };
   mcpServers: Record<string, McpServerConfig>;
@@ -41,6 +42,9 @@ export async function resolveRunnerMcpServers(params: Readonly<{
     commandMode: params.commandMode,
     credentials: params.credentials,
     accountSettings,
+    ...(typeof params.requestedBuiltInMcpPort === 'number'
+      ? { requestedPort: params.requestedBuiltInMcpPort }
+      : {}),
   });
 
   if (!accountSettings || params.includeConfiguredMcpServers === false) {

@@ -28,6 +28,7 @@ const {
   runHookForwarder,
   safeAppendJsonl,
 } = require('./fake-claude-code-cli.helpers.cjs');
+const { buildWorkflowSpec } = require('./fake-claude-workflow-transcript.cjs');
 
 const argv = process.argv.slice(2);
 const isVersionProbe = argv.length === 1 && (argv[0] === '--version' || argv[0] === 'version');
@@ -62,6 +63,40 @@ const localActiveTurnStartSignalPath = String(
 ).trim();
 const localActiveTurnCompleteSignalPath = String(
   process.env.HAPPIER_E2E_FAKE_CLAUDE_LOCAL_COMPLETE_SIGNAL || '',
+).trim();
+const runtimeActivityTerminalSignalPath = String(
+  process.env.HAPPIER_E2E_FAKE_CLAUDE_RUNTIME_ACTIVITY_TERMINAL_SIGNAL || '',
+).trim();
+
+// `goal-status-attachment` scenario (T3): in local/unified-terminal mode, when a
+// signal file appears the fake CLI appends a Claude-native `goal_status`
+// transcript `attachment` record (the exact shape the unified-terminal launcher
+// tails and routes through `routeClaudeAttachment` → goal source → metadata).
+// The signal file's contents (if any) become the goal `condition`/objective so a
+// test can correlate the emitted goal with what it requested.
+const goalStatusActiveSignalPath = String(
+  process.env.HAPPIER_E2E_FAKE_CLAUDE_GOAL_ACTIVE_SIGNAL || '',
+).trim();
+const goalStatusCompletedSignalPath = String(
+  process.env.HAPPIER_E2E_FAKE_CLAUDE_GOAL_COMPLETED_SIGNAL || '',
+).trim();
+const goalStatusSignalsEnabled = goalStatusActiveSignalPath.length > 0 || goalStatusCompletedSignalPath.length > 0;
+const goalStatusDefaultObjective = String(
+  process.env.HAPPIER_E2E_FAKE_CLAUDE_GOAL_OBJECTIVE || 'fake claude goal objective',
+).trim();
+
+// `workflow-activity` scenario (T2): in local/unified-terminal mode, when the workflow signal file
+// appears the fake CLI appends a Claude-native Dynamic Workflow transcript stream (`Workflow {script}`
+// tool_use + `task_started task_type:"local_workflow"` + `task_progress.workflow_progress[]` carrying
+// `workflow_phase`/`workflow_agent` rows + terminal `task_updated`/`task_notification`). These are the
+// exact shapes the live workflow ACTIVITY source consumes off the raw transcript channel. The records
+// are stamped with the fake CLI's OWN session id so the source's foreign-session guard accepts them.
+// The signal file's (non-empty) contents select the preset (`success`, `progress`, `failure`,
+// `stopped`, `no-phase`, `long-preview`, `concurrent`); the stream is emitted exactly once.
+const workflowSignalPath = String(process.env.HAPPIER_E2E_FAKE_CLAUDE_WORKFLOW_SIGNAL || '').trim();
+const workflowSignalsEnabled = workflowSignalPath.length > 0;
+const workflowTerminalSignalPath = String(
+  process.env.HAPPIER_E2E_FAKE_CLAUDE_WORKFLOW_TERMINAL_SIGNAL || '',
 ).trim();
 
 if (isVersionProbe) {
@@ -282,6 +317,105 @@ function appendLocalAssistantTurnComplete() {
   safeAppendJsonl(logPath, { type: 'local_turn_completed', invocationId, ts: Date.now() });
 }
 
+// A goal signal is only "ready" once the file exists AND carries a non-empty
+// objective. This removes a race where the watcher fired on the just-created
+// (still empty) file and emitted a goal_status with the fallback condition
+// before the test's objective bytes were flushed.
+function readReadySignalObjective(signalPath) {
+  try {
+    const raw = fs.readFileSync(signalPath, 'utf8').trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append a Claude-native `goal_status` transcript `attachment` record, matching
+ * the real Claude Code shape (and the captured fixtures under
+ * `apps/cli/src/backends/claude/workState/__fixtures__/goal-status/`). The
+ * record's `sessionId` is the fake CLI's own session id so the launcher's
+ * source-session guard accepts it.
+ *   - met:false              → goal is active (pursuing `condition`)
+ *   - met:true (no sentinel) → goal completed
+ *   - met:true + sentinel    → goal cleared/cancelled
+ */
+function appendGoalStatusAttachment(params) {
+  const met = params.met === true;
+  const sentinel = params.sentinel === true;
+  const condition = String(params.condition || '').trim() || goalStatusDefaultObjective;
+  const attachment = {
+    type: 'goal_status',
+    met,
+    condition,
+    ...(sentinel ? { sentinel: true } : {}),
+    ...(met
+      ? { reason: 'fake claude goal completion', iterations: 1, durationMs: 1234, tokens: 42 }
+      : {}),
+  };
+  safeAppendTranscriptJsonl({
+    type: 'attachment',
+    uuid: randomUUID(),
+    parentUuid: null,
+    isSidechain: false,
+    sessionId,
+    timestamp: new Date().toISOString(),
+    userType: 'external',
+    entrypoint: 'cli',
+    cwd: process.cwd(),
+    version: '0.0.0-fake',
+    attachment,
+  });
+  safeAppendJsonl(logPath, {
+    type: 'goal_status_attachment_emitted',
+    invocationId,
+    ts: Date.now(),
+    met,
+    sentinel,
+    condition,
+  });
+}
+
+/**
+ * Append a Claude-native Dynamic Workflow transcript stream for the named preset (T2). Each record
+ * is stamped with the fake CLI's own `session_id`/`uuid` so the workflow source's foreign-session
+ * guard accepts it, and written to the native transcript file the launcher's scanner tails (the same
+ * raw channel that drives the goal source). For `concurrent`, the two runs' records are INTERLEAVED
+ * so the per-run tracker is exercised against interleaved progress, never merged.
+ */
+function appendWorkflowActivityTranscript(preset) {
+  const spec = buildWorkflowSpec(preset);
+  if (!spec.runs.length) return;
+
+  // Interleave records across runs (round-robin) so concurrent runs arrive intermixed.
+  const queues = spec.runs.map((run) => [...run.records]);
+  const emitted = [];
+  let remaining = queues.reduce((sum, q) => sum + q.length, 0);
+  while (remaining > 0) {
+    for (const queue of queues) {
+      const record = queue.shift();
+      if (!record) continue;
+      remaining -= 1;
+      safeAppendTranscriptJsonl({
+        ...record,
+        session_id: sessionId,
+        uuid: randomUUID(),
+        timestamp: new Date().toISOString(),
+      });
+      emitted.push(record);
+    }
+  }
+
+  safeAppendJsonl(logPath, {
+    type: 'workflow_activity_emitted',
+    invocationId,
+    ts: Date.now(),
+    preset,
+    runs: spec.runs.map((run) => ({ toolUseId: run.toolUseId, taskId: run.taskId, title: run.title })),
+    recordCount: emitted.length,
+  });
+}
+
 function appendLocalStdinTurn(promptText, turn) {
   safeAppendTranscriptJsonl(createLocalUserTurn(promptText));
   safeAppendTranscriptJsonl(createLocalAssistantTurn(`FAKE_CLAUDE_LOCAL_OK_${turn}`, turn));
@@ -295,6 +429,10 @@ function appendLocalStdinTurn(promptText, turn) {
     userTextSha256: sha256Text(promptText),
     userTextPreview: promptText.slice(0, 800),
   });
+}
+
+function shouldSuppressProviderAcceptanceForLocalTurn(turn) {
+  return scenario === 'provider-acceptance-timeout-once' && turn === 1;
 }
 
 function extractUserTextFromSdkMessage(msg) {
@@ -409,6 +547,10 @@ async function runSdkStreamUntilEof() {
   const rl = readline.createInterface({ input: process.stdin });
   let initialized = false;
   let turn = 0;
+  let stagedRuntimeActivityTaskId = null;
+  let stagedRuntimeActivityTerminalEmitted = false;
+  let stagedWorkflowProgressEmitted = false;
+  let stagedWorkflowTerminalEmitted = false;
 
   function emitSdk(obj) {
     process.stdout.write(`${JSON.stringify(obj)}\n`);
@@ -421,6 +563,92 @@ async function runSdkStreamUntilEof() {
       messageSubtype: obj?.subtype ?? null,
     });
   }
+
+  const runtimeActivityTerminalInterval =
+    scenario === 'runtime-activity-staged' && runtimeActivityTerminalSignalPath
+      ? setInterval(() => {
+          if (
+            !stagedRuntimeActivityTaskId
+            || stagedRuntimeActivityTerminalEmitted
+            || !fs.existsSync(runtimeActivityTerminalSignalPath)
+          ) return;
+          stagedRuntimeActivityTerminalEmitted = true;
+          emitSdk({
+            type: 'system',
+            subtype: 'task_notification',
+            task_id: stagedRuntimeActivityTaskId,
+            status: 'completed',
+            summary: 'staged runtime activity completed',
+            uuid: randomUUID(),
+            session_id: sessionId,
+          });
+          safeAppendJsonl(logPath, {
+            type: 'runtime_activity_terminal_emitted',
+            invocationId,
+            taskId: stagedRuntimeActivityTaskId,
+            ts: Date.now(),
+          });
+        }, 50)
+      : null;
+
+  const runtimeActivityWorkflowInterval =
+    scenario === 'runtime-activity-staged' && workflowSignalsEnabled
+      ? setInterval(() => {
+          if (!stagedWorkflowProgressEmitted) {
+            const preset = readReadySignalObjective(workflowSignalPath);
+            if (preset !== null) {
+              stagedWorkflowProgressEmitted = true;
+              const spec = buildWorkflowSpec(preset);
+              for (const run of spec.runs) {
+                for (const record of run.records) {
+                  emitSdk({
+                    ...record,
+                    session_id: sessionId,
+                    uuid: randomUUID(),
+                  });
+                }
+              }
+              safeAppendJsonl(logPath, {
+                type: 'runtime_activity_workflow_progress_emitted',
+                invocationId,
+                preset,
+                ts: Date.now(),
+              });
+            }
+          }
+          if (
+            stagedWorkflowProgressEmitted
+            && !stagedWorkflowTerminalEmitted
+            && workflowTerminalSignalPath
+            && fs.existsSync(workflowTerminalSignalPath)
+          ) {
+            stagedWorkflowTerminalEmitted = true;
+            emitSdk({
+              type: 'system',
+              subtype: 'task_updated',
+              task_id: 'w_progress',
+              patch: { status: 'completed', end_time: Date.now() },
+              session_id: sessionId,
+              uuid: randomUUID(),
+            });
+            emitSdk({
+              type: 'system',
+              subtype: 'task_notification',
+              task_id: 'w_progress',
+              tool_use_id: 'toolu_wf_progress',
+              status: 'completed',
+              summary: 'research-task completed',
+              session_id: sessionId,
+              uuid: randomUUID(),
+            });
+            safeAppendJsonl(logPath, {
+              type: 'runtime_activity_workflow_terminal_emitted',
+              invocationId,
+              ts: Date.now(),
+            });
+          }
+        }, 50)
+      : null;
 
   function createControlResponse(requestId, response) {
     return {
@@ -604,6 +832,22 @@ async function runSdkStreamUntilEof() {
 
     const now = Date.now();
     turn += 1;
+
+    if (scenario === 'runtime-activity-staged' && stagedRuntimeActivityTaskId === null) {
+      stagedRuntimeActivityTaskId = `runtime_activity_${turn}`;
+      emitSdk({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: stagedRuntimeActivityTaskId,
+        status: 'running',
+        description: 'staged runtime activity',
+        uuid: randomUUID(),
+        session_id: sessionId,
+      });
+      emitSdk(createAssistantMessage([{ type: 'text', text: `FAKE_CLAUDE_OK_${turn}` }]));
+      emitSdk(createResultSuccess());
+      continue;
+    }
 
     if (scenario === 'memory-hints-json') {
       const match = String(promptText).match(/OPENCLAW_MEMORY_SENTINEL_[A-Za-z0-9_-]+/);
@@ -1191,6 +1435,8 @@ async function runSdkStreamUntilEof() {
     emitSdk(createResultSuccess());
   }
 
+  if (runtimeActivityTerminalInterval) clearInterval(runtimeActivityTerminalInterval);
+  if (runtimeActivityWorkflowInterval) clearInterval(runtimeActivityWorkflowInterval);
   rl.close();
   safeAppendJsonl(logPath, { type: 'sdk_exited', invocationId, ts: Date.now(), turns: turn });
   process.exit(0);
@@ -1294,6 +1540,19 @@ if (isSdkStreamJson) {
       });
       return;
     }
+    if (shouldSuppressProviderAcceptanceForLocalTurn(localStdinTurn)) {
+      safeAppendJsonl(logPath, {
+        type: 'local_stdin_turn_suppressed',
+        reason: 'provider_acceptance_timeout',
+        invocationId,
+        ts: Date.now(),
+        turn: localStdinTurn,
+        userTextLength: promptText.length,
+        userTextSha256: sha256Text(promptText),
+        userTextPreview: promptText.slice(0, 800),
+      });
+      return;
+    }
     void emitHookEvent('UserPromptSubmit');
     appendLocalStdinTurn(promptText, localStdinTurn);
     void emitHookEvent('Stop', { background_tasks: [] });
@@ -1355,11 +1614,60 @@ if (isSdkStreamJson) {
     appendLocalAssistantTurnComplete();
   };
 
+  // T3: emit a `goal_status` attachment when the corresponding signal file
+  // appears. Each signal is processed once. `active` reads its objective from the
+  // signal file contents (so the test controls the goal text); `completed` reuses
+  // the same objective so the work-state item transitions in place.
+  let goalActiveEmitted = false;
+  let goalCompletedEmitted = false;
+  let lastGoalObjective = goalStatusDefaultObjective;
+  const maybeEmitGoalStatusSignals = () => {
+    if (!goalStatusSignalsEnabled) return;
+    if (!goalActiveEmitted && goalStatusActiveSignalPath) {
+      const objective = readReadySignalObjective(goalStatusActiveSignalPath);
+      if (objective !== null) {
+        goalActiveEmitted = true;
+        lastGoalObjective = objective;
+        appendGoalStatusAttachment({ met: false, condition: lastGoalObjective });
+      }
+    }
+    if (!goalCompletedEmitted && goalStatusCompletedSignalPath) {
+      // The completed signal reuses the active objective unless it carries its
+      // own; gate on the active goal having been emitted so the transition is
+      // strictly active → complete in transcript order.
+      const objective = readReadySignalObjective(goalStatusCompletedSignalPath);
+      if (objective !== null && goalActiveEmitted) {
+        goalCompletedEmitted = true;
+        appendGoalStatusAttachment({ met: true, condition: objective || lastGoalObjective });
+      }
+    }
+  };
+
+  // T2: emit the Dynamic Workflow transcript stream once the workflow signal file appears AND
+  // carries a non-empty preset name. Gating on non-empty contents removes the same create-before-
+  // flush race the goal signal documents: the watcher could otherwise fire on the just-created
+  // (still empty) signal file and emit the env-default preset before the test's chosen preset bytes
+  // were flushed. The signal is processed once.
+  let workflowEmitted = false;
+  const maybeEmitWorkflowActivity = () => {
+    if (!workflowSignalsEnabled || workflowEmitted) return;
+    // `readReadySignalObjective` returns null for a missing OR empty file, so the preset is read only
+    // once the test's chosen preset bytes are flushed — never the create-before-flush empty state.
+    const preset = readReadySignalObjective(workflowSignalPath);
+    if (preset === null) return;
+    workflowEmitted = true;
+    appendWorkflowActivityTranscript(preset);
+  };
+
   maybeStartLocalTurn();
-  const localTurnInterval = localActiveTurnEnabled
+  maybeEmitGoalStatusSignals();
+  maybeEmitWorkflowActivity();
+  const localTurnInterval = localActiveTurnEnabled || goalStatusSignalsEnabled || workflowSignalsEnabled
     ? setInterval(() => {
         maybeStartLocalTurn();
         maybeCompleteLocalTurn();
+        maybeEmitGoalStatusSignals();
+        maybeEmitWorkflowActivity();
       }, 100)
     : null;
   const interval = setInterval(() => {}, 1000);

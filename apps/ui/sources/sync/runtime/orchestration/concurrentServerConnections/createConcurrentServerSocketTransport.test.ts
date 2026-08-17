@@ -60,7 +60,7 @@ describe('createConcurrentServerSocketTransport', () => {
     it('configures socket.io to avoid Manager cache retention', async () => {
         vi.resetModules();
         const socket = createSocketStub();
-        const ioSpy = vi.fn(() => socket);
+        const ioSpy = vi.fn((_url: string, _options: { auth?: Record<string, unknown> }) => socket);
         vi.doMock('socket.io-client', () => ({
             io: ioSpy,
         }));
@@ -87,6 +87,37 @@ describe('createConcurrentServerSocketTransport', () => {
                 autoConnect: false,
             }),
         );
+        expect(ioSpy.mock.calls[0]?.[1]?.auth).not.toHaveProperty('clientCompatibility');
+    });
+
+    it('handles upgrade-required connect errors without classifying the server as unreachable', async () => {
+        vi.resetModules();
+        const socket = createSocketStub();
+        vi.doMock('socket.io-client', () => ({
+            io: vi.fn(() => socket),
+        }));
+
+        const { createConcurrentServerSocketTransport } = await import('./createConcurrentServerSocketTransport');
+        const { transport } = createConcurrentServerSocketTransport({
+            serverUrl: 'https://api.example.test',
+            token: 'token-a',
+        });
+        const errorListener = vi.fn();
+        transport.onError(errorListener);
+
+        socket.__emit('connect_error', {
+            data: {
+                error: 'client-upgrade-required',
+                requirement: {
+                    v: 1,
+                    clientKind: 'ui-web',
+                    minimumAppVersion: '0.3.0',
+                    updateUrl: null,
+                },
+            },
+        });
+
+        expect(errorListener).not.toHaveBeenCalled();
     });
 
     it('disconnects and clears onAny listeners when transport.destroy is called', async () => {

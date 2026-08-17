@@ -14,6 +14,7 @@ import { encrypt, encodeBase64 } from '@/api/encryption';
 import type { HttpStatusErrorWithCode } from '@/api/client/httpStatusError';
 import { collectBugReportMachineDiagnosticsSnapshot } from '@/diagnostics/bugReportMachineDiagnostics';
 import { removeExecutionRunMarker, writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
+import { logger } from '@/ui/logger';
 import { registerMachineRpcHandlers } from './rpcHandlers';
 import { registerMachineMemoryRpcHandlers } from './rpcHandlers.memory';
 import type { Credentials } from '@/persistence';
@@ -61,10 +62,55 @@ const { fetchServerFeaturesSnapshotMock } = vi.hoisted(() => ({
   })),
 }));
 
-const { requestDaemonSessionConnectedServiceAuthSwitchMock } = vi.hoisted(() => ({
+const {
+  getDaemonSessionRunnerStatusMock,
+  requestDaemonSessionConnectedServiceAuthSwitchMock,
+  requestDaemonSessionRunnerRestartMock,
+  restartAllDaemonSessionRunnersMock,
+} = vi.hoisted(() => ({
+  getDaemonSessionRunnerStatusMock: vi.fn(async (_body: unknown) => ({
+    v: 1,
+    sessionId: 'session-1',
+    machineId: 'machine-1',
+    daemonId: 'daemon-1',
+    observedAtMs: 123,
+    runner: {
+      pid: 123,
+      runtimeId: 'version:1.0.0',
+      cliVersion: '1.0.0',
+      entrypointVersion: '1.0.0',
+      processCommandHash: 'hash-1',
+      entrypointSource: 'process_command',
+      startedBy: 'daemon',
+      startingMode: 'remote',
+    },
+    daemon: {
+      cliVersion: '1.1.0',
+      startedWithCliVersion: '1.1.0',
+      currentEntrypointVersion: 'version:1.1.0',
+      currentEntrypointSource: 'launch_spec',
+    },
+    versionState: 'stale',
+    statusSource: 'process_command_inferred',
+    plannedRestart: { supported: true, eligible: true, disabledReason: null },
+  })),
   requestDaemonSessionConnectedServiceAuthSwitchMock: vi.fn(async (_body: unknown) => ({
     ok: true,
     action: 'restart_requested',
+  })),
+  requestDaemonSessionRunnerRestartMock: vi.fn(async (_body: unknown) => ({
+    ok: true,
+    status: 'restarted',
+    sessionId: 'session-1',
+  })),
+  restartAllDaemonSessionRunnersMock: vi.fn(async (_body: unknown) => ({
+    ok: true,
+    mode: 'force_current_cli',
+    requestedCount: 1,
+    restartedCount: 1,
+    skippedCount: 0,
+    failedCount: 0,
+    results: [{ ok: true, status: 'restarted', sessionId: 'session-1' }],
   })),
 }));
 
@@ -122,7 +168,10 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/daemon/controlClient')>();
   return {
     ...actual,
+    getDaemonSessionRunnerStatus: getDaemonSessionRunnerStatusMock,
     requestDaemonSessionConnectedServiceAuthSwitch: requestDaemonSessionConnectedServiceAuthSwitchMock,
+    requestDaemonSessionRunnerRestart: requestDaemonSessionRunnerRestartMock,
+    restartAllDaemonSessionRunners: restartAllDaemonSessionRunnersMock,
   };
 });
 
@@ -160,10 +209,119 @@ describe('registerMachineRpcHandlers', () => {
       ok: true,
       action: 'restart_requested',
     });
+    requestDaemonSessionRunnerRestartMock.mockReset();
+    requestDaemonSessionRunnerRestartMock.mockResolvedValue({
+      ok: true,
+      status: 'restarted',
+      sessionId: 'session-1',
+    });
+    restartAllDaemonSessionRunnersMock.mockReset();
+    restartAllDaemonSessionRunnersMock.mockResolvedValue({
+      ok: true,
+      mode: 'force_current_cli',
+      requestedCount: 1,
+      restartedCount: 1,
+      skippedCount: 0,
+      failedCount: 0,
+      results: [{ ok: true, status: 'restarted', sessionId: 'session-1' }],
+    });
+    getDaemonSessionRunnerStatusMock.mockReset();
+    getDaemonSessionRunnerStatusMock.mockResolvedValue({
+      v: 1,
+      sessionId: 'session-1',
+      machineId: 'machine-1',
+      daemonId: 'daemon-1',
+      observedAtMs: 123,
+      runner: {
+        pid: 123,
+        runtimeId: 'version:1.0.0',
+        cliVersion: '1.0.0',
+        entrypointVersion: '1.0.0',
+        processCommandHash: 'hash-1',
+        entrypointSource: 'process_command',
+        startedBy: 'daemon',
+        startingMode: 'remote',
+      },
+      daemon: {
+        cliVersion: '1.1.0',
+        startedWithCliVersion: '1.1.0',
+        currentEntrypointVersion: 'version:1.1.0',
+        currentEntrypointSource: 'launch_spec',
+      },
+      versionState: 'stale',
+      statusSource: 'process_command_inferred',
+      plannedRestart: { supported: true, eligible: true, disabledReason: null },
+    });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    { status: 'stopped' as const },
+    { status: 'requested' as const },
+    { status: 'not_found' as const },
+    { status: 'incomplete' as const, reason: 'runner_exit_timeout' as const },
+  ])('preserves the canonical Stop result $status at the machine RPC boundary', async (result) => {
+    const registered = new Map<string, (params: unknown) => Promise<unknown>>();
+    const stopSession = vi.fn(async () => result);
+    registerMachineRpcHandlers({
+      rpcHandlerManager: {
+        registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => {
+          registered.set(method, handler);
+        },
+      } as any,
+      handlers: {
+        spawnSession: vi.fn(async () => ({ type: 'success', sessionId: 's1' } as const)),
+        stopSession: stopSession as never,
+        requestShutdown: () => {},
+      },
+    });
+
+    await expect(registered.get(RPC_METHODS.STOP_SESSION)?.({ sessionId: 'session-1' })).resolves.toEqual(result);
+    expect(stopSession).toHaveBeenCalledWith('session-1');
+  });
+
+  it('emits ONE attribution info line per spawn/resume request carrying caller-source fields, never secrets (WAVE-E-F01)', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: vi.fn(async () => ({ type: 'success', sessionId: 's1' } as const)),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+    const handler = registered.get(RPC_METHODS.SPAWN_HAPPY_SESSION)!;
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    // Fresh spawn with an optional requestOrigin threaded by the caller and a secret-bearing env.
+    await handler({
+      directory: '/tmp',
+      machineId: 'machine-9',
+      requestOrigin: 'ui:session-route-open',
+      environmentVariables: { OPENAI_API_KEY: 'sk-super-secret-value' },
+    });
+    const spawnLog = info.mock.calls.find((call) => String(call[0]).includes('spawn/resume request received'));
+    expect(spawnLog?.[1]).toMatchObject({
+      requestType: 'spawn',
+      machineId: 'machine-9',
+      requestOrigin: 'ui:session-route-open',
+    });
+    // Values-never-logged: the env secret must never surface in the attribution telemetry.
+    expect(JSON.stringify(info.mock.calls)).not.toContain('sk-super-secret-value');
+
+    // Resume-on-open path is the exact WAVE-E-F01 shape: it must also be attributed.
+    info.mockClear();
+    await handler({ type: 'resume-session', directory: '/tmp', sessionId: 'sess-inactive', machineId: 'machine-9' });
+    const resumeLog = info.mock.calls.find((call) => String(call[0]).includes('spawn/resume request received'));
+    expect(resumeLog?.[1]).toMatchObject({ requestType: 'resume-session', sessionId: 'sess-inactive' });
   });
 
   it('normalizes empty modelId to undefined when spawning a session', async () => {
@@ -251,6 +409,74 @@ describe('registerMachineRpcHandlers', () => {
       ok: true,
       action: 'restart_requested',
     });
+  });
+
+  it('registers session-runner restart machine RPCs and forwards daemon control contracts', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+
+    const restartHandler = registered.get(RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART);
+    const restartAllHandler = registered.get(RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART_ALL);
+    const statusHandler = registered.get(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_GET);
+    expect(restartHandler).toBeDefined();
+    expect(restartAllHandler).toBeDefined();
+    expect(statusHandler).toBeDefined();
+
+    await expect(restartHandler!({
+      sessionId: 'session-1',
+      mode: 'if_stale',
+      reason: 'ui_stale_runner_banner',
+      expectedRunnerPid: 123,
+      expectedProcessCommandHash: 'hash-1',
+      expectedRunnerEntrypointIdentity: 'version:1.0.0',
+    })).resolves.toEqual({ ok: true, status: 'restarted', sessionId: 'session-1' });
+    expect(requestDaemonSessionRunnerRestartMock).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      mode: 'if_stale',
+      reason: 'ui_stale_runner_banner',
+      expectedRunnerPid: 123,
+      expectedProcessCommandHash: 'hash-1',
+      expectedRunnerEntrypointIdentity: 'version:1.0.0',
+    });
+
+    await expect(restartAllHandler!({
+      mode: 'force_current_cli',
+      dryRun: true,
+      reason: 'daemon_restart_session_runners_command',
+    })).resolves.toEqual({
+      ok: true,
+      mode: 'force_current_cli',
+      requestedCount: 1,
+      restartedCount: 1,
+      skippedCount: 0,
+      failedCount: 0,
+      results: [{ ok: true, status: 'restarted', sessionId: 'session-1' }],
+    });
+    expect(restartAllDaemonSessionRunnersMock).toHaveBeenCalledWith({
+      mode: 'force_current_cli',
+      dryRun: true,
+      reason: 'daemon_restart_session_runners_command',
+    });
+
+    await expect(statusHandler!({ sessionId: ' session-1 ' })).resolves.toMatchObject({
+      sessionId: 'session-1',
+      machineId: 'machine-1',
+      versionState: 'stale',
+    });
+    expect(getDaemonSessionRunnerStatusMock).toHaveBeenCalledWith({ sessionId: 'session-1' });
   });
 
   it('forwards account settings version hints when spawning a session', async () => {
@@ -633,7 +859,11 @@ describe('registerMachineRpcHandlers', () => {
     await handler!({
       directory: '/tmp',
       spawnNonce: 'spawn-nonce-1',
-      initialPrompt: 'Summarize the repo',
+      pendingFirstInput: {
+        text: 'Summarize the repo',
+        localId: ' spawn-first:opaque-1 ',
+        meta: { profileId: 'work' },
+      },
       agentModeId: 'plan',
       agentModeUpdatedAt: 321,
       connectedServices: {
@@ -648,7 +878,11 @@ describe('registerMachineRpcHandlers', () => {
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       directory: '/tmp',
       spawnNonce: 'spawn-nonce-1',
-      initialPrompt: 'Summarize the repo',
+      pendingFirstInput: {
+        text: 'Summarize the repo',
+        localId: ' spawn-first:opaque-1 ',
+        meta: { profileId: 'work' },
+      },
       agentModeId: 'plan',
       agentModeUpdatedAt: 321,
       connectedServices: {
@@ -705,6 +939,81 @@ describe('registerMachineRpcHandlers', () => {
       errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
       errorMessage: 'Session startup is still pending',
     });
+  });
+
+  it('preserves async spawn acceptance on the provider-safe RPC when the daemon session id is still pending', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    const spawnSession = vi.fn(async () => ({
+      type: 'success' as const,
+      spawnNonce: 'spawn-nonce-pending-ack',
+      sessionIdStatus: 'pending' as const,
+    }));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+
+    const handler = registered.get(RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE);
+    expect(handler).toBeDefined();
+
+    await expect(handler!({
+      directory: '/tmp',
+      spawnNonce: 'spawn-nonce-pending-ack',
+    })).resolves.toEqual({
+      type: 'success',
+      spawnNonce: 'spawn-nonce-pending-ack',
+      sessionIdStatus: 'pending',
+    });
+  });
+
+  it('resolves accepted spawn identity before returning success on the released legacy RPC', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    const spawnSession = vi.fn(async () => ({
+      type: 'success' as const,
+      spawnNonce: 'spawn-nonce-legacy-pending',
+      sessionIdStatus: 'pending' as const,
+    }));
+    const resolveSpawnSessionByNonce = vi.fn(async () => ({
+      status: 'success' as const,
+      sessionId: 'session-from-legacy-contract',
+    }));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession,
+        resolveSpawnSessionByNonce,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+
+    const handler = registered.get(RPC_METHODS.SPAWN_HAPPY_SESSION);
+    expect(handler).toBeDefined();
+
+    await expect(handler!({
+      directory: '/tmp',
+      spawnNonce: 'spawn-nonce-legacy-pending',
+    })).resolves.toEqual({
+      type: 'success',
+      sessionId: 'session-from-legacy-contract',
+    });
+    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('spawn-nonce-legacy-pending');
+    expect(spawnSession).toHaveBeenCalledTimes(1);
   });
 
   it('preserves structured connected-service error details from daemon spawn envelopes', async () => {
@@ -812,6 +1121,36 @@ describe('registerMachineRpcHandlers', () => {
     await expect(handler!({ spawnNonce: 'spawn-nonce-1' })).resolves.toEqual({ status: 'unsupported' });
   });
 
+  it('exposes only a typed completed spawn-abandon result through machine rpc', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    const abandonSpawnSessionByNonce = vi.fn(async () => ({
+      status: 'completed' as const,
+      sessionId: 'session-a',
+    }));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+        abandonSpawnSessionByNonce,
+      },
+    });
+
+    const handler = registered.get(RPC_METHODS.DAEMON_SPAWN_SESSION_ABANDON);
+    expect(handler).toBeDefined();
+    await expect(handler!({ spawnNonce: ' nonce-a ' })).resolves.toEqual({
+      status: 'completed',
+      sessionId: 'session-a',
+    });
+    expect(abandonSpawnSessionByNonce).toHaveBeenCalledWith('nonce-a');
+  });
+
   it('passes canonical spawn fields through when resuming a session and preserves sessionId aliasing', async () => {
     const registered = new Map<string, (params: any) => Promise<any>>();
     const rpcHandlerManager = {
@@ -820,7 +1159,11 @@ describe('registerMachineRpcHandlers', () => {
       },
     } as any;
 
-    const spawnSession = vi.fn(async () => ({ type: 'success', sessionId: 's1' } as const));
+    const spawnSession = vi.fn(async () => ({
+      type: 'success',
+      sessionId: 'sess_old',
+      runnerAcceptance: 'preexisting_or_adopted',
+    } as const));
     registerMachineRpcHandlers({
       rpcHandlerManager,
       handlers: {
@@ -833,13 +1176,16 @@ describe('registerMachineRpcHandlers', () => {
     const handler = registered.get(RPC_METHODS.SPAWN_HAPPY_SESSION);
     expect(handler).toBeDefined();
 
-    await handler!({
+    const response = await handler!({
       type: 'resume-session',
       sessionId: 'sess_old',
       directory: '/tmp',
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
       spawnNonce: 'resume-nonce-1',
-      initialPrompt: 'Resume from here',
+      pendingFirstInput: {
+        text: 'Resume from here',
+        localId: ' spawn-first:opaque-resume ',
+      },
       profileId: 'profile-work',
       agentModeId: 'plan',
       agentModeUpdatedAt: 654,
@@ -857,12 +1203,21 @@ describe('registerMachineRpcHandlers', () => {
       transcriptStorage: 'direct',
     });
 
+    expect(response).toEqual({
+      type: 'success',
+      sessionId: 'sess_old',
+      runnerAcceptance: 'preexisting_or_adopted',
+    });
+
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       existingSessionId: 'sess_old',
       directory: '/tmp',
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
       spawnNonce: 'resume-nonce-1',
-      initialPrompt: 'Resume from here',
+      pendingFirstInput: {
+        text: 'Resume from here',
+        localId: ' spawn-first:opaque-resume ',
+      },
       profileId: 'profile-work',
       agentModeId: 'plan',
       agentModeUpdatedAt: 654,
@@ -929,6 +1284,45 @@ describe('registerMachineRpcHandlers', () => {
     }));
     expect(spawnSession).toHaveBeenCalledWith(expect.not.objectContaining({
       experimentalCodexAcp: true,
+    }));
+  });
+
+  it('preserves cursor-bound user execution authorization through the production resume adapter', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    const spawnSession = vi.fn(async () => ({ type: 'success', sessionId: 's1' } as const));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+
+    await registered.get(RPC_METHODS.SPAWN_HAPPY_SESSION)?.({
+      type: 'resume-session',
+      sessionId: 'sess-paused',
+      directory: '/tmp',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      initialTranscriptAfterSeq: 41,
+      executionAuthorization: {
+        provenance: 'user_request',
+        requestId: 'message-42',
+      },
+    });
+
+    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+      existingSessionId: 'sess-paused',
+      initialTranscriptAfterSeq: 41,
+      executionAuthorization: {
+        provenance: 'user_request',
+        requestId: 'message-42',
+      },
     }));
   });
 
@@ -1967,6 +2361,195 @@ describe('registerMachineRpcHandlers', () => {
       } else {
         process.env.HOME = previousHome;
       }
+    }
+  });
+
+  it('resolves a pending provider-native fork spawn through nonce resolution instead of degrading to replay', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    const spawnSession = vi.fn(async (_opts: any) => ({
+      type: 'success',
+      sessionIdStatus: 'pending',
+      spawnNonce: 'nonce-abc',
+    } as const));
+    const resolveSpawnSessionByNonce = vi.fn()
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({ status: 'success', sessionId: 'sess_child' });
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession,
+        resolveSpawnSessionByNonce,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    } as any);
+
+    const handler = registered.get((RPC_METHODS as any).SESSION_FORK);
+    expect(handler).toBeDefined();
+
+    readCredentialsMock.mockResolvedValueOnce({
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    });
+
+    const parentMetadataPlain = JSON.stringify({
+      path: '/repo',
+      flavor: 'codex',
+      codexSessionId: 'codex-thread-parent',
+      codexBackendMode: 'appServer',
+    });
+    const childMetadataPlain = JSON.stringify({ path: '/repo', flavor: 'codex' });
+
+    const getSpy = vi.spyOn(axios, 'get');
+    const postSpy = vi.spyOn(axios, 'post');
+    getSpy
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          session: {
+            id: 'sess_parent',
+            seq: 5,
+            createdAt: 1,
+            updatedAt: 2,
+            active: true,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            metadata: parentMetadataPlain,
+            metadataVersion: 7,
+            agentState: null,
+            agentStateVersion: 0,
+            dataEncryptionKey: null,
+          },
+        },
+      } as any)
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          session: {
+            id: 'sess_child',
+            seq: 0,
+            createdAt: 10,
+            updatedAt: 10,
+            active: true,
+            activeAt: 10,
+            encryptionMode: 'plain',
+            metadata: childMetadataPlain,
+            metadataVersion: 1,
+            agentState: null,
+            agentStateVersion: 0,
+            dataEncryptionKey: null,
+          },
+        },
+      } as any);
+
+    updateSessionMetadataWithRetryMock.mockClear();
+
+    const result = await handler!({
+      v: 1,
+      parentSessionId: 'sess_parent',
+      forkPoint: { type: 'latest' },
+      strategy: 'auto',
+    });
+
+    expect(result).toMatchObject({ ok: true, childSessionId: 'sess_child' });
+    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('nonce-abc');
+    expect(spawnSession).toHaveBeenCalledTimes(1);
+    // No replay fall-through: the replay path would create a fresh session via POST.
+    expect(postSpy).not.toHaveBeenCalled();
+    const updater = (updateSessionMetadataWithRetryMock as any).mock.calls[0][0].updater as (m: any) => any;
+    const updated = updater({ path: '/repo', flavor: 'codex' });
+    expect(updated.forkV1).toMatchObject({ strategy: 'provider_native' });
+  });
+
+  it('fails the fork instead of degrading to replay when a pending provider-native spawn never resolves', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    const spawnSession = vi.fn(async (_opts: any) => ({
+      type: 'success',
+      sessionIdStatus: 'pending',
+      spawnNonce: 'nonce-stuck',
+    } as const));
+    const resolveSpawnSessionByNonce = vi.fn(async () => ({ status: 'pending' as const }));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession,
+        resolveSpawnSessionByNonce,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    } as any);
+
+    const handler = registered.get((RPC_METHODS as any).SESSION_FORK);
+    expect(handler).toBeDefined();
+
+    readCredentialsMock.mockResolvedValueOnce({
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    });
+
+    const parentMetadataPlain = JSON.stringify({
+      path: '/repo',
+      flavor: 'codex',
+      codexSessionId: 'codex-thread-parent',
+      codexBackendMode: 'appServer',
+    });
+
+    const getSpy = vi.spyOn(axios, 'get');
+    const postSpy = vi.spyOn(axios, 'post');
+    getSpy.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        session: {
+          id: 'sess_parent',
+          seq: 5,
+          createdAt: 1,
+          updatedAt: 2,
+          active: true,
+          activeAt: 2,
+          encryptionMode: 'plain',
+          metadata: parentMetadataPlain,
+          metadataVersion: 7,
+          agentState: null,
+          agentStateVersion: 0,
+          dataEncryptionKey: null,
+        },
+      },
+    } as any);
+
+    const previousTimeout = process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS;
+    const previousPoll = process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS;
+    process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS = '150';
+    process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS = '25';
+    try {
+      const result = await handler!({
+        v: 1,
+        parentSessionId: 'sess_parent',
+        forkPoint: { type: 'latest' },
+        strategy: 'auto',
+      });
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'SESSION_WEBHOOK_TIMEOUT' });
+      expect(spawnSession).toHaveBeenCalledTimes(1);
+      // Provider state was already mutated by the native fork; degrading to replay would
+      // orphan the spawned child. The replay path must never run.
+      expect(postSpy).not.toHaveBeenCalled();
+    } finally {
+      if (previousTimeout === undefined) delete process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS;
+      else process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS = previousTimeout;
+      if (previousPoll === undefined) delete process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS;
+      else process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS = previousPoll;
     }
   });
 

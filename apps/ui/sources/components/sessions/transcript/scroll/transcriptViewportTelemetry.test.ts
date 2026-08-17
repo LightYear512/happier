@@ -65,6 +65,27 @@ describe('transcript viewport telemetry', () => {
         vi.unstubAllGlobals();
     });
 
+    it('labels the active transcript renderer and native command orientation truthfully', async () => {
+        const module = await loadTelemetryModule();
+        const resolveRendererFacts = requireFunction(
+            module,
+            'resolveTranscriptViewportTelemetryRendererFacts',
+        );
+
+        expect(resolveRendererFacts({ rendererKind: 'legendList', platformOS: 'ios' })).toEqual({
+            listImplementation: 'legend',
+            orientation: 'standard',
+        });
+        expect(resolveRendererFacts({ rendererKind: 'flashList', platformOS: 'ios' })).toEqual({
+            listImplementation: 'flash_v2',
+            orientation: 'inverted',
+        });
+        expect(resolveRendererFacts({ rendererKind: 'flashList', platformOS: 'web' })).toEqual({
+            listImplementation: 'flash_v2',
+            orientation: 'standard',
+        });
+    });
+
     it('records nothing when disabled', async () => {
         const module = await loadTelemetryModule();
         const createTranscriptViewportTelemetry = requireFunction(module, 'createTranscriptViewportTelemetry');
@@ -294,7 +315,7 @@ describe('transcript viewport telemetry', () => {
         expect(loggedPayload).not.toContain('transcript text must not leak');
     });
 
-    it('keeps platform-specific index writer attribution', async () => {
+    it('accepts historical list implementation labels but drops the retired legacy index writer', async () => {
         const module = await loadTelemetryModule();
         const createTranscriptViewportTelemetry = requireFunction(module, 'createTranscriptViewportTelemetry');
 
@@ -306,15 +327,40 @@ describe('transcript viewport telemetry', () => {
             snapshot: () => { events: Array<Record<string, unknown>>; droppedCount: number };
         };
 
-        telemetry.record(buildScrollWriteEvent({ writer: 'web-scroll-to-index', targetOffsetY: 1 }));
-        telemetry.record(buildScrollWriteEvent({ writer: 'native-scroll-to-index', targetOffsetY: 2 }));
-        telemetry.record(buildScrollWriteEvent({ writer: 'legacy-scroll-to-index', targetOffsetY: 3 }));
+        telemetry.record(buildScrollWriteEvent({
+            listImplementation: 'flash_v2',
+            writer: 'web-scroll-to-index',
+            targetOffsetY: 1,
+        }));
+        telemetry.record(buildScrollWriteEvent({
+            listImplementation: 'flatlist_legacy',
+            platform: 'ios',
+            writer: 'native-scroll-to-index',
+            targetOffsetY: 2,
+        }));
+        telemetry.record(buildScrollWriteEvent({
+            listImplementation: 'web-fallback',
+            writer: 'web-scroll-to-index',
+            targetOffsetY: 3,
+        }));
+        telemetry.record(buildScrollWriteEvent({
+            listImplementation: 'web-fallback',
+            writer: 'legacy-scroll-to-index',
+            targetOffsetY: 4,
+        }));
 
-        expect(telemetry.snapshot().events.map((event) => event.writer)).toEqual([
+        const snapshot = telemetry.snapshot();
+        expect(snapshot.events.map((event) => event.listImplementation)).toEqual([
+            'flash_v2',
+            'flatlist_legacy',
+            'web-fallback',
+        ]);
+        expect(snapshot.events.map((event) => event.writer)).toEqual([
             'web-scroll-to-index',
             'native-scroll-to-index',
-            'legacy-scroll-to-index',
+            'web-scroll-to-index',
         ]);
+        expect(snapshot.droppedCount).toBe(1);
     });
 
     it('accepts passive drift as a typed scroll-write reason', async () => {
@@ -338,6 +384,30 @@ describe('transcript viewport telemetry', () => {
             type: 'scroll-write',
             writer: 'mvcp-skip',
             reason: 'passive-drift',
+        });
+    });
+
+    it('accepts viewport-resized as a typed scroll-write reason (S3 composer/keyboard resize events)', async () => {
+        const module = await loadTelemetryModule();
+        const createTranscriptViewportTelemetry = requireFunction(module, 'createTranscriptViewportTelemetry');
+
+        const telemetry = createTranscriptViewportTelemetry({
+            enabled: true,
+            now: () => 100,
+        }) as {
+            record: (event: unknown) => void;
+            snapshot: () => { events: Array<Record<string, unknown>>; droppedCount: number };
+        };
+
+        telemetry.record(buildScrollWriteEvent({
+            writer: 'mvcp-skip',
+            reason: 'viewport-resized',
+        }));
+
+        expect(telemetry.snapshot().events[0]).toMatchObject({
+            type: 'scroll-write',
+            writer: 'mvcp-skip',
+            reason: 'viewport-resized',
         });
     });
 
@@ -712,6 +782,8 @@ describe('transcript viewport telemetry', () => {
             hasVisibleRows: true,
             firstVisibleItemId: 'row:newest',
             lastVisibleItemId: 'row:oldest',
+            firstVisibleSourceIndex: 8,
+            lastVisibleSourceIndex: 11,
             blankAreaPx: 0,
             visibleWindowSource: 'ref-compute',
             blankAreaSource: 'none',
@@ -742,6 +814,8 @@ describe('transcript viewport telemetry', () => {
             hasVisibleRows: true,
             firstVisibleItemId: 'row:newest',
             lastVisibleItemId: 'row:oldest',
+            firstVisibleSourceIndex: 8,
+            lastVisibleSourceIndex: 11,
             blankAreaPx: 0,
             visibleWindowSource: 'ref-compute',
             blankAreaSource: 'none',
@@ -843,6 +917,114 @@ describe('transcript viewport telemetry', () => {
         expect(snapshot.events[0]).not.toHaveProperty('text');
     });
 
+    it('sanitizes native blank-window classifier fields without free-form payloads', async () => {
+        const module = await loadTelemetryModule();
+        const createTranscriptViewportTelemetry = requireFunction(module, 'createTranscriptViewportTelemetry');
+
+        const telemetry = createTranscriptViewportTelemetry({
+            enabled: true,
+            now: () => 100,
+        }) as {
+            record: (event: unknown) => void;
+            snapshot: () => { events: Array<Record<string, unknown>>; droppedCount: number };
+        };
+
+        telemetry.record({
+            type: 'visible-window-observed',
+            sessionId: 'session-1',
+            platform: 'ios',
+            listImplementation: 'flash_v2',
+            mode: 'user-unpinned',
+            reason: 'observed',
+            rawOffsetY: 640,
+            canonicalOffsetY: 860,
+            offsetY: 860,
+            contentHeight: 2000,
+            layoutHeight: 500,
+            eventContentHeight: 2000,
+            eventLayoutHeight: 500,
+            refContentHeight: 2000,
+            refLayoutHeight: 500,
+            distanceFromBottom: 640,
+            bottomFollowMode: 'released',
+            dragSessionTrusted: true,
+            nativeMomentumActive: false,
+            mvcpPolicy: 'disabled',
+            hasVisibleRows: false,
+            visibleWindowSource: 'ref-compute',
+            visibleWindowStale: true,
+            blankAreaPx: 500,
+            blankAreaSource: 'index-estimate',
+            nativeBlankWindowSignature: 'empty-visible-window',
+            listDataLength: 12,
+            fullItemCount: 15,
+            coldCount: 12,
+            hotCount: 3,
+            visibleRangeReadStatus: 'reversed',
+            visibleRenderedStartIndex: 4,
+            visibleRenderedEndIndex: 2,
+            firstVisibleRenderedIndex: 4,
+            entryRestoreState: 'none',
+            prependState: 'none',
+            layoutCacheClearState: 'idle',
+            layoutCacheClearReason: 'none',
+            scrollToIndexFailureState: 'none',
+            transcriptText: 'must not leak',
+            unsafeObject: { payload: 'must not leak' },
+        });
+        telemetry.record({
+            type: 'visible-window-observed',
+            sessionId: 'session-1',
+            platform: 'ios',
+            listImplementation: 'flash_v2',
+            mode: 'user-unpinned',
+            hasVisibleRows: false,
+            nativeBlankWindowSignature: 'free-form /Users/example/private.txt',
+            visibleRangeReadStatus: 'unknown',
+            entryRestoreState: 'open:private',
+            prependState: 'pending:private',
+            layoutCacheClearState: 'cleared:private',
+            layoutCacheClearReason: 'because private',
+            scrollToIndexFailureState: 'failed:private',
+        });
+
+        const snapshot = telemetry.snapshot();
+        expect(snapshot.events).toHaveLength(2);
+        expect(snapshot.events[0]).toMatchObject({
+            type: 'visible-window-observed',
+            platform: 'ios',
+            listImplementation: 'flash_v2',
+            mode: 'user-unpinned',
+            nativeBlankWindowSignature: 'empty-visible-window',
+            listDataLength: 12,
+            fullItemCount: 15,
+            coldCount: 12,
+            hotCount: 3,
+            visibleRangeReadStatus: 'reversed',
+            visibleRenderedStartIndex: 4,
+            visibleRenderedEndIndex: 2,
+            firstVisibleRenderedIndex: 4,
+            eventContentHeight: 2000,
+            eventLayoutHeight: 500,
+            refContentHeight: 2000,
+            refLayoutHeight: 500,
+            entryRestoreState: 'none',
+            prependState: 'none',
+            layoutCacheClearState: 'idle',
+            layoutCacheClearReason: 'none',
+            scrollToIndexFailureState: 'none',
+        });
+        expect(snapshot.events[0]).not.toHaveProperty('transcriptText');
+        expect(snapshot.events[0]).not.toHaveProperty('unsafeObject');
+        expect(snapshot.events[1]).not.toHaveProperty('nativeBlankWindowSignature');
+        expect(snapshot.events[1]).not.toHaveProperty('visibleRangeReadStatus');
+        expect(snapshot.events[1]).not.toHaveProperty('entryRestoreState');
+        expect(snapshot.events[1]).not.toHaveProperty('prependState');
+        expect(snapshot.events[1]).not.toHaveProperty('layoutCacheClearState');
+        expect(snapshot.events[1]).not.toHaveProperty('layoutCacheClearReason');
+        expect(snapshot.events[1]).not.toHaveProperty('scrollToIndexFailureState');
+    });
+
     it('drops scroll-write-rejected events with unknown owner values', async () => {
         const module = await loadTelemetryModule();
         const createTranscriptViewportTelemetry = requireFunction(module, 'createTranscriptViewportTelemetry');
@@ -886,7 +1068,7 @@ describe('transcript viewport telemetry', () => {
         telemetry.record(buildScrollWriteRejectedEvent({ writer: 'free-form-writer' }));
         telemetry.record(buildScrollWriteRejectedEvent({ reason: 'experiment' }));
 
-        expect(telemetry.snapshot()).toEqual({ events: [], droppedCount: 0 });
+        expect(telemetry.snapshot()).toEqual({ events: [], droppedCount: 1 });
     });
 
     it('exposes the dev getter while disabled but never in production', async () => {
@@ -1029,47 +1211,6 @@ describe('transcript viewport telemetry — N1 evidence events', () => {
         mode: 'user-unpinned',
         timestampMs: 1000,
     };
-
-    it('accepts offset-correction events with typed action, source, and diff (N1.1)', async () => {
-        const telemetry = await createEvidenceTelemetry();
-
-        const actions = [
-            { correctionAction: 'pause-set', correctionSource: 'scroll-to-index' },
-            { correctionAction: 'pause-cleared', correctionSource: 'initial-scroll-index' },
-            { correctionAction: 'correction-applied', correctionDiffPx: -412.5 },
-            { correctionAction: 'correction-skipped-paused', correctionDiffPx: 87 },
-            { correctionAction: 'correction-skipped-animation', correctionDiffPx: 12 },
-        ];
-        for (const fields of actions) {
-            telemetry.record({ type: 'offset-correction', ...commonFields, ...fields });
-        }
-
-        const snapshot = telemetry.snapshot();
-        expect(snapshot.events.map((event) => event.correctionAction)).toEqual(
-            actions.map((fields) => fields.correctionAction),
-        );
-        expect(snapshot.events[2]?.correctionDiffPx).toBe(-412.5);
-        expect(snapshot.events[0]?.correctionSource).toBe('scroll-to-index');
-        expect(snapshot.droppedCount).toBe(0);
-    });
-
-    it('drops offset-correction events with free-form action or source', async () => {
-        const telemetry = await createEvidenceTelemetry();
-
-        telemetry.record({ type: 'offset-correction', ...commonFields, correctionAction: 'user typed text' });
-        telemetry.record({ type: 'offset-correction', ...commonFields });
-        telemetry.record({
-            type: 'offset-correction',
-            ...commonFields,
-            correctionAction: 'pause-set',
-            correctionSource: 'something-else',
-        });
-
-        const snapshot = telemetry.snapshot();
-        expect(snapshot.events).toHaveLength(1);
-        expect(snapshot.events[0]).toMatchObject({ correctionAction: 'pause-set' });
-        expect(snapshot.events[0]).not.toHaveProperty('correctionSource');
-    });
 
     it('accepts row-measured events with kind, delta, and viewport relation (N1.2)', async () => {
         const telemetry = await createEvidenceTelemetry();

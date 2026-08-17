@@ -163,9 +163,18 @@ export const MergeabilityState = {
 
 export type MergeabilityState = (typeof MergeabilityState)[keyof typeof MergeabilityState];
 
+export const PendingProviderAction = {
+    send: "send",
+    steer: "steer",
+    interrupt_and_send: "interrupt_and_send",
+} as const;
+
+export type PendingProviderAction = (typeof PendingProviderAction)[keyof typeof PendingProviderAction];
+
 export const AutomationScheduleKind = {
     cron: "cron",
     interval: "interval",
+    manual: "manual",
 } as const;
 
 export type AutomationScheduleKind = (typeof AutomationScheduleKind)[keyof typeof AutomationScheduleKind];

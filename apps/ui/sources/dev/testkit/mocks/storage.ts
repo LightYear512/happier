@@ -4,9 +4,19 @@ import type { StorageState } from '@/sync/store/types';
 import type { Settings } from '@/sync/domains/settings/settings';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import type { Profile } from '@/sync/domains/profiles/profile';
-import type { StoreApi, UseBoundStore } from 'zustand';
+import { create, type StoreApi, type UseBoundStore } from 'zustand';
 
 import { mergeModuleMock, type MergeModuleMockOptions } from './_shared';
+import { createSessionMessagesHooksMock } from './sessionMessagesHooks';
+
+// Published from the storage mock because it overrides storage-module hooks; implemented next door
+// so this file stays a flat catalogue of mock factories.
+export {
+    createSessionMessagesHooksMock,
+    type CreateSessionMessagesHooksMockOptions,
+    type SessionMessagesHooksMock,
+    type TestkitSessionMessagesState,
+} from './sessionMessagesHooks';
 
 type StorageModule = typeof import('@/sync/domains/state/storage');
 type StorageStoreModule = typeof import('@/sync/domains/state/storageStore');
@@ -26,6 +36,7 @@ const testkitProfileDefaults = Object.freeze({
     linkedProviders: [],
     connectedServices: [],
     connectedServicesV2: [],
+    connectedServiceCredentialRevisionsV1: [],
 } satisfies Profile);
 
 export async function createStorageModuleMock(options: CreateStorageModuleMockOptions): Promise<StorageModule> {
@@ -73,11 +84,29 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
     const allSessionListRenderables = [] as ReturnType<StorageModule['useAllSessionListRenderables']>;
     const allAttentionSessions = [] as ReturnType<StorageModule['useAllSessionsForAttention']>;
     const allAttentionSessionListRenderables = [] as ReturnType<StorageModule['useAllSessionListRenderablesForAttention']>;
+    const sessionOrganizationProjection = {
+        schemaVersion: null,
+        version: null,
+        pinnedSessionIds: [],
+        pinsBySessionId: {},
+        foldersById: {},
+        folderAssignmentsBySessionId: {},
+        tagsById: {},
+        tagAssignmentsBySessionId: {},
+        orderEntriesByScopeKey: {},
+        labelsByLabelKey: {},
+    } satisfies NonNullable<ReturnType<StorageModule['useSessionOrganizationProjection']>>;
+    const sessionReferenceTarget = {
+        deleted: false,
+        metadata: null,
+    } satisfies ReturnType<StorageModule['useSessionReferenceTarget']>;
     const sessionTranscriptIds = [] as string[];
     const sessionMessagesById = {} as ReturnType<StorageModule['useSessionMessagesById']>;
-    const sessionMessagesReducerState = null as unknown as ReturnType<StorageModule['useSessionMessagesReducerState']>;
+    const messagesByRefs = [] as ReturnType<StorageModule['useMessagesByRefs']>;
     const connectedServiceAccountSwitchEvents = [] as ReturnType<StorageModule['useSessionConnectedServiceAccountSwitchEvents']>;
-    const subagentSourceMessages = [] as ReturnType<StorageModule['useSessionSubagentSourceMessages']>;
+    // Session-message hooks come from the shared factory so a caller can express live agent state by
+    // spreading `createSessionMessagesHooksMock({ bySessionId })` into `overrides`.
+    const sessionMessagesHooks = createSessionMessagesHooksMock();
     const socketStatus = {
         status: 'disconnected',
         lastConnectedAt: null,
@@ -124,9 +153,10 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useSettingMutable,
         useLocalSetting,
         useLocalSettingMutable,
-        useSessionMessages: () => ({ messages: [], isLoaded: true } as const),
+        useSessionMessages: sessionMessagesHooks.useSessionMessages,
         useSessionMessagesById: () => sessionMessagesById,
-        useSessionMessagesReducerState: () => sessionMessagesReducerState,
+        useMessagesByRefs: () => messagesByRefs,
+        useSessionMessagesReducerState: sessionMessagesHooks.useSessionMessagesReducerState,
         useSessionConnectedServiceAccountSwitchEvents: () => connectedServiceAccountSwitchEvents,
         useSessionTranscriptIds: () => ({ ids: sessionTranscriptIds, isLoaded: true } as const),
         useSessionReadyActivity: () => ({
@@ -134,7 +164,7 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
             latestReadyEventAt: null,
         }),
         useSessionVisibleReadSeq: () => null,
-        useSessionSubagentSourceMessages: () => subagentSourceMessages,
+        useSessionSubagentSourceMessages: sessionMessagesHooks.useSessionSubagentSourceMessages,
         useSessionMessagesVersion: () => 0,
         useSessionsReady: () => true,
         useSessionRpcAvailabilityState: () => ({
@@ -152,6 +182,7 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useAllSessionListRenderables: () => allSessionListRenderables,
         useAllSessionsForAttention: () => allAttentionSessions,
         useAllSessionListRenderablesForAttention: () => allAttentionSessionListRenderables,
+        useSessionOrganizationProjection: () => sessionOrganizationProjection,
         useMachine: () => null,
         useIsDataReady: () => true,
         useSocketStatus: () => socketStatus,
@@ -164,6 +195,8 @@ export function createStorageModuleStub<TOverrides extends object>(overrides: TO
         useWorkspaceReviewCommentsDrafts: () => [],
         useProjectForSession: () => null,
         useSessionForkSupportSource: () => null,
+        useSessionInteractionSource: () => null,
+        useSessionReferenceTarget: () => sessionReferenceTarget,
         useSessionChatFooterState: () => null,
         useSessionWorkspacePath: () => null,
         useSessionLastMobileSurface: () => null,
@@ -248,7 +281,53 @@ export function installStorageStoreModuleMock(overrides: Partial<StorageStoreMod
 }
 
 export function createStorageStoreMock(state: Partial<StorageState>): UseBoundStore<StoreApi<StorageState>> {
-    const snapshot = {
+    const snapshot = createStorageStateSnapshot(state);
+
+    return Object.assign(
+        ((selector?: (value: StorageState) => unknown) =>
+            typeof selector === 'function' ? selector(snapshot) : snapshot) as UseBoundStore<StoreApi<StorageState>>,
+        {
+            getState: () => snapshot,
+            getInitialState: () => snapshot,
+            setState: () => undefined,
+            subscribe: () => () => undefined,
+            destroy: () => undefined,
+        } satisfies Pick<StoreApi<StorageState>, 'getState' | 'getInitialState' | 'setState' | 'subscribe'> & {
+            destroy: () => void;
+        },
+    );
+}
+
+export function createReactiveStorageStoreMock(
+    state: Partial<StorageState>,
+): UseBoundStore<StoreApi<StorageState>> {
+    const snapshot = createStorageStateSnapshot(state);
+    return create<StorageState>()(() => snapshot);
+}
+
+export function createStorageStoreStub(
+    readState: () => Partial<StorageState>,
+): UseBoundStore<StoreApi<StorageState>> {
+    const getSnapshot = () => createStorageStateSnapshot(readState());
+    return Object.assign(
+        ((selector?: (value: StorageState) => unknown) => {
+            const snapshot = getSnapshot();
+            return typeof selector === 'function' ? selector(snapshot) : snapshot;
+        }) as UseBoundStore<StoreApi<StorageState>>,
+        {
+            getState: getSnapshot,
+            getInitialState: getSnapshot,
+            setState: () => undefined,
+            subscribe: () => () => undefined,
+            destroy: () => undefined,
+        } satisfies Pick<StoreApi<StorageState>, 'getState' | 'getInitialState' | 'setState' | 'subscribe'> & {
+            destroy: () => void;
+        },
+    );
+}
+
+function createStorageStateSnapshot(state: Partial<StorageState>): StorageState {
+    return {
         sessions: {},
         sessionListRenderables: {},
         sessionMessages: {},
@@ -265,18 +344,4 @@ export function createStorageStoreMock(state: Partial<StorageState>): UseBoundSt
         localPetSourcesBySourceKey: {},
         ...state,
     } as StorageState;
-
-    return Object.assign(
-        ((selector?: (value: StorageState) => unknown) =>
-            typeof selector === 'function' ? selector(snapshot) : snapshot) as UseBoundStore<StoreApi<StorageState>>,
-        {
-            getState: () => snapshot,
-            getInitialState: () => snapshot,
-            setState: () => undefined,
-            subscribe: () => () => undefined,
-            destroy: () => undefined,
-        } satisfies Pick<StoreApi<StorageState>, 'getState' | 'getInitialState' | 'setState' | 'subscribe'> & {
-            destroy: () => void;
-        },
-    );
 }

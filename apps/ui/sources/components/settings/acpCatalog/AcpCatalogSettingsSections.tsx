@@ -1,9 +1,8 @@
 import * as React from 'react';
-import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { getBuiltInAcpConfig, type AgentId } from '@happier-dev/agents';
+import { getBuiltInAcpConfig } from '@happier-dev/agents';
 
 import { getAgentCore } from '@/agents/catalog/catalog';
 import { Item } from '@/components/ui/lists/Item';
@@ -13,8 +12,10 @@ import { t } from '@/text';
 import { deleteAcpBackendDefinitionV1 } from '@/sync/domains/acpCatalog/acpCatalogCrud';
 import { normalizeAcpCatalogSettingsV1 } from '@/sync/domains/acpCatalog/normalizeAcpCatalogSettingsV1';
 import { useSettingMutable } from '@/sync/domains/state/storage';
+import { getBuiltInGenericAcpAgentIds } from './builtInGenericAcpAgentIds';
+import { Icon } from '@/components/ui/icons/Icon';
 
-const BUILT_IN_GENERIC_ACP_AGENT_IDS: readonly AgentId[] = ['kiro'];
+const BUILT_IN_GENERIC_ACP_AGENT_IDS = getBuiltInGenericAcpAgentIds();
 
 function formatBackendSubtitle(command: string, args: readonly string[]): string {
     return [command, ...args].filter(Boolean).join(' ');
@@ -48,7 +49,7 @@ export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettings
             testID="settings.acpCatalog.addBackend"
             title={t('settings.acpCatalogAddBackend')}
             subtitle={t('settings.acpCatalogAddBackendSubtitle')}
-            icon={<Ionicons name="add-circle-outline" size={29} color={theme.colors.state.success.foreground} />}
+            icon={<Icon name="plus-circle" size={29} color={theme.colors.state.success.foreground} />}
             onPress={() => router.push('/settings/acp-backend')}
         />
     );
@@ -66,7 +67,7 @@ export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettings
                             testID={`settings.acpCatalog.builtIn.${agentId}`}
                             title={t(core.displayNameKey)}
                             subtitle={formatBackendSubtitle(builtInAcp.launcher.command, builtInAcp.launcher.args)}
-                            icon={<Ionicons name="flash-outline" size={29} color={theme.colors.accent.orange} />}
+                            icon={<Icon name="lightning" size={29} color={theme.colors.accent.orange} />}
                             showChevron={false}
                         />
                     );
@@ -83,7 +84,7 @@ export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettings
                         testID={`settings.acpCatalog.backend.${backend.id}`}
                         title={backend.title || backend.name}
                         subtitle={formatBackendSubtitle(backend.command, backend.args)}
-                        icon={<Ionicons name="server-outline" size={29} color={theme.colors.accent.indigo} />}
+                        icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.indigo} />}
                         onPress={() => router.push({ pathname: '/settings/acp-backend', params: { backendId: backend.id } } as any)}
                         onLongPress={() => { void handleDeleteBackend(backend.id); }}
                     />

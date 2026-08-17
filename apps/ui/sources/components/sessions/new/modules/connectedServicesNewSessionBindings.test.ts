@@ -98,7 +98,7 @@ describe('buildConnectedServicesBindingsPayload', () => {
         });
     });
 
-    it('degrades a missing group binding to native instead of a stale profile preference', () => {
+    it('preserves a missing explicit group binding instead of silently selecting native auth', () => {
         const payload = buildConnectedServicesBindingsPayload({
             supportedConnectedServiceIds: ['openai-codex'],
             connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
@@ -124,10 +124,15 @@ describe('buildConnectedServicesBindingsPayload', () => {
             defaultProfileByServiceId: { 'openai-codex': 'backup' },
         });
 
-        expect(payload).toBeNull();
+        expect(payload).toEqual({
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': { source: 'connected', selection: 'group', groupId: 'missing-group' },
+            },
+        });
     });
 
-    it('degrades a group binding to native when account groups are disabled for the target server', () => {
+    it('preserves explicit group intent when the target server cannot currently use account groups', () => {
         const payload = buildConnectedServicesBindingsPayload({
             supportedConnectedServiceIds: ['openai-codex'],
             connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
@@ -153,10 +158,15 @@ describe('buildConnectedServicesBindingsPayload', () => {
             defaultProfileByServiceId: {},
         });
 
-        expect(payload).toBeNull();
+        expect(payload).toEqual({
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': { source: 'connected', selection: 'group', groupId: 'codex-main' },
+            },
+        });
     });
 
-    it('degrades a group binding to native when the target runtime cannot switch account groups', () => {
+    it('preserves explicit group intent when the target runtime cannot currently switch account groups', () => {
         const payload = buildConnectedServicesBindingsPayload({
             supportedConnectedServiceIds: ['openai-codex'],
             connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
@@ -183,12 +193,53 @@ describe('buildConnectedServicesBindingsPayload', () => {
             defaultProfileByServiceId: {},
         });
 
-        expect(payload).toBeNull();
+        expect(payload).toEqual({
+            v: 1,
+            bindingsByServiceId: {
+                'openai-codex': { source: 'connected', selection: 'group', groupId: 'codex-main' },
+            },
+        });
     });
 });
 
 describe('buildConnectedServiceProfileOptionsByServiceId', () => {
-    it('projects Pi Claude subscription OAuth profiles as selectable while keeping OpenCode OAuth unsupported', () => {
+    it('preserves unsupported-kind projection and UI subtitle keys for a fixed agent fixture', () => {
+        const options = buildConnectedServiceProfileOptionsByServiceId({
+            accountProfileConnectedServicesV2: [{
+                serviceId: 'claude-subscription',
+                profiles: [
+                    {
+                        profileId: 'oauth-not-supported',
+                        status: 'connected',
+                        kind: 'oauth',
+                        providerEmail: 'oauth@example.com',
+                    },
+                ],
+            }],
+            agentCore: {
+                id: 'test-agent',
+                connectedServices: {
+                    supportedServiceIds: ['claude-subscription'],
+                    supportedKindsByServiceId: {
+                        'claude-subscription': ['token'],
+                    },
+                },
+            },
+            supportedConnectedServiceIds: ['claude-subscription'],
+            labelsByKey: {},
+        });
+
+        expect(options['claude-subscription']).toEqual([
+            expect.objectContaining({
+                profileId: 'oauth-not-supported',
+                status: 'unsupported_kind',
+                kind: 'oauth',
+                unsupportedSubtitleKey: 'connectedServices.detail.connectSetupTokenSubtitle',
+            }),
+        ]);
+    });
+
+    it('projects Claude subscription OAuth profiles as selectable for both Pi and OpenCode', () => {
         const accountProfileConnectedServicesV2 = [{
             serviceId: 'claude-subscription' as const,
             profiles: [
@@ -224,36 +275,37 @@ describe('buildConnectedServiceProfileOptionsByServiceId', () => {
         expect(opencodeOptions['claude-subscription']).toEqual([
             expect.objectContaining({
                 profileId: 'claude-pro-oauth',
-                status: 'unsupported_kind',
+                status: 'connected',
                 kind: 'oauth',
-                unsupportedSubtitleKey: 'connectedServices.detail.connectSetupTokenSubtitle',
             }),
         ]);
 
-        expect(buildConnectedServicesBindingsPayload({
-            supportedConnectedServiceIds: ['claude-subscription'],
-            connectedServiceProfileOptionsByServiceId: piOptions,
-            connectedServicesBindingsByServiceId: {
-                'claude-subscription': {
-                    source: 'connected',
-                    selection: 'profile',
-                    profileId: 'claude-pro-oauth',
+        for (const options of [piOptions, opencodeOptions]) {
+            expect(buildConnectedServicesBindingsPayload({
+                supportedConnectedServiceIds: ['claude-subscription'],
+                connectedServiceProfileOptionsByServiceId: options,
+                connectedServicesBindingsByServiceId: {
+                    'claude-subscription': {
+                        source: 'connected',
+                        selection: 'profile',
+                        profileId: 'claude-pro-oauth',
+                    },
                 },
-            },
-            defaultProfileByServiceId: {},
-        })).toEqual({
-            v: 1,
-            bindingsByServiceId: {
-                'claude-subscription': {
-                    source: 'connected',
-                    selection: 'profile',
-                    profileId: 'claude-pro-oauth',
+                defaultProfileByServiceId: {},
+            })).toEqual({
+                v: 1,
+                bindingsByServiceId: {
+                    'claude-subscription': {
+                        source: 'connected',
+                        selection: 'profile',
+                        profileId: 'claude-pro-oauth',
+                    },
                 },
-            },
-        });
+            });
+        }
     });
 
-    it('keeps OpenCode Claude subscription OAuth profiles visible as setup-token action rows', () => {
+    it('projects OpenCode Claude subscription setup-token AND OAuth profiles as selectable', () => {
         const options = buildConnectedServiceProfileOptionsByServiceId({
             accountProfileConnectedServicesV2: [{
                 serviceId: 'claude-subscription',
@@ -285,9 +337,8 @@ describe('buildConnectedServiceProfileOptionsByServiceId', () => {
             }),
             expect.objectContaining({
                 profileId: 'claude-pro-oauth',
-                status: 'unsupported_kind',
+                status: 'connected',
                 kind: 'oauth',
-                unsupportedSubtitleKey: 'connectedServices.detail.connectSetupTokenSubtitle',
             }),
         ]);
     });

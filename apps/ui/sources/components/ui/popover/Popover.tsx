@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { Keyboard, Platform, View, type StyleProp, type ViewProps, type ViewStyle, useWindowDimensions } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import { usePopoverBoundaryRef } from './PopoverBoundary';
 import { usePopoverScrollSourceRef } from './PopoverScrollSource';
 import { requireRadixDismissableLayer } from '@/utils/web/radixCjs';
@@ -55,21 +56,13 @@ function readNumericStyleValue(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function flattenPopoverStyle(style: unknown): ViewStyle {
-    if (!style) return {};
-    if (Array.isArray(style)) {
-        return Object.assign({}, ...style.map(flattenPopoverStyle));
-    }
-    return typeof style === 'object' ? style as ViewStyle : {};
-}
-
 function resolvePaddingEdges(style: StyleProp<ViewStyle>): Readonly<{
     top: number;
     right: number;
     bottom: number;
     left: number;
 }> {
-    const flatStyle = flattenPopoverStyle(style);
+    const flatStyle = StyleSheet.flatten(style) as ViewStyle | undefined;
     const base = readNumericStyleValue(flatStyle?.padding) ?? 0;
     const horizontal = readNumericStyleValue(flatStyle?.paddingHorizontal) ?? base;
     const vertical = readNumericStyleValue(flatStyle?.paddingVertical) ?? base;
@@ -855,9 +848,14 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
             });
         };
 
-        scheduleFrame(() => {
-            void measureWithRetries(0);
-        });
+        // Measure immediately rather than a frame later. The popover is INVISIBLE until this lands
+        // (`portalOpacity` returns 0 while `anchorRectState` is null) and the enter animation is
+        // gated on the same state, so a leading frame is dead time on every open — the user sees
+        // nothing at all, not a slow popover. The anchor is already laid out (it is the element
+        // that was tapped) and Fabric resolves `measure` in-tick off the shadow tree, so there is
+        // nothing to wait for. The retry ladder above still yields a frame BETWEEN attempts, which
+        // is what actually handles the "layout settles late" case this used to cover.
+        void measureWithRetries(0);
     }, [anchorRef, anchorRectFromProp, boundaryRef, edgeInsets.horizontal, edgeInsets.vertical, gap, keyboardBottomInsetProp, maxHeightCap, maxWidthCap, open, placement, resolvedAnchorMode, shouldPortalNative, shouldPortalWeb, windowHeight, windowWidth, portalTarget]);
 
     React.useLayoutEffect(() => {
@@ -999,7 +997,27 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
 
     const fixedPositionOnWeb = (Platform.OS === 'web' ? ('fixed' as any) : 'absolute') as ViewStyle['position'];
 
-    const placementStyle = React.useMemo<ViewStyle>(() => {
+    /**
+     * Single owner of "how tall is the coordinate space this popover lays out in".
+     *
+     * On native with an overlay portal, both the content container and the backdrop are children of
+     * `OverlayPortalHost`'s `absoluteFill` inside the screen-local portal root, and `anchorRectState`
+     * is portal-relative (see `resolvePortalRelativeAnchorRect`). Anything derived from that anchor
+     * must be measured against the portal root's height, not the window's — on an iOS
+     * `containedModal` the two differ by the presentation inset plus the nav header.
+     *
+     * Every consumer (placement pinning here, the above-anchor dismiss frame in `backdrop.tsx`)
+     * reads this value so the two can never disagree again.
+     */
+    const portalSpaceHeight = React.useMemo(() => {
+        if (Platform.OS === 'web' || !shouldPortalNative) return windowHeight;
+        const nativePortalHeight = portalTarget?.layout?.height;
+        return typeof nativePortalHeight === 'number' && nativePortalHeight > 0
+            ? nativePortalHeight
+            : windowHeight;
+    }, [portalTarget?.layout?.height, shouldPortalNative, windowHeight]);
+
+    const placementStyle: ViewStyle = (() => {
         // On web, optional: render as a viewport-fixed overlay so it can escape any overflow:hidden ancestors.
         // This is especially important for headers/sidebars which often clip overflow.
         if (shouldPortal && anchorRectState) {
@@ -1090,18 +1108,11 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                         position === 'absolute'
                             ? (anchorRectState.y - webPortalOffsetY)
                             : anchorRectState.y;
-                    const portalHeight = (() => {
-                        if (Platform.OS !== 'web') {
-                            const nativePortalHeight = portalTarget?.layout?.height;
-                            return (typeof nativePortalHeight === 'number' && nativePortalHeight > 0)
-                                ? nativePortalHeight
-                                : windowHeight;
-                        }
-
-                        return position === 'absolute'
+                    const portalHeight = Platform.OS !== 'web'
+                        ? portalSpaceHeight
+                        : (position === 'absolute'
                             ? (webPortalTargetRect?.height ?? windowHeight)
-                            : windowHeight;
-                    })();
+                            : windowHeight);
                     const boundaryBottomInPortalSpace =
                         position === 'absolute'
                             ? boundaryRect.y + boundaryRect.height - webPortalOffsetY
@@ -1145,29 +1156,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
             case 'right':
                 return { position: 'absolute', left: '100%', top: 0, marginLeft: gap, zIndex: 1000 };
         }
-    }, [
-        anchorAlignOnPortal,
-        anchorAlignVerticalOnPortal,
-        anchorRectState,
-        boundaryRectState,
-        computed.maxHeight,
-        computed.maxWidth,
-        computed.placement,
-        contentRectState?.height,
-        fixedPositionOnWeb,
-        gap,
-        matchAnchorWidthOnPortal,
-        nativePortalShadowOutset,
-        portalPositionOnWeb,
-        portalTarget?.layout?.height,
-        shouldPortal,
-        shouldPortalWeb,
-        webPortalOffsetX,
-        webPortalOffsetY,
-        webPortalTargetRect?.height,
-        windowHeight,
-        windowWidth,
-    ]);
+    })();
 
     const portalOpacity = (() => {
         // Web portal popovers should not "jiggle" (render in one place then snap).
@@ -1380,7 +1369,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
         props.closeOnAnchorPress,
     ]);
 
-    const content = React.useMemo(() => shouldRender ? (
+    const content = shouldRender ? (
         <>
             <PopoverBackdrop
                 backdrop={backdropEnabled ? backdrop : false}
@@ -1391,11 +1380,6 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 backdropSpotlight={backdropSpotlight}
                 backdropAnchorOverlay={backdropAnchorOverlay}
                 backdropStyle={backdropStyle}
-                backdropPointerEvents={
-                    overlayPresence.exiting || portalOpacity === 0
-                        ? 'none'
-                        : 'auto'
-                }
                 closeOnBackdropPan={closeOnBackdropPan}
                 backdropPointerEventsEnabled={backdropPointerEventsEnabled}
                 onRequestClose={onRequestClose}
@@ -1409,6 +1393,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 anchorRect={anchorRectState}
                 windowWidth={windowWidth}
                 windowHeight={windowHeight}
+                portalSpaceHeight={portalSpaceHeight}
                 webPortalOffsetX={webPortalOffsetX}
                 webPortalOffsetY={webPortalOffsetY}
             />
@@ -1443,6 +1428,24 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                         }
                         return prev;
                     });
+
+                    // Measurement recovery.
+                    //
+                    // `recompute` retries on a fixed budget of animation frames. That budget encodes a
+                    // *time* assumption ("layout settles within ~6 frames") which does not hold when the
+                    // popover opens inside a freshly-presented contained modal, or while the JS thread is
+                    // saturated. When it expires with no valid geometry, `anchorRectState` stays null,
+                    // `portalOpacity` stays 0 and the popover is mounted but invisible and untappable —
+                    // permanently, because nothing else re-runs `recompute` unless one of its inputs
+                    // (window size, keyboard inset, portal-root layout, caps) happens to change.
+                    //
+                    // This layout event IS the platform reporting that the popover subtree now has
+                    // geometry, so it re-arms measurement. It is self-terminating rather than a retry
+                    // loop: it only fires while no anchor rect has ever been measured, and an unchanged
+                    // layout emits no further events.
+                    if (!anchorRectState) {
+                        void recompute();
+                    }
                 }}
             >
                 {Platform.OS === 'web' && shouldPortalWeb ? (
@@ -1480,46 +1483,9 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 )}
             </ViewWithWheel>
         </>
-    ) : null, [
-        anchorRectState,
-        backdrop,
-        backdropAnchorOverlay,
-        backdropBlocksOutsidePointerEvents,
-        backdropBlurOnWeb,
-        backdropEnabled,
-        backdropOutsidePointerEventsMode,
-        backdropSpotlight,
-        backdropStyle,
-        children,
-        closeOnBackdropPan,
-        computed,
-        containerStyle,
-        contentContainerMaxWidth,
-        fixedPositionOnWeb,
-        motionVisible,
-        nativePortalShadowPaddingStyle,
-        onRequestClose,
-        overlayPresence.exiting,
-        paddingStyle,
-        placementStyle,
-        popoverMotionDirection,
-        portalOpacity,
-        portalPositionOnWeb,
-        props.portal,
-        resolvedBackdropEffect,
-        setPopoverModalPortalHostRef,
-        shouldPortal,
-        shouldPortalNative,
-        shouldPortalWeb,
-        shouldRender,
-        stopScrollEventPropagationOnWeb,
-        webPortalOffsetX,
-        webPortalOffsetY,
-        windowHeight,
-        windowWidth,
-    ]);
+    ) : null;
 
-    const contentWithRadixBranch = React.useMemo(() => {
+    const contentWithRadixBranch = (() => {
         if (!content) return null;
         if (!shouldPortalWeb) return content;
         try {
@@ -1536,7 +1502,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
         } catch {
             return content;
         }
-    }, [content, shouldPortalWeb]);
+    })();
 
     useNativeOverlayPortalNode({
         overlayPortal,

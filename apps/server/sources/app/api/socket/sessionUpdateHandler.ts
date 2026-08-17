@@ -1,16 +1,14 @@
-import { sessionAliveEventsCounter, socketMessageAckCounter, websocketEventsCounter } from "@/app/monitoring/metrics2";
-import { activityCache } from "@/app/presence/sessionCache";
+import { socketMessageAckCounter, websocketEventsCounter } from "@/app/monitoring/metrics2";
 import {
     buildMessageUpdatedUpdate,
     buildNewMessageUpdate,
     buildPendingChangedUpdate,
-    buildSessionActivityEphemeral,
     buildUpdateSessionUpdate,
     ClientConnection,
     eventRouter,
 } from "@/app/events/eventRouter";
-import { AsyncLock } from "@/utils/runtime/lock";
-import { log } from "@/utils/logging/log";
+import { AsyncLock, isLockAdmissionDeadlineExceededError } from "@/utils/runtime/lock";
+import { error as logError, log, warn } from "@/utils/logging/log";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { Socket } from "socket.io";
 import {
@@ -20,67 +18,72 @@ import {
     updateSessionAgentState,
     updateSessionMetadata,
 } from "@/app/session/sessionWriteService";
-import { recordSessionAlive } from "@/app/presence/presenceRecorder";
-import { materializeNextPendingMessage, readSessionPendingState } from "@/app/session/pending/pendingMessageService";
+import {
+    mapPendingMaterializationError,
+    materializeNextPendingMessageForCurrentPublisherInTx,
+} from "@/app/session/pending/pendingMessageService";
+import {
+    resolvePendingMaterializeDeliveryStateOptIn,
+    parsePendingMaterializeDeliveryTiming,
+} from "@/app/session/pending/pendingMaterializationRequest";
 import { serializePendingMaterializedMessage } from "@/app/session/pending/serializePendingMaterializedMessage";
 import { normalizeIncomingSessionMessageContent } from "@/app/session/messageContent/normalizeIncomingSessionMessageContent";
-import { checkSessionAccess, requireAccessLevel } from "@/app/share/accessControl";
-import { getSessionParticipantUserIds } from "@/app/share/sessionParticipants";
-import { parseIntEnv } from "@/config/env";
 import { parseSessionMessageSidechainId } from "@/app/session/parseSessionMessageSidechainId";
 import {
+    ACCEPTED_PENDING_SETTLEMENT_EVENT_V1,
+    AcceptedPendingSettlementRequestV1Schema,
+    AcceptedPendingSettlementResponseV1Schema,
+    readPendingLocalId,
     ExecutionRunPublicStateSchema,
-    type SessionEndAckResponse,
+    SESSION_MESSAGE_NO_USER_ATTENTION_IMPACT,
+    SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1,
+    SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_V1,
+    SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1,
+    isRecoveredHistoryTranscriptObservationProvenance,
+    SessionTranscriptObservationV1Schema,
     SessionTurnMutationV1Schema,
 } from "@happier-dev/protocol";
-import { TranscriptStreamSegmentEphemeralMessageSchema } from "@happier-dev/protocol/updates";
+import {
+    TranscriptStreamSegmentDeltaEphemeralMessageSchema,
+    TranscriptStreamSegmentEphemeralMessageSchema,
+} from "@happier-dev/protocol/updates";
 import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import { didSessionActivityBadgeContributionChange } from "@/app/activity/accountActivityBadge";
-import { canPublishFromSessionScopedSocket } from "./sessionScopedBinding";
+import { authorizeSessionRelayPublish } from "./sessionRelayAuthCache";
 import { publishSessionReadCursorUpdate } from "@/app/session/readCursor/publishSessionReadCursorUpdate";
 import { publishSessionTurnUpdate } from "@/app/session/turns/publishSessionTurnUpdate";
-import { applySessionEnd } from "@/app/session/applySessionEnd";
 import { publishSessionReadyProjectionUpdate } from "@/app/session/ready/publishSessionReadyProjectionUpdate";
+import { db } from "@/storage/db";
+import type { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import { coordinateAcceptedPendingSettlement } from "@/app/session/pending/acceptedPendingSettlementCoordinator";
+import {
+    isTransactionAcquisitionUnavailableError,
+    isTransactionDeadlineExceededError,
+} from "@/storage/inTx";
 
-const DEFAULT_SOCKET_PENDING_MATERIALIZE_NOOP_THROTTLE_MS = 1_500;
-const LEGACY_UI_USER_MESSAGE_SENT_FROM = new Set(["web", "ios", "android", "mac", "pending_send_now", "retry"]);
+const PENDING_MATERIALIZATION_REQUEST_BUDGET_MS = 9_000;
+const PENDING_TRANSACTION_RETRY_AFTER_MS = 1_000;
+
+const RELEASED_UI_V0_2_0_DIRECT_USER_MESSAGE_SENT_FROM = new Set(["web", "ios", "android", "mac", "pending_send_now", "retry"]);
+
+// Hoisted stripped-schema instances: `.strip()` builds a new Zod schema object on every call, and
+// these run on the 25Hz relay hot path.
+const StrippedExecutionRunPublicStateSchema = ExecutionRunPublicStateSchema.strip();
+const StrippedTranscriptStreamSegmentSchema = TranscriptStreamSegmentEphemeralMessageSchema.strip();
+const StrippedTranscriptStreamSegmentDeltaSchema = TranscriptStreamSegmentDeltaEphemeralMessageSchema.strip();
 
 function shouldLogSocketMessageDiagnostics(): boolean {
     return process.env.HAPPIER_SOCKET_MESSAGE_DIAGNOSTIC_LOGS === "1"
         || process.env.HAPPY_SOCKET_MESSAGE_DIAGNOSTIC_LOGS === "1";
 }
 
-type PendingMaterializeNoopResponse = Readonly<{
-    ok: true;
-    didMaterialize: false;
-    pendingCount: number;
-    pendingVersion: number;
-}>;
-
-type PendingMaterializeNoopCacheEntry = Readonly<{
-    untilMs: number;
-    response: PendingMaterializeNoopResponse;
-}>;
-
-const pendingMaterializeNoopByUserSession = new Map<string, PendingMaterializeNoopCacheEntry>();
-
-function createPendingMaterializeNoopCacheKey(userId: string, sessionId: string): string {
-    return `${userId}\u0000${sessionId}`;
-}
-
-function pruneExpiredPendingMaterializeNoopEntries(nowMs: number): void {
-    for (const [key, entry] of pendingMaterializeNoopByUserSession) {
-        if (entry.untilMs <= nowMs) {
-            pendingMaterializeNoopByUserSession.delete(key);
-        }
-    }
-}
-
-function isLegacyUiUserMessagePayload(data: unknown): boolean {
+function isReleasedUiV020DirectUserMessagePayload(data: unknown): boolean {
     if (!data || typeof data !== "object" || Array.isArray(data)) return false;
     const record = data as Record<string, unknown>;
-    const sentFrom = typeof record.sentFrom === "string" ? record.sentFrom.trim() : "";
-    if (!LEGACY_UI_USER_MESSAGE_SENT_FROM.has(sentFrom)) return false;
+    if ("messageRole" in record) return false;
+    if (readPendingLocalId(record.localId) === null) return false;
+    const sentFrom = typeof record.sentFrom === "string" ? record.sentFrom : "";
+    if (!RELEASED_UI_V0_2_0_DIRECT_USER_MESSAGE_SENT_FROM.has(sentFrom)) return false;
     if (typeof record.permissionMode !== "string" || record.permissionMode.trim().length === 0) return false;
     if (typeof record.sessionEventType === "string" && record.sessionEventType.trim().length > 0) return false;
     if (typeof record.sidechainId === "string" && record.sidechainId.trim().length > 0) return false;
@@ -90,21 +93,200 @@ function isLegacyUiUserMessagePayload(data: unknown): boolean {
 function resolveSocketSuppliedMessageRole(data: unknown): unknown {
     if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
     if ("messageRole" in data) return (data as { messageRole?: unknown }).messageRole;
-    return isLegacyUiUserMessagePayload(data) ? "user" : undefined;
+    return undefined;
 }
 
 function canMutateSocketSession(connection: ClientConnection, sessionId: string): boolean {
     return connection.connectionType !== "session-scoped" || connection.sessionId === sessionId;
 }
 
-export function sessionUpdateHandler(userId: string, socket: Socket, connection: ClientConnection) {
+function scheduleSessionParticipantBadgeRefresh(params: Parameters<typeof refreshSessionParticipantBadgePushes>[0]): void {
+    void refreshSessionParticipantBadgePushes(params).catch((error) => {
+        log({ module: "websocket", level: "warn" }, `Error scheduling badge push refresh: ${error}`);
+    });
+}
+
+type TrustedTranscriptObservationPublisher = Readonly<{
+    presence: Pick<ReturnType<typeof createSessionPublisherPresence>, "resolveCurrentPublisher">
+        & Partial<Pick<ReturnType<typeof createSessionPublisherPresence>, "runAsCurrentPublisher" | "runAsCurrentPublisherInTx">>;
+    binding: Readonly<{ accountId: string; machineId: string; sessionId: string }>;
+}>;
+
+export function sessionUpdateHandler(
+    userId: string,
+    socket: Socket,
+    connection: ClientConnection,
+    trustedTranscriptObservationPublisher?: TrustedTranscriptObservationPublisher,
+) {
+    socket.on(SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+        try {
+        const parsed = data && typeof data === "object" && !Array.isArray(data)
+            ? data as Record<string, unknown>
+            : null;
+        const sessionId = parsed?.v === 1 && typeof parsed.sessionId === "string"
+            ? parsed.sessionId
+            : null;
+        if (!sessionId || !canMutateSocketSession(connection, sessionId)) {
+            callback?.({ ok: false, error: "invalid_session" });
+            return;
+        }
+        const authorized = await authorizeSessionRelayPublish({ socket, connection, userId, sessionId });
+        if (!authorized || !trustedTranscriptObservationPublisher || trustedTranscriptObservationPublisher.binding.sessionId !== sessionId) {
+            callback?.({ ok: false, error: "forbidden" });
+            return;
+        }
+        const publisher = await trustedTranscriptObservationPublisher.presence.resolveCurrentPublisher({
+            socket,
+            binding: trustedTranscriptObservationPublisher.binding,
+        });
+        callback?.(publisher.status === "current"
+            ? { ok: true, capability: SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_V1 }
+            : { ok: false, error: "forbidden" });
+        } catch (error) {
+            log({ module: "websocket", level: "warn" }, `Transcript observation capability negotiation failed: ${error}`);
+            callback?.({ ok: false, error: "internal" });
+        }
+    });
+
+    socket.on(SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+        try {
+        const parsed = SessionTranscriptObservationV1Schema.safeParse(data);
+        if (!parsed.success) {
+            callback?.({ ok: false, error: "invalid_observation" });
+            return;
+        }
+        const observation = parsed.data;
+        const isRecoveredHistory = isRecoveredHistoryTranscriptObservationProvenance(observation.provenance);
+        if (!canMutateSocketSession(connection, observation.sessionId)) {
+            callback?.({ ok: false, error: "forbidden" });
+            return;
+        }
+        const authorized = await authorizeSessionRelayPublish({
+            socket,
+            connection,
+            userId,
+            sessionId: observation.sessionId,
+        });
+        if (!authorized) {
+            callback?.({ ok: false, error: "forbidden" });
+            return;
+        }
+        if (
+            !trustedTranscriptObservationPublisher
+            || trustedTranscriptObservationPublisher.binding.sessionId !== observation.sessionId
+        ) {
+            callback?.({ ok: false, error: "forbidden" });
+            return;
+        }
+        const publisher = await trustedTranscriptObservationPublisher.presence.resolveCurrentPublisher({
+            socket,
+            binding: trustedTranscriptObservationPublisher.binding,
+        });
+        if (publisher.status !== "current") {
+            callback?.({ ok: false, error: "forbidden" });
+            return;
+        }
+
+        const result = typeof observation.content === "string"
+            ? await createSessionMessage({
+                actorUserId: userId,
+                sessionId: observation.sessionId,
+                ciphertext: observation.content,
+                localId: observation.localId,
+                sidechainId: observation.sidechainId,
+                messageRole: observation.messageRole,
+                trustedPublisherFence: {
+                    ...trustedTranscriptObservationPublisher.binding,
+                    committedFence: publisher.committedFence,
+                },
+                trustedSourceTimestamps: { createdAt: observation.createdAt, updatedAt: observation.updatedAt },
+                trustedTranscriptObservationProvenance: observation.provenance,
+                ...(isRecoveredHistory
+                    ? { trustedAttentionImpact: SESSION_MESSAGE_NO_USER_ATTENTION_IMPACT }
+                    : {}),
+                ...(observation.sessionEventType && !isRecoveredHistory
+                    ? { trustedSessionEventType: observation.sessionEventType }
+                    : {}),
+            })
+            : await createSessionMessage({
+                actorUserId: userId,
+                sessionId: observation.sessionId,
+                content: observation.content,
+                localId: observation.localId,
+                sidechainId: observation.sidechainId,
+                messageRole: observation.messageRole,
+                trustedPublisherFence: {
+                    ...trustedTranscriptObservationPublisher.binding,
+                    committedFence: publisher.committedFence,
+                },
+                trustedSourceTimestamps: { createdAt: observation.createdAt, updatedAt: observation.updatedAt },
+                trustedTranscriptObservationProvenance: observation.provenance,
+                ...(isRecoveredHistory
+                    ? { trustedAttentionImpact: SESSION_MESSAGE_NO_USER_ATTENTION_IMPACT }
+                    : {}),
+                ...(observation.sessionEventType && !isRecoveredHistory
+                    ? { trustedSessionEventType: observation.sessionEventType }
+                    : {}),
+            });
+        if (!result.ok) {
+            callback?.({ ok: false, error: result.error === "forbidden" ? "forbidden" : result.error === "internal" ? "internal" : "invalid_observation" });
+            return;
+        }
+
+        callback?.({
+            ok: true,
+            status: "observed",
+            id: result.message.id,
+            seq: result.message.seq,
+            localId: result.message.localId,
+            didWrite: result.didWrite,
+            ...(result.didUpdate ? { didUpdate: true } : {}),
+            ingestedAt: Date.now(),
+        });
+
+        if (!result.didWrite && !result.didUpdate) return;
+        await Promise.all(result.participantCursors.map(async ({ accountId: participantUserId, cursor }) => {
+            const options = result.attentionImpact ? { attentionImpact: result.attentionImpact } : undefined;
+            const payload = result.didWrite
+                ? (options
+                    ? buildNewMessageUpdate(result.message, observation.sessionId, cursor, randomKeyNaked(12), options)
+                    : buildNewMessageUpdate(result.message, observation.sessionId, cursor, randomKeyNaked(12)))
+                : (options
+                    ? buildMessageUpdatedUpdate(result.message, observation.sessionId, cursor, randomKeyNaked(12), options)
+                    : buildMessageUpdatedUpdate(result.message, observation.sessionId, cursor, randomKeyNaked(12)));
+            eventRouter.emitUpdate({
+                userId: participantUserId,
+                payload,
+                recipientFilter: { type: "all-interested-in-session", sessionId: observation.sessionId },
+            });
+        }));
+        if (result.didWrite) {
+            await publishSessionReadyProjectionUpdate({
+                sessionId: observation.sessionId,
+                readyProjection: result.readyProjection,
+            });
+        }
+        scheduleSessionParticipantBadgeRefresh({
+            badgeAttentionChanged: result.badgeAttentionChanged,
+            participantCursors: result.participantCursors,
+        });
+        } catch (error) {
+            log({ module: "websocket", level: "warn" }, `Transcript observation failed: ${error}`);
+            callback?.({ ok: false, error: "internal" });
+        }
+    });
+
     socket.on('update-metadata', async (data: any, callback: (response: any) => void) => {
         try {
             const { sid, metadata, expectedVersion } = data;
-            const readCursorHintV1Raw = (data as any)?.readCursorHintV1;
+            const dataRecord = data && typeof data === "object" ? data as Record<string, unknown> : null;
+            const readCursorHintV1Raw = dataRecord?.readCursorHintV1;
+            const readCursorHintV1 = readCursorHintV1Raw && typeof readCursorHintV1Raw === "object"
+                ? readCursorHintV1Raw as Record<string, unknown>
+                : null;
             const lastViewedSessionSeqHint =
-                typeof readCursorHintV1Raw?.lastViewedSessionSeq === "number" && Number.isFinite(readCursorHintV1Raw.lastViewedSessionSeq)
-                    ? Math.max(0, Math.floor(readCursorHintV1Raw.lastViewedSessionSeq))
+                typeof readCursorHintV1?.lastViewedSessionSeq === "number" && Number.isFinite(readCursorHintV1.lastViewedSessionSeq)
+                    ? Math.max(0, Math.floor(readCursorHintV1.lastViewedSessionSeq))
                     : null;
 
             // Validate input
@@ -167,7 +349,7 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                     skipSenderConnection: accountId === userId ? connection : undefined,
                 });
             }));
-            await refreshSessionParticipantBadgePushes({
+            scheduleSessionParticipantBadgeRefresh({
                 badgeAttentionChanged: result.badgeAttentionChanged,
                 participantCursors: result.participantCursors,
             });
@@ -184,7 +366,11 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
     socket.on('update-state', async (data: any, callback: (response: any) => void) => {
         try {
             const { sid, agentState, expectedVersion } = data;
-            const activitySummaryV1 = (data as any)?.activitySummaryV1;
+            const dataRecord = data && typeof data === "object" ? data as Record<string, unknown> : null;
+            const activitySummaryV1Raw = dataRecord?.activitySummaryV1;
+            const activitySummaryV1 = activitySummaryV1Raw && typeof activitySummaryV1Raw === "object"
+                ? activitySummaryV1Raw as Record<string, unknown>
+                : null;
             const pendingPermissionRequestCount =
                 typeof activitySummaryV1?.pendingPermissionRequestCount === "number" && Number.isFinite(activitySummaryV1.pendingPermissionRequestCount)
                     ? Math.max(0, Math.floor(activitySummaryV1.pendingPermissionRequestCount))
@@ -266,7 +452,7 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                     skipSenderConnection: accountId === userId ? connection : undefined,
                 });
             }));
-            await refreshSessionParticipantBadgePushes({
+            scheduleSessionParticipantBadgeRefresh({
                 badgeAttentionChanged: result.badgeAttentionChanged,
                 participantCursors: result.participantCursors,
             });
@@ -399,55 +585,6 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
             callback?.({ result: 'error' });
         }
     });
-    socket.on('session-alive', async (data: {
-        sid: string;
-        time: number;
-        thinking?: boolean;
-    }) => {
-        try {
-            // Track metrics
-            websocketEventsCounter.inc({ event_type: 'session-alive' });
-            sessionAliveEventsCounter.inc();
-
-            // Basic validation
-            if (!data || typeof data.time !== 'number' || !data.sid) {
-                return;
-            }
-
-            let t = data.time;
-            if (t > Date.now()) {
-                t = Date.now();
-            }
-            if (t < Date.now() - 1000 * 60 * 10) {
-                return;
-            }
-
-            const { sid, thinking } = data;
-            if (!canMutateSocketSession(connection, sid)) {
-                return;
-            }
-
-            // Check session validity using cache
-            const isValid = await activityCache.isSessionValid(sid, userId);
-            if (!isValid) {
-                return;
-            }
-
-            // Queue database update (will only update if time difference is significant)
-            await recordSessionAlive({ accountId: userId, sessionId: sid, timestamp: t, thinking: data.thinking });
-
-            // Emit session activity update
-            const sessionActivity = buildSessionActivityEphemeral(sid, true, t, thinking || false);
-            eventRouter.emitEphemeral({
-                userId,
-                payload: sessionActivity,
-                recipientFilter: { type: 'user-scoped-only' }
-            });
-        } catch (error) {
-            log({ module: 'websocket', level: 'error' }, `Error in session-alive: ${error}`);
-        }
-    });
-
     socket.on('execution-run-updated', async (data: any) => {
         try {
             websocketEventsCounter.inc({ event_type: 'execution-run-updated' });
@@ -456,32 +593,19 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
             const runRaw = data?.run;
             if (!sid) return;
 
-            if (!await canPublishFromSessionScopedSocket({
+            const participantUserIds = await authorizeSessionRelayPublish({
                 socket,
                 connection,
+                userId,
                 sessionId: sid,
-                requireMachineBinding: true,
-            })) {
-                return;
-            }
-
-            const access = await checkSessionAccess(userId, sid);
-            if (!access) return;
-            if (!requireAccessLevel(access, 'edit')) {
-                return;
-            }
-            if (!access.isOwner) {
-                return;
-            }
+            });
+            if (!participantUserIds) return;
 
             // Strip unknown fields before rebroadcasting (clients treat this as a hint; keep the payload tight).
-            const parsedRun = ExecutionRunPublicStateSchema.strip().safeParse(runRaw);
+            const parsedRun = StrippedExecutionRunPublicStateSchema.safeParse(runRaw);
             if (!parsedRun.success) {
                 return;
             }
-
-            const participantUserIds = await getSessionParticipantUserIds({ sessionId: sid });
-            if (!participantUserIds || participantUserIds.length === 0) return;
 
             const payload = {
                 type: 'execution-run-updated' as const,
@@ -510,31 +634,18 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
             const sid = typeof data?.sid === 'string' ? String(data.sid).trim() : '';
             if (!sid) return;
 
-            if (!await canPublishFromSessionScopedSocket({
+            const participantUserIds = await authorizeSessionRelayPublish({
                 socket,
                 connection,
+                userId,
                 sessionId: sid,
-                requireMachineBinding: true,
-            })) {
-                return;
-            }
+            });
+            if (!participantUserIds) return;
 
-            const access = await checkSessionAccess(userId, sid);
-            if (!access) return;
-            if (!requireAccessLevel(access, 'edit')) {
-                return;
-            }
-            if (!access.isOwner) {
-                return;
-            }
-
-            const parsedMessage = TranscriptStreamSegmentEphemeralMessageSchema.strip().safeParse(data?.message);
+            const parsedMessage = StrippedTranscriptStreamSegmentSchema.safeParse(data?.message);
             if (!parsedMessage.success) {
                 return;
             }
-
-            const participantUserIds = await getSessionParticipantUserIds({ sessionId: sid });
-            if (!participantUserIds || participantUserIds.length === 0) return;
 
             const payload = {
                 type: 'transcript-stream-segment' as const,
@@ -555,13 +666,46 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
         }
     });
 
-    const receiveMessageLock = new AsyncLock();
-    const pendingMaterializeNoopThrottleMs = parseIntEnv(
-        process.env.HAPPIER_SOCKET_PENDING_MATERIALIZE_NOOP_THROTTLE_MS,
-        DEFAULT_SOCKET_PENDING_MATERIALIZE_NOOP_THROTTLE_MS,
-        { min: 0, max: 60_000 },
-    );
+    socket.on('transcript-stream-segment-delta', async (data: any) => {
+        try {
+            websocketEventsCounter.inc({ event_type: 'transcript-stream-segment-delta' });
 
+            const sid = typeof data?.sid === 'string' ? String(data.sid).trim() : '';
+            if (!sid) return;
+
+            const participantUserIds = await authorizeSessionRelayPublish({
+                socket,
+                connection,
+                userId,
+                sessionId: sid,
+            });
+            if (!participantUserIds) return;
+
+            const parsedMessage = StrippedTranscriptStreamSegmentDeltaSchema.safeParse(data?.message);
+            if (!parsedMessage.success) {
+                return;
+            }
+
+            const payload = {
+                type: 'transcript-stream-segment-delta' as const,
+                sessionId: sid,
+                message: parsedMessage.data,
+            };
+
+            for (const participantUserId of participantUserIds) {
+                eventRouter.emitEphemeral({
+                    userId: participantUserId,
+                    payload,
+                    recipientFilter: { type: 'all-interested-in-session', sessionId: sid },
+                    skipSenderConnection: participantUserId === userId ? connection : undefined,
+                });
+            }
+        } catch (error) {
+            log({ module: 'websocket', level: 'error' }, `Error in transcript-stream-segment-delta handler: ${error}`);
+        }
+    });
+
+    const receiveMessageLock = new AsyncLock();
     socket.on('message', async (data: any, callback?: (response: any) => void) => {
         await receiveMessageLock.inLock(async () => {
             const respond = (response: any) => {
@@ -575,7 +719,6 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                 const sid = typeof data?.sid === 'string' ? data.sid : null;
                 const content = normalizeIncomingSessionMessageContent(data?.message);
                 const localId = typeof data?.localId === 'string' ? data.localId : null;
-                const messageRole = resolveSocketSuppliedMessageRole(data);
                 const trustedSessionEventType = data?.sessionEventType === 'ready' ? 'ready' : undefined;
                 const echoToSender = data?.echoToSender === true;
                 const parsedSidechainId = parseSessionMessageSidechainId(data?.sidechainId, { emptyString: "invalid" });
@@ -586,7 +729,7 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                 }
                 const sidechainId = parsedSidechainId.sidechainId;
 
-                if (!sid || !content) {
+                if (!sid || sid.trim().length === 0 || !content) {
                     socketMessageAckCounter.inc({ result: 'error', error: 'invalid-params' });
                     respond({ ok: false, error: 'invalid-params' });
                     return;
@@ -597,6 +740,17 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                     respond({ ok: false, error: 'forbidden' });
                     return;
                 }
+
+                // Immutable old UIs wrote user prompts directly to the transcript. The Pending
+                // Queue is now the only user-input ingress, so reject this exact release-proven shape
+                // before any transcript or provider-visible effect.
+                if (isReleasedUiV020DirectUserMessagePayload(data)) {
+                    socketMessageAckCounter.inc({ result: 'error', error: 'client-upgrade-required' });
+                    respond({ ok: false, error: 'client-upgrade-required' });
+                    return;
+                }
+
+                const messageRole = resolveSocketSuppliedMessageRole(data);
 
                 if (shouldLogSocketMessageDiagnostics()) {
                     const loggedLength = (() => {
@@ -644,9 +798,18 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                 }
 
                 await Promise.all(result.participantCursors.map(async ({ accountId: participantUserId, cursor }) => {
+                    const options = result.attentionImpact ? { attentionImpact: result.attentionImpact } : undefined;
                     const payload = result.didWrite
-                        ? buildNewMessageUpdate(result.message, sid, cursor, randomKeyNaked(12))
-                        : buildMessageUpdatedUpdate(result.message, sid, cursor, randomKeyNaked(12));
+                        ? (
+                            options
+                                ? buildNewMessageUpdate(result.message, sid, cursor, randomKeyNaked(12), options)
+                                : buildNewMessageUpdate(result.message, sid, cursor, randomKeyNaked(12))
+                        )
+                        : (
+                            options
+                                ? buildMessageUpdatedUpdate(result.message, sid, cursor, randomKeyNaked(12), options)
+                                : buildMessageUpdatedUpdate(result.message, sid, cursor, randomKeyNaked(12))
+                        );
                     eventRouter.emitUpdate({
                         userId: participantUserId,
                         payload,
@@ -662,7 +825,7 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                         skipSenderConnection: echoToSender ? undefined : connection,
                     });
                 }
-                await refreshSessionParticipantBadgePushes({
+                scheduleSessionParticipantBadgeRefresh({
                     badgeAttentionChanged: result.badgeAttentionChanged,
                     participantCursors: result.participantCursors,
                 });
@@ -674,14 +837,98 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
         });
     });
 
-    socket.on('pending-materialize-next', async (data: any, callback?: (response: any) => void) => {
-        await receiveMessageLock.inLock(async () => {
-            const respond = (response: any) => {
-                if (typeof callback === 'function') {
-                    callback(response);
+    socket.on(ACCEPTED_PENDING_SETTLEMENT_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+        const respond = (response: unknown) => {
+            callback?.(AcceptedPendingSettlementResponseV1Schema.parse(response));
+        };
+        try {
+            await receiveMessageLock.inLock(async () => {
+                const parsed = AcceptedPendingSettlementRequestV1Schema.safeParse(data);
+                if (!parsed.success || !canMutateSocketSession(connection, parsed.data.sessionId)) {
+                    respond({ ok: false, error: "invalid-params" });
+                    return;
                 }
-            };
+                const { sessionId, localId } = parsed.data;
+                const trusted = trustedTranscriptObservationPublisher;
+                if (
+                    connection.connectionType !== "session-scoped"
+                    || !trusted
+                    || !trusted.presence.runAsCurrentPublisher
+                    || trusted.binding.accountId !== userId
+                    || trusted.binding.sessionId !== sessionId
+                    || !await authorizeSessionRelayPublish({ socket, connection, userId, sessionId })
+                ) {
+                    respond({ ok: false, error: "forbidden" });
+                    return;
+                }
+                const current = await trusted.presence.runAsCurrentPublisher({
+                    socket,
+                    binding: trusted.binding,
+                    action: async (publisher) => await coordinateAcceptedPendingSettlement({
+                        actorUserId: userId,
+                        sessionId,
+                        localId,
+                        trustedPublisherFence: {
+                            ...trusted.binding,
+                            committedFence: publisher.committedFence,
+                        },
+                    }),
+                });
+                if (current.status !== "current") {
+                    respond({ ok: false, error: "forbidden" });
+                    return;
+                }
+                const result = current.value;
+                if (!result.ok) {
+                    respond({
+                        ok: false,
+                        error: result.error,
+                        ...(result.error === "transaction-unavailable" ? { retryAfterMs: result.retryAfterMs } : {}),
+                        ...(result.error === "transaction-unavailable" && result.correlationId
+                            ? { correlationId: result.correlationId }
+                            : {}),
+                    });
+                    return;
+                }
+                respond({
+                    ok: true,
+                    didResolve: result.didResolve,
+                    pendingCount: result.pendingCount,
+                    pendingBlockedCount: result.pendingBlockedCount,
+                    pendingVersion: result.pendingVersion,
+                    ...(result.message ? { message: serializePendingMaterializedMessage(result.message) } : {}),
+                });
+            });
+        } catch (error) {
+            if (isTransactionAcquisitionUnavailableError(error)) {
+                warn(
+                    { module: "websocket", event: ACCEPTED_PENDING_SETTLEMENT_EVENT_V1, err: error },
+                    "Accepted pending settlement publisher authority transaction unavailable",
+                );
+                respond({
+                    ok: false,
+                    error: "transaction-unavailable",
+                    retryAfterMs: PENDING_TRANSACTION_RETRY_AFTER_MS,
+                });
+                return;
+            }
+            logError(
+                { module: "websocket", event: ACCEPTED_PENDING_SETTLEMENT_EVENT_V1, err: error },
+                "Error in accepted pending settlement handler",
+            );
+            respond({ ok: false, error: "internal" });
+        }
+    });
 
+    socket.on('pending-materialize-next', async (data: any, callback?: (response: any) => void) => {
+        const respond = (response: any) => {
+            if (typeof callback === 'function') {
+                callback(response);
+            }
+        };
+        const deadlineAtMs = Date.now() + PENDING_MATERIALIZATION_REQUEST_BUDGET_MS;
+        try {
+            await receiveMessageLock.inLock(async () => {
             try {
                 const sid = typeof data?.sid === 'string' ? data.sid : null;
                 if (!sid) {
@@ -694,89 +941,135 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                     return;
                 }
 
-                const clientPendingVersion = typeof data?.pendingVersion === 'number' && Number.isSafeInteger(data.pendingVersion) && data.pendingVersion >= 0
-                    ? data.pendingVersion
-                    : null;
-                const cacheKey = createPendingMaterializeNoopCacheKey(userId, sid);
-                const nowMs = Date.now();
-                pruneExpiredPendingMaterializeNoopEntries(nowMs);
-                const cachedNoop = pendingMaterializeNoopByUserSession.get(cacheKey);
-                if (cachedNoop && cachedNoop.untilMs > nowMs) {
-                    if (clientPendingVersion === null || clientPendingVersion <= cachedNoop.response.pendingVersion) {
-                        const currentPendingState = await readSessionPendingState({
-                            actorUserId: userId,
-                            sessionId: sid,
-                        });
-                        if (
-                            currentPendingState.ok &&
-                            currentPendingState.pendingVersion <= cachedNoop.response.pendingVersion &&
-                            currentPendingState.pendingCount <= cachedNoop.response.pendingCount
-                        ) {
-                            respond(cachedNoop.response);
-                            return;
-                        }
-                    }
-                    pendingMaterializeNoopByUserSession.delete(cacheKey);
-                } else if (cachedNoop) {
-                    pendingMaterializeNoopByUserSession.delete(cacheKey);
+                const expectedPendingVersion = typeof data?.expectedPendingVersion === 'number'
+                    && Number.isSafeInteger(data.expectedPendingVersion)
+                    && data.expectedPendingVersion >= 0
+                    ? data.expectedPendingVersion
+                    : undefined;
+                const deliveryState = resolvePendingMaterializeDeliveryStateOptIn(data);
+                if (deliveryState !== "provider") {
+                    respond({ ok: false, error: "forbidden" });
+                    return;
                 }
-
-                const result = await materializeNextPendingMessage({
+                const deliveryTimingParseResult = parsePendingMaterializeDeliveryTiming(data);
+                const foregroundState = data?.foregroundState;
+                const expectedRuntimeActivityRevision = typeof data?.expectedRuntimeActivityRevision === "number"
+                    && Number.isSafeInteger(data.expectedRuntimeActivityRevision)
+                    && data.expectedRuntimeActivityRevision >= 0
+                    ? data.expectedRuntimeActivityRevision
+                    : undefined;
+                if (deliveryTimingParseResult.status !== "valid") {
+                    respond({ ok: false, error: 'invalid-params' });
+                    return;
+                }
+                const deliveryTiming = deliveryTimingParseResult.value;
+                if (
+                    foregroundState !== "ready"
+                    && foregroundState !== "active_steerable"
+                    && foregroundState !== "active_unsteerable"
+                ) {
+                    respond({ ok: false, error: 'invalid-params' });
+                    return;
+                }
+                const commonMaterializeParams = {
                     actorUserId: userId,
                     sessionId: sid,
+                    ...(expectedPendingVersion !== undefined ? { expectedPendingVersion } : {}),
+                    deliveryTiming,
+                    foregroundState,
+                    ...(expectedRuntimeActivityRevision !== undefined ? { expectedRuntimeActivityRevision } : {}),
+                };
+                const trusted = trustedTranscriptObservationPublisher;
+                if (
+                    connection.connectionType !== "session-scoped"
+                    || !trusted
+                    || !trusted.presence.runAsCurrentPublisherInTx
+                    || trusted.binding.accountId !== userId
+                    || trusted.binding.sessionId !== sid
+                ) {
+                    respond({ ok: false, error: "forbidden" });
+                    return;
+                }
+                const current = await trusted.presence.runAsCurrentPublisherInTx({
+                    socket,
+                    binding: trusted.binding,
+                    deadlineAtMs,
+                    action: async (publisher, tx) => await materializeNextPendingMessageForCurrentPublisherInTx({
+                        ...commonMaterializeParams,
+                        tx,
+                        trustedPublisherFence: {
+                            ...trusted.binding,
+                            committedFence: publisher.committedFence,
+                        },
+                    }),
                 });
+                if (current.status !== "current") {
+                    respond({ ok: false, error: "forbidden" });
+                    return;
+                }
+                const result = current.value;
 
                 if (!result.ok) {
-                    respond({ ok: false, error: result.error });
+                    respond({
+                        ok: false,
+                        error: result.error,
+                        ...(result.error === "transaction-unavailable" ? { retryAfterMs: result.retryAfterMs } : {}),
+                    });
                     return;
                 }
 
                 if (!result.didMaterialize) {
-                    const response: PendingMaterializeNoopResponse = {
+                    const response = {
                         ok: true,
                         didMaterialize: false,
                         pendingCount: result.pendingCount,
+                        pendingBlockedCount: result.pendingBlockedCount,
                         pendingVersion: result.pendingVersion,
+                        ...(result.deliveryState ? { deliveryState: result.deliveryState } : {}),
+                        ...(result.deferredReason ? { deferredReason: result.deferredReason } : {}),
+                        ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
                     };
-                    if (pendingMaterializeNoopThrottleMs > 0) {
-                        const responseAtMs = Date.now();
-                        pruneExpiredPendingMaterializeNoopEntries(responseAtMs);
-                        pendingMaterializeNoopByUserSession.set(cacheKey, {
-                            untilMs: responseAtMs + pendingMaterializeNoopThrottleMs,
-                            response,
+                    respond(response);
+                    if (result.pendingStateChanged === true) {
+                        const participantCursorsPending = result.participantCursorsPending ?? [];
+                        await Promise.all(
+                            participantCursorsPending.map(async ({ accountId, cursor }) => {
+                                const payload = buildPendingChangedUpdate(
+                                    {
+                                        sessionId: sid,
+                                        pendingCount: result.pendingCount,
+                                        pendingBlockedCount: result.pendingBlockedCount,
+                                        pendingVersion: result.pendingVersion,
+                                        changedByAccountId: userId,
+                                    },
+                                    cursor,
+                                    randomKeyNaked(12),
+                                );
+                                eventRouter.emitUpdate({
+                                    userId: accountId,
+                                    payload,
+                                    recipientFilter: { type: 'all-interested-in-session', sessionId: sid },
+                                });
+                            }),
+                        );
+                        scheduleSessionParticipantBadgeRefresh({
+                            badgeAttentionChanged: result.badgeAttentionChanged ?? false,
+                            participantCursors: participantCursorsPending,
                         });
                     }
-                    respond(response);
                     return;
                 }
-
-                pendingMaterializeNoopByUserSession.delete(cacheKey);
 
                 respond({
                     ok: true,
                     didMaterialize: true,
                     didWrite: result.didWriteMessage,
                     pendingCount: result.pendingCount,
+                    pendingBlockedCount: result.pendingBlockedCount,
                     pendingVersion: result.pendingVersion,
+                    ...(result.deliveryState ? { deliveryState: result.deliveryState } : {}),
                     message: serializePendingMaterializedMessage(result.message),
                 });
-
-                if (result.didWriteMessage) {
-                    await Promise.all(
-                        result.participantCursorsMessage.map(async ({ accountId, cursor }) => {
-                            const payload = buildNewMessageUpdate(result.message, sid, cursor, randomKeyNaked(12));
-                            eventRouter.emitUpdate({
-                                userId: accountId,
-                                payload,
-                                recipientFilter: { type: 'all-interested-in-session', sessionId: sid },
-                            });
-                        }),
-                    );
-                    await publishSessionReadyProjectionUpdate({
-                        sessionId: sid,
-                        readyProjection: result.readyProjection,
-                    });
-                }
 
                 await Promise.all(
                     result.participantCursorsPending.map(async ({ accountId, cursor }) => {
@@ -784,8 +1077,8 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                             {
                                 sessionId: sid,
                                 pendingCount: result.pendingCount,
+                                pendingBlockedCount: result.pendingBlockedCount,
                                 pendingVersion: result.pendingVersion,
-                                meaningfulActivityAt: result.meaningfulActivityAt ?? (result.didWriteMessage ? result.message.createdAt : undefined),
                                 changedByAccountId: userId,
                             },
                             cursor,
@@ -798,60 +1091,44 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                         });
                     }),
                 );
-                await refreshSessionParticipantBadgePushes({
+                scheduleSessionParticipantBadgeRefresh({
                     badgeAttentionChanged: result.badgeAttentionChanged,
-                    participantCursors: [...result.participantCursorsMessage, ...result.participantCursorsPending],
+                    participantCursors: result.participantCursorsPending,
                 });
             } catch (error) {
+                if (
+                    isLockAdmissionDeadlineExceededError(error)
+                    || isTransactionDeadlineExceededError(error)
+                    || isTransactionAcquisitionUnavailableError(error)
+                ) {
+                    throw error;
+                }
                 log({ module: 'websocket', level: 'error' }, `Error in pending-materialize-next: ${error}`);
-                respond({ ok: false, error: 'internal' });
+                const failure = mapPendingMaterializationError(error);
+                respond({
+                    ok: false,
+                    error: failure.ok ? "internal" : failure.error,
+                    ...(!failure.ok && failure.error === "transaction-unavailable"
+                        ? { retryAfterMs: failure.retryAfterMs }
+                        : {}),
+                });
             }
-        });
-    });
-
-    const respondSessionEnd = (callback: unknown, response: SessionEndAckResponse) => {
-        if (typeof callback !== "function") return;
-        (callback as (value: SessionEndAckResponse) => void)(response);
-    };
-
-    socket.on('session-end', async (data: {
-        sid: string;
-        time: number;
-    }, callback?: unknown) => {
-        try {
-            const { sid, time } = data;
-            if (!sid || typeof time !== 'number') {
-                respondSessionEnd(callback, { ok: false, error: "invalid-params" });
-                return;
-            }
-            if (!canMutateSocketSession(connection, sid)) {
-                respondSessionEnd(callback, { ok: false, error: "forbidden" });
-                return;
-            }
-            const result = await applySessionEnd({
-                actorUserId: userId,
-                sessionId: sid,
-                time,
-                skipSenderConnection: connection,
-            });
-            if (!result.ok) {
-                respondSessionEnd(callback, { ok: false, error: result.error });
-                return;
-            }
-            respondSessionEnd(callback, {
-                ok: true,
-                applied: result.applied,
-                time: result.time,
-                active: result.active,
-                activeAt: result.activeAt,
-                latestTurnId: result.latestTurnId,
-                latestTurnStatus: result.latestTurnStatus,
-                latestTurnStatusObservedAt: result.latestTurnStatusObservedAt,
-                lastRuntimeIssue: result.lastRuntimeIssue,
-            });
+            }, { deadlineAtMs });
         } catch (error) {
-            log({ module: 'websocket', level: 'error' }, `Error in session-end: ${error}`);
-            respondSessionEnd(callback, { ok: false, error: "internal" });
+            if (
+                isLockAdmissionDeadlineExceededError(error)
+                || isTransactionDeadlineExceededError(error)
+                || isTransactionAcquisitionUnavailableError(error)
+            ) {
+                respond({
+                    ok: false,
+                    error: "transaction-unavailable",
+                    retryAfterMs: PENDING_TRANSACTION_RETRY_AFTER_MS,
+                });
+                return;
+            }
+            log({ module: 'websocket', level: 'error' }, `Error admitting pending-materialize-next: ${error}`);
+            respond({ ok: false, error: 'internal' });
         }
     });
 

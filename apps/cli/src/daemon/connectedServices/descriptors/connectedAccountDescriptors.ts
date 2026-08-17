@@ -2,6 +2,16 @@ import {
   CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
   CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPES,
   CLAUDE_CODE_REQUIRED_OAUTH_SCOPES,
+  CLAUDE_OAUTH_PROFILE_BETA_HEADER,
+  CLAUDE_OAUTH_PROFILE_URL,
+  CLAUDE_OAUTH_CLIENT_ID,
+  CLAUDE_OAUTH_TOKEN_URL,
+  GEMINI_CLI_OAUTH_CLIENT_ID,
+  GEMINI_CLI_OAUTH_CLIENT_SECRET,
+  GEMINI_CLI_OAUTH_TOKEN_URL,
+  OPENAI_CODEX_OAUTH_CLIENT_ID,
+  OPENAI_CODEX_OAUTH_TOKEN_URL,
+  normalizeClaudeOauthProfileEntitlement,
 } from '@happier-dev/agents';
 import {
   ConnectedServiceIdSchema,
@@ -22,6 +32,25 @@ export const CLAUDE_SUBSCRIPTION_OAUTH_SCOPES = CLAUDE_CODE_RECOMMENDED_OAUTH_SC
 export const CLAUDE_SUBSCRIPTION_OAUTH_SCOPE = CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE;
 export const CLAUDE_SUBSCRIPTION_REQUIRED_CLAUDE_CODE_SCOPES = CLAUDE_CODE_REQUIRED_OAUTH_SCOPES;
 
+export type ConnectedAccountOauthRefreshResponseIdentity = Readonly<{
+  providerAccountId?: string | null;
+  providerEmail?: string | null;
+}>;
+
+export type ConnectedAccountRefreshCredentialEvidence =
+  | Readonly<{
+      status: 'accepted';
+      raw: ConnectedServiceOauthCredentialRawMetadata | null;
+    }>
+  | Readonly<{
+      status: 'rejected';
+      providerStatus: number;
+      providerErrorCode: string | null;
+    }>
+  | Readonly<{
+      status: 'unavailable';
+    }>;
+
 export type ConnectedAccountOAuthDescriptor = Readonly<{
   clientIdEnv: string;
   defaultClientId: string;
@@ -35,6 +64,21 @@ export type ConnectedAccountOAuthDescriptor = Readonly<{
     now: number;
     payload: unknown;
   }>) => ConnectedAccountOauthCredentialPayload;
+  /**
+   * CS-FIX-4: provider-owned identity extraction from a REFRESH response. Providers whose account
+   * identity is carried in the refresh id_token (e.g. openai-codex) implement this so the central
+   * refresher (`refreshConnectedAccountOauthTokens`) stays config-driven with no provider-name
+   * branch. Absent ⇒ the refresh response carries no provider identity.
+   */
+  extractRefreshResponseIdentity?: (input: Readonly<{
+    idToken: string | null;
+    payload: unknown;
+  }>) => ConnectedAccountOauthRefreshResponseIdentity;
+  resolveRefreshCredentialEvidence?: (input: Readonly<{
+    accessToken: string;
+    fetcher: typeof fetch;
+    signal?: AbortSignal;
+  }>) => Promise<ConnectedAccountRefreshCredentialEvidence>;
 }>;
 
 export type ConnectedAccountOauthCredentialPayload = Readonly<{
@@ -71,6 +115,15 @@ export type ResolvedConnectedAccountOauthConfig = Readonly<{
   tokenUrl: string;
   refreshTokenBody: 'form' | 'json';
   scopes: readonly string[];
+  extractRefreshResponseIdentity?: (input: Readonly<{
+    idToken: string | null;
+    payload: unknown;
+  }>) => ConnectedAccountOauthRefreshResponseIdentity;
+  resolveRefreshCredentialEvidence?: (input: Readonly<{
+    accessToken: string;
+    fetcher: typeof fetch;
+    signal?: AbortSignal;
+  }>) => Promise<ConnectedAccountRefreshCredentialEvidence>;
 }>;
 
 function resolveNonEmptyEnv(raw: string | undefined, fallback: string): string {
@@ -158,9 +211,9 @@ export const CONNECTED_ACCOUNT_DESCRIPTORS = [
     credentialKind: 'oauth',
     oauth: {
       clientIdEnv: 'HAPPIER_CONNECTED_SERVICES_OPENAI_CODEX_OAUTH_CLIENT_ID',
-      defaultClientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
+      defaultClientId: OPENAI_CODEX_OAUTH_CLIENT_ID,
       tokenUrlEnv: 'HAPPIER_CONNECTED_SERVICES_OPENAI_CODEX_OAUTH_TOKEN_URL',
-      defaultTokenUrl: 'https://auth.openai.com/oauth/token',
+      defaultTokenUrl: OPENAI_CODEX_OAUTH_TOKEN_URL,
       refreshTokenBody: 'form',
       scopes: [],
       mapCredentialPayload: ({ now, payload }) => {
@@ -178,6 +231,10 @@ export const CONNECTED_ACCOUNT_DESCRIPTORS = [
           raw: null,
         };
       },
+      extractRefreshResponseIdentity: ({ idToken }) => ({
+        providerAccountId: extractOpenAiCodexAccountId(idToken),
+        providerEmail: extractOpenAiCodexEmail(idToken),
+      }),
     },
     ui: { iconName: 'openai', oauthAddActionModes: ['device', 'browser'] },
   },
@@ -202,9 +259,9 @@ export const CONNECTED_ACCOUNT_DESCRIPTORS = [
     credentialKind: 'oauth',
     oauth: {
       clientIdEnv: 'HAPPIER_CONNECTED_SERVICES_CLAUDE_SUBSCRIPTION_OAUTH_CLIENT_ID',
-      defaultClientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+      defaultClientId: CLAUDE_OAUTH_CLIENT_ID,
       tokenUrlEnv: 'HAPPIER_CONNECTED_SERVICES_CLAUDE_SUBSCRIPTION_OAUTH_TOKEN_URL',
-      defaultTokenUrl: 'https://console.anthropic.com/v1/oauth/token',
+      defaultTokenUrl: CLAUDE_OAUTH_TOKEN_URL,
       refreshTokenBody: 'json',
       scopes: CLAUDE_SUBSCRIPTION_OAUTH_SCOPES,
       mapCredentialPayload: ({ now, payload }) => {
@@ -220,6 +277,28 @@ export const CONNECTED_ACCOUNT_DESCRIPTORS = [
           providerEmail: readString(account.email_address),
           expiresAt: resolveExpiresAtFromPayload({ now, payload: data }),
           raw: resolveClaudeSubscriptionNativeOauthRaw(data),
+        };
+      },
+      resolveRefreshCredentialEvidence: async ({ accessToken, fetcher, signal }) => {
+        const response = await fetcher(CLAUDE_OAUTH_PROFILE_URL, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'anthropic-beta': CLAUDE_OAUTH_PROFILE_BETA_HEADER,
+          },
+          signal,
+        });
+        if (response.status === 401) {
+          return {
+            status: 'rejected',
+            providerStatus: response.status,
+            providerErrorCode: null,
+          };
+        }
+        if (!response.ok) return { status: 'unavailable' };
+        return {
+          status: 'accepted',
+          raw: normalizeClaudeOauthProfileEntitlement(await response.json()),
         };
       },
     },
@@ -250,11 +329,11 @@ export const CONNECTED_ACCOUNT_DESCRIPTORS = [
     credentialKind: 'oauth',
     oauth: {
       clientIdEnv: 'HAPPIER_CONNECTED_SERVICES_GEMINI_OAUTH_CLIENT_ID',
-      defaultClientId: '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
+      defaultClientId: GEMINI_CLI_OAUTH_CLIENT_ID,
       clientSecretEnv: 'HAPPIER_CONNECTED_SERVICES_GEMINI_OAUTH_CLIENT_SECRET',
-      defaultClientSecret: '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l',
+      defaultClientSecret: GEMINI_CLI_OAUTH_CLIENT_SECRET,
       tokenUrlEnv: 'HAPPIER_CONNECTED_SERVICES_GEMINI_OAUTH_TOKEN_URL',
-      defaultTokenUrl: 'https://oauth2.googleapis.com/token',
+      defaultTokenUrl: GEMINI_CLI_OAUTH_TOKEN_URL,
       refreshTokenBody: 'form',
       scopes: [],
       mapCredentialPayload: ({ now, payload }) => {
@@ -339,5 +418,11 @@ export function resolveConnectedAccountOauthConfig(
     tokenUrl,
     refreshTokenBody: oauth.refreshTokenBody,
     scopes: oauth.scopes,
+    ...(oauth.extractRefreshResponseIdentity
+      ? { extractRefreshResponseIdentity: oauth.extractRefreshResponseIdentity }
+      : {}),
+    ...(oauth.resolveRefreshCredentialEvidence
+      ? { resolveRefreshCredentialEvidence: oauth.resolveRefreshCredentialEvidence }
+      : {}),
   };
 }

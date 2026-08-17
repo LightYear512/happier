@@ -13,8 +13,13 @@ const sessionDeny = vi.fn();
 const sendMessage = vi.fn();
 const sessionAllowWithAnswers = vi.fn();
 const modalAlert = vi.fn();
+const openAttachedSessionTerminal = vi.fn();
+const setWorkspaceTrust = vi.fn();
+const setResumeChoice = vi.fn();
 let supportsAnswersInPermission = true;
-let activeAskUserQuestionRequest: { tool: string; kind?: 'user_action' } | null = null;
+let attachedSessionTerminalAvailable = true;
+let attachedSessionTerminalUnavailableReason: 'missing_machine' | 'terminal_disabled' | 'cli_update_required' | null = null;
+let activeAskUserQuestionRequest: { tool: string; kind?: 'user_action'; source?: string } | null = null;
 let activeAskUserQuestionRequestId = 'toolu_1';
 
 installWorkflowRendererCommonModuleMocks({
@@ -29,6 +34,32 @@ installWorkflowRendererCommonModuleMocks({
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
+            useSession: () => ({
+                agentState: {
+                    capabilities: { askUserQuestionAnswersInPermission: supportsAnswersInPermission },
+                    requests: activeAskUserQuestionRequest
+                        ? {
+                            [activeAskUserQuestionRequestId]: {
+                                tool: activeAskUserQuestionRequest.tool,
+                                ...(activeAskUserQuestionRequest.kind ? { kind: activeAskUserQuestionRequest.kind } : {}),
+                                ...(activeAskUserQuestionRequest.source ? { source: activeAskUserQuestionRequest.source } : {}),
+                                arguments: {},
+                                createdAt: 1,
+                            },
+                        }
+                        : {},
+                },
+            }),
+            useSettingMutable: (key: string) => [
+                key === 'claudeUnifiedTerminalWorkspaceTrust' || key === 'claudeUnifiedTerminalResumeChoice'
+                    ? 'ask_every_time'
+                    : null,
+                key === 'claudeUnifiedTerminalWorkspaceTrust'
+                    ? setWorkspaceTrust
+                    : key === 'claudeUnifiedTerminalResumeChoice'
+                        ? setResumeChoice
+                        : vi.fn(),
+            ],
             storage: {
                 getState: () => ({
                     sessions: {
@@ -40,6 +71,7 @@ installWorkflowRendererCommonModuleMocks({
                                         [activeAskUserQuestionRequestId]: {
                                             tool: activeAskUserQuestionRequest.tool,
                                             ...(activeAskUserQuestionRequest.kind ? { kind: activeAskUserQuestionRequest.kind } : {}),
+                                            ...(activeAskUserQuestionRequest.source ? { source: activeAskUserQuestionRequest.source } : {}),
                                             arguments: {},
                                             createdAt: 1,
                                         },
@@ -63,6 +95,14 @@ vi.mock('@/sync/sync', () => ({
     sync: {
         sendMessage: (...args: any[]) => sendMessage(...args),
     },
+}));
+
+vi.mock('@/components/sessions/terminal/openAttachedSessionTerminal', () => ({
+    useOpenAttachedSessionTerminal: () => ({
+        available: attachedSessionTerminalAvailable,
+        unavailableReason: attachedSessionTerminalUnavailableReason,
+        open: (...args: any[]) => openAttachedSessionTerminal(...args),
+    }),
 }));
 
 describe('AskUserQuestionView', () => {
@@ -170,7 +210,12 @@ describe('AskUserQuestionView', () => {
         sendMessage.mockReset();
         sessionAllowWithAnswers.mockReset();
         modalAlert.mockReset();
+        openAttachedSessionTerminal.mockReset();
+        setWorkspaceTrust.mockReset();
+        setResumeChoice.mockReset();
         supportsAnswersInPermission = true;
+        attachedSessionTerminalAvailable = true;
+        attachedSessionTerminalUnavailableReason = null;
         activeAskUserQuestionRequestId = 'toolu_1';
         activeAskUserQuestionRequest = { tool: 'AskUserQuestion', kind: 'user_action' };
     });
@@ -182,9 +227,279 @@ describe('AskUserQuestionView', () => {
         await chooseOptionAndSubmit(screen, 'A');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': 'A' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'Pick one': 'A' },
+        });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
+    });
+
+    it('opens the attached Claude terminal without resolving the permission request', async () => {
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: {
+                    kind: 'unrecognized',
+                    mode: 'notice',
+                    dialogId: 'unrecognized_confirmation',
+                    action: 'open_terminal',
+                },
+                questions: [{
+                    header: 'Claude dialog',
+                    question: 'Open the terminal?',
+                    multiSelect: false,
+                    options: [],
+                }],
+            },
+        }));
+
+        const openTerminal = screen.findByProps({ testID: 'ask-user-question.open-claude-terminal' });
+        expect(openTerminal).toBeTruthy();
+        await pressTestInstanceAsync(openTerminal, 'Open Claude terminal');
+
+        expect(openAttachedSessionTerminal).toHaveBeenCalledTimes(1);
+        expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(0);
+        expect(screen.findAllByProps({ testID: 'ask-user-question.submit' })).toHaveLength(0);
+    });
+
+    it('fails closed when the connected CLI cannot open an attached Claude terminal', async () => {
+        attachedSessionTerminalAvailable = false;
+        attachedSessionTerminalUnavailableReason = 'cli_update_required';
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: {
+                    kind: 'unrecognized',
+                    mode: 'notice',
+                    dialogId: 'unrecognized_confirmation',
+                    action: 'open_terminal',
+                },
+                questions: [{
+                    header: 'Claude dialog',
+                    question: 'Open the terminal?',
+                    multiSelect: false,
+                    options: [],
+                }],
+            },
+        }));
+
+        expect(screen.findAllByProps({ testID: 'ask-user-question.open-claude-terminal' })).toHaveLength(0);
+        expect(screen.findByProps({ testID: 'ask-user-question.attached-terminal-unavailable' })).toBeTruthy();
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'deps.ui.notAvailableUpdateCli')).toBeTruthy();
+        expect(screen.findAllByProps({ testID: 'ask-user-question.submit' })).toHaveLength(0);
+        expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(0);
+    });
+
+    it('reports a missing machine target without suggesting a CLI update', async () => {
+        attachedSessionTerminalAvailable = false;
+        attachedSessionTerminalUnavailableReason = 'missing_machine';
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: {
+                    kind: 'unrecognized',
+                    mode: 'notice',
+                    dialogId: 'unrecognized_confirmation',
+                    action: 'open_terminal',
+                },
+                questions: [{ header: 'Claude dialog', question: 'Open the terminal?', multiSelect: false, options: [] }],
+            },
+        }));
+
+        expect(findTestInstanceByTypeContainingText(
+            screen,
+            'Text',
+            'terminalEmbedded.errors.missingMachineTarget',
+        )).toBeTruthy();
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'deps.ui.notAvailableUpdateCli')).toBeUndefined();
+    });
+
+    it('does not suggest a CLI update when terminal navigation is blocked only by read-only access', async () => {
+        attachedSessionTerminalAvailable = false;
+        attachedSessionTerminalUnavailableReason = 'missing_machine';
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: {
+                    kind: 'unrecognized',
+                    mode: 'notice',
+                    dialogId: 'unrecognized_confirmation',
+                    action: 'open_terminal',
+                },
+                questions: [{
+                    header: 'Claude dialog',
+                    question: 'Open the terminal?',
+                    multiSelect: false,
+                    options: [],
+                }],
+            },
+        }), {
+            interaction: { canApprovePermissions: false, permissionDisabledReason: 'readOnly' },
+        });
+
+        expect(screen.findAllByProps({ testID: 'ask-user-question.attached-terminal-unavailable' })).toHaveLength(0);
+        expect(findTestInstanceByTypeContainingText(
+            screen,
+            'Text',
+            'session.sharing.permissionApprovalsDisabledReadOnly',
+        )).toBeTruthy();
+    });
+
+    it('keeps recognized choices answerable while explaining that the attached terminal is unavailable', async () => {
+        attachedSessionTerminalAvailable = false;
+        attachedSessionTerminalUnavailableReason = 'cli_update_required';
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: { kind: 'recognized', dialogId: 'trust_folder', secondaryAction: 'open_terminal' },
+                questions: [{
+                    header: 'Workspace trust',
+                    question: 'How should Claude continue?',
+                    multiSelect: false,
+                    options: [{ choice: 'trust_once', label: 'Trust once', description: '' }],
+                }],
+            },
+        }));
+
+        expect(screen.findAllByProps({ testID: 'ask-user-question.open-claude-terminal' })).toHaveLength(0);
+        expect(screen.findByProps({ testID: 'ask-user-question.attached-terminal-unavailable' })).toBeTruthy();
+        expect(screen.findByProps({ testID: 'ask-user-question.submit' })).toBeTruthy();
+    });
+
+    it('keeps recognized dialog choices answerable while exposing attached-terminal navigation', async () => {
+        activeAskUserQuestionRequest = {
+            tool: 'AskUserQuestion',
+            kind: 'user_action',
+            source: 'claude_unified_terminal_dialog_choice',
+        };
+        sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: {
+                    kind: 'recognized',
+                    dialogId: 'trust_folder',
+                    secondaryAction: 'open_terminal',
+                },
+                questions: [{
+                    header: 'Workspace trust',
+                    question: 'How should Claude continue?',
+                    multiSelect: false,
+                    options: [{
+                        choice: 'trust_always',
+                        label: 'Trust and remember',
+                        description: '',
+                        settingMutation: {
+                            settingId: 'claudeUnifiedTerminalWorkspaceTrust',
+                            value: 'always_trust_happier_workspaces',
+                        },
+                    }],
+                }],
+            },
+        }));
+
+        expect(screen.findByProps({ testID: 'ask-user-question.open-claude-terminal' })).toBeTruthy();
+        await chooseOptionAndSubmit(screen, 'Trust and remember');
+
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'How should Claude continue?': 'trust_always' },
+        });
+        expect(setWorkspaceTrust).toHaveBeenCalledWith('always_trust_happier_workspaces');
+    });
+
+    it('persists a remembered resume policy only after the canonical dialog answer succeeds', async () => {
+        activeAskUserQuestionRequest = {
+            tool: 'AskUserQuestion',
+            kind: 'user_action',
+            source: 'claude_unified_terminal_dialog_choice',
+        };
+        sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: {
+                    kind: 'recognized',
+                    dialogId: 'resume_choice',
+                    secondaryAction: 'open_terminal',
+                },
+                questions: [{
+                    header: 'Claude resume',
+                    question: 'How should Claude resume this session?',
+                    multiSelect: false,
+                    options: [{
+                        choice: 'always_resume_from_summary',
+                        label: 'Always resume from summary',
+                        description: '',
+                        settingMutation: {
+                            settingId: 'claudeUnifiedTerminalResumeChoice',
+                            value: 'resume_from_summary',
+                        },
+                    }],
+                }],
+            },
+        }));
+
+        await chooseOptionAndSubmit(screen, 'Always resume from summary');
+
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'How should Claude resume this session?': 'always_resume_from_summary' },
+        });
+        expect(setResumeChoice).toHaveBeenCalledWith('resume_from_summary');
+    });
+
+    it('ignores a forged workspace-trust mutation without canonical request-source proof', async () => {
+        sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: { kind: 'recognized', dialogId: 'trust_folder', secondaryAction: 'open_terminal' },
+                questions: [{
+                    header: 'Workspace trust',
+                    question: 'How should Claude continue?',
+                    multiSelect: false,
+                    options: [{
+                        choice: 'trust_always',
+                        label: 'Trust and remember',
+                        description: '',
+                        settingMutation: {
+                            settingId: 'claudeUnifiedTerminalWorkspaceTrust',
+                            value: 'always_trust_happier_workspaces',
+                        },
+                    }],
+                }],
+            },
+        }));
+
+        await chooseOptionAndSubmit(screen, 'Trust and remember');
+
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'How should Claude continue?': 'trust_always' },
+        });
+        expect(setWorkspaceTrust).not.toHaveBeenCalled();
+    });
+
+    it('ignores an unrecognized setting mutation while preserving the one-shot answer', async () => {
+        sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
+        const screen = await renderView(makeTool({
+            input: {
+                happierDialog: { kind: 'recognized', dialogId: 'trust_folder', secondaryAction: 'open_terminal' },
+                questions: [{
+                    header: 'Workspace trust',
+                    question: 'How should Claude continue?',
+                    multiSelect: false,
+                    options: [{
+                        choice: 'trust_once',
+                        label: 'Trust once',
+                        description: '',
+                        settingMutation: { settingId: 'arbitrarySetting', value: 'enabled' },
+                    }],
+                }],
+            },
+        }));
+
+        await chooseOptionAndSubmit(screen, 'Trust once');
+
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'How should Claude continue?': 'trust_once' },
+        });
+        expect(setWorkspaceTrust).not.toHaveBeenCalled();
     });
 
     it('exposes stable testIDs for native E2E (Maestro)', async () => {
@@ -204,7 +519,10 @@ describe('AskUserQuestionView', () => {
         await chooseOptionAndSubmit(screen, 'A');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_reconnect', { 'Pick one': 'A' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_reconnect', {
+            protocol: 'legacy-permission',
+            answers: { 'Pick one': 'A' },
+        });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
         expect(modalAlert).toHaveBeenCalledTimes(0);
@@ -226,7 +544,29 @@ describe('AskUserQuestionView', () => {
         expect(modalAlert).toHaveBeenCalledTimes(0);
     });
 
-    it('shows an error when permission approval fails', async () => {
+    it.each([
+        ['STRUCTURED_QUESTION_INVALID', 'tools.askUserQuestion.submissionFailures.retry'],
+        ['STRUCTURED_QUESTION_LEGACY_INVALID', 'tools.askUserQuestion.submissionFailures.retry'],
+        ['STRUCTURED_QUESTION_LEGACY_AMBIGUOUS', 'tools.askUserQuestion.submissionFailures.retry'],
+        ['STRUCTURED_QUESTION_RECEIVER_NOT_OWNER', 'tools.askUserQuestion.submissionFailures.reconnect'],
+        ['RPC_METHOD_NOT_AVAILABLE', 'tools.askUserQuestion.submissionFailures.update'],
+        ['RPC_METHOD_NOT_FOUND', 'tools.askUserQuestion.submissionFailures.update'],
+    ])('keeps the pending answer selected and shows inline guidance for %s', async (rpcErrorCode, guidanceKey) => {
+        sessionAllowWithAnswers.mockRejectedValueOnce(Object.assign(new Error('private server detail'), { rpcErrorCode }));
+
+        const screen = await renderView(makeTool());
+        await chooseOptionAndSubmit(screen, 'A');
+
+        expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
+        expect(sessionDeny).toHaveBeenCalledTimes(0);
+        expect(sendMessage).toHaveBeenCalledTimes(0);
+        expect(modalAlert).toHaveBeenCalledTimes(0);
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', guidanceKey)).toBeTruthy();
+        expect(screen.findByProps({ testID: 'ask-user-question.option:0:0' }).props.accessibilityState).toEqual({ selected: true });
+        expect(screen.findByProps({ testID: 'ask-user-question.submit' }).props.disabled).toBe(false);
+    });
+
+    it('shows a safe generic error when permission approval fails without a public code', async () => {
         sessionAllowWithAnswers.mockRejectedValueOnce(new Error('boom'));
 
         const screen = await renderView(makeTool());
@@ -235,7 +575,7 @@ describe('AskUserQuestionView', () => {
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
-        expect(modalAlert).toHaveBeenCalledWith('common.error', 'boom');
+        expect(modalAlert).toHaveBeenCalledWith('common.error', 'errors.failedToSendMessage');
     });
 
     it('uses permission approval when answers-in-permission capability is unavailable but the matching request is still active', async () => {
@@ -247,7 +587,10 @@ describe('AskUserQuestionView', () => {
         await chooseOptionAndSubmit(screen, 'A');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': 'A' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'Pick one': 'A' },
+        });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
@@ -303,7 +646,10 @@ describe('AskUserQuestionView', () => {
         await fillFreeformAndSubmit(screen, 'README.md');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Which file should I inspect?': 'README.md' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+            protocol: 'legacy-permission',
+            answers: { 'Which file should I inspect?': 'README.md' },
+        });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
@@ -324,12 +670,9 @@ describe('AskUserQuestionView', () => {
 
         const submitAfter = findPressableByLabel(screen, 'tools.askUserQuestion.submit');
         expect(submitAfter).toBeTruthy();
-        expect(submitAfter!.props.disabled).toBe(false);
+        expect(submitAfter!.props.disabled).toBe(true);
 
-        await pressTestInstanceAsync(submitAfter, 'tools.askUserQuestion.submit');
-
-        expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'What are you trying to achieve?': 'Custom goal, with commas' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(0);
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });

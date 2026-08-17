@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
@@ -10,14 +9,16 @@ import { Typography } from '@/constants/Typography';
 import type { ConnectedServiceQuotaMeterV1 } from '@happier-dev/protocol';
 
 import { clampQuotaPct, deriveQuotaUtilizationPct } from '@/sync/domains/connectedServices/deriveQuotaUtilizationPct';
-import { formatResetCountdown, type ResetCountdownFormatter } from '@/sync/domains/connectedServices/formatResetCountdown';
+import { formatResetCountdown, isResetCountdownOutdated, type ResetCountdownFormatter } from '@/sync/domains/connectedServices/formatResetCountdown';
 import { resolveQuotaTone } from '@/sync/domains/connectedServices/resolveQuotaTone';
 import { t } from '@/text';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
-type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+type IoniconName = IconName;
 
 const RESET_COUNTDOWN_FORMATTER: ResetCountdownFormatter = {
   durationNow: () => t('connectedServices.quota.duration.now'),
+  durationOutdated: () => t('connectedServices.quota.duration.outdated'),
   durationDaysHours: ({ days, hours }) => t('connectedServices.quota.duration.daysHours', { days, hours }),
   durationHoursMinutes: ({ hours, minutes }) => t('connectedServices.quota.duration.hoursMinutes', { hours, minutes }),
   durationHours: ({ hours }) => t('connectedServices.quota.duration.hours', { hours }),
@@ -61,7 +62,11 @@ export const ConnectedServiceQuotaMeterRow = React.memo(function ConnectedServic
     ? clampQuotaPct(props.meter.remainingPct)
     : utilization === null ? null : clampQuotaPct(100 - utilization);
   const remainingText = remaining === null ? '—' : `${Math.round(remaining)}%`;
-  const resetText = formatResetCountdown(props.nowMs, props.meter.resetAtMs ?? props.meter.resetsAt, RESET_COUNTDOWN_FORMATTER);
+  // An elapsed reset boundary means the snapshot predates its own reset — fall back to the plain
+  // remaining label instead of composing the nonsense phrase "resets in outdated".
+  const resetText = isResetCountdownOutdated(props.nowMs, props.meter.resetAtMs ?? props.meter.resetsAt)
+    ? null
+    : formatResetCountdown(props.nowMs, props.meter.resetAtMs ?? props.meter.resetsAt, RESET_COUNTDOWN_FORMATTER);
   const right = remaining === null
     ? remainingText
     : resetText
@@ -81,7 +86,11 @@ export const ConnectedServiceQuotaMeterRow = React.memo(function ConnectedServic
           testID="connected-service-quota-meter-row:remaining-bar"
           style={styles.bar}
           tone={tone}
-          value={(remaining ?? 0) / 100}
+          // CS quota gauges are remaining-first end to end: the labels say "% left", the tone is
+          // derived from remaining, and the capacity rings display remaining. The fill must match
+          // that language (battery model: full green bar = plenty left) — a consumption fill next
+          // to a "left" label reads inverted (user decision 2026-07-10, reverting 5ad4d06be).
+          fillFraction={(remaining ?? 0) / 100}
         />
         <Text style={styles.rightText}>{right}</Text>
       </View>
@@ -99,7 +108,7 @@ export const ConnectedServiceQuotaMeterRow = React.memo(function ConnectedServic
       showChevron={false}
       rightElement={(
         <Pressable onPress={props.onTogglePin} hitSlop={12} style={{ paddingLeft: 8, paddingVertical: 4 }}>
-          <Ionicons name={pinIcon as IoniconName} size={18} color={props.pinned ? theme.colors.text.primary : theme.colors.text.secondary} />
+          <Icon name={pinIcon as IoniconName} size={16} color={props.pinned ? theme.colors.text.primary : theme.colors.text.secondary} />
         </Pressable>
       )}
     />

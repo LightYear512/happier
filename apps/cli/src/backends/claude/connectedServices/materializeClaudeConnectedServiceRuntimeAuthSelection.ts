@@ -8,6 +8,7 @@ import type { ConnectedServiceRuntimeAuthSelectionMaterializer } from '@/daemon/
 import type { ConnectedServiceResolvedSelection } from '@/daemon/connectedServices/materialize/materializeConnectedServicesForSpawn';
 import { resolveExistingSessionAttachContext } from '@/daemon/sessionEncryption/resolveExistingSessionAttachContext';
 import { resolveTrackedConnectedServiceSwitchContinuityContext } from '@/daemon/connectedServices/sessionAuthSwitch/resolveTrackedConnectedServiceSwitchContinuityContext';
+import { HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
 import type { Credentials } from '@/persistence';
 
 import { materializeClaudeConnectedServiceSelection } from './materializeClaudeConnectedServiceSelection';
@@ -15,8 +16,10 @@ import { resolveClaudeConnectedServiceStableConfigDir } from './resolveClaudeCon
 import {
   CLAUDE_RUNTIME_AUTH_SHARED_GROUP_SURFACE_METADATA_KEY,
   buildClaudeRuntimeAuthSharedGroupSurfaceMetadata,
+  readClaudeRuntimeAuthSharedGroupSurfaceMetadata,
 } from './claudeRuntimeAuthSharedGroupSurfaceMetadata';
 import { resolveClaudeConnectedServiceCandidatePersistedSessionFile } from './resolveClaudeConnectedServiceCandidatePersistedSessionFile';
+import { createConnectedServiceGroupMutationCurrentnessValidator } from '@/daemon/connectedServices/credentials/createConnectedServiceGroupMutationCurrentnessValidator';
 
 function readCredentialRecord(value: unknown): ConnectedServiceCredentialRecordV1 | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -35,6 +38,17 @@ function samePath(left: string | null | undefined, right: string | null | undefi
   const leftTrimmed = left.trim();
   const rightTrimmed = right.trim();
   return leftTrimmed.length > 0 && rightTrimmed.length > 0 && resolve(leftTrimmed) === resolve(rightTrimmed);
+}
+
+function trackedRuntimeTargetsClaudeSharedGroupConfig(
+  trackedEnv: NodeJS.ProcessEnv | undefined,
+  runtimeClaudeConfigDir: string,
+): boolean {
+  return samePath(trackedEnv?.CLAUDE_CONFIG_DIR, runtimeClaudeConfigDir)
+    || samePath(
+      trackedEnv?.[HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY],
+      runtimeClaudeConfigDir,
+    );
 }
 
 async function resolvePersistedClaudeSessionMetadata(params: Readonly<{
@@ -62,6 +76,7 @@ function buildSelection(params: Readonly<{
   activeProfileId?: string;
   fallbackProfileId?: string;
   generation?: number;
+  credentialRevision?: Parameters<ReturnType<typeof createConnectedServiceGroupMutationCurrentnessValidator>>[0]['credentialRevision'];
 }>): ConnectedServiceResolvedSelection | null {
   const binding = readBinding(params.binding);
   if (binding?.selection === 'group') {
@@ -85,6 +100,7 @@ function buildSelection(params: Readonly<{
       activeProfileId,
       fallbackProfileId,
       generation,
+      credentialRevision: params.credentialRevision ?? null,
       record: params.record,
       policy: null,
     };
@@ -104,7 +120,6 @@ function buildPreflightRuntimeAuthSelection(params: Readonly<{
   baseSelection: Parameters<ConnectedServiceRuntimeAuthSelectionMaterializer>[0]['baseSelection'];
   record: ConnectedServiceCredentialRecordV1;
   selection: ConnectedServiceResolvedSelection | null;
-  trackedEnv?: NodeJS.ProcessEnv;
 }>): unknown {
   if (params.serviceId !== 'claude-subscription' || params.selection?.kind !== 'group') {
     return params.baseSelection;
@@ -116,9 +131,7 @@ function buildPreflightRuntimeAuthSelection(params: Readonly<{
     fallbackProfileId: params.selection.fallbackProfileId,
     selection: params.selection,
   });
-  if (!runtimeClaudeConfigDir || !samePath(params.trackedEnv?.CLAUDE_CONFIG_DIR, runtimeClaudeConfigDir)) {
-    return params.baseSelection;
-  }
+  if (!runtimeClaudeConfigDir) return params.baseSelection;
 
   const sourceClaudeConfigDir = resolveClaudeConnectedServiceStableConfigDir({
     activeServerDir: params.activeServerDir,
@@ -170,16 +183,27 @@ export const materializeClaudeConnectedServiceRuntimeAuthSelection: ConnectedSer
     ...(typeof params.baseSelection.activeProfileId === 'string' ? { activeProfileId: params.baseSelection.activeProfileId } : {}),
     ...(typeof params.baseSelection.fallbackProfileId === 'string' ? { fallbackProfileId: params.baseSelection.fallbackProfileId } : {}),
     ...(typeof params.baseSelection.generation === 'number' ? { generation: params.baseSelection.generation } : {}),
+    credentialRevision: params.baseSelection.credentialRevision,
   });
-  if (params.input.mode === 'preflight') {
-    return buildPreflightRuntimeAuthSelection({
-      activeServerDir,
-      serviceId: params.input.serviceId,
-      baseSelection: params.baseSelection,
-      record,
-      selection,
-      trackedEnv: params.input.tracked.spawnOptions?.environmentVariables,
-    });
+  const sharedGroupRuntimeAuthSelection = buildPreflightRuntimeAuthSelection({
+    activeServerDir,
+    serviceId: params.input.serviceId,
+    baseSelection: params.baseSelection,
+    record,
+    selection,
+  });
+  if (params.input.mode === 'preflight') return sharedGroupRuntimeAuthSelection;
+  const preflightSharedGroupMetadata = readClaudeRuntimeAuthSharedGroupSurfaceMetadata(
+    sharedGroupRuntimeAuthSelection,
+  );
+  if (
+    preflightSharedGroupMetadata
+    && trackedRuntimeTargetsClaudeSharedGroupConfig(
+      params.input.tracked.spawnOptions?.environmentVariables,
+      preflightSharedGroupMetadata.runtimeClaudeConfigDir,
+    )
+  ) {
+    return sharedGroupRuntimeAuthSelection;
   }
   const trackedContinuityContext = resolveTrackedConnectedServiceSwitchContinuityContext({
     agentId: params.input.agentId,
@@ -217,10 +241,13 @@ export const materializeClaudeConnectedServiceRuntimeAuthSelection: ConnectedSer
     sessionDirectory: params.input.tracked.spawnOptions?.directory ?? null,
     vendorResumeId: continuityContext.vendorResumeId,
     candidatePersistedSessionFile: continuityContext.candidatePersistedSessionFile,
+    validateGroupMutationCurrentness: createConnectedServiceGroupMutationCurrentnessValidator({
+      api: params.api,
+      credentials: params.credentials,
+    }),
   });
   if (!materialized) return params.baseSelection;
 
-  const trackedEnv = params.input.tracked.spawnOptions?.environmentVariables;
   const materializedClaudeConfigDir = materialized.env.CLAUDE_CONFIG_DIR;
   const sourceClaudeConfigDir = selection?.kind === 'group' && params.input.serviceId === 'claude-subscription'
     ? resolveClaudeConnectedServiceStableConfigDir({
@@ -237,7 +264,6 @@ export const materializeClaudeConnectedServiceRuntimeAuthSelection: ConnectedSer
     : null;
   const sharedGroupSurfaceMetadata = params.input.serviceId === 'claude-subscription'
     && selection?.kind === 'group'
-    && samePath(trackedEnv?.CLAUDE_CONFIG_DIR, materializedClaudeConfigDir)
     ? buildClaudeRuntimeAuthSharedGroupSurfaceMetadata({
         runtimeClaudeConfigDir: materializedClaudeConfigDir,
         runtimeMaterializedRoot: materialized.targetMaterializedRoot,

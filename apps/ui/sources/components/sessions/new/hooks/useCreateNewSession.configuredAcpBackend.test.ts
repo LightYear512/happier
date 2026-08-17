@@ -7,6 +7,7 @@ import type { Settings } from '@/sync/domains/settings/settings';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
 import { renderScreen } from '@/dev/testkit';
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -204,6 +205,8 @@ async function setupHarness() {
             captured.value = opts;
             return { type: 'error', errorCode: 'unexpected', errorMessage: 'stop' };
         }),
+        completeMachineSpawnAttemptCustody: vi.fn(async () => true),
+        resetMachineSpawnAttemptCustody: vi.fn(async () => true),
     }));
 
     const { useCreateNewSession } = await import('./useCreateNewSession');
@@ -237,6 +240,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -255,7 +259,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 },
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -302,6 +306,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -320,7 +325,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 },
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -365,6 +370,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -383,7 +389,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 },
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -425,6 +431,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -447,7 +454,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 },
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -495,6 +502,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -513,7 +521,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 },
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 resumeSessionId: '',
                 agentNewSessionOptions: null,
                 machineEnvPresence,
@@ -597,6 +605,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
@@ -612,7 +621,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
                 permissionMode: 'default' as PermissionMode,
                 modelMode: 'default' as ModelMode,
-                sessionPrompt: 'Review the repo',
+                promptStore: createNewSessionPromptStore('Review the repo'),
                 resumeSessionId: '',
                 agentNewSessionOptions: { experimentalCodexAcp: false },
                 machineEnvPresence,

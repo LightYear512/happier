@@ -34,6 +34,7 @@ describe('createClaudeRemoteStreamedTranscriptSession', () => {
             sendAgentMessageCommitted: async () => {},
             sendAgentMessageEphemeral: (provider, body, opts) => {
                 ephemeralCalls.push({ provider, body, opts });
+                return { accepted: true, epoch: 0 };
             },
         });
 
@@ -89,7 +90,7 @@ describe('createClaudeRemoteStreamedTranscriptSession', () => {
         expect(session.sendAgentMessageEphemeral).toBeUndefined();
     });
 
-    it('routes streamed committed snapshots through the durable enqueue hook when available', async () => {
+    it('keeps prompt-dependent streamed snapshots on the direct committed path', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date(0));
 
@@ -113,11 +114,78 @@ describe('createClaudeRemoteStreamedTranscriptSession', () => {
         await writer.flushAll({ reason: 'turn-end' });
         await flushTranscriptCommitMicrotasks();
 
-        expect(sendAgentMessageCommitted).not.toHaveBeenCalled();
-        expect(enqueueAgentMessageCommitted).toHaveBeenCalledWith(
+        expect(sendAgentMessageCommitted).toHaveBeenCalledWith(
             'claude',
             { type: 'message', message: 'Claude final' },
             expect.objectContaining({ localId: 'segment-1' }),
         );
+        expect(enqueueAgentMessageCommitted).not.toHaveBeenCalled();
+    });
+
+    it('proxies optional ephemeral delta sends and connection epochs when the session client supports them', () => {
+        const acceptedOutcome = { accepted: true as const, epoch: 3 };
+        const sendAgentMessageEphemeralDelta = vi.fn(() => acceptedOutcome);
+        const getEphemeralStreamConnectionEpoch = vi.fn(() => 3);
+
+        const session = createClaudeRemoteStreamedTranscriptSession({
+            sendAgentMessage: () => {},
+            sendAgentMessageCommitted: async () => {},
+            sendAgentMessageEphemeral: () => acceptedOutcome,
+            sendAgentMessageEphemeralDelta,
+            getEphemeralStreamConnectionEpoch,
+        });
+
+        expect(session.sendAgentMessageEphemeralDelta).toBeTypeOf('function');
+        const outcome = session.sendAgentMessageEphemeralDelta?.(
+            'claude',
+            { type: 'message', message: ' delta' },
+            { localId: 'segment-1', tick: 2, baseLength: 5, createdAt: 10, updatedAt: 20 },
+        );
+
+        expect(sendAgentMessageEphemeralDelta).toHaveBeenCalledWith(
+            'claude',
+            { type: 'message', message: ' delta' },
+            { localId: 'segment-1', tick: 2, baseLength: 5, createdAt: 10, updatedAt: 20 },
+        );
+        expect(outcome).toEqual(acceptedOutcome);
+        expect(session.getEphemeralStreamConnectionEpoch?.()).toBe(3);
+    });
+
+    it('preserves the underlying session receiver while returning ephemeral outcomes', () => {
+        const expectedOutcome = { accepted: true as const, epoch: 6 };
+        const client = {
+            expectedOutcome,
+            sendAgentMessage: () => {},
+            sendAgentMessageCommitted: async () => {},
+            sendAgentMessageEphemeral() {
+                return this.expectedOutcome;
+            },
+            sendAgentMessageEphemeralDelta() {
+                return this.expectedOutcome;
+            },
+        };
+        const session = createClaudeRemoteStreamedTranscriptSession(client);
+
+        expect(session.sendAgentMessageEphemeral?.(
+            'claude',
+            { type: 'message', message: 'snapshot' },
+            { localId: 'segment-1', createdAt: 10 },
+        )).toEqual(expectedOutcome);
+        expect(session.sendAgentMessageEphemeralDelta?.(
+            'claude',
+            { type: 'message', message: ' delta' },
+            { localId: 'segment-1', tick: 2, baseLength: 8, createdAt: 10 },
+        )).toEqual(expectedOutcome);
+    });
+
+    it('keeps delta sends unavailable when the session client does not support them', () => {
+        const session = createClaudeRemoteStreamedTranscriptSession({
+            sendAgentMessage: () => {},
+            sendAgentMessageCommitted: async () => {},
+            sendAgentMessageEphemeral: () => ({ accepted: true, epoch: 0 }),
+        });
+
+        expect(session.sendAgentMessageEphemeralDelta).toBeUndefined();
+        expect(session.getEphemeralStreamConnectionEpoch).toBeUndefined();
     });
 });

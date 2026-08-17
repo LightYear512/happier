@@ -5,7 +5,7 @@ import {
   resolveOpenCodeConnectedServiceSelectionByPrecedence,
 } from './openCodeConnectedServicePrecedence';
 import { extractOpenCodeErrorText } from '@/backends/opencode/server/openCodeErrorText';
-import { releaseForAuthSwitch } from '@/backends/opencode/server/sharedManagedServer';
+import { applyBrokerBridgeRuntimeAuthSelection } from '@/daemon/connectedServices/broker/applyBrokerBridgeRuntimeAuthSelection';
 import {
   classifyProviderLimitEvidence,
   parseProviderResetAt,
@@ -138,40 +138,31 @@ export function createOpenCodeConnectedServiceRuntimeAuthAdapter(): ConnectedSer
     async materializeActiveProfile() {
       return { supported: true };
     },
-    canHotApply() {
-      return { supported: false, recovery: 'restart_rematerialize' };
+    canHotApply(input) {
+      const selection = readRecord(input.selection);
+      return readString(selection?.brokerSelectionIdentity)
+        ? { supported: true, recovery: 'provider_owned_broker_selection' }
+        : { supported: false, recovery: 'restart_rematerialize' };
     },
-    async hotApply() {
-      return { applied: false, reason: 'hot_apply_unsupported' };
+    async hotApply(input) {
+      return applyBrokerBridgeRuntimeAuthSelection(input.selection);
     },
     async recoverAfterRuntimeAuthSwitch(input) {
       const selection = readRecord(input.selection);
-      const previousLaunchFingerprint = readString(selection?.previousLaunchFingerprint);
-      if (!previousLaunchFingerprint) {
+      if (!readString(selection?.brokerSelectionIdentity)) {
         return {
-          recovered: true,
+          recovered: false,
           recovery: 'restart_rematerialize',
           detached: false,
-          detachedReason: 'prior_launch_fingerprint_missing',
+          detachedReason: 'broker_selection_identity_missing',
         };
       }
 
-      const previousOwnerToken = readString(selection?.previousOwnerToken);
-      if (!previousOwnerToken) {
-        return {
-          recovered: true,
-          recovery: 'restart_rematerialize',
-          detached: false,
-          detachedReason: 'prior_owner_token_missing',
-        };
-      }
-
-      const detached = await releaseForAuthSwitch(previousLaunchFingerprint, previousOwnerToken);
       return {
         recovered: true,
-        recovery: 'restart_rematerialize',
-        detached: detached.released,
-        detachedReason: detached.reason,
+        recovery: 'provider_owned_broker_selection',
+        detached: false,
+        detachedReason: 'broker_request_time_selection_preserved',
       };
     },
     async verifyActiveAccount() {

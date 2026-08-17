@@ -143,3 +143,67 @@ test('withStackEnv preserves explicit local stack runtime override env vars from
     }
   });
 });
+
+test('withStackEnv replaces a foreign daemon lifecycle scope with the selected stack scope', async () => {
+  await withTempStackEnvFixture(async ({ stackName }) => {
+    const previousActiveServerId = process.env.HAPPIER_ACTIVE_SERVER_ID;
+    const previousLifecycleScopeId = process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID;
+    process.env.HAPPIER_ACTIVE_SERVER_ID = 'stack_other__id_default';
+    process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID = 'stack_other__id_default';
+
+    try {
+      await withStackEnv({
+        stackName,
+        reconcileDaemonRuntimeState: false,
+        fn: async ({ env }) => {
+          assert.equal(env.HAPPIER_ACTIVE_SERVER_ID, 'stack_sanitize__id_default');
+          assert.equal(env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID, 'stack_sanitize__id_default');
+        },
+      });
+    } finally {
+      if (typeof previousActiveServerId === 'undefined') delete process.env.HAPPIER_ACTIVE_SERVER_ID;
+      else process.env.HAPPIER_ACTIVE_SERVER_ID = previousActiveServerId;
+      if (typeof previousLifecycleScopeId === 'undefined') delete process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID;
+      else process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID = previousLifecycleScopeId;
+    }
+  });
+});
+
+test('withStackEnv does not carry a foreign stack Expo port allocation into the selected stack', async () => {
+  await withTempStackEnvFixture(async ({ stackName, storageDir }) => {
+    const keys = [
+      'HAPPIER_STACK_STACK',
+      'HAPPIER_STACK_ENV_FILE',
+      'HAPPIER_STACK_EXPO_DEV_PORT',
+      'HAPPIER_STACK_EXPO_DEV_PORT_STRATEGY',
+      'HAPPIER_STACK_EXPO_DEV_PORT_BASE',
+      'HAPPIER_STACK_EXPO_DEV_PORT_RANGE',
+    ];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+
+    process.env.HAPPIER_STACK_STACK = 'source-stack';
+    process.env.HAPPIER_STACK_ENV_FILE = join(storageDir, 'source-stack', 'env');
+    process.env.HAPPIER_STACK_EXPO_DEV_PORT = '18829';
+    process.env.HAPPIER_STACK_EXPO_DEV_PORT_STRATEGY = 'stable';
+    process.env.HAPPIER_STACK_EXPO_DEV_PORT_BASE = '18081';
+    process.env.HAPPIER_STACK_EXPO_DEV_PORT_RANGE = '2000';
+
+    try {
+      await withStackEnv({
+        stackName,
+        fn: async ({ env }) => {
+          assert.equal(env.HAPPIER_STACK_STACK, stackName);
+          assert.equal(env.HAPPIER_STACK_EXPO_DEV_PORT, undefined);
+          assert.equal(env.HAPPIER_STACK_EXPO_DEV_PORT_STRATEGY, undefined);
+          assert.equal(env.HAPPIER_STACK_EXPO_DEV_PORT_BASE, undefined);
+          assert.equal(env.HAPPIER_STACK_EXPO_DEV_PORT_RANGE, undefined);
+        },
+      });
+    } finally {
+      for (const key of keys) {
+        if (typeof previous[key] === 'undefined') delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+});

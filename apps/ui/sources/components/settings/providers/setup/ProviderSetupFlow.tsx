@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { Ionicons } from '@expo/vector-icons';
 import { View } from 'react-native';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { useUnistyles } from 'react-native-unistyles';
@@ -20,6 +19,7 @@ import { t } from '@/text';
 import { ProviderAuthenticationCard } from '../authentication/ProviderAuthenticationCard';
 import { ProviderAuthenticationTerminalPane } from '../authentication/ProviderAuthenticationTerminalPane';
 import { useProviderAuthenticationState } from '../authentication/useProviderAuthenticationState';
+import type { ProviderLocalAuthLaunch } from '@/agents/providers/shared/providerLocalAuthPlugin';
 import {
     completeActiveProviderSetupStep,
     createProviderSetupQueueState,
@@ -27,6 +27,7 @@ import {
     type ProviderSetupQueueState,
 } from './providerSetupQueue';
 import { useProviderCliInstallQueue, type ProviderCliInstallStatus } from './useProviderCliInstallQueue';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const DEFAULT_PROVIDER_IDS = AGENT_IDS.filter((agentId) => agentId !== 'customAcp');
 
@@ -75,7 +76,10 @@ export const ProviderSetupFlow = React.memo(function ProviderSetupFlow(props: Re
 
     const [selectedProviderIds, setSelectedProviderIds] = React.useState<AgentId[]>(() => [...providerIds]);
     const [queueState, setQueueState] = React.useState<ProviderSetupQueueState | null>(null);
-    const [terminalProviderId, setTerminalProviderId] = React.useState<AgentId | null>(null);
+    const [terminalAuthSelection, setTerminalAuthSelection] = React.useState<Readonly<{
+        providerId: AgentId;
+        kind: ProviderLocalAuthLaunch['kind'];
+    }> | null>(null);
 
     React.useEffect(() => {
         setSelectedProviderIds((previous) => {
@@ -161,14 +165,14 @@ export const ProviderSetupFlow = React.memo(function ProviderSetupFlow(props: Re
                                     ? installStatus === 'installing'
                                         ? <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                                         : installStatus === 'installed'
-                                            ? <Ionicons name="checkmark-circle" size={20} color={theme.colors.accent.blue} />
+                                            ? <Icon name="check-circle" size={20} color={theme.colors.accent.blue} />
                                             : installStatus === 'failed'
-                                                ? <Ionicons name="alert-circle" size={20} color={theme.colors.text.secondary} />
+                                                ? <Icon name="warning-circle" size={20} color={theme.colors.text.secondary} />
                                                 : installStatus === 'queued'
-                                                    ? <Ionicons name="time-outline" size={20} color={theme.colors.text.secondary} />
+                                                    ? <Icon name="clock" size={20} color={theme.colors.text.secondary} />
                                                     : undefined
                                     : selected
-                                        ? <Ionicons name="checkmark-circle" size={20} color={theme.colors.accent.blue} />
+                                        ? <Icon name="check-circle" size={20} color={theme.colors.accent.blue} />
                                         : undefined
                             }
                             onPress={async () => {
@@ -235,19 +239,20 @@ export const ProviderSetupFlow = React.memo(function ProviderSetupFlow(props: Re
                                 includeLoginStatusForAgentIds: [activeProviderId],
                             });
                         }}
-                        onLaunchLogin={() => {
+                        activeAuthLaunchKind={terminalAuthSelection?.providerId === activeProviderId ? terminalAuthSelection.kind : null}
+                        onLaunchAuth={(kind) => {
                             if (!supportsDesktopControls) return;
-                            setTerminalProviderId(activeProviderId);
+                            setTerminalAuthSelection({ providerId: activeProviderId, kind });
                         }}
                     />
-                    {supportsDesktopControls && terminalProviderId === activeProviderId && authState.loginLaunch ? (
+                    {supportsDesktopControls && terminalAuthSelection?.providerId === activeProviderId ? (
                         <View style={{ minHeight: 320 }}>
                             <ProviderAuthenticationTerminalPane
                                 providerId={activeProviderId}
                                 machineId={machineId}
                                 machineHomeDir={authState.machineHomeDir}
-                                loginLaunch={authState.loginLaunch}
-                                onRequestClose={() => setTerminalProviderId(null)}
+                                authLaunch={authState.authLaunches.find((launch) => launch.kind === terminalAuthSelection.kind) ?? null}
+                                onRequestClose={() => setTerminalAuthSelection(null)}
                                 onTerminalExit={() => {
                                     cliAvailability.refresh({
                                         bypassCache: true,
@@ -264,14 +269,14 @@ export const ProviderSetupFlow = React.memo(function ProviderSetupFlow(props: Re
                         primaryAction={{
                             label: (queueState?.pendingProviderIds.length ?? 0) > 0 ? t('common.continue') : t('common.done'),
                             onPress: () => {
-                                setTerminalProviderId(null);
+                                setTerminalAuthSelection(null);
                                 setQueueState((current) => (current ? completeActiveProviderSetupStep(current) : current));
                             },
                         }}
                         secondaryAction={{
                             label: t('settingsProviders.setup.skipAction'),
                             onPress: () => {
-                                setTerminalProviderId(null);
+                                setTerminalAuthSelection(null);
                                 setQueueState((current) => (current ? skipActiveProviderSetupStep(current) : current));
                             },
                         }}
@@ -288,7 +293,7 @@ export const ProviderSetupFlow = React.memo(function ProviderSetupFlow(props: Re
                         label: t('common.done'),
                         onPress: () => {
                             setQueueState(null);
-                            setTerminalProviderId(null);
+                            setTerminalAuthSelection(null);
                             installQueue.reset();
                         },
                     }}

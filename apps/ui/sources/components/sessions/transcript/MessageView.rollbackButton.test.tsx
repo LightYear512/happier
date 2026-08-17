@@ -74,7 +74,8 @@ vi.mock('@/components/markdown/MarkdownView', () => ({
 }));
 
 vi.mock('@/components/sessions/transcript/messageCopyVisibility', () => ({
-    shouldShowMessageCopyButton: () => true,
+    shouldShowTranscriptRowActions: () => true,
+    shouldShowTranscriptRowPinAction: () => true,
 }));
 
 vi.mock('@/components/sessions/transcript/structured/StructuredMessageBlock', () => ({
@@ -114,7 +115,8 @@ vi.mock('@/utils/system/fireAndForget', () => ({
     fireAndForget: (promise: any) => promise,
 }));
 
-vi.mock('@/sync/domains/messages/messageRouteIds', () => ({
+vi.mock('@/sync/domains/messages/messageRouteIds', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/messages/messageRouteIds')>()),
     resolveMessageRouteIdForDisplay: () => null,
 }));
 
@@ -130,8 +132,8 @@ vi.mock('@/components/sessions/linkedFiles/extractWorkspaceFileMentions', () => 
     extractWorkspaceFileMentions: () => [],
 }));
 
-vi.mock('@/components/sessions/linkedFiles/LinkedWorkspaceFilesRow', () => ({
-    LinkedWorkspaceFilesRow: () => null,
+vi.mock('@/components/sessions/transcript/references/StructuredReferencesRow', () => ({
+    StructuredReferencesRow: () => null,
 }));
 
 vi.mock('@/sync/domains/attachments/attachmentsMessageMeta', () => ({

@@ -7,6 +7,17 @@ import {
     buildLightShadowLevels,
     buildShadowPopoverArrowBoxShadow,
 } from '../shadowElevation';
+import {
+    buildLightStateColors,
+    darkStateColors,
+    LIGHT_STATE_INFO_FOREGROUND,
+} from './tokens/stateColors';
+import {
+    darkSurfaceColors,
+    darkTextColors,
+    lightSurfaceColors,
+    lightTextColors,
+} from './tokens/surfaceAndTextColors';
 import { createVerticalGradient } from './verticalGradient';
 
 // The opt-in glass composer is a large surface, so its top inner-shadow reads a
@@ -54,15 +65,10 @@ export const lightTheme = {
         // Main colors
         //
 
-        text: {
-            primary: '#000000',
-            secondary: '#6c6c70',
-            tertiary: '#99999d',
-            link: '#2BACCC',
-            destructive: '#FF3B30',
-            placeholder: '#999999',
-            disabled: '#C0C0C0',
-        },
+        // `text.*` and `surface.*` are owned by `theme/tokens/surfaceAndTextColors.ts` for the same
+        // reason `state.*` is: the Vitest theme mock must consume the same bytes rather than restate
+        // them. See that module for the seven drifts restating produced.
+        text: lightTextColors,
         accent: {
             blue: '#007AFF',
             green: '#34C759',
@@ -72,59 +78,37 @@ export const lightTheme = {
             indigo: Platform.select({ ios: '#5856D6', default: '#5C6BC0' }),
             purple: Platform.select({ ios: '#AF52DE', default: '#9C27B0' }),
         },
-        state: {
-            success: {
-                foreground: '#34C759',
-                background: 'rgba(52, 199, 89, 0.12)',
-                border: '#34C759',
-            },
-            warning: {
-                foreground: '#FF9500',
-                background: '#FFF8F0',
-                border: '#FF9500',
-            },
-            danger: {
-                foreground: '#FF3B30',
-                background: '#FFF0F0',
-                border: '#FF3B30',
-            },
-            info: {
-                foreground: Platform.select({ ios: '#5856D6', default: '#5C6BC0' }),
-                background: 'rgba(0, 122, 255, 0.10)',
-                border: '#007AFF',
-            },
-            neutral: {
-                foreground: '#8E8E93',
-                background: '#F2F2F7',
-                border: '#D1D1D6',
-            },
-            active: {
-                foreground: '#007AFF',
-                background: 'rgba(0, 122, 255, 0.10)',
-                border: 'rgba(0, 122, 255, 0.40)',
-            },
-        },
+        // The `state.*` palette is owned by `theme/tokens/stateColors.ts` so the Vitest theme mock
+        // consumes the same bytes instead of restating them (see that module for why it cannot
+        // import this one). `foreground` tints glyphs, icons, borders and action indicators;
+        // `onTint` is the ONLY correct colour for text sitting on the matching `background` tint.
+        // `themeContrast.test.ts` is the arbiter of every recorded ratio.
+        state: buildLightStateColors(Platform.select({
+            ios: LIGHT_STATE_INFO_FOREGROUND.ios,
+            default: LIGHT_STATE_INFO_FOREGROUND.default,
+        })),
         background: {
             canvas: '#F5F5F5',
         },
-        surface: {
-            base: '#ffffff',
-            inset: '#F8F8F8',
-            elevated: '#f0f0f0',
-            ripple: 'rgba(0, 0, 0, 0.08)',
-            pressed: '#fafafa',
-            selected: '#f8f8f8',
-            pressedOverlay: '#fafafa',
-            // Barely-there grouped-section tint. Baked as an opacity overlay (not a
-            // solid inset) so it reads a hair off the base surface; a runtime opacity
-            // transform would be a silent no-op once web var-ifies the token.
-            sectionTint: 'rgba(0,0,0,0.012)',
+        surface: lightSurfaceColors,
+        // The keyboard focus indicator. Deliberately its own hue rather than an alias of
+        // `state.active` or `accent.blue`: the ring's promise is >=3:1 against every surface the
+        // app can put behind it (WCAG 2.2 SC 1.4.11 / 2.4.11), and an accent that gets re-tuned
+        // for brand reasons cannot carry that promise. #0059B3 measures 6.82:1 on white down to
+        // 4.69:1 on `border.strong`, which is the binding case. `focusRingContrast.test.ts` is the
+        // arbiter.
+        focus: {
+            ring: '#0059B3',
         },
         border: {
             default: Platform.select({ ios: '#eaeaea', default: '#eaeaea' }),
             surface: 'transparent',
             strong: Platform.select({ ios: '#d6d6d6', default: '#d6d6d6' }),
             modal: 'rgba(0, 0, 0, 0.1)',
+            // Half the weight of `default`, for seams and for controls whose border should imply an
+            // edge without competing with the content inside it. Introduced for the sidebar/content
+            // seam and shared by the quiet toolbar buttons rather than re-typed as a literal.
+            subtle: 'rgba(0, 0, 0, 0.062)',
         },
         effect: {
             surfaceHighlight: 'transparent',
@@ -230,7 +214,7 @@ export const lightTheme = {
         },
         input: {
             background: '#F5F5F5',
-            text: '#000000',
+            text: '#222222',
             placeholder: '#999999',
         },
         composer: {
@@ -329,10 +313,10 @@ export const lightTheme = {
         message: {
             user: {
                 background: '#f0eee6',
-                foreground: '#000000',
+                foreground: '#222222',
             },
             agent: {
-                foreground: '#000000',
+                foreground: '#222222',
             },
             event: {
                 foreground: '#666666',
@@ -379,15 +363,8 @@ export const darkTheme = {
         // Main colors
         //
 
-        text: {
-            primary: '#EFEFEF',
-            secondary: '#8A817C',
-            tertiary: '#6C625D',
-            link: '#9EB9FF',
-            destructive: '#EE6E6C',
-            placeholder: '#766C67',
-            disabled: '#635955',
-        },
+        // See the light theme: owned by `theme/tokens/surfaceAndTextColors.ts`.
+        text: darkTextColors,
         accent: {
             blue: '#9EB9FF',
             green: '#66DC7E',
@@ -397,56 +374,23 @@ export const darkTheme = {
             indigo: '#8EA3FF',
             purple: '#C0A7FF',
         },
-        state: {
-            success: {
-                foreground: '#66DC7E',
-                background: 'rgba(102, 220, 126, 0.15)',
-                border: '#66DC7E',
-            },
-            warning: {
-                foreground: '#E0B65A',
-                background: 'rgba(224, 182, 90, 0.15)',
-                border: '#E0B65A',
-            },
-            danger: {
-                foreground: '#EE6E6C',
-                background: 'rgba(238, 110, 108, 0.15)',
-                border: '#EE6E6C',
-            },
-            info: {
-                foreground: '#9EB9FF',
-                background: 'rgba(158, 185, 255, 0.14)',
-                border: '#9EB9FF',
-            },
-            neutral: {
-                foreground: '#8A817C',
-                background: '#2A2222',
-                border: '#302727',
-            },
-            active: {
-                foreground: '#9EB9FF',
-                background: 'rgba(158, 185, 255, 0.12)',
-                border: 'rgba(158, 185, 255, 0.50)',
-            },
-        },
+        // See `theme/tokens/stateColors.ts` for the `foreground` vs `onTint` split and the ratios.
+        state: darkStateColors,
         background: {
             canvas: '#131111',
         },
-        surface: {
-            base: '#191717',
-            inset: '#171515',
-            elevated: '#221C1C',
-            ripple: 'rgba(255, 255, 255, 0.055)',
-            pressed: '#302727',
-            selected: '#292121',
-            pressedOverlay: 'rgba(255,255,255,0.036)',
-            sectionTint: 'rgba(255,255,255,0.014)',
+        surface: darkSurfaceColors,
+        // See the light theme for why this is a dedicated hue. #A9C2FF measures 10.07:1 on
+        // `surface.base` down to 6.20:1 on `border.strong` over `surface.pressed`.
+        focus: {
+            ring: '#A9C2FF',
         },
         border: {
             default: 'rgba(255,255,255,0.050)',
             surface: 'rgba(255,255,255,0.056)',
             strong: 'rgba(255,255,255,0.090)',
             modal: 'rgba(255,255,255,0.064)',
+            subtle: 'rgba(255,255,255,0.040)',
         },
         effect: {
             surfaceHighlight: 'transparent',

@@ -83,6 +83,26 @@ describe('createSessionConfigOptionOverrideSynchronizer', () => {
     expect(setSessionConfigOption).toHaveBeenCalledWith('speed', 'fast');
   });
 
+  it('preserves exact nonblank opaque config identifiers and values from metadata', async () => {
+    const setSessionConfigOption = vi.fn(async (_configId: string, _value: any) => {});
+    const sync = createSessionConfigOptionOverrideSynchronizer({
+      session: {
+        getMetadataSnapshot: () => ({
+          sessionConfigOptionOverridesV1: {
+            v: 1,
+            updatedAt: 23,
+            overrides: { ' effort ': { updatedAt: 23, value: ' high ' } },
+          },
+        }) as any,
+      },
+      runtime: { setSessionConfigOption },
+      isStarted: () => true,
+    });
+
+    sync.syncFromMetadata();
+    expect(setSessionConfigOption).toHaveBeenCalledWith(' effort ', ' high ');
+  });
+
   it('retries immediate apply on next sync when setSessionConfigOption fails', async () => {
     const setSessionConfigOption = vi
       .fn<(_configId: string, _value: any) => Promise<void>>()

@@ -36,6 +36,10 @@ import {
     emitClaudeUnifiedLifecycleGapDetected,
 } from './unifiedTerminal/telemetry';
 import { createClaudeSessionTranscriptProjector } from './localControl/createClaudeSessionTranscriptProjector';
+import { createClaudeWorkflowActivitySourceForSession } from './workflows/createClaudeWorkflowActivitySourceForSession';
+import { createWorkflowAgentTranscriptRegistrar } from './remote/sidechains/createWorkflowAgentTranscriptRegistrar';
+import type { ClaudeRemoteSubagentFileCollector } from './remote/sidechains/claudeRemoteSubagentFileCollector';
+import { loadClaudeJsonlReplayBaseline } from './utils/loadClaudeJsonlReplayBaseline';
 
 function upsertClaudePermissionModeArgs(
     args: string[] | undefined,
@@ -99,7 +103,31 @@ export async function claudeLocalLauncher(
 
         const entry = opts?.entry ?? 'initial';
         const remoteSwitchingEnabled = opts?.remoteSwitchingEnabled !== false;
-        const transcriptProjector = createClaudeSessionTranscriptProjector({ session, logPrefix: '[local]' });
+        // Centralized Claude Dynamic Workflow ACTIVITY source (CWF2/CWF3/CWF4). Built at the launcher
+        // (which owns credentials + stored-content encryption) and handed to the projector, which feeds
+        // it the SAME raw transcript channel as the goal source and applies its CWF4 owned-id filter at
+        // the work-state merge chokepoint. Null when no credentials are available yet — the goal /
+        // work-state path is unaffected.
+        // The scanner that owns this session's ONE sidechain importer is created further down (it
+        // needs the projector this source feeds), so the source reaches the importer through this
+        // holder rather than the other way round. A workflow run cannot start before the scanner
+        // exists — nothing observes a transcript until then — and the registrar FAILS rather than
+        // assuming it, so no agent is ever stamped with an id for an import that did not happen.
+        let subagentFileCollectorRef: ClaudeRemoteSubagentFileCollector | null = null;
+        const workflowActivitySource = await createClaudeWorkflowActivitySourceForSession({
+            session,
+            logPrefix: '[local]',
+            // Workflow agent transcripts ride the SAME importer as `Task` sub-agent transcripts: one
+            // follower budget, one dedupe, one `isSidechain`/`sidechainId` marking rule.
+            registerWorkflowAgentTranscript: createWorkflowAgentTranscriptRegistrar({
+                getCollector: () => subagentFileCollectorRef,
+            }),
+            getCurrentClaudeSessionId: () => {
+                const claudeSessionId = session.client.getMetadataSnapshot?.()?.claudeSessionId;
+                return typeof claudeSessionId === 'string' && claudeSessionId.trim().length > 0 ? claudeSessionId.trim() : null;
+            },
+        });
+        const transcriptProjector = createClaudeSessionTranscriptProjector({ session, logPrefix: '[local]', workflowActivitySource });
         const readyHandler = createClaudeReadyHandler({
             session: session.client,
             pushSender: null,
@@ -107,6 +135,7 @@ export async function claudeLocalLauncher(
             logPrefix: '[local]',
             getPending: () => null,
             getQueueSize: () => session.queue.size(),
+            hasOnlyBlockedPendingWork: () => session.client.hasOnlyBlockedPendingWork?.() === true,
         });
         const surfaceRateLimit = (details: NormalizedProviderUsageLimitDetailsV1): void => {
             void surfaceClaudeRateLimitRuntimeIssue(session, details, '[local]').catch((error) => {
@@ -137,11 +166,29 @@ export async function claudeLocalLauncher(
         });
         const applyFd3ThinkingFallback = (thinking: boolean): void => {
             const snapshot = turnLifecycle.snapshot();
+            // Claude's legacy terminal thinking signal can briefly flip back to busy
+            // for post-result task notifications/background output. Once the hook
+            // lifecycle has terminalized the foreground turn, only a real hook
+            // turn-start should open the next foreground lifecycle.
+            if (thinking && snapshot.terminal && !snapshot.active) return;
             if (!thinking && snapshot.active && !snapshot.terminal) return;
             session.onThinkingChange(thinking);
         };
-        const lifecycleTracker = createClaudeLocalLifecycleTracker({ lifecycle: turnLifecycle });
+        const lifecycleTracker = createClaudeLocalLifecycleTracker({
+            lifecycle: turnLifecycle,
+            runtimeActivityAdapter: session.getProviderTaskRuntimeActivityAdapter(),
+            providerActivityLedger: session.getProviderTaskActivityLedger() ?? undefined,
+        });
         const unifiedTelemetry = createClaudeUnifiedTelemetrySink();
+
+        const resumesKnownClaudeSession = Boolean(session.sessionId || session.transcriptPath);
+        const replayBaseline = resumesKnownClaudeSession
+            ? await loadClaudeJsonlReplayBaseline({
+                loadCommittedBaseline: session.client.fetchCommittedClaudeJsonlMessageBaseline?.bind(session.client),
+                resumesKnownClaudeSession: true,
+                logPrefix: '[local]',
+            })
+            : null;
 
         // Create scanner
             const scanner = await createSessionScanner({
@@ -149,9 +196,29 @@ export async function claudeLocalLauncher(
         transcriptPath: session.transcriptPath,
         claudeConfigDir: resolveClaudeConfigDirOverride(process.env),
         workingDirectory: session.path,
-        onMessage: (message) => {
-            transcriptProjector.observe(message);
-            lifecycleTracker.observeTranscript(message);
+        initialProcessedMessageKeys: replayBaseline?.initialProcessedMessageKeys,
+        replayInitialMessages: resumesKnownClaudeSession,
+        replaySuppressRowsBeforeMs: replayBaseline?.replaySuppressRowsBeforeMs ?? null,
+        onMessage: async (message, observation) => {
+            if (observation?.historicalReplay) {
+                await transcriptProjector.observeCommitted(message);
+            } else {
+                transcriptProjector.observe(message);
+                lifecycleTracker.observeTranscript(message);
+            }
+        },
+        // Native Claude `/goal` source (plan H7): goal_status attachments + the
+        // system/init slash_commands are dropped before `onMessage` (F2 gate), so
+        // the goal source must observe them on the RAW channel. The projector keeps
+        // them out of the visible transcript.
+        onRawJsonlValue: (value, observation) => {
+            transcriptProjector.observeRaw(value, observation);
+        },
+        onLiveJsonlValue: ({ sessionId, value }) => {
+            lifecycleTracker.observeLiveProviderActivityRow(value, sessionId);
+        },
+        onLiveJsonlObservationLost: ({ reason }) => {
+            lifecycleTracker.handleProviderActivityObservationLoss(reason);
         },
         onTranscriptMissing: () => {
             session.client.sendSessionEvent({
@@ -161,7 +228,10 @@ export async function claudeLocalLauncher(
         },
         transcriptMissingWarningMs: configuration.claudeTranscriptMissingWarningMs,
     });
-    
+    // The scanner owns this session's one sidechain importer; the workflow journal follower can now
+    // hand its `agent-<id>.jsonl` sidecars to it.
+    subagentFileCollectorRef = scanner.subagentFileCollector;
+
     // Register callback to notify scanner when session ID is found via hook
     // This is important for --continue/--resume where session ID is not known upfront
     const scannerSessionCallback = (info: SessionFoundInfo) => {
@@ -182,6 +252,10 @@ export async function claudeLocalLauncher(
     let deferredRemoteSwitch: { dispose: () => void } | null = null;
     let pendingQueueWatcher: { stop: () => void } | null = null;
     try {
+        workflowActivitySource?.armStartupReconciliation();
+        await session.getProviderTaskRuntimeActivityAdapter()?.activateObservation(
+            'claude-local-provider-observer-installed',
+        );
         const clientEmitter = session.client as unknown as {
             getMetadataSnapshot?: () => Metadata | null | undefined;
             on?: (event: string, listener: () => void) => void;
@@ -329,9 +403,8 @@ export async function claudeLocalLauncher(
                 }
                 return session.client.peekPendingMessageQueueV2Count({ reconcileWhenEmpty: 'skip', reason: 'passive-wait' });
             },
-            pollIntervalMs: configuration.pendingQueueIdleWakePollIntervalMs,
             requestRemoteSwitch: () => remoteSwitchController.requestRemoteSwitch('server_pending_queue'),
-            waitForPendingQueueUpdate: (signal) => session.client.waitForMetadataUpdate(signal),
+            waitForPendingQueueUpdate: (signal) => session.client.waitForPendingEligibilityUpdate(signal),
         }) : null;
 
         // Handle session start
@@ -484,7 +557,18 @@ export async function claudeLocalLauncher(
         deferredRemoteSwitch?.dispose();
         turnLifecycle.dispose();
 
-        // Cleanup
+        // This teardown is the OBSERVATION that the provider process is gone: resolve every
+        // shutdown-sensitive source the projector owns before the sources are drained and disposed.
+        // G-6 marks an active-but-unmet goal interrupted; RULING-14 resolves live workflow runs and
+        // their agents so they stop reading as "Working" forever.
+        transcriptProjector.finalizeInterruptedWorkOnShutdown();
+        // Drain any pending workflow-activity writes, then stop scheduling (dispose via reset()).
+        await transcriptProjector.flushWorkflowActivity();
+        transcriptProjector.reset();
+
+        // Cleanup. The importer dies with the scanner, so withdraw it first: a late journal entry
+        // must fail to register rather than attach a follower nothing will ever stop.
+        subagentFileCollectorRef = null;
         await scanner.cleanup();
     }
 

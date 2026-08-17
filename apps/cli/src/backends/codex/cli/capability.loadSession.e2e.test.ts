@@ -89,6 +89,7 @@ describe('cli.codex capability (ACP)', () => {
               codex: { available: true, resolvedPath: resolvedCodexPath as string },
               opencode: makeUnavailableCliEntry(),
               gemini: makeUnavailableCliEntry(),
+              grok: makeUnavailableCliEntry(),
               auggie: makeUnavailableCliEntry(),
               qwen: makeUnavailableCliEntry(),
               kimi: makeUnavailableCliEntry(),

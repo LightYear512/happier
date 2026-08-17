@@ -29,7 +29,13 @@ describe('createAttachmentActionChip', () => {
         const originalOs = Platform.OS;
         (Platform as any).OS = 'ios';
         const queuedInteractionCallbacks: Array<() => void> = [];
-        const queuedTimeoutCallbacks: Array<() => void> = [];
+        const queuedTimeoutCallbacks: Array<{ handler: () => void; timeout: number }> = [];
+        const runQueuedTimeout = (delay: number) => {
+            const index = queuedTimeoutCallbacks.findIndex((entry) => entry.timeout === delay);
+            expect(index).toBeGreaterThanOrEqual(0);
+            const [entry] = queuedTimeoutCallbacks.splice(index, 1);
+            entry!.handler();
+        };
         type RunAfterInteractionsTask = Parameters<typeof InteractionManager.runAfterInteractions>[0];
         const createRunAfterInteractionsResult = (): ReturnType<typeof InteractionManager.runAfterInteractions> => ({
             then: (onfulfilled, onrejected) => Promise.resolve().then(() => onfulfilled?.(), onrejected),
@@ -48,7 +54,7 @@ describe('createAttachmentActionChip', () => {
             .spyOn(globalThis, 'setTimeout')
             .mockImplementation((handler: TimerHandler, timeout?: number) => {
                 if (typeof handler === 'function') {
-                    queuedTimeoutCallbacks.push(handler as () => void);
+                    queuedTimeoutCallbacks.push({ handler: handler as () => void, timeout: timeout ?? 0 });
                 }
                 return 0 as unknown as ReturnType<typeof setTimeout>;
             });
@@ -104,7 +110,7 @@ describe('createAttachmentActionChip', () => {
             queuedInteractionCallbacks.shift()?.();
             expect(onPickImage).not.toHaveBeenCalled();
             expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 250);
-            queuedTimeoutCallbacks.shift()?.();
+            runQueuedTimeout(250);
             expect(onPickImage).toHaveBeenCalledTimes(1);
 
             requestClose.mockClear();
@@ -115,7 +121,7 @@ describe('createAttachmentActionChip', () => {
             queuedInteractionCallbacks.shift()?.();
             expect(onPickFile).not.toHaveBeenCalled();
             expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 250);
-            queuedTimeoutCallbacks.shift()?.();
+            runQueuedTimeout(250);
             expect(onPickFile).toHaveBeenCalledTimes(1);
 
             requestClose.mockClear();
@@ -126,7 +132,7 @@ describe('createAttachmentActionChip', () => {
             queuedInteractionCallbacks.shift()?.();
             expect(onPasteImage).not.toHaveBeenCalled();
             expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 250);
-            queuedTimeoutCallbacks.shift()?.();
+            runQueuedTimeout(250);
             expect(onPasteImage).toHaveBeenCalledTimes(1);
         } finally {
             setTimeoutSpy.mockRestore();
@@ -134,6 +140,12 @@ describe('createAttachmentActionChip', () => {
             (Platform as any).OS = originalOs;
         }
     });
+
+    // NOTE: a "JS-thread starvation fallback" case used to live here. It mocked
+    // `InteractionManager.runAfterInteractions` to never invoke its task, which RN 0.81's
+    // `InteractionManagerStub` cannot do (it always resolves on a microtask), and it asserted a
+    // timeout fallback that could therefore never fire. Both the fallback and the test were removed;
+    // the iOS case above covers the real contract (interaction task -> 250ms popover-dismiss delay).
 
     it('on web it keeps the attach chip as a direct action (no chooser popover)', async () => {
         const { createAttachmentActionChip } = await import('./createAttachmentActionChip');

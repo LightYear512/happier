@@ -12,11 +12,18 @@ import { resolveLocalServerPortForStack } from './utils/server/resolve_stack_ser
 import { STACK_RESERVED_PORT_KEYS } from './utils/server/port.mjs';
 import { resolveStackEnvPath } from './utils/paths/paths.mjs';
 import { parseEnvToObject } from './utils/env/dotenv.mjs';
-import { applyStackActiveServerScopeEnv, buildStackStableScopeId } from './utils/auth/stable_scope_id.mjs';
-import { resolvePreferredStackServerIdFromCliSettings } from './utils/auth/credentials_paths.mjs';
-import { readCliDistIntegrity } from './utils/cli/cliDistIntegrity.mjs';
+import {
+  applyStackActiveServerScopeEnv,
+  applyStackDaemonLifecycleScopeEnv,
+  buildStackStableScopeId,
+} from './utils/auth/stable_scope_id.mjs';
+import { probeCliDistRuntimeImport, readCliDistIntegrity } from './utils/cli/cliDistIntegrity.mjs';
 import { resolveStackRuntimeLaunchContext } from './runtime/launch/resolveStackRuntimeLaunchContext.mjs';
-import { resolveCliRuntimeLaunchSpec } from './runtime/launch/resolveCliRuntimeLaunchSpec.mjs';
+import { isPidAlive, readStackRuntimeStateFile } from './utils/stack/runtime_state.mjs';
+import {
+  applyCliRuntimeLaunchProvenanceEnv,
+  resolveCliRuntimeLaunchSpec,
+} from './runtime/launch/resolveCliRuntimeLaunchSpec.mjs';
 import { resolveJavaScriptRuntimeCommand } from '@happier-dev/cli-common/providers/managedJavaScriptRuntime';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 
@@ -221,7 +228,7 @@ function isIdentityScopedCliHomeDir(value) {
   return /(^|[\\/])cli-identities([\\/]|$)/.test(String(value ?? '').trim());
 }
 
-function bestEffortSeedStackServerProfileInCliSettings({ cliHomeDir, stackName, cliIdentity, internalServerUrl, publicServerUrl }) {
+function bestEffortReconcileStackServerProfileInCliSettings({ cliHomeDir, stackName, cliIdentity, internalServerUrl, publicServerUrl }) {
   const home = String(cliHomeDir ?? '').trim();
   if (!home) return;
   const serverUrl = normalizeServerUrl(internalServerUrl);
@@ -244,7 +251,7 @@ function bestEffortSeedStackServerProfileInCliSettings({ cliHomeDir, stackName, 
   const serversRaw = parsed.servers && typeof parsed.servers === 'object' ? parsed.servers : {};
   const servers = { ...serversRaw };
 
-  const matchingId = Object.entries(servers).find(([, profile]) => {
+  const matchingIds = Object.entries(servers).filter(([, profile]) => {
     const coerced = coerceServerProfileFromSettings(profile);
     if (!coerced) return false;
     const targetComparableKey = comparableServerUrl(serverUrl);
@@ -254,12 +261,19 @@ function bestEffortSeedStackServerProfileInCliSettings({ cliHomeDir, stackName, 
       || normalizeServerUrl(coerced.serverUrl) === serverUrl
       || normalizeServerUrl(coerced.localServerUrl) === serverUrl
     );
-  })?.[0] ?? '';
+  }).map(([id]) => id);
 
   const stableId = buildStackStableScopeId({ stackName, cliIdentity });
-  const targetId = matchingId || stableId;
+  const activeServerId = typeof parsed.activeServerId === 'string' ? parsed.activeServerId.trim() : '';
+  const sourceId = matchingIds.includes(activeServerId)
+    ? activeServerId
+    : matchingIds.length === 1
+      ? matchingIds[0]
+      : '';
+  const targetId = stableId;
 
-  const existing = servers[targetId] && typeof servers[targetId] === 'object' ? servers[targetId] : {};
+  const source = sourceId && servers[sourceId] && typeof servers[sourceId] === 'object' ? servers[sourceId] : {};
+  const existing = servers[targetId] && typeof servers[targetId] === 'object' ? servers[targetId] : source;
   const now = Date.now();
   const nextProfile = {
     ...existing,
@@ -273,16 +287,39 @@ function bestEffortSeedStackServerProfileInCliSettings({ cliHomeDir, stackName, 
     lastUsedAt: now,
   };
 
+  let nextSettings = { ...parsed, activeServerId: targetId, servers: { ...servers, [targetId]: nextProfile } };
+  let didMigrateServerScopedState = false;
+  if (sourceId && sourceId !== targetId) {
+    const migrateServerScopedEntry = (key) => {
+      const sourceMap = parsed[key];
+      if (!sourceMap || typeof sourceMap !== 'object' || !(sourceId in sourceMap)) return;
+      const targetMap = { ...sourceMap };
+      if (!(targetId in targetMap)) {
+        targetMap[targetId] = sourceMap[sourceId];
+        didMigrateServerScopedState = true;
+      }
+      nextSettings = { ...nextSettings, [key]: targetMap };
+    };
+    for (const key of [
+      'machineIdByServerId',
+      'machineIdByServerIdByAccountId',
+      'machineReplacementCandidatesByServerIdByAccountId',
+      'lastTokenSubByServerId',
+      'machineIdConfirmedByServerByServerId',
+      'lastChangesCursorByServerIdByAccountId',
+    ]) {
+      migrateServerScopedEntry(key);
+    }
+  }
+
   const shouldWrite =
     parsed.activeServerId !== targetId ||
     !servers[targetId] ||
     normalizeServerUrl(servers[targetId].serverUrl) !== serverUrl ||
-    normalizeServerUrl(servers[targetId].webappUrl) !== webappUrl;
+    normalizeServerUrl(servers[targetId].webappUrl) !== webappUrl ||
+    didMigrateServerScopedState;
 
   if (!shouldWrite) return;
-
-  servers[targetId] = nextProfile;
-  const nextSettings = { ...parsed, activeServerId: targetId, servers };
 
   try {
     writeFileSync(settingsPath, JSON.stringify(nextSettings, null, 2) + '\n', 'utf-8');
@@ -291,11 +328,16 @@ function bestEffortSeedStackServerProfileInCliSettings({ cliHomeDir, stackName, 
   }
 }
 
-function resolveCliEntrypoint(cliDir) {
+async function resolveCliEntrypoint(cliDir) {
   const distEntrypoint = join(cliDir, 'dist', 'index.mjs');
   const distIntegrity = readCliDistIntegrity(distEntrypoint);
   if (distIntegrity.ok) {
-    return { kind: 'dist', nodeArgs: [distEntrypoint], distEntrypoint };
+    try {
+      await probeCliDistRuntimeImport(distEntrypoint, { cwd: cliDir });
+      return { kind: 'dist', nodeArgs: [distEntrypoint], distEntrypoint };
+    } catch {
+      // Fall through to the source entrypoint when the completed build cannot link at runtime.
+    }
   }
 
   const srcEntrypoint = join(cliDir, 'src', 'index.ts');
@@ -347,7 +389,20 @@ async function main() {
     defaultPort: 3005,
   });
   const prefixServerSelection = readPrefixServerSelection(argv);
-  const runtimeLaunchContext = await resolveStackRuntimeLaunchContext({ argv, env: baseProcessEnv });
+  const recordedRuntimeState = await readStackRuntimeStateFile(runtimeStatePath);
+  const recordedRuntimeOwnerPid = Number(recordedRuntimeState?.ownerPid);
+  const activeRuntimeState =
+    String(recordedRuntimeState?.stackName ?? '').trim() === stackName &&
+    Number.isFinite(recordedRuntimeOwnerPid) &&
+    recordedRuntimeOwnerPid > 1 &&
+    isPidAlive(recordedRuntimeOwnerPid)
+    ? recordedRuntimeState
+    : null;
+  const runtimeLaunchContext = await resolveStackRuntimeLaunchContext({
+    argv,
+    env: baseProcessEnv,
+    activeRuntimeState,
+  });
 
   const internalServerUrl = `http://127.0.0.1:${serverPort}`;
   const { publicServerUrl } = getPublicServerUrlEnvOverride({ env: baseProcessEnv, serverPort, stackName });
@@ -367,7 +422,7 @@ async function main() {
           args: cliLaunchSpec.args,
           distEntrypoint: cliLaunchSpec.entrypoint,
         }
-    : resolveCliEntrypoint(cliDir);
+    : await resolveCliEntrypoint(cliDir);
   if (wantsHelp(argv, { flags }) && !resolvedCli) {
     printHstackHappierHelp({ json });
     return;
@@ -417,7 +472,7 @@ async function main() {
 
   if (isStackScopedInvocation && !prefixServerSelection.hasExplicitSelection) {
     const cliIdentity = (env.HAPPIER_STACK_CLI_IDENTITY ?? '').toString().trim() || 'default';
-    bestEffortSeedStackServerProfileInCliSettings({
+    bestEffortReconcileStackServerProfileInCliSettings({
       cliHomeDir,
       stackName,
       cliIdentity,
@@ -442,6 +497,7 @@ async function main() {
     }
     env.HAPPIER_WEBAPP_URL = settingsDefaults.webappUrl;
     delete env.HAPPIER_ACTIVE_SERVER_ID;
+    delete env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID;
   }
   // Only set default env vars when no explicit server selection flags are present
   if (!prefixServerSelection.hasExplicitSelection && !settingsDefaults) {
@@ -470,20 +526,17 @@ async function main() {
     } else {
       delete env.HAPPIER_ACTIVE_SERVER_ID;
     }
-  } else if (isStackScopedInvocation && !settingsDefaults) {
-    env = applyStackActiveServerScopeEnv({
-      env,
+    delete env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID;
+  } else if (!settingsDefaults) {
+    env = applyStackDaemonLifecycleScopeEnv({
+      env: applyStackActiveServerScopeEnv({
+        env,
+        stackName,
+        cliIdentity: (env.HAPPIER_STACK_CLI_IDENTITY ?? '').toString().trim() || 'default',
+      }),
       stackName,
       cliIdentity: (env.HAPPIER_STACK_CLI_IDENTITY ?? '').toString().trim() || 'default',
     });
-    const settingsServerId = resolvePreferredStackServerIdFromCliSettings({
-      cliHomeDir,
-      serverUrl: internalServerUrl,
-      env,
-    });
-    if (settingsServerId) {
-      env.HAPPIER_ACTIVE_SERVER_ID = settingsServerId;
-    }
   }
 
   if (cliLaunchSpec?.nodeEntrypoint) {
@@ -498,6 +551,7 @@ async function main() {
     }
   }
 
+  env = applyCliRuntimeLaunchProvenanceEnv({ env, cliLaunchSpec });
   const forwardedArgv = stripHstackHappierWrapperFlags(argv);
   const res =
     resolvedCli.kind === 'runtime'

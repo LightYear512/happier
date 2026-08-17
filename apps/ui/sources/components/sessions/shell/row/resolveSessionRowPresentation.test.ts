@@ -107,6 +107,31 @@ describe('resolveSessionRowPresentation', () => {
         });
     });
 
+    it('gives retained working rows a dedicated status text instead of live status', () => {
+        expect(resolveSessionRowPresentation({
+            attentionState: 'working',
+            workingRetained: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'path',
+            hasPathSubtitle: true,
+        })).toEqual({
+            attentionIndicator: 'working',
+            titleTone: 'emphasized',
+            secondaryLine: 'status',
+            statusTextKey: 'status.workingRetained',
+        });
+    });
+
+    it('does not apply the retained status text to live working rows', () => {
+        expect(resolveSessionRowPresentation({
+            attentionState: 'working',
+            workingRetained: false,
+            density: 'default',
+            requestedSecondaryLineMode: 'path',
+            hasPathSubtitle: true,
+        }).statusTextKey).toBeUndefined();
+    });
+
     it('keeps blocked active work visible when the row prefers a path subtitle', () => {
         expect(resolveSessionRowPresentation({
             attentionState: 'permission_required',
@@ -168,6 +193,99 @@ describe('resolveSessionRowPresentation', () => {
             titleTone: 'emphasized',
             secondaryLine: 'status',
             statusTextKey: 'status.error',
+        });
+    });
+
+    it('uses the normal working indicator for background activity while retaining precise status and higher-priority attention', () => {
+        expect(resolveSessionRowPresentation({
+            attentionState: 'unread',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'path',
+            hasPathSubtitle: true,
+        })).toEqual({
+            attentionIndicator: 'working',
+            titleTone: 'emphasized',
+            secondaryLine: 'status',
+            backgroundActivityStatusLine: true,
+        });
+        expect(resolveSessionRowPresentation({
+            attentionState: 'pending',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        })).toEqual({
+            attentionIndicator: 'working',
+            titleTone: 'emphasized',
+            secondaryLine: 'status',
+            backgroundActivityStatusLine: true,
+        });
+        expect(resolveSessionRowPresentation({
+            attentionState: 'ready',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        })).toEqual({
+            attentionIndicator: 'working',
+            titleTone: 'emphasized',
+            secondaryLine: 'status',
+            backgroundActivityStatusLine: true,
+        });
+        expect(resolveSessionRowPresentation({
+            attentionState: 'permission_required',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        })).toEqual({
+            attentionIndicator: 'permission',
+            titleTone: 'emphasized',
+            secondaryLine: 'status',
+        });
+        expect(resolveSessionRowPresentation({
+            attentionState: 'action_required',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        }).attentionIndicator).toBe('action');
+        expect(resolveSessionRowPresentation({
+            attentionState: 'failed',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        }).attentionIndicator).toBe('failed');
+    });
+
+    it('uses the normal working indicator without a secondary line in minimal background-active rows', () => {
+        expect(resolveSessionRowPresentation({
+            attentionState: 'quiet',
+            backgroundActive: true,
+            density: 'minimal',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        })).toEqual({
+            attentionIndicator: 'working',
+            titleTone: 'quiet',
+            secondaryLine: 'none',
+        });
+    });
+
+    it('keeps a quiet background-active row title quiet while showing the working indicator', () => {
+        expect(resolveSessionRowPresentation({
+            attentionState: 'quiet',
+            backgroundActive: true,
+            density: 'default',
+            requestedSecondaryLineMode: 'status',
+            hasPathSubtitle: false,
+        })).toEqual({
+            attentionIndicator: 'working',
+            titleTone: 'quiet',
+            secondaryLine: 'status',
+            backgroundActivityStatusLine: true,
         });
     });
 

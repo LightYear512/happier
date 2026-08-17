@@ -155,6 +155,7 @@ const persistedDraft = vi.hoisted(() => ({
     codexBackendMode?: unknown;
     targetServerId?: string | null;
     windowsRemoteSessionLaunchModeOverride?: { machineId: string; mode: 'hidden' | 'windows_terminal' | 'console' } | null;
+    launchUserAttemptId?: string;
 });
 
 const cliDetectionState = vi.hoisted(() => ({
@@ -546,6 +547,7 @@ vi.mock('@/components/automations/editor/AutomationSettingsForm', () => ({
 }));
 
 vi.mock('@react-navigation/native', () => ({
+    useIsFocused: () => true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useFocusEffect: (fn: any) => {
         focusEffectRef.current.push(fn);
@@ -743,7 +745,6 @@ vi.mock('@/components/sessions/new/hooks/useCreateNewSession', () => ({
 vi.mock('@/components/sessions/new/hooks/useNewSessionWizardProps', () => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useNewSessionWizardProps: (params: any) => ({
-        layout: {},
         profiles: {
             selectedProfileId: params.selectedProfileId,
             getProfileSubtitleExtra: params.getProfileSubtitleExtra,
@@ -753,9 +754,15 @@ vi.mock('@/components/sessions/new/hooks/useNewSessionWizardProps', () => ({
             openProfileEdit: params.openProfileEdit,
             handleDuplicateProfile: params.handleDuplicateProfile,
         },
-        agent: {},
-        machine: {},
-        footer: {},
+        // Mirrors the real hook: wizard-only sections exist only for the wizard variant.
+        wizardSections: params.enabled
+            ? {
+                layout: {},
+                agent: {},
+                machine: {},
+                footer: {},
+            }
+            : null,
     }),
 }));
 
@@ -975,6 +982,7 @@ export function resetDraftPersistenceState(): void {
     delete persistedDraft.resumeSessionId;
     delete persistedDraft.targetServerId;
     delete persistedDraft.windowsRemoteSessionLaunchModeOverride;
+    delete persistedDraft.launchUserAttemptId;
     persistedDraft.selectedMachineId = 'machine-2';
     persistedDraft.selectedPath = '/repo/custom';
     persistedDraft.updatedAt = 123;

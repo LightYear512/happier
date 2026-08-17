@@ -1,7 +1,7 @@
 import type { AgentBackend } from '@/agent/core/AgentBackend';
 import type { AgentPromptPayload } from '@/agent/core/AgentPromptPayload';
 import type { AgentId } from '@happier-dev/agents';
-import type { BackendTargetRefV1 } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, BackendTargetRefV1 } from '@happier-dev/protocol';
 
 import { sendAgentPromptPayload, sendAgentSteerPromptPayload } from '@/agent/core/AgentPromptPayload';
 import { createConfiguredAcpBackend } from '@/agent/acp/catalog/configured/createConfiguredAcpBackend';
@@ -17,6 +17,15 @@ import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/boot
 import { assertBackendEnabledByAccountSettings } from '@/settings/backendEnabled';
 
 export { createExecutionRunPermissionHandler } from '@/agent/executionRuns/policy/executionRunPermissionDecision';
+
+function startBestEffortConstructionCleanup(cleanup: (() => void | Promise<void>) | null): void {
+  if (!cleanup) return;
+  try {
+    void Promise.resolve(cleanup()).catch(() => {});
+  } catch {
+    // Construction must preserve its original error even when cleanup itself throws synchronously.
+  }
+}
 
 function normalizeNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -192,100 +201,165 @@ export function createExecutionRunBackend(opts: Readonly<{
   backendId: string;
   backendTarget?: BackendTargetRefV1;
   modelId?: string;
+  /**
+   * Optional canonical config-option overrides for the run (e.g. `reasoning_effort`), SAME shape as
+   * session spawn. Threaded to the backend factory so providers apply run options exactly like a
+   * spawned session. Absent keeps the backend's configured defaults.
+   */
+  sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
   permissionMode: string;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   start?: Readonly<{ intentInput?: unknown; retentionPolicy?: string; intent?: string }> | null;
+  /**
+   * Provider-agnostic connected-service environment for this run, already materialized by the daemon
+   * run-materialization bridge (e.g. `CODEX_HOME`/`CLAUDE_CONFIG_DIR`). Merged into the isolation
+   * bundle BEFORE the per-backend `resolveIsolation` so runs use CS accounts/pools exactly like
+   * sessions. No provider knowledge lives here — the keys come from the daemon materializer.
+   */
+  connectedServicesEnv?: Readonly<Record<string, string>> | null;
+  /**
+   * Idempotent run-end release for the daemon-side CS registration + run-scoped materialized root.
+   * Invoked on backend dispose (run end / stop) regardless of retention policy — the materialized
+   * root is run-scoped, so a later resume re-materializes rather than reusing a stale root.
+   */
+  connectedServicesCleanup?: (() => Promise<void>) | null;
 }>): AgentBackend {
-  const backendId = String(opts.backendId ?? '').trim();
-  const accountSettings = resolveExecutionRunAccountSettings({
-    backendTarget: opts.backendTarget,
-    accountSettings: opts.accountSettings,
-  });
-  if (accountSettings && opts.backendTarget?.kind === 'builtInAgent') {
-    assertBackendEnabledByAccountSettings({
-      agentId: opts.backendTarget.agentId as AgentId,
+  const connectedServicesCleanup = opts.connectedServicesCleanup ?? null;
+  let acquiredIsolationCleanup: (() => void | Promise<void>) | null = null;
+  try {
+    const backendId = String(opts.backendId ?? '').trim();
+    const accountSettings = resolveExecutionRunAccountSettings({
       backendTarget: opts.backendTarget,
-      settings: accountSettings,
+      accountSettings: opts.accountSettings,
     });
-  }
-  if (accountSettings && opts.backendTarget?.kind === 'configuredAcpBackend') {
-    assertBackendEnabledByAccountSettings({
-      backendTarget: opts.backendTarget,
-      settings: accountSettings,
-    });
-  }
-  if (backendId === 'customAcp' && opts.backendTarget?.kind === 'configuredAcpBackend') {
-    return createLazyConfiguredAcpExecutionRunBackend({
-      cwd: opts.cwd,
-      backendTarget: opts.backendTarget,
-      modelId: opts.modelId,
-      permissionMode: opts.permissionMode,
-      credentials: null,
-      accountSettings,
-    });
-  }
-  const permissionHandler = createExecutionRunPermissionHandler({
-    backendId,
-    permissionMode: opts.permissionMode,
-  });
-  const descriptor = getExecutionRunBackendDescriptor(backendId);
-  if (!descriptor) {
-    throw new Error(`Unsupported execution-run backend: ${backendId}`);
-  }
-
-  const retentionPolicy = String(opts.start?.retentionPolicy ?? '').trim();
-  const shouldCleanupIsolation = retentionPolicy === 'ephemeral';
-  const shouldIsolate = shouldCleanupIsolation || String(opts.runId ?? '').trim().length > 0;
-  const intent = (() => {
-    const raw = String(opts.start?.intent ?? '').trim();
-    return raw.length > 0 ? raw : undefined;
-  })();
-
-  const isolationId = shouldIsolate ? (String(opts.runId ?? '').trim() || `run_${backendId}_${Date.now()}`) : '';
-  const baseBundle = shouldIsolate
-    ? resolveBackendIsolationBundle({
-        backendId,
-        isolationId,
-        scope: 'execution_run',
-        ...(intent ? { intent } : {}),
+    if (accountSettings && opts.backendTarget?.kind === 'builtInAgent') {
+      assertBackendEnabledByAccountSettings({
+        agentId: opts.backendTarget.agentId as AgentId,
+        backendTarget: opts.backendTarget,
+        settings: accountSettings,
+      });
+    }
+    if (accountSettings && opts.backendTarget?.kind === 'configuredAcpBackend') {
+      assertBackendEnabledByAccountSettings({
+        backendTarget: opts.backendTarget,
+        settings: accountSettings,
+      });
+    }
+    if (backendId === 'customAcp' && opts.backendTarget?.kind === 'configuredAcpBackend') {
+      return createLazyConfiguredAcpExecutionRunBackend({
         cwd: opts.cwd,
-      })
-    : null;
+        backendTarget: opts.backendTarget,
+        modelId: opts.modelId,
+        permissionMode: opts.permissionMode,
+        credentials: null,
+        accountSettings,
+      });
+    }
+    const permissionHandler = createExecutionRunPermissionHandler({
+      backendId,
+      permissionMode: opts.permissionMode,
+    });
+    const descriptor = getExecutionRunBackendDescriptor(backendId);
+    if (!descriptor) {
+      throw new Error(`Unsupported execution-run backend: ${backendId}`);
+    }
 
-  const bundle = baseBundle && descriptor.resolveIsolation
-    ? descriptor.resolveIsolation(
-        {
+    const connectedServicesEnv = opts.connectedServicesEnv && typeof opts.connectedServicesEnv === 'object'
+      ? opts.connectedServicesEnv
+      : null;
+    const hasConnectedServicesEnv = connectedServicesEnv !== null && Object.keys(connectedServicesEnv).length > 0;
+
+    const retentionPolicy = String(opts.start?.retentionPolicy ?? '').trim();
+    const shouldCleanupIsolation = retentionPolicy === 'ephemeral';
+    const shouldIsolate = shouldCleanupIsolation
+      || String(opts.runId ?? '').trim().length > 0
+      || hasConnectedServicesEnv;
+    const intent = (() => {
+      const raw = String(opts.start?.intent ?? '').trim();
+      return raw.length > 0 ? raw : undefined;
+    })();
+
+    const isolationId = shouldIsolate ? (String(opts.runId ?? '').trim() || `run_${backendId}_${Date.now()}`) : '';
+    const resolvedBaseBundle = shouldIsolate
+      ? resolveBackendIsolationBundle({
           backendId,
           isolationId,
           scope: 'execution_run',
           ...(intent ? { intent } : {}),
           cwd: opts.cwd,
-        },
-        baseBundle,
-      )
-    : baseBundle;
+        })
+      : null;
+    if (shouldCleanupIsolation) {
+      acquiredIsolationCleanup = resolvedBaseBundle?.cleanup ?? null;
+    }
 
-  const backend = descriptor.factory({
-    cwd: opts.cwd,
-    backendId,
-    modelId: opts.modelId,
-    permissionMode: opts.permissionMode,
-    accountSettings,
-    permissionHandler,
-    start: opts.start ?? null,
-    ...(bundle ? { isolation: { env: bundle.env, settingsPath: bundle.settingsPath } } : {}),
-  });
+    // Generic, pre-descriptor CS env merge (design pin: the isolation-bundle choke point). Provider env
+    // keys (e.g. `CODEX_HOME`) come from the daemon materializer and take precedence over the base
+    // isolation env so the run reads the materialized CS home instead of the runner's inherited account.
+    const baseBundle = resolvedBaseBundle && hasConnectedServicesEnv && connectedServicesEnv
+      ? { ...resolvedBaseBundle, env: { ...resolvedBaseBundle.env, ...connectedServicesEnv } }
+      : resolvedBaseBundle;
 
-  if (shouldCleanupIsolation && bundle?.cleanup) {
-    const originalDispose = backend.dispose.bind(backend);
-    backend.dispose = async () => {
-      try {
-        await originalDispose();
-      } finally {
-        await bundle.cleanup?.();
-      }
-    };
+    const bundle = baseBundle && descriptor.resolveIsolation
+      ? descriptor.resolveIsolation(
+          {
+            backendId,
+            isolationId,
+            scope: 'execution_run',
+            ...(intent ? { intent } : {}),
+            cwd: opts.cwd,
+          },
+          baseBundle,
+        )
+      : baseBundle;
+    if (shouldCleanupIsolation) {
+      acquiredIsolationCleanup = bundle?.cleanup ?? acquiredIsolationCleanup;
+    }
+
+    const shouldCleanupBundleOnDispose = shouldCleanupIsolation && Boolean(bundle?.cleanup);
+    const backend = descriptor.factory({
+      cwd: opts.cwd,
+      backendId,
+      modelId: opts.modelId,
+      ...(opts.sessionConfigOptionOverrides ? { sessionConfigOptionOverrides: opts.sessionConfigOptionOverrides } : {}),
+      permissionMode: opts.permissionMode,
+      accountSettings,
+      permissionHandler,
+      start: opts.start ?? null,
+      ...(bundle ? { isolation: { env: bundle.env, settingsPath: bundle.settingsPath } } : {}),
+    });
+
+    if (shouldCleanupBundleOnDispose || connectedServicesCleanup) {
+      const originalDispose = backend.dispose.bind(backend);
+      let disposal: Promise<void> | null = null;
+      backend.dispose = () => {
+        if (!disposal) {
+          disposal = (async () => {
+            try {
+              await originalDispose();
+            } finally {
+              try {
+                if (shouldCleanupBundleOnDispose) {
+                  await bundle?.cleanup?.();
+                }
+              } finally {
+                // Run-end ER-CS release (idempotent, best-effort inside the callback itself).
+                await connectedServicesCleanup?.();
+              }
+            }
+          })();
+        }
+        return disposal;
+      };
+    }
+
+    return backend;
+  } catch (error) {
+    // Connected-service materialization and every synchronous backend-construction stage are one
+    // acquisition boundary. Start both best-effort cleanups, but never replace the construction
+    // error with a cleanup failure. The connected callback itself owns its shared once-promise.
+    startBestEffortConstructionCleanup(acquiredIsolationCleanup);
+    startBestEffortConstructionCleanup(connectedServicesCleanup);
+    throw error;
   }
-
-  return backend;
 }

@@ -6,16 +6,8 @@ export function buildTuiAuthArgs({ happysBin, stackName, force = false } = {}) {
   return [bin, 'stack', 'auth', name, 'login', ...(force ? ['--force'] : [])];
 }
 
-export function buildTuiDaemonStartArgs({ happysBin, stackName } = {}) {
-  const bin = String(happysBin ?? '').trim();
-  const name = String(stackName ?? '').trim();
-  if (!bin) throw new Error('buildTuiDaemonStartArgs: happysBin is required');
-  if (!name) throw new Error('buildTuiDaemonStartArgs: stackName is required');
-  return [bin, 'stack', 'daemon', name, 'start', '--source'];
-}
-
-export function shouldHoldAfterAuthExit({ code, signal } = {}) {
-  // Success should return immediately to the TUI. Failures should hold so users can read the error output.
-  if (signal) return true;
-  return Number(code) !== 0;
+export function buildTuiAuthExitNotice({ code, signal } = {}) {
+  if (!signal && Number(code) === 0) return null;
+  const status = signal ? `signal=${signal}` : `code=${code ?? 'unknown'}`;
+  return `auth: failed (${status}); press a to retry or A to force re-authentication`;
 }

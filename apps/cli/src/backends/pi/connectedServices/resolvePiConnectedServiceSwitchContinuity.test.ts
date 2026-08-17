@@ -276,4 +276,43 @@ describe('resolvePiConnectedServiceSwitchContinuity', () => {
       reason: 'pi_exact_connected_service_selection_required',
     });
   });
+
+  it('uses the request-time broker boundary for a brokered different-member switch', async () => {
+    await expect(resolvePiConnectedServiceSwitchContinuity({
+      sessionId: 'session-1',
+      agentId: 'pi',
+      serviceId: 'openai-codex',
+      previousBinding: {
+        source: 'connected',
+        selection: 'profile',
+        serviceId: 'openai-codex',
+        profileId: 'old',
+        groupId: null,
+      },
+      nextBinding: {
+        source: 'connected',
+        selection: 'profile',
+        serviceId: 'openai-codex',
+        profileId: 'new',
+        groupId: null,
+      },
+      fromBindings: {
+        v: 1,
+        bindingsByServiceId: {
+          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'old' },
+        },
+      },
+      toBindings: {
+        v: 1,
+        bindingsByServiceId: {
+          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'new' },
+        },
+      },
+      runtimeAuthSelection: {
+        brokerSelectionIdentity: 'pi|connected|broker:1|openai-codex:acct-old:',
+      },
+      connectedServiceMaterializationIdentityV1: MATERIALIZATION_IDENTITY,
+      vendorResumeId: 'pi-session-1',
+    })).resolves.toEqual({ mode: 'hot_apply' });
+  });
 });

@@ -6,6 +6,31 @@ import { isRetryableSqliteWriteError } from "@/storage/sqliteRetryClassifier";
 
 export type Tx = TransactionClient;
 
+export type InTxOptions = Readonly<{
+    deadlineAtMs?: number;
+}>;
+
+export class TransactionAcquisitionUnavailableError extends Error {
+    readonly code = "P2028";
+    readonly cause: unknown;
+
+    constructor(cause: unknown) {
+        super("Database transaction acquisition is temporarily unavailable");
+        this.name = "TransactionAcquisitionUnavailableError";
+        this.cause = cause;
+    }
+}
+
+export class TransactionDeadlineExceededError extends Error {
+    readonly cause: unknown;
+
+    constructor(cause: unknown) {
+        super("Database transaction request deadline expired");
+        this.name = "TransactionDeadlineExceededError";
+        this.cause = cause;
+    }
+}
+
 const symbol = Symbol();
 
 type SqliteTransactionConfig = Readonly<{
@@ -80,6 +105,8 @@ function canStartAnotherSqliteTransactionAttempt(params: Readonly<{
 }
 
 export function isRetryableTransactionError(params: Readonly<{ provider: string; err: unknown }>): boolean {
+    // Acquisition-shaped P2028 requires callback-entry context, which only inTx owns.
+    if (isTransactionAcquisitionTimeout(params.err)) return false;
     if (isPrismaErrorCode(params.err, "P2034")) return true;
 
     if (params.provider === "sqlite") {
@@ -87,6 +114,25 @@ export function isRetryableTransactionError(params: Readonly<{ provider: string;
     }
 
     return false;
+}
+
+function readTransactionErrorMessage(error: unknown): string {
+    if (error && typeof error === "object" && "meta" in error) {
+        const metaError = (error as { meta?: { error?: unknown } }).meta?.error;
+        if (typeof metaError === "string") return metaError;
+    }
+    return error instanceof Error ? error.message : "";
+}
+
+export function isTransactionAcquisitionTimeout(error: unknown): boolean {
+    return isPrismaErrorCode(error, "P2028")
+        && readTransactionErrorMessage(error).toLowerCase().includes("unable to start a transaction");
+}
+
+export function isTransactionAcquisitionUnavailableError(
+    error: unknown,
+): error is TransactionAcquisitionUnavailableError {
+    return error instanceof TransactionAcquisitionUnavailableError;
 }
 
 export function afterTx(tx: Tx, callback: () => void) {
@@ -102,23 +148,58 @@ export function afterTx(tx: Tx, callback: () => void) {
     callbacks.push(callback);
 }
 
-export async function inTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+function resolveBoundedTransactionOptions(params: Readonly<{
+    deadlineAtMs: number;
+    maxWaitMs: number;
+    timeoutMs: number;
+}>): Readonly<{ maxWait: number; timeout: number }> {
+    const remainingMs = Math.floor(params.deadlineAtMs - Date.now());
+    if (remainingMs < 2) throw new TransactionDeadlineExceededError(null);
+    const maxWait = Math.max(1, Math.min(params.maxWaitMs, Math.floor(remainingMs / 3)));
+    return {
+        maxWait,
+        timeout: Math.max(1, Math.min(params.timeoutMs, remainingMs - maxWait)),
+    };
+}
+
+export function isTransactionDeadlineExceededError(error: unknown): error is TransactionDeadlineExceededError {
+    return error instanceof TransactionDeadlineExceededError;
+}
+
+export async function inTx<T>(fn: (tx: Tx) => Promise<T>, options: InTxOptions = {}): Promise<T> {
     const provider = getDbProviderFromEnv(process.env, "postgres");
     const sqliteTransactionConfig = provider === "sqlite" ? readSqliteTransactionConfigFromEnv(process.env) : null;
     const maxRetries = sqliteTransactionConfig?.maxRetries ?? 3;
     const startedAtMs = Date.now();
     let counter = 0;
+    let transactionCallbackEntered = false;
     let wrapped = async (tx: Tx) => {
+        transactionCallbackEntered = true;
         (tx as any)[symbol] = [];
         let result = await fn(tx);
         let callbacks = (tx as any)[symbol] as (() => void)[];
         return { result, callbacks };
     }
     while (true) {
+        transactionCallbackEntered = false;
         try {
+            const bounded = options.deadlineAtMs === undefined
+                ? null
+                : resolveBoundedTransactionOptions({
+                    deadlineAtMs: options.deadlineAtMs,
+                    maxWaitMs: sqliteTransactionConfig?.maxWaitMs ?? 2_000,
+                    timeoutMs: sqliteTransactionConfig?.timeoutMs ?? 10_000,
+                });
             const txOpts = sqliteTransactionConfig
-                ? { timeout: sqliteTransactionConfig.timeoutMs, maxWait: sqliteTransactionConfig.maxWaitMs }
-                : { isolationLevel: "Serializable" as const, timeout: 10000 };
+                ? {
+                    timeout: bounded?.timeout ?? sqliteTransactionConfig.timeoutMs,
+                    maxWait: bounded?.maxWait ?? sqliteTransactionConfig.maxWaitMs,
+                }
+                : {
+                    isolationLevel: "Serializable" as const,
+                    timeout: bounded?.timeout ?? 10_000,
+                    ...(bounded ? { maxWait: bounded.maxWait } : {}),
+                };
             let result = await db.$transaction(wrapped, txOpts);
             for (let callback of result.callbacks) {
                 try {
@@ -129,7 +210,19 @@ export async function inTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
             }
             return result.result;
         } catch (e) {
-            if (isRetryableTransactionError({ provider, err: e }) && counter < maxRetries) {
+            const acquisitionTimeout = isTransactionAcquisitionTimeout(e) && !transactionCallbackEntered;
+            const retryable = acquisitionTimeout || isRetryableTransactionError({ provider, err: e });
+            if (
+                options.deadlineAtMs !== undefined
+                && transactionCallbackEntered
+                && (
+                    Date.now() >= options.deadlineAtMs
+                    || isPrismaErrorCode(e, "P2028")
+                )
+            ) {
+                throw new TransactionDeadlineExceededError(e);
+            }
+            if (retryable && counter < maxRetries) {
                 const nextAttempt = counter + 1;
                 const retryDelayMs = sqliteTransactionConfig
                     ? resolveSqliteTransactionRetryDelayMs(nextAttempt, sqliteTransactionConfig)
@@ -142,11 +235,26 @@ export async function inTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
                         startedAtMs,
                     })
                 ) {
+                    if (acquisitionTimeout) {
+                        throw new TransactionAcquisitionUnavailableError(e);
+                    }
                     throw e;
+                }
+                if (
+                    options.deadlineAtMs !== undefined
+                    && Date.now() + retryDelayMs >= options.deadlineAtMs
+                ) {
+                    throw new TransactionDeadlineExceededError(e);
                 }
                 counter = nextAttempt;
                 await delay(retryDelayMs);
                 continue;
+            }
+            if (acquisitionTimeout) {
+                if (options.deadlineAtMs !== undefined) {
+                    throw new TransactionDeadlineExceededError(e);
+                }
+                throw new TransactionAcquisitionUnavailableError(e);
             }
             throw e;
         }

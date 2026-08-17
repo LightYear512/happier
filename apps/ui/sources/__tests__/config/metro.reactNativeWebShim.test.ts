@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 
@@ -38,13 +38,6 @@ function loadMetroConfig(envOverrides: Record<string, string | undefined> = {}) 
     }
 }
 
-function isPathWatched(watchedRoots: readonly string[], targetPath: string): boolean {
-    return watchedRoots.some((folder) => {
-        const pathFromFolder = relative(folder, targetPath);
-        return pathFromFolder === '' || (!pathFromFolder.startsWith('..') && !isAbsolute(pathFromFolder));
-    });
-}
-
 async function loadMetroConfigWithSentryFactory(
     createModuleIdFactory: () => (moduleName: string) => number,
     envOverrides: Record<string, string | undefined> = {},
@@ -74,6 +67,24 @@ async function loadMetroConfigWithSentryFactory(
 }
 
 describe('metro.config.js (web)', () => {
+    it('blocks generated CLI runner snapshots without hiding CLI source', () => {
+        const uiDir = getUiDir();
+        const repoRoot = resolve(uiDir, '..', '..');
+        const config = loadMetroConfig();
+        const blockList = Array.isArray(config.resolver.blockList)
+            ? config.resolver.blockList
+            : [config.resolver.blockList];
+        const isBlocked = (candidatePath: string) => (
+            blockList.some((entry: unknown) => entry instanceof RegExp && entry.test(candidatePath))
+        );
+        const cliRoot = resolve(repoRoot, 'apps/cli');
+
+        expect(isBlocked(join(cliRoot, '.runner-snapshots', 'current', 'tools', 'unpacked', 'zellij'))).toBe(true);
+        expect(isBlocked(String.raw`C:\repo\apps\cli\.runner-snapshots\current\tools\unpacked\zellij`)).toBe(true);
+        expect(isBlocked(join(cliRoot, 'src/index.ts'))).toBe(false);
+        expect(isBlocked(join(cliRoot, '.runner-snapshot-scratch', 'src/index.ts'))).toBe(false);
+    });
+
     it('shims react-native to provide unstable_batchedUpdates (LegendList compatibility)', () => {
         const uiDir = getUiDir();
         const config = loadMetroConfig();
@@ -130,7 +141,6 @@ describe('metro.config.js (web)', () => {
 
         try {
             const config = loadMetroConfig({ HAPPIER_UI_WORKLETS_BUNDLE_MODE: '1' });
-            const resolvedGeneratedWorkletPath = realpathSync(generatedWorkletPath);
 
             expect(existsSync(generatedWorkletPath)).toBe(true);
 
@@ -147,7 +157,7 @@ describe('metro.config.js (web)', () => {
 
             expect(resolved).toEqual({
                 type: 'sourceFile',
-                filePath: resolvedGeneratedWorkletPath,
+                filePath: generatedWorkletPath,
             });
         } finally {
             rmSync(generatedWorkletPath, { force: true });
@@ -209,11 +219,10 @@ describe('metro.config.js (web)', () => {
     it('watches generated Worklets Bundle Mode modules when explicitly enabled', () => {
         const uiDir = getUiDir();
         const config = loadMetroConfig({ HAPPIER_UI_WORKLETS_BUNDLE_MODE: '1' });
-        const workletsPackageRoot = dirname(require.resolve('react-native-worklets/package.json', { paths: [uiDir] }));
 
         expect(config.watchFolders).toEqual(expect.arrayContaining([
-            join(workletsPackageRoot, '__generatedWorklets'),
-            join(workletsPackageRoot, '.worklets'),
+            join(uiDir, 'node_modules/react-native-worklets/__generatedWorklets'),
+            join(uiDir, 'node_modules/react-native-worklets/.worklets'),
         ]));
     });
 
@@ -238,67 +247,6 @@ describe('metro.config.js (web)', () => {
 
         expect(config.resolver.useWatchman).toBe(false);
         expect(config.watcher?.useWatchman).toBe(false);
-    });
-
-    it('allows CI-style runs to force Watchman back on when explicitly requested', () => {
-        const config = loadMetroConfig({
-            CI: '1',
-            HAPPIER_UI_METRO_FORCE_WATCHMAN: '1',
-        });
-
-        expect(config.resolver.useWatchman).not.toBe(false);
-        expect(config.watcher?.useWatchman).not.toBe(false);
-    });
-
-    it('does not redundantly watch hoisted Expo package roots when the parent node_modules root is already watched', () => {
-        const uiDir = getUiDir();
-        const repoNodeModulesDir = join(uiDir, '..', '..', 'node_modules');
-        const config = loadMetroConfig();
-
-        expect(config.watchFolders).toContain(repoNodeModulesDir);
-        expect(config.watchFolders).toEqual(expect.not.arrayContaining([
-            join(repoNodeModulesDir, 'expo-modules-core'),
-            join(repoNodeModulesDir, 'expo-system-ui'),
-        ]));
-    });
-
-    it('watches the real node_modules root for symlinked dependency targets that escape the worktree', () => {
-        const uiDir = getUiDir();
-        const repoNodeModulesDir = join(uiDir, '..', '..', 'node_modules');
-        const externalNodeModulesDir = dirname(realpathSync(join(repoNodeModulesDir, 'expo-modules-core')));
-        const config = loadMetroConfig();
-
-        expect(config.watchFolders).toContain(externalNodeModulesDir);
-    });
-
-    it('keeps Metro empty module path inside the project root or watchFolders', () => {
-        const uiDir = getUiDir();
-        const config = loadMetroConfig();
-        const emptyModulePath = String(config.resolver.emptyModulePath);
-        const watchedRoots = [config.projectRoot, ...config.watchFolders].filter(
-            (folder): folder is string => typeof folder === 'string' && folder.length > 0,
-        );
-
-        expect(emptyModulePath).toContain('metro-runtime');
-        expect(isPathWatched(watchedRoots, emptyModulePath)).toBe(true);
-        expect(existsSync(emptyModulePath)).toBe(true);
-        expect(isPathWatched(watchedRoots, dirname(emptyModulePath))).toBe(true);
-        expect(isPathWatched(
-            watchedRoots,
-            dirname(require.resolve('metro-runtime/package.json', { paths: [uiDir] })),
-        )).toBe(true);
-    });
-
-    it('watches additional absolute folders when explicitly provided for external dependency roots', () => {
-        const extraWatchFolders = [
-            '/tmp/happier-metro-extra-a',
-            '/tmp/happier-metro-extra-b',
-        ];
-        const config = loadMetroConfig({
-            HAPPIER_UI_METRO_EXTRA_WATCH_FOLDERS: extraWatchFolders.join(delimiter),
-        });
-
-        expect(config.watchFolders).toEqual(expect.arrayContaining(extraWatchFolders));
     });
 
 });

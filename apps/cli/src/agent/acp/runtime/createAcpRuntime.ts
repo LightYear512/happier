@@ -2,8 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import { logger } from '@/ui/logger';
 import type { AgentBackend, AgentMessage, McpServerConfig } from '@/agent';
+import type { AgentPromptPayload } from '@/agent/core/AgentPromptPayload';
 import type { CatalogAgentId } from '@/backends/types';
-import type { AcpPermissionHandler, SessionConfigOption } from '@/agent/acp/AcpBackend';
+import {
+  AcpPromptSubmissionPhaseError,
+  type AcpPermissionHandler,
+  type AcpPromptSubmissionEvidence,
+  type SessionConfigOption,
+} from '@/agent/acp/AcpBackend';
 import type { AcpTurnOutcome } from '@/agent/acp/backend/turn/_types';
 import type { MessageBuffer } from '@/ui/ink/messageBuffer';
 import {
@@ -22,15 +28,25 @@ import { extractAcpMediaContentBlocks } from '@/agent/acp/media/extractAcpMediaC
 import type { AcpRuntimeSessionClient } from '@/agent/acp/sessionClient';
 import { isAbortLikeError } from '@/agent/executionRuns/runtime/turnDelivery';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
-import type { AgentState } from '@/api/types';
+import type { AgentState, Metadata } from '@/api/types';
 import { getAgentModelConfig, getAgentSessionModeDescriptor, type AgentId } from '@happier-dev/agents';
 import { updateAgentStateBestEffort, updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import { createStreamedTranscriptWriter } from '@/api/session/streamedTranscriptWriter';
 import type { TurnAssistantPreviewTracker } from '@/agent/runtime/turnAssistantPreviewTracker';
 import {
+  createAcpSessionIdentityBinding,
+  AcpSessionIdentityBindingError,
+  type AcpSessionIdentityPublication,
+  type AcpSessionOpenIntent,
+} from '@/agent/acp/runtime/sessionIdentityBinding';
+import {
   recordSessionTurnCompleted,
   surfacePrimarySessionRuntimeIssue,
 } from '@/agent/runtime/session/errors/surfacePrimarySessionRuntimeIssue';
+import {
+  classifyPrimarySessionRuntimeIssue,
+  PI_PROVIDER_SESSION_FAILURE_AFTER_PROMPT_ACCEPTANCE_DIAGNOSTIC,
+} from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 import {
   collectAcpModelScopedConfigOptions,
   normalizeConfigOptionsArray,
@@ -40,49 +56,55 @@ import {
   isAcpModeConfigOptionLike,
   isAcpModelConfigOptionLike,
 } from '@/agent/acp/configOptionChoiceNormalization';
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import { readPendingLocalId } from '@happier-dev/protocol';
+import type {
+  ProviderPromptSubmissionCallbacks,
+  ProviderPromptWithMeta,
+} from '@/agent/runtime/providerPromptSubmission';
+import { ProviderPromptSubmissionRejectedBeforeEffectError } from '@/agent/runtime/providerPromptSubmission';
 import {
   computePendingModelOverrideApplication,
   computePendingSessionModeOverrideApplication,
 } from '@/agent/runtime/permission/permissionModeFromMetadata';
-import { createSessionProviderPendingDrainAdapter } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
 import type {
-  PendingMaterializationReconcileWhenEmpty,
-  PendingMaterializationResult,
   SessionProviderInputConsumer,
 } from '@/agent/runtime/sessionInput/types';
 import { resolveSessionMediaDedupeKey } from '@/session/sessionMedia/sessionMediaDedupeKey';
+import type { SessionMediaPersistResult } from '@/session/sessionMedia/createAgentSessionMediaPersister';
+import { boundSessionMediaEnvelopeEntries } from '@/session/sessionMedia/boundSessionMediaEnvelopeEntries';
 import {
+  SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1,
   SESSION_MEDIA_MESSAGE_META_KIND_V1,
+  type SessionRuntimeIssueV1,
   type SessionMediaItemV1,
+  type SessionMediaUnavailableV1,
   TranscriptRawAgentEventV1Schema,
   type TranscriptRawAgentEventV1,
 } from '@happier-dev/protocol';
+import {
+  applyAcpPlanSnapshotToMetadata,
+  type NormalizedAcpPlanSnapshot,
+} from '@/agent/acp/plans';
+import { applyProviderSessionInfoUpdate } from '@/agent/acp/runtime/providerSessionInfoState';
+import { createSessionMediaTurnState } from '@/agent/acp/runtime/sessionMediaTurnState';
 
 const DEFAULT_SESSION_CONTROL_TIMEOUT_MS = 15_000;
+const ACP_FAILURE_TRACE_ENV = 'HAPPIER_ACP_FAILURE_TRACE';
 
 type RuntimeSessionMediaMessage = Extract<AgentMessage, { type: 'session-media' }>;
 type RuntimeSessionMediaSource = RuntimeSessionMediaMessage['media'][number];
-type RuntimeSessionMediaPersistResult = readonly SessionMediaItemV1[] | void;
+type RuntimeSessionMediaPersistResult = SessionMediaPersistResult;
 type AcpPendingQueueCommon = {
-  waitForMetadataUpdate: (abortSignal?: AbortSignal) => Promise<boolean>;
   maxPopPerWake?: number;
   drainDuringTurn?: boolean;
   drainAfterStartOrLoad?: boolean;
-  pollIntervalMs?: number;
 };
-type AcpPendingQueueWithConsumer = AcpPendingQueueCommon & {
-  inputConsumer: Pick<SessionProviderInputConsumer<never, never>, 'drainPending'>;
+type AcpPendingQueue = AcpPendingQueueCommon & {
+  inputConsumer: Pick<SessionProviderInputConsumer<never, never>, 'drainPending'>
+    & Partial<Pick<SessionProviderInputConsumer<never, never>, 'pumpPendingWhileActive'>>;
 };
-type AcpPendingQueueLegacyAdapter = AcpPendingQueueCommon & {
-  inputConsumer?: undefined;
-  popPendingMessage: () => Promise<boolean>;
-  materializeNextPendingMessageSafely?: ((opts?: {
-    reconcileWhenEmpty?: PendingMaterializationReconcileWhenEmpty;
-  }) => Promise<PendingMaterializationResult>) | undefined;
-  shouldAttemptMaterialization?: (() => boolean) | undefined;
-  reconcilePendingQueueState?: ((opts: { force: boolean }) => Promise<unknown> | unknown) | undefined;
-};
-type AcpPendingQueue = AcpPendingQueueWithConsumer | AcpPendingQueueLegacyAdapter;
 
 type SessionModelConfigUpdate = Readonly<{
   modelId: string;
@@ -118,10 +140,108 @@ function resolveSessionControlTimeoutMs(): number {
   return Math.trunc(parsed);
 }
 
+function readAcpPromptFailureErrorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : '';
+}
+
+function classifyAcpPromptFailureErrorMessageKind(error: unknown): string {
+  const message = readAcpPromptFailureErrorMessage(error).trim();
+  if (!message) return 'empty';
+  if (/^provider session failed$/iu.test(message)) return 'generic_provider_session_failed';
+  if (message.startsWith('Pi provider reported ')) return 'pi_provider_diagnostic';
+  return 'other';
+}
+
+function readAcpPromptFailureErrorMessageLength(error: unknown): number {
+  return readAcpPromptFailureErrorMessage(error).length;
+}
+
+function isGenericProviderSessionFailureRuntimeIssue(issue: SessionRuntimeIssueV1): boolean {
+  return issue.source === 'provider_session_error'
+    && issue.code === 'provider_session_error'
+    && issue.sanitizedPreview === 'Provider session failed';
+}
+
+function findPiRuntimeIssueCarrier(
+  error: unknown,
+  property: 'piBrokerReadinessFailure' | 'piProviderFailure',
+): unknown | null {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (!current || typeof current !== 'object' || seen.has(current)) return null;
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    if (record[property] && typeof record[property] === 'object') return current;
+    current = record.cause;
+  }
+  return null;
+}
+
+function normalizeAcpPromptFailureRuntimeIssueError(params: Readonly<{
+  provider: string;
+  error: unknown;
+  turnInFlight: boolean;
+}>): unknown {
+  if (params.provider !== 'pi') return params.error;
+  const brokerReadinessCarrier = findPiRuntimeIssueCarrier(params.error, 'piBrokerReadinessFailure');
+  if (brokerReadinessCarrier) return brokerReadinessCarrier;
+  if (!params.turnInFlight) return params.error;
+  const providerFailureCarrier = findPiRuntimeIssueCarrier(params.error, 'piProviderFailure');
+  if (providerFailureCarrier) return providerFailureCarrier;
+  const issue = classifyPrimarySessionRuntimeIssue({
+    cause: 'session_error',
+    provider: params.provider,
+    error: params.error,
+  });
+  return isGenericProviderSessionFailureRuntimeIssue(issue)
+    ? PI_PROVIDER_SESSION_FAILURE_AFTER_PROMPT_ACCEPTANCE_DIAGNOSTIC
+    : params.error;
+}
+
+function classifyAcpRuntimeIssuePreviewKind(issue: SessionRuntimeIssueV1 | null): string {
+  const preview = issue?.sanitizedPreview?.trim() ?? '';
+  if (!preview) return 'none';
+  if (preview === 'Provider session failed') return 'generic_provider_session_failed';
+  if (preview.startsWith('Pi provider reported ')) return 'pi_provider_diagnostic';
+  return 'other';
+}
+
+function traceAcpPromptFailureBoundary(params: Readonly<{
+  provider: string;
+  error: unknown;
+  issue: SessionRuntimeIssueV1 | null;
+  turnInFlight: boolean;
+  lifecycleAvailable: boolean;
+  compatibilityMarkerSent: boolean;
+}>): void {
+  if (params.provider !== 'pi') return;
+  if (process.env[ACP_FAILURE_TRACE_ENV] !== '1') return;
+  logger.debug('[acp] prompt failure trace', {
+    provider: params.provider,
+    branch: 'surface_prompt_failure',
+    cause: 'session_error',
+    errorMessageKind: classifyAcpPromptFailureErrorMessageKind(params.error),
+    errorMessageLength: readAcpPromptFailureErrorMessageLength(params.error),
+    issueSource: params.issue?.source ?? null,
+    issueCode: params.issue?.code ?? null,
+    issuePreviewKind: classifyAcpRuntimeIssuePreviewKind(params.issue),
+    issuePreviewLength: typeof params.issue?.sanitizedPreview === 'string'
+      ? params.issue.sanitizedPreview.length
+      : 0,
+    turnInFlight: params.turnInFlight,
+    lifecycleAvailable: params.lifecycleAvailable,
+    compatibilityMarkerSent: params.compatibilityMarkerSent,
+  });
+}
+
 function normalizeSessionConfigOptionValue(value: string | number | boolean | null): string | number | boolean | null {
   if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    return readNonBlankSessionControlIdentifier(value);
   }
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'boolean') return value;
@@ -129,7 +249,7 @@ function normalizeSessionConfigOptionValue(value: string | number | boolean | nu
 }
 
 function stringifySessionConfigOptionValue(value: string | number | boolean | null | undefined): string {
-  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'string') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return '';
@@ -172,10 +292,12 @@ export type AcpRuntime = Readonly<{
    * Send additional user text into the currently running turn when supported.
    *
    * This should NOT start a new turn and should NOT abort the current turn.
-   */
+  */
   steerPrompt: (prompt: string, options?: AcpRuntimeSteerPromptOptions) => Promise<void>;
   compactContext: (command: string) => Promise<void>;
   sendPrompt: (prompt: string) => Promise<void>;
+  sendPromptWithMeta: (params: ProviderPromptWithMeta) => Promise<void>;
+  failTurn: (error: unknown) => Promise<boolean>;
   flushTurn: () => Promise<void>;
 }>;
 
@@ -186,51 +308,20 @@ export type AcpRuntimeSteerPromptOptions = Readonly<{
   userMessageSeqs?: readonly number[];
 }>;
 
-function normalizeSteerPromptLocalIds(options: AcpRuntimeSteerPromptOptions | undefined): string[] {
-  const values = [
-    ...(typeof options?.localId === 'string' ? [options.localId] : []),
-    ...(options?.localIds ?? []),
-  ];
-  const seen = new Set<string>();
-  const localIds: string[] = [];
-  for (const value of values) {
-    const localId = typeof value === 'string' ? value.trim() : '';
-    if (!localId || seen.has(localId)) continue;
-    seen.add(localId);
-    localIds.push(localId);
-  }
-  return localIds;
-}
-
-function normalizeSteerPromptSeqs(options: AcpRuntimeSteerPromptOptions | undefined): number[] {
-  const values = [
-    ...(typeof options?.userMessageSeq === 'number' ? [options.userMessageSeq] : []),
-    ...(options?.userMessageSeqs ?? []),
-  ];
-  const seqs: number[] = [];
-  for (const value of values) {
-    if (!Number.isInteger(value) || value < 0 || seqs.includes(value)) continue;
-    seqs.push(value);
-  }
-  return seqs;
-}
-
-function confirmSteerPromptDeliveredToProvider(
-  session: AcpRuntimeSessionClient,
-  options: AcpRuntimeSteerPromptOptions | undefined,
-): void {
-  if (typeof session.confirmUserMessageDeliveredToProvider !== 'function') return;
-  const localIds = normalizeSteerPromptLocalIds(options);
-  const seqs = normalizeSteerPromptSeqs(options);
-  if (localIds.length === 0 && seqs.length === 0) return;
-  const highestSeq = seqs.length === 0 ? null : Math.max(...seqs);
-  session.confirmUserMessageDeliveredToProvider(highestSeq, {
-    localIds: localIds.length === 0 ? null : localIds,
-  });
-}
-
 export type AcpRuntimeBackend = Omit<AgentBackend, 'waitForResponseComplete'> & {
   waitForResponseComplete?: (timeoutMs?: number | null) => Promise<AcpTurnOutcome | void>;
+  /**
+   * ACP-owned prompt evidence. Unlike sendPrompt(), first-update liveness remains
+   * distinguishable from the exact final response for this JSON-RPC request.
+   */
+  sendPromptWithEvidence?: (
+    sessionId: string,
+    prompt: string,
+  ) => Promise<AcpPromptSubmissionEvidence>;
+  sendPromptPayloadWithEvidence?: (
+    sessionId: string,
+    payload: AgentPromptPayload,
+  ) => Promise<AcpPromptSubmissionEvidence>;
   /**
    * Optional provider-native ACP session mode change (e.g. "plan" vs "code").
    */
@@ -251,6 +342,9 @@ export type AcpRuntimeBackend = Omit<AgentBackend, 'waitForResponseComplete'> & 
    * Optional: send additional user input into an already running turn.
    */
   sendSteerPrompt?: (sessionId: string, prompt: string, options?: AcpRuntimeSteerPromptOptions) => Promise<void>;
+  setPlanStatePublisher?: (
+    publisher: (snapshot: NormalizedAcpPlanSnapshot) => Promise<void>,
+  ) => void;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -351,22 +445,6 @@ export async function abortAcpRuntimeTurnIfNeeded(
   return true;
 }
 
-function resolveAcpPendingQueueInputConsumer(
-  pendingQueue: AcpPendingQueue,
-): Pick<SessionProviderInputConsumer<never, never>, 'drainPending'> {
-  if ('inputConsumer' in pendingQueue && pendingQueue.inputConsumer) {
-    return pendingQueue.inputConsumer;
-  }
-
-  return createSessionProviderPendingDrainAdapter({
-    waitForMetadataUpdate: pendingQueue.waitForMetadataUpdate,
-    popPendingMessage: pendingQueue.popPendingMessage,
-    materializeNextPendingMessageSafely: pendingQueue.materializeNextPendingMessageSafely,
-    shouldAttemptPendingMaterialization: pendingQueue.shouldAttemptMaterialization,
-    reconcilePendingQueueState: pendingQueue.reconcilePendingQueueState,
-  });
-}
-
 export function createAcpRuntime(params: {
   provider: string;
   directory: string;
@@ -377,6 +455,8 @@ export function createAcpRuntime(params: {
   permissionHandler: AcpPermissionHandler;
   onThinkingChange: (thinking: boolean) => void;
   ensureBackend: () => Promise<AcpRuntimeBackend>;
+  /** Provider opt-in for binding backend session open to the enclosing runner cancellation. */
+  getSessionOpenAbortSignal?: () => AbortSignal | undefined;
   /**
    * Defensive controls for the tool-call name cache (callId -> toolName).
    *
@@ -392,10 +472,14 @@ export function createAcpRuntime(params: {
    * When omitted, a new catalog ACP backend is created on-demand.
    */
   createReplayBackend?: () => Promise<AcpRuntimeBackend>;
+  /** Explicit owner for vendor session identity persistence. */
+  sessionIdentity: AcpSessionIdentityPublication;
   /**
-   * Optional hook to publish vendor session id metadata after start/load/prompt.
+   * Provider-owned projection from an opaque resume reference to the vendor
+   * session id that a successful load must return. The provider still receives
+   * the original reference; the generic identity binder remains strict.
    */
-  onSessionIdChange?: (sessionId: string | null) => void;
+  resolveExpectedVendorSessionIdForResume?: (resumeReference: string) => string | null;
   /**
    * Optional in-flight steer support.
    *
@@ -405,14 +489,7 @@ export function createAcpRuntime(params: {
     enabled?: boolean;
   };
   /**
-   * Optional pending-queue integration used to materialize server-backed pending messages
-   * while a steer-capable turn is in-flight.
-   */
-  /**
    * Optional pending-queue drain integration.
-   *
-   * Prefer `inputConsumer` for new callers. The legacy shape remains only as a compatibility
-   * adapter for provider wrappers outside this generic ACP lane.
    */
   pendingQueue?: AcpPendingQueue;
   /**
@@ -486,7 +563,13 @@ export function createAcpRuntime(params: {
 }): AcpRuntime {
   let backend: AcpRuntimeBackend | null = null;
   let backendPromise: Promise<AcpRuntimeBackend> | null = null;
+  let messageForwarder: ReturnType<typeof createAcpAgentMessageForwarder> | null = null;
   let sessionId: string | null = null;
+  let runtimeMetadataPublicationGeneration = 0;
+  let pendingProviderSessionInfo: Readonly<{
+    update: { title?: string | null; updatedAt?: string | null };
+    observedAt: number;
+  }> | null = null;
   let accumulatedResponse = '';
   let isResponseInProgress = false;
   let taskStartedSent = false;
@@ -496,6 +579,21 @@ export function createAcpRuntime(params: {
   let turnInFlight = false;
   let currentTurnId: string | null = null;
   let turnMediaGeneration = 0;
+  let startOrLoadFlight: Readonly<{ intentKey: string; promise: Promise<string> }> | null = null;
+  let postStartPendingDrainFlight: Promise<void> | null = null;
+  let startupDrainController: AbortController | null = null;
+  let postStartDrainController: AbortController | null = null;
+  let completedStartOrLoadIntentKey: string | null = null;
+  let resetInProgress = false;
+  let resetFlight: Promise<void> | null = null;
+  let runtimeGeneration = 0;
+  const assertRuntimeGeneration = (expectedGeneration: number): void => {
+    if (runtimeGeneration === expectedGeneration) return;
+    throw new AcpSessionIdentityBindingError(
+      'ACP_SESSION_IDENTITY_STALE_GENERATION',
+      'ACP session startup completed after the runtime generation was reset',
+    );
+  };
   const inFlightSteerEnabled = params.inFlightSteer?.enabled === true;
   const publishInFlightSteerCapabilities = (available: boolean): void => {
     const sessionWithAgentState = params.session as unknown as {
@@ -540,11 +638,20 @@ export function createAcpRuntime(params: {
   })();
   let pendingPumpController: AbortController | null = null;
   const pendingQueueInputConsumer = params.pendingQueue
-    ? resolveAcpPendingQueueInputConsumer(params.pendingQueue)
+    ? params.pendingQueue.inputConsumer
     : null;
-  const persistedMediaDedupeKeys = new Set<string>();
-  const pendingSessionMediaPersistPromises: Promise<void>[] = [];
+  let sessionMediaPersistenceQueueTail: Promise<void> = Promise.resolve();
   let persistedSessionMediaItems: SessionMediaItemV1[] = [];
+  const unavailableSessionMediaByDedupeKey = new Map<string, SessionMediaUnavailableV1[]>();
+  const sessionMediaTurnState = createSessionMediaTurnState<RuntimeSessionMediaSource>({
+    maxEntries: SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1,
+    resolveDedupeKey: resolveSessionMediaDedupeKey,
+  });
+  const identityBinding = createAcpSessionIdentityBinding({
+    persistBound: params.sessionIdentity.kind === 'persist-bound'
+      ? params.sessionIdentity.persistBound
+      : async () => {},
+  });
 
   const stopPendingPump = () => {
     if (!pendingPumpController) return;
@@ -581,66 +688,22 @@ export function createAcpRuntime(params: {
     if (!params.pendingQueue) return;
     if (params.pendingQueue.drainDuringTurn !== true) return;
     if (pendingPumpController) return;
+    if (!pendingQueueInputConsumer?.pumpPendingWhileActive) return;
 
     const controller = new AbortController();
     pendingPumpController = controller;
-    const pollIntervalMs = Math.max(5, params.pendingQueue.pollIntervalMs ?? 2_000);
-
-    const waitForPollWake = async (): Promise<boolean> =>
-      await new Promise<boolean>((resolve) => {
-        if (controller.signal.aborted) return resolve(false);
-        const timer = setTimeout(() => resolve(true), pollIntervalMs);
-        timer.unref?.();
-        controller.signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            resolve(false);
-          },
-          { once: true },
-        );
-      });
-
-    void (async () => {
-      // Drain immediately once to avoid stranding already-enqueued pending messages while we wait
-      // for a "metadata update" wake signal.
-      await drainPendingMessagesOnce(controller);
-
-      while (!controller.signal.aborted) {
-        // Pending queue updates do not always publish a metadata wake signal (version skew / transport races).
-        // Poll as a fallback so newly enqueued messages can still be drained mid-turn for in-flight steer.
-        //
-        // IMPORTANT: avoid leaking `metadata-updated` listeners by canceling the losing wait when polling wins.
-        const iteration = new AbortController();
-        const abortIteration = (reason: string) => {
-          try {
-            iteration.abort(reason);
-          } catch {
-            // ignore
-          }
-        };
-        const onGlobalAbort = () => abortIteration('acp-runtime:pending-pump:global-abort');
-        controller.signal.addEventListener('abort', onGlobalAbort, { once: true });
-
-        const winner = await Promise.race([
-          params.pendingQueue!
-            .waitForMetadataUpdate(iteration.signal)
-            .then(() => 'metadata')
-            .catch(() => 'metadata'),
-          waitForPollWake().then(() => 'poll'),
-        ]);
-        controller.signal.removeEventListener('abort', onGlobalAbort);
-        if (winner === 'poll') {
-          // Cancel the still-pending metadata wait so it can remove its listeners.
-          abortIteration('acp-runtime:pending-pump:poll-wake');
-        }
-        if (controller.signal.aborted) break;
-
-        await drainPendingMessagesOnce(controller);
-      }
-    })().catch((error) => {
+    void pendingQueueInputConsumer.pumpPendingWhileActive({
+      abortSignal: controller.signal,
+      maxPopPerWake: params.pendingQueue.maxPopPerWake,
+      shouldContinue: () => turnInFlight && pendingPumpController === controller,
+      logPrefix: '[ACP]',
+      reason: 'acp-active-turn',
+    }).catch((error) => {
       logger.debug(`[${params.provider}] Pending queue pump stopped after non-fatal drain error`, error);
-      stopPendingPump();
+    }).finally(() => {
+      if (pendingPumpController === controller) {
+        pendingPumpController = null;
+      }
     });
   };
 
@@ -737,6 +800,13 @@ export function createAcpRuntime(params: {
   };
 
   const resetTurnState = () => {
+    const droppedSessionMediaCount = sessionMediaTurnState.takeOverflowCount();
+    if (droppedSessionMediaCount > 0) {
+      logger.debug(`[${params.provider}] Bounded excess session media sources for the turn`, {
+        droppedCount: droppedSessionMediaCount,
+        maxEntries: SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1,
+      });
+    }
     accumulatedResponse = '';
     isResponseInProgress = false;
     taskStartedSent = false;
@@ -744,9 +814,9 @@ export function createAcpRuntime(params: {
     pendingTurnOutcome = null;
     currentTurnId = null;
     turnMediaGeneration += 1;
-    pendingSessionMediaPersistPromises.length = 0;
     persistedSessionMediaItems = [];
-    persistedMediaDedupeKeys.clear();
+    unavailableSessionMediaByDedupeKey.clear();
+    sessionMediaTurnState.reset();
     params.turnAssistantPreviewTracker?.reset();
   };
 
@@ -771,63 +841,165 @@ export function createAcpRuntime(params: {
     throw error;
   };
 
-  const filterNewSessionMedia = (items: readonly RuntimeSessionMediaSource[]): RuntimeSessionMediaSource[] => {
-    const media: RuntimeSessionMediaSource[] = [];
-    for (const item of items) {
-      const dedupeKey = resolveSessionMediaDedupeKey(item);
-      if (persistedMediaDedupeKeys.has(dedupeKey)) continue;
-      persistedMediaDedupeKeys.add(dedupeKey);
-      media.push(item);
+  const createRejectedBeforeProviderEffectError = (
+    cause: unknown,
+    reason: 'runtime_disposed_before_delivery' | 'provider_rejected_before_acceptance' = 'runtime_disposed_before_delivery',
+  ): ProviderPromptSubmissionRejectedBeforeEffectError =>
+    cause instanceof ProviderPromptSubmissionRejectedBeforeEffectError
+      ? cause
+      : new ProviderPromptSubmissionRejectedBeforeEffectError(
+          reason,
+          cause,
+        );
+
+  const rethrowAcpPromptSubmissionError = (error: unknown): never => {
+    if (
+      error instanceof AcpPromptSubmissionPhaseError
+      && error.phase === 'rejected_before_effect'
+    ) {
+      throw createRejectedBeforeProviderEffectError(error, 'provider_rejected_before_acceptance');
     }
-    return media;
+    return rethrowPromptError(error);
+  };
+
+  const rebalanceTurnUnavailableSessionMedia = (): void => {
+    const unavailable = [...unavailableSessionMediaByDedupeKey.values()].flat();
+    const bounded = boundSessionMediaEnvelopeEntries({
+      media: persistedSessionMediaItems,
+      unavailable,
+      maxEntries: SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1,
+    });
+    sessionMediaTurnState.recordOverflow(bounded.droppedCount);
+    let remainingUnavailable = bounded.unavailable.length;
+    const retainedByDedupeKey = new Map<string, SessionMediaUnavailableV1[]>();
+    for (const [dedupeKey, entries] of unavailableSessionMediaByDedupeKey) {
+      if (remainingUnavailable <= 0) break;
+      const retained = entries.slice(0, remainingUnavailable);
+      if (retained.length > 0) retainedByDedupeKey.set(dedupeKey, retained);
+      remainingUnavailable -= retained.length;
+    }
+    unavailableSessionMediaByDedupeKey.clear();
+    for (const [dedupeKey, entries] of retainedByDedupeKey) {
+      unavailableSessionMediaByDedupeKey.set(dedupeKey, entries);
+    }
   };
 
   const persistSessionMediaSources = async (
     source: string,
     items: readonly RuntimeSessionMediaSource[],
-  ): Promise<SessionMediaItemV1[]> => {
-    const media = filterNewSessionMedia(items);
-    if (media.length === 0) return [];
+    recordUnavailableForTurn = true,
+  ): Promise<RuntimeSessionMediaPersistResult> => {
     if (!params.sessionMedia) {
       logger.debug(`[${params.provider}] Session media emitted before media persister is wired; dropping transient sources`);
-      return [];
+      return { media: [], unavailable: [] };
     }
-    const persisted = await Promise.resolve(params.sessionMedia.persist({ type: 'session-media', source, media }));
-    return Array.isArray(persisted) ? [...persisted] : [];
+    const generation = turnMediaGeneration;
+    const persistedItems: SessionMediaItemV1[] = [];
+    const unavailableItems: SessionMediaUnavailableV1[] = [];
+    for (const { item, dedupeKey } of sessionMediaTurnState.admit(items)) {
+      const persistence = sessionMediaPersistenceQueueTail.then(async () => {
+        if (generation !== turnMediaGeneration) return;
+        try {
+          const persisted = await Promise.resolve(params.sessionMedia!.persist({
+            type: 'session-media',
+            source,
+            media: [item],
+          }));
+          if (generation !== turnMediaGeneration) return;
+          if (!recordUnavailableForTurn) {
+            const bounded = boundSessionMediaEnvelopeEntries({
+              media: persisted.media,
+              unavailable: persisted.unavailable,
+              maxEntries: SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1,
+            });
+            persistedItems.push(...bounded.media);
+            unavailableItems.push(...bounded.unavailable);
+            sessionMediaTurnState.recordOverflow(bounded.droppedCount);
+            sessionMediaTurnState.finish(
+              dedupeKey,
+              persisted.media.length > 0
+                ? 'persisted'
+                : persisted.unavailable.length > 0
+                  ? 'unavailable'
+                  : 'release',
+            );
+            return;
+          }
+          if (persisted.media.length > 0) {
+            unavailableSessionMediaByDedupeKey.delete(dedupeKey);
+            const bounded = boundSessionMediaEnvelopeEntries({
+              media: [...persistedSessionMediaItems, ...persisted.media],
+              unavailable: [],
+              maxEntries: SESSION_MEDIA_MESSAGE_MAX_ENTRIES_V1,
+            });
+            const acceptedMedia = bounded.media.slice(persistedSessionMediaItems.length);
+            sessionMediaTurnState.recordOverflow(bounded.droppedCount);
+            if (acceptedMedia.length === 0) {
+              // Persistence already completed for this admitted key. Keep the slot terminal even
+              // when a multi-item result exceeded the remaining durable-envelope capacity, so a
+              // provider cannot force repeated persistence work with the same dropped source.
+              sessionMediaTurnState.finish(dedupeKey, 'persisted');
+              return;
+            }
+            persistedItems.push(...acceptedMedia);
+            persistedSessionMediaItems.push(...acceptedMedia);
+            rebalanceTurnUnavailableSessionMedia();
+            sessionMediaTurnState.finish(dedupeKey, 'persisted');
+            return;
+          }
+          if (persisted.unavailable.length > 0) {
+            unavailableSessionMediaByDedupeKey.set(dedupeKey, [...persisted.unavailable]);
+            rebalanceTurnUnavailableSessionMedia();
+            const acceptedUnavailable = unavailableSessionMediaByDedupeKey.get(dedupeKey) ?? [];
+            unavailableItems.push(...acceptedUnavailable);
+            sessionMediaTurnState.finish(dedupeKey, 'unavailable');
+            return;
+          }
+          sessionMediaTurnState.finish(dedupeKey, 'release');
+        } catch (error) {
+          sessionMediaTurnState.finish(dedupeKey, 'release');
+          throw error;
+        }
+      });
+      sessionMediaPersistenceQueueTail = persistence.then(
+        () => undefined,
+        () => undefined,
+      );
+      await persistence;
+    }
+    return { media: persistedItems, unavailable: unavailableItems };
   };
 
   const persistSessionMediaMessage = (msg: RuntimeSessionMediaMessage): void => {
-    const generation = turnMediaGeneration;
     const persistPromise = persistSessionMediaSources(msg.source, msg.media)
-      .then((items) => {
-        if (generation !== turnMediaGeneration) return;
-        if (items.length === 0) return;
-        persistedSessionMediaItems.push(...items);
-      })
+      .then(() => undefined)
       .catch((error) => {
         logger.debug(`[${params.provider}] Failed to persist session media (non-fatal)`, error);
       });
-    pendingSessionMediaPersistPromises.push(persistPromise);
+    sessionMediaTurnState.track(persistPromise);
   };
 
   const drainPendingSessionMediaPersistence = async (): Promise<void> => {
-    const pending = pendingSessionMediaPersistPromises.splice(0, pendingSessionMediaPersistPromises.length);
-    if (pending.length === 0) return;
-    await Promise.allSettled(pending);
+    await sessionMediaTurnState.drain();
   };
 
-  const buildSessionMediaEnvelope = (media: readonly SessionMediaItemV1[]): Record<string, unknown> => ({
+  const buildSessionMediaEnvelope = (
+    media: readonly SessionMediaItemV1[],
+    unavailable: readonly SessionMediaUnavailableV1[] = [],
+  ): Record<string, unknown> => ({
     kind: SESSION_MEDIA_MESSAGE_META_KIND_V1,
     payload: {
       media,
+      ...(unavailable.length > 0 ? { unavailable } : {}),
     },
   });
 
   const buildSessionMediaMeta = (
     media: readonly SessionMediaItemV1[],
     existingMeta?: Record<string, unknown>,
+    unavailable: readonly SessionMediaUnavailableV1[] = [],
   ): Record<string, unknown> => {
-    const envelope = buildSessionMediaEnvelope(media);
+    const envelope = buildSessionMediaEnvelope(media, unavailable);
     const base = existingMeta ? { ...existingMeta } : {};
     if (base.happier !== undefined) {
       return {
@@ -878,26 +1050,22 @@ export function createAcpRuntime(params: {
       return;
     }
 
-    const forwardPromise = persistSessionMediaSources('acp-tool-result', media)
-      .then((items) => {
-        if (items.length === 0) {
+    const forwardPromise = persistSessionMediaSources('acp-tool-result', media, false)
+      .then((result) => {
+        if (result.media.length === 0 && result.unavailable.length === 0) {
           forward(msg);
           return;
         }
         forward({
           ...msg,
-          meta: buildSessionMediaMeta(items, msg.meta),
+          meta: buildSessionMediaMeta(result.media, msg.meta, result.unavailable),
         });
       })
       .catch((error) => {
         logger.debug(`[${params.provider}] Failed to persist tool-result session media (non-fatal)`, error);
         forward(msg);
       });
-    pendingSessionMediaPersistPromises.push(forwardPromise);
-  };
-
-  const publishSessionId = () => {
-    params.onSessionIdChange?.(sessionId);
+    sessionMediaTurnState.track(forwardPromise);
   };
 
   const surfaceStatusError = (detailRaw: unknown) => {
@@ -912,7 +1080,7 @@ export function createAcpRuntime(params: {
         });
         compatibilityMarkerId = handle.turnId;
       }
-      await surfacePrimarySessionRuntimeIssue({
+      const issue = await surfacePrimarySessionRuntimeIssue({
         cause: 'status_error',
         provider: params.provider,
         providerTurnId,
@@ -923,6 +1091,7 @@ export function createAcpRuntime(params: {
         params.session.sendAgentMessage(params.provider, {
           type: 'turn_failed',
           id: compatibilityMarkerId,
+          ...(issue ? { issue } : {}),
         });
       }
     })().catch((error) => {
@@ -931,14 +1100,156 @@ export function createAcpRuntime(params: {
     return true;
   };
 
+  const surfacePromptFailure = async (detailRaw: unknown): Promise<boolean> => {
+    if (isAbortLikeError(detailRaw)) return false;
+    if (turnAborted) return true;
+
+    const providerTurnId = currentTurnId ?? (turnInFlight ? ensureCurrentTurnId() : null);
+    turnAborted = true;
+    clearToolCallCache();
+    params.onThinkingChange(false);
+    params.session.keepAlive(false, 'remote');
+
+    try {
+      await streamedTranscriptWriter.flushAll({ reason: 'abort', interruptedReason: 'prompt-error' });
+    } catch (error) {
+      logger.debug(`[${params.provider}] Failed to flush streamed transcript after prompt failure`, error);
+    }
+    await abortPendingAcpPermissionRequests(
+      params.permissionHandler,
+      'ACP runtime prompt failed',
+      (error) => {
+        logger.debug(`[${params.provider}] Failed to abort pending permission requests after prompt failure`, error);
+      },
+    );
+
+    let compatibilityMarkerId = providerTurnId;
+    if (turnInFlight && !taskStartedSent && params.session.sessionTurnLifecycle) {
+      const handle = await params.session.sessionTurnLifecycle.beginTurn({
+        provider: params.provider,
+        ...(providerTurnId ? { providerTurnId } : {}),
+      });
+      compatibilityMarkerId = handle.turnId;
+    }
+    const issueError = normalizeAcpPromptFailureRuntimeIssueError({
+      provider: params.provider,
+      error: detailRaw,
+      turnInFlight,
+    });
+    const issue = await surfacePrimarySessionRuntimeIssue({
+      cause: 'session_error',
+      provider: params.provider,
+      providerTurnId,
+      error: issueError,
+      session: params.session,
+    });
+    let compatibilityMarkerSent = false;
+    if (turnInFlight && compatibilityMarkerId && params.session.sessionTurnLifecycle) {
+      params.session.sendAgentMessage(params.provider, {
+        type: 'turn_failed',
+        id: compatibilityMarkerId,
+        ...(issue ? { issue } : {}),
+      });
+      compatibilityMarkerSent = true;
+    }
+    traceAcpPromptFailureBoundary({
+      provider: params.provider,
+      error: detailRaw,
+      issue: issue ?? null,
+      turnInFlight,
+      lifecycleAvailable: !!params.session.sessionTurnLifecycle,
+      compatibilityMarkerSent,
+    });
+    return true;
+  };
+
+  const publishRuntimeMetadataBestEffort = (
+    updater: (metadata: Metadata) => Metadata,
+    reason: string,
+  ): void => {
+    const publicationGeneration = runtimeMetadataPublicationGeneration;
+    updateMetadataBestEffort(
+      params.session,
+      (metadata) => publicationGeneration === runtimeMetadataPublicationGeneration
+        ? updater(metadata)
+        : metadata,
+      `[${params.provider}]`,
+      reason,
+    );
+  };
+
+  const publishProviderSessionInfo = (
+    update: { title?: string | null; updatedAt?: string | null },
+    observedAt: number,
+  ): void => {
+    const providerSessionId = sessionId;
+    if (!providerSessionId) {
+      pendingProviderSessionInfo = {
+        update: {
+          ...(pendingProviderSessionInfo?.update ?? {}),
+          ...update,
+        },
+        observedAt,
+      };
+      return;
+    }
+    publishRuntimeMetadataBestEffort(
+      (metadata) => {
+        // ApiSessionClient may invoke this updater only after waiting for its metadata lock or
+        // reconnecting. A reset cannot cancel that external queue, so make the delayed write a
+        // no-op unless it still belongs to the active provider-session lifecycle.
+        if (sessionId !== providerSessionId) {
+          return metadata;
+        }
+        return applyProviderSessionInfoUpdate({
+          metadata,
+          provider: params.provider,
+          sessionId: providerSessionId,
+          observedAt,
+          update,
+        });
+      },
+      'session_info_update',
+    );
+  };
+
+  const flushPendingProviderSessionInfo = (): void => {
+    const pending = pendingProviderSessionInfo;
+    if (!pending || !sessionId) return;
+    pendingProviderSessionInfo = null;
+    publishProviderSessionInfo(pending.update, pending.observedAt);
+  };
+
   const attachMessageHandler = (b: AcpRuntimeBackend) => {
+    messageForwarder?.dispose();
+    const handlerGeneration = runtimeMetadataPublicationGeneration;
     const forwarder = createAcpAgentMessageForwarder({
       sendAcp: (provider, body, opts) => params.session.sendAgentMessage(provider, body, opts),
       provider: params.provider,
       makeId: () => randomUUID(),
     });
+    messageForwarder = forwarder;
+
+    const handleProviderSessionInfoMessage = (msg: AgentMessage): boolean => {
+      if (msg.type !== 'event' || msg.name !== 'session_info_update') return false;
+      const payloadRecord = asRecord(msg.payload);
+      if (!payloadRecord) return true;
+      const update: { title?: string | null; updatedAt?: string | null } = {};
+      if (Object.prototype.hasOwnProperty.call(payloadRecord, 'title')) {
+        const title = payloadRecord.title;
+        if (title === null || typeof title === 'string') update.title = title;
+      }
+      if (Object.prototype.hasOwnProperty.call(payloadRecord, 'updatedAt')) {
+        const updatedAt = payloadRecord.updatedAt;
+        if (updatedAt === null || typeof updatedAt === 'string') update.updatedAt = updatedAt;
+      }
+      publishProviderSessionInfo(update, Date.now());
+      return true;
+    };
 
     b.onMessage((msg: AgentMessage) => {
+      if (handlerGeneration !== runtimeMetadataPublicationGeneration) return;
+      if (handleProviderSessionInfoMessage(msg)) return;
       if (loadingSession) {
         if (msg.type === 'status' && msg.status === 'error') {
           turnAborted = true;
@@ -1104,7 +1415,7 @@ export function createAcpRuntime(params: {
                   return match?.[1] ? String(match[1]) : null;
                 })()
               : null;
-            const remoteSessionId = (metadataSessionId ?? embeddedSessionId)?.trim() || '';
+            const remoteSessionId = readNonBlankOpaqueIdentifier(metadataSessionId ?? embeddedSessionId) ?? '';
 
             if (remoteSessionId) {
               const createReplayBackend = params.createReplayBackend ?? (async () => {
@@ -1200,7 +1511,7 @@ export function createAcpRuntime(params: {
           const payloadRecord = asRecord((msg as any).payload);
           const toolNameRaw = typeof payloadRecord?.toolName === 'string' ? payloadRecord.toolName : typeof (msg as any).reason === 'string' ? (msg as any).reason : '';
           const toolName = typeof toolNameRaw === 'string' && toolNameRaw.trim() ? toolNameRaw.trim() : 'unknown_tool';
-          const permissionId = typeof (msg as any).id === 'string' && (msg as any).id.trim() ? String((msg as any).id).trim() : randomUUID();
+          const permissionId = readNonBlankOpaqueIdentifier((msg as any).id) ?? randomUUID();
           const reason = typeof (msg as any).reason === 'string' ? String((msg as any).reason) : toolName;
           try {
             params.hooks?.onPermissionRequest?.({ permissionId, toolName, payload: (msg as any).payload, reason });
@@ -1232,7 +1543,15 @@ export function createAcpRuntime(params: {
             const payload = msg.payload;
             const payloadRecord = asRecord(payload);
             const details = normalizeAvailableCommands(payloadRecord?.availableCommands ?? payload);
-            publishSlashCommandsToMetadata({ session: params.session, details });
+            publishSlashCommandsToMetadata({
+              session: {
+                updateMetadata: (updater) => publishRuntimeMetadataBestEffort(
+                  updater,
+                  'available_commands_update',
+                ),
+              },
+              details,
+            });
           }
           if (name === 'session_modes_state') {
             const payloadRecord = asRecord(msg.payload);
@@ -1249,8 +1568,7 @@ export function createAcpRuntime(params: {
                   }))
               : [];
             if (currentModeId && availableModes.length > 0) {
-              updateMetadataBestEffort(
-                params.session,
+              publishRuntimeMetadataBestEffort(
                 (metadata) => {
                   const sessionModes = {
                     v: 1 as const,
@@ -1265,14 +1583,18 @@ export function createAcpRuntime(params: {
                     acpSessionModesV1: sessionModes,
                   };
                 },
-                `[${params.provider}]`,
                 'session_modes_state',
               );
             }
           }
           if (name === 'session_models_state') {
             publishAcpSessionModelsState({
-              session: params.session,
+              session: {
+                updateMetadata: (updater) => publishRuntimeMetadataBestEffort(
+                  updater,
+                  'session_models_state',
+                ),
+              },
               provider: params.provider,
               payload: msg.payload,
               logPrefix: `[${params.provider}]`,
@@ -1330,28 +1652,29 @@ export function createAcpRuntime(params: {
               return { currentModeId, availableModes };
             })();
 
-            updateMetadataBestEffort(
-              params.session,
+            publishRuntimeMetadataBestEffort(
               (metadata) => {
                 const now = Date.now();
                 const next: any = {
                   ...metadata,
-                  acpConfigOptionsV1: {
+                  sessionConfigOptionsV1: {
                     v: 1,
                     provider: params.provider,
                     updatedAt: now,
                     configOptions,
                   },
                 };
+                next.acpConfigOptionsV1 = next.sessionConfigOptionsV1;
 
                 if (derivedModels) {
-                  next.acpSessionModelsV1 = {
+                  next.sessionModelsV1 = {
                     v: 1,
                     provider: params.provider,
                     updatedAt: now,
                     currentModelId: derivedModels.currentModelId,
                     availableModels: derivedModels.availableModels,
                   };
+                  next.acpSessionModelsV1 = next.sessionModelsV1;
                 }
                 if (derivedModes) {
                   const sessionModes = {
@@ -1367,7 +1690,6 @@ export function createAcpRuntime(params: {
 
                 return next as any;
               },
-              `[${params.provider}]`,
               'config_options_state',
             );
           }
@@ -1376,8 +1698,7 @@ export function createAcpRuntime(params: {
             const currentModeIdRaw = payloadRecord?.currentModeId;
             const currentModeId = typeof currentModeIdRaw === 'string' ? currentModeIdRaw : '';
             if (currentModeId) {
-              updateMetadataBestEffort(
-                params.session,
+              publishRuntimeMetadataBestEffort(
                 (metadata) => {
                   const prev = metadata.sessionModesV1 ?? metadata.acpSessionModesV1;
                   const availableModes = Array.isArray(prev?.availableModes) ? prev.availableModes : [];
@@ -1394,7 +1715,6 @@ export function createAcpRuntime(params: {
                     acpSessionModesV1: sessionModes,
                   };
                 },
-                `[${params.provider}]`,
                 'current_mode_update',
               );
             }
@@ -1404,8 +1724,7 @@ export function createAcpRuntime(params: {
             const currentModelIdRaw = payloadRecord?.currentModelId;
             const currentModelId = typeof currentModelIdRaw === 'string' ? currentModelIdRaw : '';
             if (currentModelId) {
-              updateMetadataBestEffort(
-                params.session,
+              publishRuntimeMetadataBestEffort(
                 (metadata) => {
                   const prev = (metadata as any).acpSessionModelsV1 as any;
                   const availableModels = Array.isArray(prev?.availableModels) ? prev.availableModels : [];
@@ -1420,7 +1739,6 @@ export function createAcpRuntime(params: {
                     },
                   };
                 },
-                `[${params.provider}]`,
                 'current_model_update',
               );
             }
@@ -1444,6 +1762,15 @@ export function createAcpRuntime(params: {
     if (backendPromise) return await backendPromise;
     backendPromise = (async () => {
       const created = await params.ensureBackend();
+      created.setPlanStatePublisher?.(async (snapshot) => {
+        await Promise.resolve(params.session.updateMetadata((metadata) => (
+          applyAcpPlanSnapshotToMetadata({
+            metadata,
+            snapshot,
+            updatedAt: Date.now(),
+          }) as typeof metadata
+        )));
+      });
       backend = created;
       attachMessageHandler(created);
       logger.debug(`[${params.provider}] ACP backend created`);
@@ -1483,7 +1810,7 @@ export function createAcpRuntime(params: {
   };
 
   const applySessionModeControl = async (modeId: string): Promise<void> => {
-    const normalizedModeId = typeof modeId === 'string' ? modeId.trim() : '';
+    const normalizedModeId = readNonBlankSessionControlIdentifier(modeId) ?? '';
     if (!normalizedModeId) return;
     if (!sessionId) {
       throw new Error(`${params.provider} ACP session was not started`);
@@ -1537,7 +1864,7 @@ export function createAcpRuntime(params: {
   };
 
   const applySessionModelControl = async (modelId: string): Promise<void> => {
-    const normalizedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+    const normalizedModelId = readNonBlankSessionControlIdentifier(modelId) ?? '';
     if (!normalizedModelId) return;
     if (!sessionId) {
       throw new Error(`${params.provider} ACP session was not started`);
@@ -1547,13 +1874,13 @@ export function createAcpRuntime(params: {
     const controlTimeoutMs = resolveSessionControlTimeoutMs();
     const modelConfigOptionId = (() => {
       try {
-        return getAgentModelConfig(params.provider as AgentId).acpModelConfigOptionId ?? 'model';
+        return getAgentModelConfig(params.provider as AgentId).acpModelConfigOptionId ?? null;
       } catch (error) {
         logger.debug(
-          `[${params.provider}] Failed to resolve provider model config option id; falling back to "model"`,
+          `[${params.provider}] Failed to resolve provider model config option id; config-option fallback is unavailable`,
           error
         );
-        return 'model';
+        return null;
       }
     })();
     const modelSetMethod = (() => {
@@ -1575,15 +1902,13 @@ export function createAcpRuntime(params: {
     });
     if (providerResolvedModelUpdate === null) return;
     const resolvedModelUpdate = providerResolvedModelUpdate ?? { modelId: normalizedModelId };
-    const resolvedModelId = typeof resolvedModelUpdate.modelId === 'string'
-      ? resolvedModelUpdate.modelId.trim()
-      : normalizedModelId;
+    const resolvedModelId = readNonBlankSessionControlIdentifier(resolvedModelUpdate.modelId) ?? normalizedModelId;
     if (!resolvedModelId) return;
     const applyCompanionConfigUpdates = async (): Promise<void> => {
       if (!b.setSessionConfigOption) return;
       const updates = resolvedModelUpdate.configUpdates ?? [];
       for (const update of updates) {
-        const configId = typeof update.configId === 'string' ? update.configId.trim() : '';
+        const configId = readNonBlankSessionControlIdentifier(update.configId) ?? '';
         if (!configId || configId === modelConfigOptionId) continue;
         const value = normalizeSessionConfigOptionValue(update.value);
         if (value === null) continue;
@@ -1591,7 +1916,7 @@ export function createAcpRuntime(params: {
       }
     };
     if (modelSetMethod === 'config_option') {
-      if (b.setSessionConfigOption) {
+      if (b.setSessionConfigOption && modelConfigOptionId) {
         await b.setSessionConfigOption(activeSessionId, modelConfigOptionId, resolvedModelId);
         await applyCompanionConfigUpdates();
         return;
@@ -1623,7 +1948,7 @@ export function createAcpRuntime(params: {
       const e = outcome.error;
       // Some ACP agents may not support `session/set_model` but may expose an equivalent
       // `model` config option. Fall back best-effort; callers already treat this as non-fatal.
-      if (!b.setSessionConfigOption) throw e;
+      if (!b.setSessionConfigOption || !modelConfigOptionId) throw e;
 
       try {
         await b.setSessionConfigOption(activeSessionId, modelConfigOptionId, resolvedModelId);
@@ -1635,16 +1960,14 @@ export function createAcpRuntime(params: {
       }
     }
 
-    if (b.setSessionConfigOption) {
+    if (b.setSessionConfigOption && modelConfigOptionId) {
       await b.setSessionConfigOption(activeSessionId, modelConfigOptionId, resolvedModelId);
       await applyCompanionConfigUpdates();
     }
   };
 
   const applyStartupModelOverride = async (): Promise<void> => {
-    const explicitModelId = typeof params.startupOverrides?.model?.modelId === 'string'
-      ? params.startupOverrides.model.modelId.trim()
-      : '';
+    const explicitModelId = readNonBlankSessionControlIdentifier(params.startupOverrides?.model?.modelId) ?? '';
     const pendingModel = explicitModelId && explicitModelId !== 'default'
       ? { modelId: explicitModelId, updatedAt: params.startupOverrides?.model?.updatedAt ?? 0 }
       : computePendingModelOverrideApplication({
@@ -1660,9 +1983,7 @@ export function createAcpRuntime(params: {
   };
 
   const applyStartupModeOverride = async (): Promise<void> => {
-    const explicitModeId = typeof params.startupOverrides?.mode?.modeId === 'string'
-      ? params.startupOverrides.mode.modeId.trim()
-      : '';
+    const explicitModeId = readNonBlankSessionControlIdentifier(params.startupOverrides?.mode?.modeId) ?? '';
     const pendingMode = explicitModeId && explicitModeId !== 'default'
       ? { modeId: explicitModeId, updatedAt: params.startupOverrides?.mode?.updatedAt ?? 0 }
       : computePendingSessionModeOverrideApplication({
@@ -1674,6 +1995,71 @@ export function createAcpRuntime(params: {
       await applySessionModeControl(pendingMode.modeId);
     } catch (error) {
       logger.debug(`[${params.provider}] Failed to apply startup mode override before pending drain (non-fatal)`, error);
+    }
+  };
+
+  const sendPromptToProvider = async (
+    prompt: string,
+    callbacks: ProviderPromptSubmissionCallbacks = {},
+    metadata?: Record<string, unknown>,
+  ): Promise<void> => {
+    if (!sessionId) {
+      throw createRejectedBeforeProviderEffectError(
+        new Error(`${params.provider} ACP session was not started`),
+      );
+    }
+
+    let b: AcpRuntimeBackend;
+    try {
+      b = await ensureBackend();
+    } catch (error) {
+      throw createRejectedBeforeProviderEffectError(error);
+    }
+    let submissionEvidence: AcpPromptSubmissionEvidence | null = null;
+    try {
+      if (metadata && b.sendPromptPayloadWithEvidence) {
+        submissionEvidence = await b.sendPromptPayloadWithEvidence(sessionId, { text: prompt, meta: metadata });
+      } else if (metadata && b.sendPromptPayload) {
+        await b.sendPromptPayload(sessionId, { text: prompt, meta: metadata });
+      } else if (b.sendPromptWithEvidence) {
+        submissionEvidence = await b.sendPromptWithEvidence(sessionId, prompt);
+      } else {
+        await b.sendPrompt(sessionId, prompt);
+      }
+    } catch (error) {
+      rethrowAcpPromptSubmissionError(error);
+    }
+    await callbacks.onProviderPromptSubmitted?.();
+
+    let responseCompletion: Promise<AcpTurnOutcome | void> | null = null;
+    try {
+      if (b.waitForResponseComplete) {
+        responseCompletion = b.waitForResponseComplete();
+      }
+
+      if (submissionEvidence?.kind === 'effect_may_have_occurred') {
+        const responseCompletionFailure = responseCompletion
+          ? responseCompletion.then(
+              () => new Promise<never>(() => {}),
+              (error: unknown) => Promise.reject(error),
+            )
+          : new Promise<never>(() => {});
+        await Promise.race([
+          submissionEvidence.finalResponseEvidence,
+          responseCompletionFailure,
+        ]);
+      }
+
+      // Only the ACP evidence seam may publish acceptance here. Legacy backends
+      // complete normally and let the outer prompt loop confirm after return.
+      if (submissionEvidence) {
+        callbacks.onProviderPromptAccepted?.();
+      }
+      if (responseCompletion) {
+        rememberTurnOutcome(await responseCompletion);
+      }
+    } catch (error) {
+      rethrowPromptError(error);
     }
   };
 
@@ -1737,85 +2123,181 @@ export function createAcpRuntime(params: {
     },
 
     async reset(): Promise<void> {
-      sessionId = null;
-      turnInFlight = false;
-      publishInFlightSteerCapabilities(false);
-      resetTurnState();
-      loadingSession = false;
-      clearToolCallCache();
-      stopPendingPump();
-      params.onThinkingChange(false);
-      params.session.keepAlive(false, 'remote');
-      publishSessionId();
+      if (resetFlight) return await resetFlight;
+      const operation = (async (): Promise<void> => {
+        resetInProgress = true;
+        const startupFlight = startOrLoadFlight?.promise ?? null;
+        const deferredDrainFlight = postStartPendingDrainFlight;
+        runtimeGeneration += 1;
+        runtimeMetadataPublicationGeneration += 1;
+        const identityReset = identityBinding.reset();
+        startupDrainController?.abort('acp-runtime:generation-reset');
+        postStartDrainController?.abort('acp-runtime:generation-reset');
+        startOrLoadFlight = null;
+        postStartPendingDrainFlight = null;
+        completedStartOrLoadIntentKey = null;
+        sessionId = null;
+        pendingProviderSessionInfo = null;
+        turnInFlight = false;
+        publishInFlightSteerCapabilities(false);
+        resetTurnState();
+        loadingSession = false;
+        clearToolCallCache();
+        stopPendingPump();
+        params.onThinkingChange(false);
+        params.session.keepAlive(false, 'remote');
+        messageForwarder?.dispose();
+        messageForwarder = null;
 
-      if (backend) {
         try {
-          await backend.dispose();
-        } catch (e) {
-          logger.debug(`[${params.provider}] Failed to dispose backend (non-fatal)`, e);
+          const backendCreation = backendPromise;
+          if (backendCreation) await backendCreation.catch(() => undefined);
+          if (backend) {
+            try {
+              await backend.dispose();
+            } catch (e) {
+              logger.debug(`[${params.provider}] Failed to dispose backend (non-fatal)`, e);
+            }
+            backend = null;
+          }
+          await identityReset;
+          await startupFlight?.catch(() => undefined);
+          await deferredDrainFlight?.catch(() => undefined);
+        } finally {
+          startupDrainController = null;
+          postStartDrainController = null;
+          resetInProgress = false;
         }
-        backend = null;
+      })();
+      resetFlight = operation;
+      try {
+        await operation;
+      } finally {
+        if (resetFlight === operation) resetFlight = null;
       }
     },
 
     async startOrLoad(opts: { resumeId?: string | null; importHistory?: boolean; deferPendingDrain?: boolean } = {}): Promise<string> {
-      const b = await ensureBackend();
+      if (resetInProgress) {
+        throw new AcpSessionIdentityBindingError(
+          'ACP_SESSION_IDENTITY_RESET_REQUIRED',
+          'Wait for the ACP runtime reset to complete before opening a session',
+        );
+      }
+      const hasResumeIntent = typeof opts.resumeId === 'string';
+      const resumeReference = hasResumeIntent ? opts.resumeId!.trim() : '';
+      const intentKey = hasResumeIntent ? `resume:${resumeReference}` : 'create';
+      if (startOrLoadFlight) {
+        if (startOrLoadFlight.intentKey === intentKey) return await startOrLoadFlight.promise;
+        throw new AcpSessionIdentityBindingError(
+          'ACP_SESSION_IDENTITY_INTENT_CONFLICT',
+          'A different ACP session open intent is already in progress',
+        );
+      }
+      if (completedStartOrLoadIntentKey) {
+        if (completedStartOrLoadIntentKey === intentKey && sessionId) return sessionId;
+        throw new AcpSessionIdentityBindingError(
+          'ACP_SESSION_IDENTITY_INTENT_CONFLICT',
+          'The ACP runtime generation is already bound to a different session open intent',
+        );
+      }
 
-      const resumeId = typeof opts.resumeId === 'string' ? opts.resumeId.trim() : '';
-      const importHistory = opts.importHistory === true;
-      if (resumeId) {
-        if (!b.loadSession && !b.loadSessionWithReplayCapture) {
-          throw new Error(`${params.provider} ACP backend does not support loading sessions`);
-        }
+      const operationPromise = (async (): Promise<string> => {
+        const operationGeneration = runtimeGeneration;
+        const importHistory = opts.importHistory === true;
+        const intent: AcpSessionOpenIntent = hasResumeIntent
+          ? {
+              kind: 'resume',
+              expectedVendorSessionId: params.resolveExpectedVendorSessionIdForResume
+                ? params.resolveExpectedVendorSessionIdForResume(resumeReference) ?? ''
+                : resumeReference,
+            }
+          : { kind: 'create' };
+        const opened = await identityBinding.open({
+          intent,
+          openSession: async (identityContext) => {
+            const b = await ensureBackend();
+            identityContext.assertCurrent();
+            const sessionOpenSignal = params.getSessionOpenAbortSignal?.();
+            const sessionOpenOptions = sessionOpenSignal ? { signal: sessionOpenSignal } : undefined;
+            if (!hasResumeIntent) return await b.startSession(undefined, sessionOpenOptions);
+            if (!b.loadSession && !b.loadSessionWithReplayCapture) {
+              throw new Error(`${params.provider} ACP backend does not support loading sessions`);
+            }
+            loadingSession = true;
+            try {
+              if (b.loadSessionWithReplayCapture && importHistory) {
+                return await b.loadSessionWithReplayCapture(resumeReference);
+              }
+              if (b.loadSession) return await b.loadSession(resumeReference, sessionOpenOptions);
+              return await b.loadSessionWithReplayCapture!(resumeReference);
+            } finally {
+              loadingSession = false;
+            }
+          },
+        });
+        assertRuntimeGeneration(operationGeneration);
+        sessionId = opened.identity.vendorSessionId;
+        flushPendingProviderSessionInfo();
 
-        loadingSession = true;
-        let replay: unknown[] | null = null;
-        try {
-          if (b.loadSessionWithReplayCapture && importHistory) {
-            const loaded = await b.loadSessionWithReplayCapture(resumeId);
-            sessionId = loaded.sessionId ?? resumeId;
-            replay = Array.isArray(loaded.replay) ? loaded.replay : null;
-          } else if (b.loadSession) {
-            const loaded = await b.loadSession(resumeId);
-            sessionId = loaded.sessionId ?? resumeId;
-          } else if (b.loadSessionWithReplayCapture) {
-            const loaded = await b.loadSessionWithReplayCapture(resumeId);
-            sessionId = loaded.sessionId ?? resumeId;
-          } else {
-            throw new Error(`${params.provider} ACP backend does not support loading sessions`);
-          }
-        } finally {
-          loadingSession = false;
-        }
-
+        const replay = Array.isArray(opened.result.replay) ? opened.result.replay : null;
         if (replay && importHistory) {
           importAcpReplayHistoryV1({
             session: params.session,
             provider: params.provider,
-            remoteSessionId: resumeId,
+            remoteSessionId: resumeReference,
             replay: replay as unknown[],
             permissionHandler: params.permissionHandler,
           }).catch((e) => {
             logger.debug(`[${params.provider}] Failed to import replay history (non-fatal)`, e);
           });
         }
-      } else {
-        const started = await b.startSession();
-        sessionId = started.sessionId;
-      }
 
-      publishSessionId();
-      await applyStartupModeOverride();
-      await applyStartupModelOverride();
-      if (params.pendingQueue?.drainAfterStartOrLoad === true && opts.deferPendingDrain !== true) {
-        await drainPendingMessagesOnce();
+        await applyStartupModeOverride();
+        assertRuntimeGeneration(operationGeneration);
+        await applyStartupModelOverride();
+        assertRuntimeGeneration(operationGeneration);
+        if (params.pendingQueue?.drainAfterStartOrLoad === true && opts.deferPendingDrain !== true) {
+          const controller = new AbortController();
+          startupDrainController = controller;
+          try {
+            await drainPendingMessagesOnce(controller);
+            assertRuntimeGeneration(operationGeneration);
+          } finally {
+            if (startupDrainController === controller) startupDrainController = null;
+          }
+        }
+        assertRuntimeGeneration(operationGeneration);
+        completedStartOrLoadIntentKey = intentKey;
+        return opened.identity.vendorSessionId;
+      })();
+      startOrLoadFlight = { intentKey, promise: operationPromise };
+      try {
+        return await operationPromise;
+      } finally {
+        if (startOrLoadFlight?.promise === operationPromise) startOrLoadFlight = null;
       }
-      return sessionId!;
     },
 
     async drainPendingAfterStartOrLoad(): Promise<void> {
       if (params.pendingQueue?.drainAfterStartOrLoad !== true) return;
-      await drainPendingMessagesOnce();
+      if (postStartPendingDrainFlight) return await postStartPendingDrainFlight;
+      if (!completedStartOrLoadIntentKey || !sessionId) return;
+      const operationGeneration = runtimeGeneration;
+      const controller = new AbortController();
+      const operation = (async (): Promise<void> => {
+        assertRuntimeGeneration(operationGeneration);
+        await drainPendingMessagesOnce(controller);
+        assertRuntimeGeneration(operationGeneration);
+      })();
+      postStartDrainController = controller;
+      postStartPendingDrainFlight = operation;
+      try {
+        await operation;
+      } finally {
+        if (postStartDrainController === controller) postStartDrainController = null;
+        if (postStartPendingDrainFlight === operation) postStartPendingDrainFlight = null;
+      }
     },
 
     async setSessionMode(modeId: string): Promise<void> {
@@ -1827,7 +2309,7 @@ export function createAcpRuntime(params: {
     },
 
     async setSessionConfigOption(configId: string, value: string | number | boolean | null): Promise<void> {
-      const normalizedConfigId = typeof configId === 'string' ? configId.trim() : '';
+      const normalizedConfigId = readNonBlankSessionControlIdentifier(configId) ?? '';
       if (!normalizedConfigId) return;
       const normalizedValue = normalizeSessionConfigOptionValue(value);
       if (normalizedValue === null) return;
@@ -1845,9 +2327,7 @@ export function createAcpRuntime(params: {
         return;
       }
 
-      const resolvedConfigId = typeof resolvedUpdate.configId === 'string'
-        ? resolvedUpdate.configId.trim()
-        : '';
+      const resolvedConfigId = readNonBlankSessionControlIdentifier(resolvedUpdate.configId) ?? '';
       if (!resolvedConfigId) return;
       const resolvedValue = normalizeSessionConfigOptionValue(resolvedUpdate.value);
       if (resolvedValue === null) return;
@@ -1886,28 +2366,17 @@ export function createAcpRuntime(params: {
         } else {
           await b.sendSteerPrompt(sessionId, prompt, options);
         }
-        confirmSteerPromptDeliveredToProvider(params.session, options);
       } else {
         throw new Error(`${params.provider} ACP backend does not support in-flight steer`);
       }
-      publishSessionId();
     },
 
     async sendPrompt(prompt: string): Promise<void> {
-      if (!sessionId) {
-        throw new Error(`${params.provider} ACP session was not started`);
-      }
+      await sendPromptToProvider(prompt);
+    },
 
-      const b = await ensureBackend();
-      try {
-        await b.sendPrompt(sessionId, prompt);
-        if (b.waitForResponseComplete) {
-          rememberTurnOutcome(await b.waitForResponseComplete());
-        }
-      } catch (error) {
-        rethrowPromptError(error);
-      }
-      publishSessionId();
+    async sendPromptWithMeta(promptParams: ProviderPromptWithMeta): Promise<void> {
+      await sendPromptToProvider(promptParams.text, promptParams, promptParams.meta);
     },
 
     async compactContext(command: string): Promise<void> {
@@ -1928,14 +2397,18 @@ export function createAcpRuntime(params: {
       } catch (error) {
         rethrowPromptError(error);
       }
-      publishSessionId();
+    },
+
+    async failTurn(error: unknown): Promise<boolean> {
+      return surfacePromptFailure(error);
     },
 
     async flushTurn(): Promise<void> {
       await waitForPendingTurnBoundaryStreamFlush();
       await drainPendingSessionMediaPersistence();
-      const sessionMediaMeta = persistedSessionMediaItems.length > 0
-        ? buildSessionMediaMeta(persistedSessionMediaItems)
+      const unavailableSessionMedia = [...unavailableSessionMediaByDedupeKey.values()].flat();
+      const sessionMediaMeta = persistedSessionMediaItems.length > 0 || unavailableSessionMedia.length > 0
+        ? buildSessionMediaMeta(persistedSessionMediaItems, undefined, unavailableSessionMedia)
         : null;
       const attachedSessionMediaToAssistantRow = sessionMediaMeta
         ? streamedTranscriptWriter.mergeAssistantMeta(sessionMediaMeta)
@@ -2025,6 +2498,7 @@ export function createAcpRuntime(params: {
         });
       }
 
+      clearToolCallCache();
       resetTurnState();
     },
   };

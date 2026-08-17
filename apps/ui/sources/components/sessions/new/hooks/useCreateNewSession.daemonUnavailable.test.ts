@@ -8,25 +8,42 @@ import { SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
 import { flushHookEffects, renderHook } from '@/dev/testkit';
 import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
+import { createSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
 
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function setupHarness() {
   const modalAlertSpy = vi.fn((..._args: unknown[]) => {});
+  type SpawnAttemptCustodyTestResult = Readonly<{
+    status: 'unresolved' | 'completed';
+    userAttemptId: string;
+    spawnNonce: string;
+    targetFingerprint: string;
+    createdSessionId?: string | null;
+    firstTurnLocalId?: string;
+    attachmentMessageLocalId?: string;
+  }>;
   type SpawnNewSessionTestResult =
     | Readonly<{
         type: 'error';
         errorCode:
           | typeof SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE
-          | typeof SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT;
+          | typeof SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT
+          | typeof SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED
+          | typeof SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST;
         errorMessage: string;
+        spawnAttemptCustody?: SpawnAttemptCustodyTestResult;
       }>
     | Readonly<{
         type: 'success';
-        sessionId: string;
+        sessionId?: string;
+        spawnNonce?: string;
+        sessionIdStatus?: 'available' | 'pending';
+        spawnAttemptCustody?: SpawnAttemptCustodyTestResult;
       }>;
   type ResolveSpawnSessionTestResult =
     | Readonly<{ status: 'success'; sessionId: string }>
@@ -42,7 +59,9 @@ async function setupHarness() {
   }));
   const machineResolveSpawnSessionByNonceSpy = vi.fn(async (): Promise<ResolveSpawnSessionTestResult> => ({ status: 'not_found' }));
   const machineResolveSpawnSessionByNonceUntilSettledSpy = vi.fn(async (): Promise<ResolveSpawnSessionTestResult> => ({ status: 'not_found' }));
-  const followUpSpawnedSessionWithServerScopeSpy = vi.fn(async () => {});
+  const modalConfirmSpy = vi.fn(async () => false);
+  const completeMachineSpawnAttemptCustodySpy = vi.fn(async () => true);
+  const followUpSpawnedSessionWithServerScopeSpy = vi.fn(async (_params: unknown) => {});
   const storageState = {
     settings: {},
     machines: { m1: { id: 'm1' } },
@@ -69,7 +88,7 @@ async function setupHarness() {
         },
       }),
   });
-  vi.doMock('@/modal', () => ({ Modal: { alert: modalAlertSpy, confirm: vi.fn(async () => false) } }));
+  vi.doMock('@/modal', () => ({ Modal: { alert: modalAlertSpy, confirm: modalConfirmSpy } }));
   vi.doMock('@/sync/sync', () => ({
     sync: {
       applySettings: vi.fn(),
@@ -192,15 +211,20 @@ async function setupHarness() {
   vi.doMock('@/agents/runtime/resumeCapabilities', () => ({ canAgentResume: vi.fn(() => false) }));
   vi.doMock('@/components/sessions/new/modules/formatResumeSupportDetailCode', () => ({ formatResumeSupportDetailCode: vi.fn(() => '') }));
   vi.doMock('@/sync/ops', () => ({
+    machineBash: vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 })),
     machineSpawnNewSession: machineSpawnNewSessionSpy,
     machineResolveSpawnSessionByNonce: machineResolveSpawnSessionByNonceSpy,
     machineResolveSpawnSessionByNonceUntilSettled: machineResolveSpawnSessionByNonceUntilSettledSpy,
+    completeMachineSpawnAttemptCustody: completeMachineSpawnAttemptCustodySpy,
+    resetMachineSpawnAttemptCustody: vi.fn(async () => true),
   }));
 
   const { useCreateNewSession } = await import('./useCreateNewSession');
   return {
     useCreateNewSession,
     modalAlertSpy,
+    modalConfirmSpy,
+    completeMachineSpawnAttemptCustodySpy,
     machineSpawnNewSessionSpy,
     machineResolveSpawnSessionByNonceSpy,
     machineResolveSpawnSessionByNonceUntilSettledSpy,
@@ -233,9 +257,9 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
       refreshedAt: null,
       refresh: () => {},
     };
-
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -250,7 +274,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -298,6 +322,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(
       ({ selectedMachineId }: { selectedMachineId: string | null }) =>
         useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
           router: { push: vi.fn(), replace: vi.fn() },
           selectedMachineId,
           selectedPath: '/tmp',
@@ -314,7 +339,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
           agentType: 'opencode' as any,
           permissionMode: 'default' as PermissionMode,
           modelMode: 'default' as ModelMode,
-          sessionPrompt: '',
+          promptStore: createNewSessionPromptStore(''),
           resumeSessionId: '',
           agentNewSessionOptions: null,
           machineEnvPresence,
@@ -362,6 +387,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(
       ({ selectedPath, triggerCreate }: { selectedPath: string; triggerCreate: boolean }) => {
         const createHook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
           router: { push: vi.fn(), replace: vi.fn() },
           selectedMachineId: 'm1',
           selectedPath,
@@ -376,7 +402,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
           agentType: 'opencode' as any,
           permissionMode: 'default' as PermissionMode,
           modelMode: 'default' as ModelMode,
-          sessionPrompt: '',
+          promptStore: createNewSessionPromptStore(''),
           resumeSessionId: '',
           agentNewSessionOptions: null,
           machineEnvPresence,
@@ -430,6 +456,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/home/happier',
@@ -445,7 +472,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -488,6 +515,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -502,7 +530,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -558,6 +586,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -572,7 +601,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -595,7 +624,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     expect(modalAlertSpy).toHaveBeenCalled();
   });
 
-  it('resolves an ambiguous spawn by nonce without spawning another session', async () => {
+  it('consumes the operation settlement and actual custody identity without a hook-level resolver', async () => {
     const {
       useCreateNewSession,
       machineSpawnNewSessionSpy,
@@ -606,13 +635,14 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     storageState.sessions['session-created-from-nonce'] = { id: 'session-created-from-nonce' };
     machineSpawnNewSessionSpy.mockResolvedValueOnce({
-      type: 'error' as const,
-      errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
-      errorMessage: 'Session startup timed out',
-    });
-    machineResolveSpawnSessionByNonceUntilSettledSpy.mockResolvedValueOnce({
-      status: 'success' as const,
+      type: 'success' as const,
       sessionId: 'session-created-from-nonce',
+      spawnAttemptCustody: {
+        status: 'completed',
+        userAttemptId: 'persisted-attempt-a',
+        spawnNonce: 'actual-operation-nonce',
+        targetFingerprint: 'new-session.launch:scope-a',
+      },
     });
 
     const settings = { experiments: false } as unknown as Settings;
@@ -627,6 +657,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -641,7 +672,232 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: 'First turn',
+        promptStore: createNewSessionPromptStore('First turn'),
+        resumeSessionId: '',
+        agentNewSessionOptions: null,
+        machineEnvPresence,
+        secrets: [],
+        secretBindingsByProfileId: {},
+        selectedSecretIdByProfileIdByEnvVarName: {},
+        sessionOnlySecretValueByProfileIdByEnvVarName: {},
+        selectedMachineCapabilities: {},
+        targetServerId: null,
+        allowedTargetServerIds: undefined,
+        launchUserAttemptId: 'persisted-attempt-a',
+      }),
+    );
+
+    await act(async () => {
+      await hook.getCurrent().handleCreateSession();
+    });
+    await flushHookEffects({ runAllTimers: true });
+
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
+    const spawnOptions = machineSpawnNewSessionSpy.mock.calls[0]?.[0] as {
+      spawnNonce?: string;
+      userAttemptId?: string;
+    };
+    expect(spawnOptions.spawnNonce).toEqual(expect.stringMatching(/^spawn-/));
+    expect(spawnOptions.userAttemptId).toBe('persisted-attempt-a');
+    expect(machineResolveSpawnSessionByNonceUntilSettledSpy).not.toHaveBeenCalled();
+    expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-created-from-nonce',
+      initialMessageText: 'First turn',
+    }));
+    expect(router.replace).toHaveBeenCalledWith(
+      '/session/session-created-from-nonce?serverId=server-a',
+      expect.anything(),
+    );
+
+    await hook.unmount();
+  });
+
+  it('fails closed when a stale response belongs to a different user attempt', async () => {
+    const {
+      useCreateNewSession,
+      machineSpawnNewSessionSpy,
+      modalAlertSpy,
+      storageState,
+      followUpSpawnedSessionWithServerScopeSpy,
+    } = await setupHarness();
+    storageState.sessions['session-from-attempt-a'] = { id: 'session-from-attempt-a' };
+    machineSpawnNewSessionSpy.mockResolvedValueOnce({
+        type: 'success',
+        sessionId: 'session-from-attempt-a',
+        spawnAttemptCustody: {
+          status: 'completed',
+          userAttemptId: 'attempt-a',
+          spawnNonce: 'nonce-a',
+          targetFingerprint: 'new-session.launch:scope-a',
+        },
+      });
+    const router = { push: vi.fn(), replace: vi.fn() };
+    const disableDraftPersistence = vi.fn();
+    const onLaunchUserAttemptIdChange = vi.fn();
+    const hook = await renderHook(() => useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
+      router,
+      selectedMachineId: 'm1',
+      selectedPath: '/tmp',
+      selectedMachine: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
+      setIsCreating: vi.fn(),
+      setIsResumeSupportChecking: vi.fn(),
+      settings: { experiments: false } as unknown as Settings,
+      useProfiles: false,
+      selectedProfileId: null,
+      profileMap: new Map(),
+      recentMachinePaths: [],
+      agentType: 'opencode' as any,
+      permissionMode: 'default' as PermissionMode,
+      modelMode: 'default' as ModelMode,
+      promptStore: createNewSessionPromptStore('new intent B'),
+      resumeSessionId: '',
+      agentNewSessionOptions: null,
+      machineEnvPresence: { isPreviewEnvSupported: false, isLoading: false, meta: {}, refreshedAt: null, refresh: () => {} },
+      secrets: [],
+      secretBindingsByProfileId: {},
+      selectedSecretIdByProfileIdByEnvVarName: {},
+      sessionOnlySecretValueByProfileIdByEnvVarName: {},
+      selectedMachineCapabilities: {},
+      targetServerId: null,
+      allowedTargetServerIds: undefined,
+      disableDraftPersistence,
+      launchUserAttemptId: 'attempt-b',
+      onLaunchUserAttemptIdChange,
+    }));
+
+    await act(async () => { await hook.getCurrent().handleCreateSession(); });
+    await flushHookEffects({ runAllTimers: true });
+
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
+    expect(followUpSpawnedSessionWithServerScopeSpy).not.toHaveBeenCalled();
+    expect(disableDraftPersistence).not.toHaveBeenCalled();
+    expect(onLaunchUserAttemptIdChange).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(modalAlertSpy).toHaveBeenCalledWith(
+      'common.error',
+      'newSession.failedToStart',
+    );
+    await hook.unmount();
+  });
+
+  it('rotates the action identity when the canonical launch intent changes on the same mounted screen', async () => {
+    const {
+      useCreateNewSession,
+      machineSpawnNewSessionSpy,
+      machineResolveSpawnSessionByNonceSpy,
+    } = await setupHarness();
+    machineSpawnNewSessionSpy.mockResolvedValue({
+      type: 'error',
+      errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
+      errorMessage: 'Session startup timed out',
+    });
+    const settings = { experiments: false } as unknown as Settings;
+    const machineEnvPresence: UseMachineEnvPresenceResult = {
+      isPreviewEnvSupported: false,
+      isLoading: false,
+      meta: {},
+      refreshedAt: null,
+      refresh: () => {},
+    };
+    const hook = await renderHook(
+      ({ launchIntentSignature }: { launchIntentSignature: string }) => useCreateNewSession({
+        router: { push: vi.fn(), replace: vi.fn() },
+        selectedMachineId: 'm-mounted-prompt',
+        selectedPath: '/tmp',
+        selectedMachine: { id: 'm-mounted-prompt', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
+        setIsCreating: vi.fn(),
+        setIsResumeSupportChecking: vi.fn(),
+        settings,
+        useProfiles: false,
+        selectedProfileId: null,
+        profileMap: new Map(),
+        recentMachinePaths: [],
+        agentType: 'opencode' as any,
+        permissionMode: 'default' as PermissionMode,
+        modelMode: 'default' as ModelMode,
+        promptStore: createNewSessionPromptStore('Unchanged prompt'),
+        resumeSessionId: '',
+        agentNewSessionOptions: null,
+        machineEnvPresence,
+        secrets: [],
+        secretBindingsByProfileId: {},
+        selectedSecretIdByProfileIdByEnvVarName: {},
+        sessionOnlySecretValueByProfileIdByEnvVarName: {},
+        selectedMachineCapabilities: {},
+        targetServerId: null,
+        allowedTargetServerIds: undefined,
+        launchUserAttemptId: 'persisted-attempt-a',
+        launchIntentSignature,
+      }),
+      { initialProps: { launchIntentSignature: 'intent-a' } },
+    );
+
+    await act(async () => { await hook.getCurrent().handleCreateSession(); });
+    await flushHookEffects({ runAllTimers: true });
+    const firstSpawnOptions = machineSpawnNewSessionSpy.mock.calls[0]?.[0] as {
+      spawnNonce?: string;
+      userAttemptId?: string;
+    };
+
+    await hook.rerender({ launchIntentSignature: 'intent-b' });
+    await act(async () => { await hook.getCurrent().handleCreateSession(); });
+    await flushHookEffects({ runAllTimers: true });
+
+    const secondSpawnOptions = machineSpawnNewSessionSpy.mock.calls[1]?.[0] as {
+      spawnNonce?: string;
+      userAttemptId?: string;
+    };
+    expect(machineResolveSpawnSessionByNonceSpy).not.toHaveBeenCalled();
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(2);
+    expect(secondSpawnOptions.userAttemptId).not.toBe(firstSpawnOptions.userAttemptId);
+    expect(secondSpawnOptions.spawnNonce).not.toBe(firstSpawnOptions.spawnNonce);
+    await hook.unmount();
+  });
+
+  it('uses the operation-settled pending ACK before sending the first turn', async () => {
+    const {
+      useCreateNewSession,
+      machineSpawnNewSessionSpy,
+      machineResolveSpawnSessionByNonceUntilSettledSpy,
+      storageState,
+      followUpSpawnedSessionWithServerScopeSpy,
+    } = await setupHarness();
+
+    storageState.sessions['session-created-after-ack'] = { id: 'session-created-after-ack' };
+    machineSpawnNewSessionSpy.mockResolvedValueOnce({
+      type: 'success' as const,
+      sessionId: 'session-created-after-ack',
+    });
+
+    const settings = { experiments: false } as unknown as Settings;
+    const machineEnvPresence: UseMachineEnvPresenceResult = {
+      isPreviewEnvSupported: false,
+      isLoading: false,
+      meta: {},
+      refreshedAt: null,
+      refresh: () => {},
+    };
+    const router = { push: vi.fn(), replace: vi.fn() };
+
+    const hook = await renderHook(() =>
+      useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
+        router,
+        selectedMachineId: 'm1',
+        selectedPath: '/tmp',
+        selectedMachine: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
+        setIsCreating: vi.fn(),
+        setIsResumeSupportChecking: vi.fn(),
+        settings,
+        useProfiles: false,
+        selectedProfileId: null,
+        profileMap: new Map(),
+        recentMachinePaths: [],
+        agentType: 'opencode' as any,
+        permissionMode: 'default' as PermissionMode,
+        modelMode: 'default' as ModelMode,
+        promptStore: createNewSessionPromptStore('First turn after ack'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -662,25 +918,20 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
     const spawnOptions = machineSpawnNewSessionSpy.mock.calls[0]?.[0] as { spawnNonce?: string };
-    expect(spawnOptions.spawnNonce).toEqual(expect.stringMatching(/^spawn-/));
-    expect(machineResolveSpawnSessionByNonceUntilSettledSpy).toHaveBeenCalledWith({
-      machineId: 'm1',
-      serverId: 'server-a',
-      spawnNonce: spawnOptions.spawnNonce,
-    });
+    expect(machineResolveSpawnSessionByNonceUntilSettledSpy).not.toHaveBeenCalled();
     expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'session-created-from-nonce',
-      initialMessageText: 'First turn',
+      sessionId: 'session-created-after-ack',
+      initialMessageText: 'First turn after ack',
     }));
     expect(router.replace).toHaveBeenCalledWith(
-      '/session/session-created-from-nonce?serverId=server-a',
+      '/session/session-created-after-ack?serverId=server-a',
       expect.anything(),
     );
 
     await hook.unmount();
   });
 
-  it('waits for pending spawn nonce resolution before sending the first turn', async () => {
+  it('uses the operation-settled ambiguous spawn before sending the first turn', async () => {
     const {
       useCreateNewSession,
       machineSpawnNewSessionSpy,
@@ -691,12 +942,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     storageState.sessions['session-created-after-pending'] = { id: 'session-created-after-pending' };
     machineSpawnNewSessionSpy.mockResolvedValueOnce({
-      type: 'error' as const,
-      errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
-      errorMessage: 'Session startup timed out',
-    });
-    machineResolveSpawnSessionByNonceUntilSettledSpy.mockResolvedValueOnce({
-      status: 'success' as const,
+      type: 'success' as const,
       sessionId: 'session-created-after-pending',
     });
 
@@ -712,6 +958,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -726,7 +973,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: 'First turn after pending',
+        promptStore: createNewSessionPromptStore('First turn after pending'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -747,11 +994,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
     const spawnOptions = machineSpawnNewSessionSpy.mock.calls[0]?.[0] as { spawnNonce?: string };
-    expect(machineResolveSpawnSessionByNonceUntilSettledSpy).toHaveBeenCalledWith({
-      machineId: 'm1',
-      serverId: 'server-a',
-      spawnNonce: spawnOptions.spawnNonce,
-    });
+    expect(machineResolveSpawnSessionByNonceUntilSettledSpy).not.toHaveBeenCalled();
     expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'session-created-after-pending',
       initialMessageText: 'First turn after pending',
@@ -801,6 +1044,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -815,7 +1059,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: 'Retry same nonce',
+        promptStore: createNewSessionPromptStore('Retry same nonce'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -842,6 +1086,8 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
       return Array.isArray(buttons) && buttons.some((button) => button?.text === 'common.retry');
     });
     expect(retryAlertCall).toBeTruthy();
+    expect(retryAlertCall?.[0]).toBe('newSession.launchStillPendingTitle');
+    expect(retryAlertCall?.[1]).toContain('newSession.launchStillPendingBody');
     const retry = ((retryAlertCall?.[2] ?? []) as any[]).find((button) => button?.text === 'common.retry');
 
     await act(async () => {
@@ -905,6 +1151,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -919,7 +1166,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: `Retry after ${resolveStatus}`,
+        promptStore: createNewSessionPromptStore(`Retry after ${resolveStatus}`),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -976,10 +1223,19 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     } = await setupHarness();
 
     storageState.sessions['session-created'] = { id: 'session-created' };
-    machineSpawnNewSessionSpy.mockResolvedValueOnce({
-      type: 'success' as const,
-      sessionId: 'session-created',
-    });
+    machineSpawnNewSessionSpy.mockImplementationOnce(async (options: any) => ({
+        type: 'success' as const,
+        sessionId: 'session-created',
+        spawnAttemptCustody: {
+          status: 'completed',
+          userAttemptId: options.userAttemptId,
+          spawnNonce: options.spawnNonce,
+          targetFingerprint: 'new-session.launch:first-turn-retry',
+          createdSessionId: 'session-created',
+          firstTurnLocalId: options.firstTurnLocalId,
+          attachmentMessageLocalId: options.attachmentMessageLocalId,
+        },
+      }));
     const retryableFollowUpError = Object.assign(new Error('Machine target not available for session'), {
       rpcErrorCode: 'SESSION_MACHINE_TARGET_UNAVAILABLE',
     });
@@ -999,6 +1255,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -1013,7 +1270,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: 'First turn',
+        promptStore: createNewSessionPromptStore('First turn'),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -1093,10 +1350,12 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
       refreshedAt: null,
       refresh: () => {},
     };
+    const router = { push: vi.fn(), replace: vi.fn() };
 
     const hook = await renderHook(() =>
       useCreateNewSession({
-        router: { push: vi.fn(), replace: vi.fn() },
+        launchIntentSignature: 'test-launch-intent',
+        router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
         selectedMachine: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
@@ -1110,7 +1369,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -1135,10 +1394,15 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
     expect(afterCreated).toHaveBeenCalledTimes(1);
+    expect(router.replace).not.toHaveBeenCalled();
 
     resolveAfterCreated();
     await firstCreate;
     await secondCreate;
+    expect(router.replace).toHaveBeenCalledWith(
+      '/session/session-created?serverId=server-a',
+      expect.anything(),
+    );
 
     await hook.unmount();
   });
@@ -1172,6 +1436,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(
       ({ targetServerId }: { targetServerId: string | null }) =>
         useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
           router,
           selectedMachineId: 'm1',
           selectedPath: '/tmp',
@@ -1186,7 +1451,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
           agentType: 'opencode' as any,
           permissionMode: 'default' as PermissionMode,
           modelMode: 'default' as ModelMode,
-          sessionPrompt: '',
+          promptStore: createNewSessionPromptStore(''),
           resumeSessionId: '',
           agentNewSessionOptions: null,
           machineEnvPresence,
@@ -1246,6 +1511,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(
       ({ targetServerId }: { targetServerId: string | null }) =>
         useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
           router,
           selectedMachineId: 'm1',
           selectedPath: '/tmp',
@@ -1260,7 +1526,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
           agentType: 'opencode' as any,
           permissionMode: 'default' as PermissionMode,
           modelMode: 'default' as ModelMode,
-          sessionPrompt: '',
+          promptStore: createNewSessionPromptStore(''),
           resumeSessionId: '',
           agentNewSessionOptions: null,
           machineEnvPresence,
@@ -1329,6 +1595,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(
       ({ useProfiles }: { useProfiles: boolean }) =>
         useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
           router,
           selectedMachineId: 'm1',
           selectedPath: '/tmp',
@@ -1343,7 +1610,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
           agentType: 'opencode' as any,
           permissionMode: 'default' as PermissionMode,
           modelMode: 'default' as ModelMode,
-          sessionPrompt: '',
+          promptStore: createNewSessionPromptStore(''),
           resumeSessionId: '',
           agentNewSessionOptions: null,
           machineEnvPresence,
@@ -1400,6 +1667,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -1414,7 +1682,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -1457,6 +1725,241 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     await hook.unmount();
   });
 
+  it('opens the created session instead of respawning after a real first-turn ack timeout', async () => {
+    const {
+      useCreateNewSession,
+      modalAlertSpy,
+      machineSpawnNewSessionSpy,
+      storageState,
+      followUpSpawnedSessionWithServerScopeSpy,
+    } = await setupHarness();
+
+    storageState.sessions['session-created'] = { id: 'session-created' };
+    machineSpawnNewSessionSpy.mockResolvedValueOnce({
+      type: 'success' as const,
+      sessionId: 'session-created',
+    });
+    followUpSpawnedSessionWithServerScopeSpy.mockRejectedValueOnce(createSocketIoAckTimeoutError());
+
+    const settings = { experiments: false } as unknown as Settings;
+    const machineEnvPresence: UseMachineEnvPresenceResult = {
+      isPreviewEnvSupported: false,
+      isLoading: false,
+      meta: {},
+      refreshedAt: null,
+      refresh: () => {},
+    };
+    const router = { push: vi.fn(), replace: vi.fn() };
+
+    const hook = await renderHook(() =>
+      useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
+        router,
+        selectedMachineId: 'm1',
+        selectedPath: '/tmp',
+        selectedMachine: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
+        setIsCreating: vi.fn(),
+        setIsResumeSupportChecking: vi.fn(),
+        settings,
+        useProfiles: false,
+        selectedProfileId: null,
+        profileMap: new Map(),
+        recentMachinePaths: [],
+        agentType: 'claude' as any,
+        permissionMode: 'default' as PermissionMode,
+        modelMode: 'default' as ModelMode,
+        promptStore: createNewSessionPromptStore('first turn'),
+        resumeSessionId: '',
+        agentNewSessionOptions: null,
+        machineEnvPresence,
+        secrets: [],
+        secretBindingsByProfileId: {},
+        selectedSecretIdByProfileIdByEnvVarName: {},
+        sessionOnlySecretValueByProfileIdByEnvVarName: {},
+        selectedMachineCapabilities: {},
+        targetServerId: null,
+        allowedTargetServerIds: undefined,
+      }),
+    );
+
+    await act(async () => {
+      await hook.getCurrent().handleCreateSession();
+    });
+    await flushHookEffects({ runAllTimers: true });
+
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
+    expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-created',
+      initialMessageText: 'first turn',
+      messageLocalId: expect.stringMatching(/^first-turn-/),
+    }));
+    expect(modalAlertSpy).not.toHaveBeenCalledWith('common.error', 'operation has timed out');
+    expect(router.replace).toHaveBeenCalledWith(
+      '/session/session-created?serverId=server-a',
+      expect.anything(),
+    );
+
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
+
+    await hook.unmount();
+  });
+
+  it('does not reuse a created session after an unrelated bare timeout failure', async () => {
+    const {
+      useCreateNewSession,
+      modalAlertSpy,
+      machineSpawnNewSessionSpy,
+      storageState,
+      followUpSpawnedSessionWithServerScopeSpy,
+    } = await setupHarness();
+
+    storageState.sessions['session-created'] = { id: 'session-created' };
+    machineSpawnNewSessionSpy.mockResolvedValueOnce({
+      type: 'success' as const,
+      sessionId: 'session-created',
+    });
+    followUpSpawnedSessionWithServerScopeSpy.mockRejectedValueOnce(new Error('timeout'));
+
+    const settings = { experiments: false } as unknown as Settings;
+    const machineEnvPresence: UseMachineEnvPresenceResult = {
+      isPreviewEnvSupported: false,
+      isLoading: false,
+      meta: {},
+      refreshedAt: null,
+      refresh: () => {},
+    };
+    const router = { push: vi.fn(), replace: vi.fn() };
+
+    const hook = await renderHook(() =>
+      useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
+        router,
+        selectedMachineId: 'm1',
+        selectedPath: '/tmp',
+        selectedMachine: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
+        setIsCreating: vi.fn(),
+        setIsResumeSupportChecking: vi.fn(),
+        settings,
+        useProfiles: false,
+        selectedProfileId: null,
+        profileMap: new Map(),
+        recentMachinePaths: [],
+        agentType: 'claude' as any,
+        permissionMode: 'default' as PermissionMode,
+        modelMode: 'default' as ModelMode,
+        promptStore: createNewSessionPromptStore('first turn'),
+        resumeSessionId: '',
+        agentNewSessionOptions: null,
+        machineEnvPresence,
+        secrets: [],
+        secretBindingsByProfileId: {},
+        selectedSecretIdByProfileIdByEnvVarName: {},
+        sessionOnlySecretValueByProfileIdByEnvVarName: {},
+        selectedMachineCapabilities: {},
+        targetServerId: null,
+        allowedTargetServerIds: undefined,
+      }),
+    );
+
+    await act(async () => {
+      await hook.getCurrent().handleCreateSession();
+    });
+    await flushHookEffects({ runAllTimers: true });
+
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
+    expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledTimes(1);
+    expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'timeout');
+    expect(router.replace).not.toHaveBeenCalledWith(
+      '/session/session-created?serverId=server-a',
+      expect.anything(),
+    );
+
+    await hook.unmount();
+  });
+
+  it('reuses the created session when retrying after a real first-turn ack timeout', async () => {
+    const {
+      useCreateNewSession,
+      modalAlertSpy,
+      machineSpawnNewSessionSpy,
+      storageState,
+      followUpSpawnedSessionWithServerScopeSpy,
+    } = await setupHarness();
+
+    storageState.sessions['session-created'] = { id: 'session-created' };
+    machineSpawnNewSessionSpy.mockResolvedValueOnce({
+      type: 'success' as const,
+      sessionId: 'session-created',
+    });
+    followUpSpawnedSessionWithServerScopeSpy
+      .mockRejectedValueOnce(createSocketIoAckTimeoutError())
+      .mockResolvedValueOnce(undefined);
+
+    const settings = { experiments: false } as unknown as Settings;
+    const machineEnvPresence: UseMachineEnvPresenceResult = {
+      isPreviewEnvSupported: false,
+      isLoading: false,
+      meta: {},
+      refreshedAt: null,
+      refresh: () => {},
+    };
+    const router = { push: vi.fn(), replace: vi.fn() };
+
+    const hook = await renderHook(() =>
+      useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
+        router,
+        selectedMachineId: 'm1',
+        selectedPath: '/tmp',
+        selectedMachine: { id: 'm1', active: true, activeAt: Date.now(), metadata: { host: 'devbox' } },
+        setIsCreating: vi.fn(),
+        setIsResumeSupportChecking: vi.fn(),
+        settings,
+        useProfiles: false,
+        selectedProfileId: null,
+        profileMap: new Map(),
+        recentMachinePaths: [],
+        agentType: 'claude' as any,
+        permissionMode: 'default' as PermissionMode,
+        modelMode: 'default' as ModelMode,
+        promptStore: createNewSessionPromptStore('first turn'),
+        resumeSessionId: '',
+        agentNewSessionOptions: null,
+        machineEnvPresence,
+        secrets: [],
+        secretBindingsByProfileId: {},
+        selectedSecretIdByProfileIdByEnvVarName: {},
+        sessionOnlySecretValueByProfileIdByEnvVarName: {},
+        selectedMachineCapabilities: {},
+        targetServerId: null,
+        allowedTargetServerIds: undefined,
+      }),
+    );
+
+    await act(async () => {
+      await hook.getCurrent().handleCreateSession();
+    });
+    await flushHookEffects({ runAllTimers: true });
+
+    await act(async () => {
+      await hook.getCurrent().handleCreateSession();
+    });
+    await flushHookEffects({ runAllTimers: true });
+
+    expect(machineSpawnNewSessionSpy).toHaveBeenCalledTimes(1);
+    expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledTimes(2);
+    const firstFollowUpParams = followUpSpawnedSessionWithServerScopeSpy.mock.calls[0]?.[0] as { messageLocalId?: string } | undefined;
+    const secondFollowUpParams = followUpSpawnedSessionWithServerScopeSpy.mock.calls[1]?.[0] as { messageLocalId?: string } | undefined;
+    expect(secondFollowUpParams?.messageLocalId).toBe(firstFollowUpParams?.messageLocalId);
+    expect(modalAlertSpy).not.toHaveBeenCalledWith('common.error', 'operation has timed out');
+    expect(router.replace).toHaveBeenCalledWith(
+      '/session/session-created?serverId=server-a',
+      expect.anything(),
+    );
+
+    await hook.unmount();
+  });
+
   it('does not reuse a created session after a fatal post-create follow-up failure', async () => {
     const { useCreateNewSession, modalAlertSpy, machineSpawnNewSessionSpy, storageState } = await setupHarness();
 
@@ -1490,6 +1993,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router,
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -1504,7 +2008,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -1569,6 +2073,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     const hook = await renderHook(() =>
       useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
         router: { push: vi.fn(), replace: vi.fn() },
         selectedMachineId: 'm1',
         selectedPath: '/tmp',
@@ -1583,7 +2088,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
         agentType: 'opencode' as any,
         permissionMode: 'default' as PermissionMode,
         modelMode: 'default' as ModelMode,
-        sessionPrompt: '',
+        promptStore: createNewSessionPromptStore(''),
         resumeSessionId: '',
         agentNewSessionOptions: null,
         machineEnvPresence,
@@ -1642,6 +2147,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(
       ({ triggerCreate }: { triggerCreate: boolean }) => {
         const createHook = useCreateNewSession({
+        launchIntentSignature: 'test-launch-intent',
           router: { push: vi.fn(), replace: vi.fn() },
           selectedMachineId: 'm1',
           selectedPath: '/tmp',
@@ -1656,7 +2162,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
           agentType: 'opencode' as any,
           permissionMode: 'default' as PermissionMode,
           modelMode: 'default' as ModelMode,
-          sessionPrompt: '',
+          promptStore: createNewSessionPromptStore(''),
           resumeSessionId: '',
           agentNewSessionOptions: null,
           machineEnvPresence,

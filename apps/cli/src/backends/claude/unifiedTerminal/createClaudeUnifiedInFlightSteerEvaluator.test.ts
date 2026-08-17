@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TerminalHostHandle, TerminalInputState } from '@/integrations/terminalHost/_types';
 
@@ -17,6 +17,10 @@ const handle: TerminalHostHandle = {
     liveProbe: 'required',
   },
 };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const generatingScreen = [
   '● Working through the task…',
@@ -42,6 +46,11 @@ const idleInteractiveScreen = [
 const unknownResumeScreen = [
   'Resuming previous conversation...',
   'Rendering transcript messages and tools...',
+].join('\n');
+
+const modeFooterWithoutComposerScreen = [
+  'Applied runtime control; transcript is redrawing',
+  '  ⏵⏵ accept edits on (shift+tab to cycle)',
 ].join('\n');
 
 const queuedBannerScreen = [
@@ -145,6 +154,23 @@ describe('createClaudeUnifiedInFlightSteerEvaluator', () => {
     const unknownDecision = await unknown.wiring.evaluateInFlightSteer(pendingBatch('steer me'));
     expect(unknownDecision).toMatchObject({ steer: false, reason: 'no_interactive_composer' });
     expect(unknownDecision).not.toMatchObject({ turnLikelyEnded: true });
+  });
+
+  it('vetoes a mode-footer capture whose interactive marker is stale but composer is absent', async () => {
+    const { telemetry, wiring } = createHarness({ screen: modeFooterWithoutComposerScreen });
+
+    const decision = await wiring.evaluateInFlightSteer(pendingBatch('exact pending prompt'));
+
+    expect(decision).toMatchObject({ steer: false, reason: 'no_interactive_composer' });
+    expect(decision).not.toMatchObject({ turnLikelyEnded: true });
+    expect(telemetry.emit).toHaveBeenCalledWith({
+      name: 'unified.steer.decision',
+      properties: expect.objectContaining({
+        decision: 'vetoed',
+        reason: 'no_interactive_composer',
+        originKind: 'ui_pending',
+      }),
+    });
   });
 
   it('refuses to steer a prompt that changes the permission mode while a turn is live', async () => {
@@ -274,6 +300,37 @@ describe('createClaudeUnifiedInFlightSteerEvaluator', () => {
     expect(hiddenCustody).not.toHaveBeenCalled();
   });
 
+  it('retries queued-message banner custody probes before leaving steer custody unresolved', async () => {
+    vi.useFakeTimers();
+    let screen = generatingScreen;
+    const custody = vi.fn();
+    const captureInputState = vi.fn(async (): Promise<TerminalInputState> => ({
+      stable: true,
+      currentInput: screen,
+      observedAt: Date.now(),
+    }));
+    const harness = createHarness({
+      captureInputState,
+      queuedBannerCheckDelayMs: 400,
+      onPromptCustodyByTerminal: custody,
+    });
+    const batch = pendingBatch('steer me');
+
+    harness.wiring.observeInjectedPrompt(
+      batch,
+      { acceptedAs: 'in_flight_steer', turnStateAtInjection: 'running' },
+    );
+
+    await vi.advanceTimersByTimeAsync(400);
+    expect(custody).not.toHaveBeenCalled();
+
+    screen = queuedBannerScreen;
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(captureInputState).toHaveBeenCalledTimes(2);
+    expect(custody).toHaveBeenCalledTimes(1);
+    expect(custody).toHaveBeenCalledWith(batch);
+  });
+
   it('does not report terminal custody when the queued banner is visible but the composer still has a draft', async () => {
     const custody = vi.fn();
     const harness = createHarness({ screen: queuedBannerScreenWithDraft, onPromptCustodyByTerminal: custody });
@@ -350,6 +407,13 @@ describe('createClaudeUnifiedInFlightSteerEvaluator — availability snapshot te
       { available: false, reason: 'unsafe_window' },
       { available: true, reason: null },
     ]);
+  });
+
+  it('proves the current session-level safe window before Pending claim without a prompt batch', async () => {
+    const { wiring, snapshots } = teeHarness(generatingScreen);
+
+    await expect(wiring.refreshAvailability()).resolves.toEqual({ available: true, reason: null });
+    expect(snapshots).toEqual([{ available: true, reason: null }]);
   });
 
   it('does NOT tee a snapshot for the payload-specific permission-mode refusal (UI computes that locally)', async () => {
@@ -487,6 +551,20 @@ describe('createClaudeUnifiedInFlightSteerEvaluator — user_draft starvation (l
   it('clears an OWN leftover draft on a non-generating screen, then steers', async () => {
     const harness = starvationHarness({
       initialScreen: idleScreenWithDraft(ownLeftoverText),
+      ownTexts: [ownLeftoverText],
+      onClear: () => harness.setScreen(idleInteractiveScreen),
+    });
+
+    const decision = await harness.wiring.evaluateInFlightSteer(pendingBatch('steer me'));
+
+    expect(harness.clearOwnLeftoverDraft).toHaveBeenCalledTimes(1);
+    expect(decision).toEqual({ steer: true, turnLikelyEnded: true });
+    expect(harness.starvations).toEqual([]);
+  });
+
+  it('clears controller slash-command residue even when the own-text registry cannot match it', async () => {
+    const harness = starvationHarness({
+      initialScreen: idleScreenWithDraft('/effort max/effort ultracode'),
       ownTexts: [ownLeftoverText],
       onClear: () => harness.setScreen(idleInteractiveScreen),
     });

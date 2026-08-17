@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
+import type { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
 
 import { registerHappierMcpResources } from '@/mcp/resources/registerHappierMcpResources';
@@ -60,6 +61,7 @@ import {
   PromptRegistryInstallRequestV1Schema,
   PromptRegistryInstallResponseV1Schema,
   type AccountSettings,
+  type BackendTargetRefV1,
   getActionSpec,
   isActionSpecSurfacedOn,
   removeLocalServicePreviewFromSessionMetadata,
@@ -67,7 +69,11 @@ import {
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { MemorySearchResultV1Schema, MemoryWindowV1Schema, type MemorySearchResultV1, type MemoryWindowV1 } from '@happier-dev/protocol';
-import { createMcpActionApprovalRequirement, createMcpActionEnablement } from '@/mcp/server/createMcpActionEnablement';
+import {
+  createMcpActionApprovalRequirement,
+  createMcpActionEnablement,
+  createMcpActionSettingsProvider,
+} from '@/mcp/server/createMcpActionEnablement';
 import {
   closeDaemonSessionDevPreview,
   listDaemonSessionDevPreviews,
@@ -85,11 +91,34 @@ const SIMULATOR_DEVICE_WRITER_LEASE_RENEW_INTERVAL_MS = 20_000;
 export type AndroidSimulatorPreviewStreamRegistry = Map<string, AndroidScreenshotMjpegStream>;
 export type IosSimulatorPreviewStreamRegistry = Map<string, IosScreenshotMjpegStream>;
 
+function resolveLiveClientPermissionMode(
+  client: HappyMcpSessionClient,
+  metadataSnapshot?: Metadata | null,
+): string | null {
+  const mode = client.getPermissionMode?.()
+    ?? metadataSnapshot?.permissionMode
+    ?? null;
+  return typeof mode === 'string' && mode.trim().length > 0 ? mode.trim() : null;
+}
+
+function resolveLiveClientBackendTarget(client: HappyMcpSessionClient): BackendTargetRefV1 | null {
+  return client.getBackendTarget?.() ?? null;
+}
+
+function resolveLiveClientLocation(client: HappyMcpSessionClient): Readonly<{
+  path?: string | null;
+  host?: string | null;
+  machineId?: string | null;
+}> | null {
+  return client.getCurrentSessionLocation?.() ?? null;
+}
+
 export function createHappierMcpServer(
   client: HappyMcpSessionClient,
   opts?: Readonly<{
     credentials?: Credentials | null;
     accountSettings?: AccountSettings | null;
+    getAccountSettings?: (() => AccountSettings | null) | null;
     devPreviewRegistry?: SessionDevPreviewRegistry | null;
     daemonDevPreviewRegister?: ((request: DaemonDevPreviewRegisterRequest) => Promise<DaemonDevPreviewRegisterResult>) | null;
     daemonDevPreviewList?: ((request: DaemonDevPreviewListRequest) => Promise<DaemonDevPreviewListResult>) | null;
@@ -115,7 +144,6 @@ export function createHappierMcpServer(
   // configured separately from the external MCP surface (`mcp`).
   const toolSurface = 'session_agent' as const;
   const credentials = opts?.credentials ?? null;
-  const actionsSettings = opts?.accountSettings?.actionsSettingsV1 ?? null;
   const devPreviewRegistry = opts?.devPreviewRegistry ?? createSessionDevPreviewRegistry();
   const daemonDevPreviewRegister = opts?.daemonDevPreviewRegister ?? registerDaemonSessionDevPreview;
   const daemonDevPreviewList = opts?.daemonDevPreviewList ?? listDaemonSessionDevPreviews;
@@ -137,12 +165,17 @@ export function createHappierMcpServer(
     ?? new Map<string, 'android' | 'ios'>();
   const simulatorDeviceService = opts?.simulatorDeviceService ?? createSimulatorDeviceService();
   const hasInjectedSimulatorDeviceService = Boolean(opts?.simulatorDeviceService);
-  const isActionEnabled = createMcpActionEnablement({
+  const actionSettingsProvider = createMcpActionSettingsProvider({
     accountSettings: opts?.accountSettings ?? null,
+    getAccountSettings: opts?.getAccountSettings ?? null,
+  });
+  const readActionsSettings = () => actionSettingsProvider.getActionsSettings();
+  const isActionEnabled = createMcpActionEnablement({
+    actionSettingsProvider,
     surface: toolSurface,
   });
   const isActionApprovalRequired = createMcpActionApprovalRequirement({
-    accountSettings: opts?.accountSettings ?? null,
+    actionSettingsProvider,
     surface: toolSurface,
   });
   const ctx = credentials
@@ -170,7 +203,15 @@ export function createHappierMcpServer(
   const sessionScopedRpc = async (method: string, params: unknown) =>
     await client.rpcHandlerManager.invokeLocal(method, params);
   const sessionMetadataSnapshot = client.getMetadataSnapshot?.() ?? null;
-  const rawSession = sessionMetadataSnapshot ? { metadata: sessionMetadataSnapshot } : null;
+  const sessionLocation = resolveLiveClientLocation(client);
+  const rawSession = sessionMetadataSnapshot || sessionLocation
+    ? {
+        ...(sessionMetadataSnapshot ? { metadata: sessionMetadataSnapshot } : {}),
+        ...(typeof sessionLocation?.path === 'string' ? { path: sessionLocation.path } : {}),
+        ...(typeof sessionLocation?.host === 'string' ? { host: sessionLocation.host } : {}),
+        ...(typeof sessionLocation?.machineId === 'string' ? { machineId: sessionLocation.machineId } : {}),
+      }
+    : null;
   const executionRuns = {
     start: async (request: unknown) =>
       normalizeExecutionRunRpcPayload(
@@ -209,6 +250,8 @@ export function createHappierMcpServer(
       sessionId: client.sessionId,
       ctx,
       rawSession,
+      getCallerPermissionMode: () => resolveLiveClientPermissionMode(client, sessionMetadataSnapshot),
+      getCurrentSessionBackendTarget: () => resolveLiveClientBackendTarget(client),
     },
     {
       sessionTitleSet: async ({ sessionId, title }) => {
@@ -815,13 +858,16 @@ export function createHappierMcpServer(
       return isActionSpecSurfacedOn(spec, toolSurface) && isActionEnabled(id as any);
     },
     surface: toolSurface,
-    actionsSettings,
+    actionsSettings: readActionsSettings(),
+    getActionsSettings: readActionsSettings,
+    resolveCallerPermissionMode: () => resolveLiveClientPermissionMode(client, sessionMetadataSnapshot),
   });
 
   const { toolNames } = registerHappierMcpBuiltInTools(mcp as any, {
     sessionId: client.sessionId,
     surface: toolSurface,
-    actionsSettings,
+    actionsSettings: readActionsSettings(),
+    getActionsSettings: readActionsSettings,
     deps: {
       changeTitle: createChangeTitleToolHandler({
         executor,

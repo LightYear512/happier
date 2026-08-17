@@ -11,10 +11,14 @@ import type {
     SessionSubagent,
     SessionSubagentActiveExecutionRunState,
 } from '@/sync/domains/session/subagents/types';
+import type { SessionParticipantTarget } from '@/sync/domains/session/participants/participantTargets';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useDirectSessionRuntime, type UseDirectSessionRuntimeResult } from '@/components/sessions/model/useDirectSessionRuntime';
+import { useReconciledStableRows } from './reconcileStableRows';
 import { useSessionRunningExecutionRuns } from './useSessionRunningExecutionRuns';
+
+import { useStableValueBySignature } from '@/hooks/ui/useStableValueBySignature';
 
 const sessionSubagentToolMessageSignatureCache = new WeakMap<Message, string>();
 
@@ -112,28 +116,17 @@ function useStableMessagesBySignature(
     return ref.current.messages;
 }
 
-function buildStableJsonSignature(value: unknown): string {
-    try {
-        return JSON.stringify(value ?? null) ?? 'null';
-    } catch {
-        return String(value);
-    }
-}
-
 function buildExecutionRunStateSignature(runs: readonly SessionSubagentActiveExecutionRunState[]): string {
     if (runs.length === 0) return '';
     return runs.map((run) => `${run.runId}\u0000${run.status ?? ''}`).join('\u0001');
 }
 
-function useStableValueBySignature<T>(value: T, signature: string): T {
-    const ref = React.useRef<{ signature: string; value: T }>({
-        signature,
-        value,
-    });
-    if (ref.current.signature !== signature) {
-        ref.current = { signature, value };
-    }
-    return ref.current.value;
+function readSubagentKey(subagent: SessionSubagent): string {
+    return subagent.id;
+}
+
+function readParticipantTargetKey(target: SessionParticipantTarget): string {
+    return target.key;
 }
 
 export function useSessionSubagents(params: Readonly<{
@@ -211,20 +204,12 @@ export function useSessionSubagents(params: Readonly<{
         subagentMessages,
         sessionFlavor,
     ]);
-    const subagentsSignature = React.useMemo(
-        () => buildStableJsonSignature(derivedSubagents),
-        [derivedSubagents],
-    );
-    const subagents = useStableValueBySignature(derivedSubagents, subagentsSignature);
+    const subagents = useReconciledStableRows(derivedSubagents, readSubagentKey);
 
     const derivedParticipantTargets = React.useMemo(() => {
         return deriveSessionSubagentRecipients(subagents);
     }, [subagents]);
-    const participantTargetsSignature = React.useMemo(
-        () => buildStableJsonSignature(derivedParticipantTargets),
-        [derivedParticipantTargets],
-    );
-    const participantTargets = useStableValueBySignature(derivedParticipantTargets, participantTargetsSignature);
+    const participantTargets = useReconciledStableRows(derivedParticipantTargets, readParticipantTargetKey);
 
     const derivedSidechainIds = React.useMemo(() => {
         return deriveSessionSubagentSidechainIds(subagents);

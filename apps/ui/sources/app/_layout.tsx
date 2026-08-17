@@ -3,7 +3,6 @@ import '../theme.css';
 import * as React from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Fonts from 'expo-font';
-import { Asset } from 'expo-asset';
 import { FontAwesome, Ionicons } from '@expo/vector-icons';
 import { usePathname, useRouter } from 'expo-router';
 import {
@@ -11,7 +10,6 @@ import {
     PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS,
     PUSH_NOTIFICATION_CATEGORY_IDS,
 } from '@happier-dev/protocol';
-import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { AuthProvider, useAuth } from '@/auth/context/AuthContext';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
@@ -26,6 +24,7 @@ import * as Sentry from '@sentry/react-native';
 import { tracking } from '@/track/tracking';
 import { SettingsAnalyticsRuntime } from '@/track/settingsAnalytics/SettingsAnalyticsRuntime';
 import { syncRestore } from '@/sync/sync';
+import { prepareWarmCacheStorage } from '@/sync/domains/state/warmCachePersistence';
 import { storage } from '@/sync/domains/state/storage';
 import {
     clearActiveViewingSessionsForNonSessionRoute,
@@ -54,6 +53,7 @@ import { consumeRestartBugReportIntent } from '@/utils/system/restartBugReportIn
 import { getCurrentReactOwnerHint, getUnexpectedPrimitiveViewChildInfo } from '@/utils/system/debugUnexpectedTextNodeCapture';
 import { resolveForegroundNotificationBehavior } from '@/activity/notifications/resolveForegroundNotificationBehavior';
 import { resolveBootCredentials } from '@/boot/resolveBootCredentials';
+import { runAppBootSequence, type AppBootReadyState } from '@/boot/runAppBootSequence';
 import { installTauriMcpBridgeOnce } from '@/desktop/mcp/maybeInstallTauriMcpBridge';
 import { DesktopShellUpdateIndicatorHost } from '@/components/navigation/shell/desktopChrome/DesktopShellUpdateIndicatorHost';
 import { DesktopShellWindowControlsHost } from '@/components/navigation/shell/desktopChrome/DesktopShellWindowControlsHost';
@@ -68,6 +68,7 @@ import { OnboardingShowcaseAutoShowMount } from '@/onboarding/showcase';
 import { DesktopMainContentDragSurface } from '@/components/navigation/desktopWindowChrome/DesktopMainContentDragSurface';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { loadExpoNotifications, type ExpoNotificationsModule } from '@/utils/platform/loadExpoNotifications';
+import { installWebFontFaces } from '@/platform/installWebFontFaces';
 
 initializeSentryOnce();
 installTauriMcpBridgeOnce();
@@ -444,62 +445,6 @@ let loaded = false;
 let suppressFontTimeoutErrorsUntilMs = 0;
 let webFontLoadAttemptedAtMs = 0;
 
-function escapeCssString(value: string): string {
-    // Enough for our controlled font family names; avoid pulling in a heavier CSS escaping dependency.
-    return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-}
-
-function injectWebFontFaces(fontMap: Parameters<typeof Fonts.loadAsync>[0]): void {
-    if (typeof document === 'undefined') return;
-    if (typeof document.getElementById !== 'function') return;
-    if (typeof document.createElement !== 'function') return;
-    const head = document.head;
-    if (!head) return;
-
-    const styleId = 'happier-web-font-faces';
-    if (document.getElementById(styleId)) return;
-
-    const rules: string[] = [];
-    for (const [fontFamily, fontModule] of Object.entries(fontMap)) {
-        try {
-            if (!fontModule) continue;
-            let uri: string | null = null;
-            if (typeof fontModule === 'string' || typeof fontModule === 'number') {
-                uri = Asset.fromModule(fontModule).uri;
-            } else if (
-                typeof fontModule === 'object'
-                && fontModule !== null
-                && 'uri' in fontModule
-                && typeof (fontModule as { uri?: unknown }).uri === 'string'
-            ) {
-                uri = (fontModule as { uri: string }).uri;
-            }
-            if (!uri) continue;
-
-            const lower = uri.toLowerCase();
-            const format =
-                lower.endsWith('.woff2') ? 'woff2'
-                : lower.endsWith('.woff') ? 'woff'
-                : lower.endsWith('.otf') ? 'opentype'
-                : lower.endsWith('.ttf') ? 'truetype'
-                : null;
-
-            const src = format ? `url("${uri}") format("${format}")` : `url("${uri}")`;
-            rules.push(
-                `@font-face{font-family:"${escapeCssString(fontFamily)}";src:${src};font-display:swap;}`
-            );
-        } catch {
-            // Best-effort only; don't let font injection break app startup.
-        }
-    }
-
-    if (rules.length === 0) return;
-    const style = document.createElement('style');
-    style.id = styleId;
-    style.textContent = rules.join('\n');
-    head.appendChild(style);
-}
-
 async function loadFonts() {
     await lock.inLock(async () => {
         if (loaded) {
@@ -616,7 +561,7 @@ async function loadFonts() {
         if (isWeb) {
             try {
                 webFontLoadAttemptedAtMs = Date.now();
-                injectWebFontFaces(fontMap);
+                await installWebFontFaces(fontMap);
             } catch {
                 // Do not surface font init issues on web.
             }
@@ -698,7 +643,7 @@ function AppBoot(props: {
         !isDesktopPetOverlayWindow,
     );
     const isTerminalConnectRoute = isTerminalConnectWebPathname(pathname);
-    const [initState, setInitState] = React.useState<{ credentials: AuthCredentials | null } | null>(null);
+    const [initState, setInitState] = React.useState<AppBootReadyState | null>(null);
     const restartBugReportCheckedRef = React.useRef(false);
 
     React.useEffect(() => {
@@ -707,33 +652,17 @@ function AppBoot(props: {
 
     React.useEffect(() => {
         let cancelled = false;
-        (async () => {
-            let credentials: AuthCredentials | null = null;
-            try {
-                try {
-                    await loadFonts();
-                } catch (error) {
-                    // Font loading failures should not brick startup.
-                    console.error('Failed to load fonts during init, continuing startup:', error);
-                }
-                await sodium.ready;
-                credentials = await resolveBootCredentials(Platform.OS);
-                if (credentials) {
-                    try {
-                        await syncRestore(credentials);
-                    } catch (error) {
-                        // Preserve app usability even if sync restore fails during boot.
-                        console.error('Failed to restore sync during init, continuing startup:', error);
-                    }
-                }
-            } catch (error) {
-                console.error('Error initializing:', error);
-            } finally {
-                if (!cancelled) {
-                    setInitState({ credentials });
-                }
-            }
-        })();
+        void runAppBootSequence({
+            loadFonts,
+            sodiumReady: sodium.ready,
+            resolveCredentials: () => resolveBootCredentials(Platform.OS),
+            prepareWarmCache: prepareWarmCacheStorage,
+            restoreSync: syncRestore,
+            onReady: (ready) => {
+                if (cancelled) return;
+                setInitState(ready);
+            },
+        });
         return () => {
             cancelled = true;
         };
@@ -789,7 +718,13 @@ function AppBoot(props: {
             <ChromeSafeAreaInsetsWarmup />
             <KeyboardProvider>
                 <GestureHandlerRootView style={{ flex: 1 }}>
-                    <AuthProvider initialCredentials={initState.credentials}>
+                    {/*
+                      * `authGeneration` is 0 for every normal boot, so this key never changes and the
+                      * tree never remounts. It only advances when a keychain read that missed its boot
+                      * deadline lands afterwards, which is exactly when the auth tree has to adopt the
+                      * recovered session instead of leaving the user signed out until the next launch.
+                      */}
+                    <AuthProvider key={initState.authGeneration} initialCredentials={initState.credentials}>
                         <ThemeProvider value={props.navigationTheme}>
                             <StatusBarProvider />
                             <AppPaneModalProvider>

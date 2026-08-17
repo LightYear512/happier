@@ -1,4 +1,5 @@
 import {
+    isExactSessionTurnEndMutationV1,
     SessionTurnMutationActionV1Schema,
     SessionTurnMutationDecisionV1Schema,
     type PrimaryTurnStatusV1,
@@ -120,15 +121,22 @@ function mergeTranscriptAnchors(
     incoming: SessionTurnTranscriptAnchorsV1 | undefined,
 ): SessionTurnTranscriptAnchorsV1 | undefined {
     if (!incoming) return existing ? cloneAnchors(existing) : undefined;
+    const userMessageSeqs = [...(existing?.userMessageSeqs ?? []), ...(incoming.userMessageSeqs ?? [])];
     return {
         ...(existing ?? {}),
         ...incoming,
-        ...(incoming.userMessageSeqs ? { userMessageSeqs: [...incoming.userMessageSeqs] } : {}),
+        ...(userMessageSeqs.length > 0
+            ? { userMessageSeqs: [...new Set(userMessageSeqs)].sort((a, b) => a - b) }
+            : {}),
     };
 }
 
 function readMutationTranscriptAnchors(mutation: SessionTurnMutationV1): SessionTurnTranscriptAnchorsV1 | undefined {
-    if (mutation.action === "append_transcript_anchors" || mutation.action === "mark_rollback_eligible") {
+    if (
+        mutation.action === "begin"
+        || mutation.action === "append_transcript_anchors"
+        || mutation.action === "mark_rollback_eligible"
+    ) {
         return mutation.transcriptAnchors;
     }
     return undefined;
@@ -215,8 +223,40 @@ export function applySessionTurnMutationToTurns(params: Readonly<{
     const existingTurn = requestedTurnId
         ? turns.find((turn) => turn.turnId === requestedTurnId) ?? null
         : null;
+    const isExactSessionEnd = isExactSessionTurnEndMutationV1(mutation);
 
-    if (mutation.action === "end_session") {
+    if (isExactSessionEnd) {
+        if (!existingTurn) {
+            return makeNoOp({
+                reason: "missing-turn",
+                latestTurnId: params.currentLatestTurnId,
+                mutation,
+                turns,
+                appliedAt: params.appliedAt,
+                turnId: requestedTurnId,
+            });
+        }
+        if (isTerminalStatus(existingTurn.status)) {
+            return makeNoOp({
+                reason: "duplicate-terminal",
+                latestTurnId: params.currentLatestTurnId,
+                mutation,
+                turns,
+                appliedAt: params.appliedAt,
+                turnId: existingTurn.turnId,
+            });
+        }
+        if (existingTurn.status !== "in_progress" || existingTurn.startedAt > mutation.observedAt) {
+            return makeNoOp({
+                reason: "stale-terminal",
+                latestTurnId: params.currentLatestTurnId,
+                mutation,
+                turns,
+                appliedAt: params.appliedAt,
+                turnId: existingTurn.turnId,
+            });
+        }
+    } else if (mutation.action === "end_session") {
         // A session-end settlement only cancels a turn that was already open when the end was
         // observed. A NEWER turn (begun after the observed end, e.g. by a replacement runner
         // while a daemon-observed exit settlement was still queued) must not be cancelled by a
@@ -293,6 +333,7 @@ export function applySessionTurnMutationToTurns(params: Readonly<{
         && requestedTurnId
         && params.currentLatestTurnId
         && requestedTurnId !== params.currentLatestTurnId
+        && !isExactSessionEnd
     ) {
         const latestTurn = turns.find((turn) => turn.turnId === params.currentLatestTurnId) ?? null;
         if (latestTurn?.status === "in_progress") {
@@ -407,8 +448,8 @@ export function applySessionTurnMutationToTurns(params: Readonly<{
     let nextTurn: SessionTurnV1 = {
         ...baseTurn,
         ...(isRecoveryLifecycleEvidence && mutation.action === "begin" ? { startedAt: mutation.observedAt } : {}),
-        ...(mutation.provider ? { provider: mutation.provider } : {}),
-        ...(mutation.providerTurnId ? { providerTurnId: mutation.providerTurnId } : {}),
+        ...(!isExactSessionEnd && mutation.provider ? { provider: mutation.provider } : {}),
+        ...(!isExactSessionEnd && mutation.providerTurnId ? { providerTurnId: mutation.providerTurnId } : {}),
         ...(lifecycleStatus ? { status: lifecycleStatus } : {}),
         ...(terminalStatus ? { terminalAt: mutation.observedAt } : {}),
         ...(mutation.action === "fail" ? { lastRuntimeIssue: mutation.issue } : {}),

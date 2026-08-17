@@ -1,10 +1,23 @@
+import { readFile } from 'node:fs/promises';
+
 import { classifyClaudeConnectedServiceRuntimeAuthFailure } from './classifyClaudeConnectedServiceRuntimeAuthFailure';
 import { mapClaudeRateLimitEventToUsageDetails } from './mapClaudeRateLimitEventToUsageDetails';
 import { resolveClaudeConnectedServiceRuntimeAuthSwitchPlan } from './claudeConnectedServiceRuntimeAuthSwitchPlan';
+import { resolveClaudeSharedGroupHotApplyTarget } from './claudeSharedGroupHotApplyTarget';
+import { materializeClaudeSharedGroupRuntimeAuth } from './materializeClaudeSharedGroupRuntimeAuth';
 import { classifyClaudeCodeCredentialHealth } from './nativeAuth/claudeCodeCredentialHealth';
+import {
+  buildClaudeCodeCredentialPayload,
+  computeClaudeCodeCredentialAccountProofFingerprint,
+  resolveClaudeCodeCredentialsFilePath,
+} from './nativeAuth/claudeCodeCredentialFile';
+import type { ClaudeSubscriptionNativeAuthSelectionDescriptor } from './nativeAuth/materializeClaudeCodeNativeAuth';
 import { verifyClaudeCodeNativeAuth } from './nativeAuth/verifyClaudeCodeNativeAuth';
+import { readClaudeSubscriptionCredentialIdentity } from './nativeAuth/claudeSubscriptionCredentialIdentity';
+import { verifyClaudeSharedGroupGenerationApplication } from './verifyClaudeSharedGroupGenerationApplication';
 import type {
   ConnectedServiceProviderRuntimeAuthAdapter,
+  ConnectedServiceRuntimeFailureInput,
   ConnectedServiceRuntimeAuthTargetInput,
 } from '@/daemon/connectedServices/runtimeAuth/types';
 import type { ConnectedServiceCredentialRecordV1 } from '@happier-dev/protocol';
@@ -14,10 +27,10 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function readString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-function readCredentialRecord(input: ConnectedServiceRuntimeAuthTargetInput): ConnectedServiceCredentialRecordV1 | null {
+function readCredentialRecord(input: Readonly<{ selection?: unknown }>): ConnectedServiceCredentialRecordV1 | null {
   const selection = readRecord(input.selection);
   const record = readRecord(selection?.record);
   return record as ConnectedServiceCredentialRecordV1 | null;
@@ -31,6 +44,64 @@ function readClaudeConfigDir(input: ConnectedServiceRuntimeAuthTargetInput): str
   return readString(env?.CLAUDE_CONFIG_DIR);
 }
 
+async function materializedCredentialMatchesRecord(params: Readonly<{
+  record: ConnectedServiceCredentialRecordV1;
+  claudeConfigDir: string;
+}>): Promise<boolean> {
+  const built = buildClaudeCodeCredentialPayload(params.record);
+  if (built.status !== 'ok') return false;
+  try {
+    const raw = JSON.parse(await readFile(resolveClaudeCodeCredentialsFilePath(params.claudeConfigDir), 'utf8')) as unknown;
+    const actual = computeClaudeCodeCredentialAccountProofFingerprint(raw);
+    const expected = computeClaudeCodeCredentialAccountProofFingerprint(built.payload);
+    return actual !== null && actual === expected;
+  } catch {
+    return false;
+  }
+}
+
+function buildSharedGroupVerification(params: Readonly<{
+  record: ConnectedServiceCredentialRecordV1;
+  selectionDescriptor: ClaudeSubscriptionNativeAuthSelectionDescriptor;
+  materializedIdentity?: Readonly<{
+    providerAccountId: string | null;
+    providerEmail: string | null;
+  }> | null;
+}>) {
+  if (params.selectionDescriptor.kind !== 'group') return null;
+  const recordIdentity = readClaudeSubscriptionCredentialIdentity(params.record);
+  return {
+    status: 'weakly_verified' as const,
+    providerAccountId: params.materializedIdentity?.providerAccountId
+      ?? recordIdentity?.providerAccountId
+      ?? null,
+    activeAccountId: params.materializedIdentity?.providerEmail
+      ?? recordIdentity?.providerEmail
+      ?? null,
+    sharedAuthSurfaceId: params.selectionDescriptor.groupId,
+    proofStrength: 'weak' as const,
+    source: 'shared_group_auth_surface',
+    reason: 'claude_shared_group_auth_surface_rewritten',
+  };
+}
+
+function attachClaudeSourceAccountIdentity(
+  classification: ReturnType<typeof classifyClaudeConnectedServiceRuntimeAuthFailure>,
+  input: ConnectedServiceRuntimeFailureInput,
+): ReturnType<typeof classifyClaudeConnectedServiceRuntimeAuthFailure> {
+  if (!classification || classification.sourceProviderAccountId) return classification;
+  const record = readCredentialRecord(input);
+  const sourceIdentity = readClaudeSubscriptionCredentialIdentity(record);
+  const sourceProviderAccountId = sourceIdentity?.providerAccountId ?? null;
+  if (!sourceProviderAccountId) return classification;
+  const sourceAccountLabel = sourceIdentity?.providerEmail ?? null;
+  return {
+    ...classification,
+    sourceProviderAccountId,
+    ...(sourceAccountLabel ? { sourceAccountLabel } : {}),
+  };
+}
+
 export function createClaudeConnectedServiceRuntimeAuthAdapter(): ConnectedServiceProviderRuntimeAuthAdapter {
   return {
     classifyRuntimeAuthFailure(input) {
@@ -38,25 +109,70 @@ export function createClaudeConnectedServiceRuntimeAuthAdapter(): ConnectedServi
         error: input.error,
         selection: input.selection,
       });
-      if (authClassification) return authClassification;
+      if (authClassification) return attachClaudeSourceAccountIdentity(authClassification, input);
 
       const details = mapClaudeRateLimitEventToUsageDetails(input.error);
       // The raw payload rides along even when details mapped, so the classifier can recover reset
       // timing the mapper could not place in the details (INC-4).
-      return classifyClaudeConnectedServiceRuntimeAuthFailure({
+      return attachClaudeSourceAccountIdentity(classifyClaudeConnectedServiceRuntimeAuthFailure({
         ...(details ? { details } : {}),
         error: input.error,
         selection: input.selection,
-      });
+      }), input);
     },
     async materializeActiveProfile() {
       return { supported: true };
     },
-    canHotApply() {
+    canHotApply(input) {
+      if (resolveClaudeSharedGroupHotApplyTarget(input.selection)) {
+        return {
+          supported: true,
+          mode: 'claude_subscription_shared_group_auth_surface_rewrite',
+        };
+      }
       return { supported: false, recovery: 'restart_rematerialize' };
     },
-    async hotApply() {
-      return { applied: false, reason: 'hot_apply_unsupported', recovery: 'restart_rematerialize' };
+    async hotApply(input) {
+      const target = resolveClaudeSharedGroupHotApplyTarget(input.selection);
+      if (!target) {
+        return { applied: false, reason: 'hot_apply_unsupported', recovery: 'restart_rematerialize' };
+      }
+      const materialized = await materializeClaudeSharedGroupRuntimeAuth({
+        ...target,
+        ...(input.validateCurrentBeforeMutation
+          ? { validateCurrentBeforeMutation: input.validateCurrentBeforeMutation }
+          : {}),
+      });
+      const blockingDiagnostics = materialized.diagnostics.filter((diagnostic) => diagnostic.severity === 'blocking');
+      if (blockingDiagnostics.length > 0 || materialized.status !== 'materialized') {
+        const superseded = blockingDiagnostics[0]?.code === 'claude_shared_group_generation_superseded';
+        return {
+          applied: false,
+          ...('authoritativeTarget' in materialized && materialized.authoritativeTarget
+            ? {
+                status: 'superseded_after_apply',
+                activeProfileId: materialized.authoritativeTarget.profileId,
+                generation: materialized.authoritativeTarget.generation,
+                credentialRevision: materialized.authoritativeTarget.credentialRevision,
+              }
+            : {}),
+          reason: blockingDiagnostics[0]?.code ?? 'claude_shared_group_auth_surface_materialization_failed',
+          recovery: superseded ? 'none' : 'restart_resume',
+          diagnostics: materialized.diagnostics,
+        };
+      }
+      return {
+        applied: true,
+        reason: 'claude_shared_group_auth_surface_rewritten',
+        targetMaterializedRoot: target.metadata.runtimeMaterializedRoot,
+        targetMaterializedEnv: {
+          CLAUDE_CONFIG_DIR: target.metadata.runtimeClaudeConfigDir,
+        },
+        verification: buildSharedGroupVerification({
+          record: target.record,
+          selectionDescriptor: target.selectionDescriptor,
+        }),
+      };
     },
     async recoverAfterRuntimeAuthSwitch(input) {
       const record = readCredentialRecord(input);
@@ -116,6 +232,26 @@ export function createClaudeConnectedServiceRuntimeAuthAdapter(): ConnectedServi
             missingScopes: [...nativeAuth.missingScopes],
           },
         };
+      }
+      const target = resolveClaudeSharedGroupHotApplyTarget(input.selection);
+      if (target && await materializedCredentialMatchesRecord({ record, claudeConfigDir })) {
+        const proof = await verifyClaudeSharedGroupGenerationApplication({
+          serviceId: 'claude-subscription',
+          groupId: target.selectionDescriptor.groupId,
+          profileId: target.selectionDescriptor.activeProfileId,
+          generation: target.selectionDescriptor.generation,
+          credentialRevision: target.credentialRevision,
+          environmentVariables: { CLAUDE_CONFIG_DIR: claudeConfigDir },
+        });
+        if (proof.status === 'verified') {
+          const recordIdentity = readClaudeSubscriptionCredentialIdentity(record);
+          return {
+            ...proof,
+            proofStrength: 'exact' as const,
+            providerAccountId: recordIdentity?.providerAccountId ?? null,
+            activeAccountId: recordIdentity?.providerEmail ?? null,
+          };
+        }
       }
       return {
         status: 'unavailable',

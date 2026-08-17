@@ -3,6 +3,7 @@ import type { SessionFolderWorkspaceRefV1 } from '@/sync/domains/session/folders
 import { getSessionStorageKind, type SessionStorageKind } from '@/sync/domains/session/sessionStorageKind';
 
 import type { SessionListAttentionPromotionReason } from './attentionPromotion/sessionListAttentionPromotion';
+import type { SessionListWorkingPlacementReason } from './placement/sessionListPlacementProjection';
 import type { SessionListViewItem } from './sessionListViewData';
 
 export type SessionListIndexItem =
@@ -34,7 +35,7 @@ export type SessionListIndexItem =
         archivedAt?: number | null;
         keepVisibleWhenInactive?: boolean;
         attentionPromotionReason?: SessionListAttentionPromotionReason;
-        workingPlacementReason?: 'working';
+        workingPlacementReason?: SessionListWorkingPlacementReason;
         serverId?: string;
         serverName?: string;
         folderId?: string | null;
@@ -142,7 +143,21 @@ function areSessionListIndexItemsEqual(
         && areMachineDisplayRenderablesEqual(previous.machine ?? null, next.machine ?? null);
 }
 
-function buildSessionListIndexHeaderNodeId(item: Extract<SessionListIndexItem, { type: 'header' }>): string {
+/**
+ * Node-id inputs shared by index items and the view rows they were built from, so
+ * both sides of a rebuild address the same node through one implementation.
+ */
+type SessionListNodeIdHeaderInput = Readonly<{
+    headerKind?: string;
+    groupKey?: string;
+    serverId?: string;
+    workspaceKey?: string;
+    folderId?: string;
+    machine?: Readonly<{ id?: string }> | null;
+    workspaceScopeHint?: Readonly<{ serverId?: string; machineId?: string; rootPath?: string }> | null;
+}>;
+
+function buildSessionListIndexHeaderNodeId(item: SessionListNodeIdHeaderInput): string {
     const headerKind = String(item.headerKind ?? '').trim() || 'header';
     const groupKey = String(item.groupKey ?? '').trim();
     const serverId = String(item.serverId ?? '').trim();
@@ -170,15 +185,31 @@ function buildSessionListIndexHeaderNodeId(item: Extract<SessionListIndexItem, {
     return parts.join('|');
 }
 
+function buildSessionListSessionNodeId(rawServerId: string | undefined, rawSessionId: string | undefined): string {
+    const serverId = String(rawServerId ?? '').trim();
+    const sessionId = String(rawSessionId ?? '').trim();
+    if (serverId && sessionId) return `session:${serverId}:${sessionId}`;
+    return `session:${sessionId}`;
+}
+
 export function buildSessionListIndexNodeId(item: SessionListIndexItem): string {
     if (item.type === 'header') {
         return buildSessionListIndexHeaderNodeId(item);
     }
 
-    const serverId = String(item.serverId ?? '').trim();
-    const sessionId = String(item.sessionId ?? '').trim();
-    if (serverId && sessionId) return `session:${serverId}:${sessionId}`;
-    return `session:${sessionId}`;
+    return buildSessionListSessionNodeId(item.serverId, item.sessionId);
+}
+
+/**
+ * The node id a view row occupies, derived without allocating its index item, so a
+ * previously built list can be addressed by node during the next rebuild.
+ */
+export function buildSessionListViewItemNodeId(item: SessionListViewItem): string {
+    if (item.type === 'header') {
+        return buildSessionListIndexHeaderNodeId(item);
+    }
+
+    return buildSessionListSessionNodeId(item.serverId, item.session.id);
 }
 
 function buildPreviousSessionListIndexItemMap(

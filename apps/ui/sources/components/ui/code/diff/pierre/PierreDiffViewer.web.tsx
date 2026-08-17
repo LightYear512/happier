@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 import { createTwoFilesPatch } from 'diff';
-import { Ionicons } from '@expo/vector-icons';
 
 import { getSingularPatch } from '@pierre/diffs';
 import type { DiffLineAnnotation, FileDiffMetadata, FileDiffOptions, OnDiffLineClickProps } from '@pierre/diffs';
@@ -26,6 +25,8 @@ import {
     REVIEW_COMMENT_LINE_AFFORDANCE_ICON_TEST_ID,
     REVIEW_COMMENT_LINE_AFFORDANCE_TEST_ID,
 } from '@/components/ui/code/diff/reviewComments/ReviewCommentLineAffordance';
+import { buildPierreInitialPresentationCacheKey } from './pierreInitialPresentation.web';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const PIERRE_REVIEW_COMMENT_HOVER_SLOT_UNSAFE_CSS = `
 [data-column-number] {
@@ -119,10 +120,10 @@ function PierreReviewCommentHoverAffordance(props: {
             }}
             type="button"
         >
-            <Ionicons
+            <Icon
                 color={props.color}
-                name={props.active ? 'close-circle-outline' : REVIEW_COMMENT_LINE_AFFORDANCE_ICON_NAME}
-                size={15}
+                name={props.active ? 'x-circle' : REVIEW_COMMENT_LINE_AFFORDANCE_ICON_NAME}
+                size={14}
                 testID={REVIEW_COMMENT_LINE_AFFORDANCE_ICON_TEST_ID}
             />
         </button>
@@ -560,10 +561,17 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
         const pathFromProp = typeof props.filePath === 'string' && props.filePath.trim() ? props.filePath.trim() : null;
         const pathCandidate = pathFromProp ?? (typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name.trim() : null);
         const languageOverride = resolvePierreLanguageOverride(pathCandidate);
-        if (!languageOverride) return parsed;
-        return { ...parsed, lang: languageOverride };
-    }, [parsedPatch, props.filePath]);
-
+        const name = pathCandidate ?? 'diff';
+        return {
+            ...parsed,
+            ...(languageOverride ? { lang: languageOverride } : {}),
+            cacheKey: buildPierreInitialPresentationCacheKey({
+                fileName: name,
+                language: languageOverride,
+                patch: sanitizedPatch,
+            }),
+        };
+    }, [parsedPatch, props.filePath, sanitizedPatch]);
     const baseOptions = React.useMemo<FileDiffOptions<React.ReactNode>>(() => {
         return buildPierreDiffOptionsBase({
             isDark,

@@ -5,6 +5,10 @@ import { StyleSheet } from 'react-native-unistyles';
 import type { ToolViewProps } from '@/components/tools/renderers/core/_registry';
 import { StructuredResultView } from '@/components/tools/renderers/system/StructuredResultView';
 import type { Message } from '@/sync/domains/messages/messageTypes';
+import {
+    deriveTranscriptExecutionRunStatus,
+    isTerminalSubagentStatus,
+} from '@/sync/domains/session/subagents/executionRuns/executionRunSubagentStatus';
 import { SubAgentSummarySection } from './SubAgentSummarySection';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -60,27 +64,7 @@ function coerceTextMessages(messages: readonly Message[]): readonly string[] {
     return out;
 }
 
-function resultHasRequestInterruptedSignal(value: unknown, depth = 0): boolean {
-    if (depth > 5 || value == null) return false;
-
-    if (typeof value === 'string') {
-        return value.replaceAll('\\"', '"').toLowerCase().includes('request interrupted');
-    }
-
-    if (Array.isArray(value)) {
-        return value.some((item) => resultHasRequestInterruptedSignal(item, depth + 1));
-    }
-
-    if (typeof value === 'object') {
-        return Object.values(value as Record<string, unknown>).some((item) =>
-            resultHasRequestInterruptedSignal(item, depth + 1),
-        );
-    }
-
-    return false;
-}
-
-export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, detailLevel, sessionId, messageId }) => {
+export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, detailLevel, sessionId, messageId, interaction }) => {
     if (tool.state === 'running') {
         return (
             <SubAgentSummarySection
@@ -90,28 +74,38 @@ export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, deta
                 detailLevel={detailLevel}
                 sessionId={sessionId}
                 messageId={messageId}
+                interaction={interaction}
+                opts={{ hideResultInlineWhenBackgroundRun: false }}
+            />
+        );
+    }
+
+    // An outer call the parent turn interrupted (e.g. turn cancel) closes with an abort placeholder
+    // and no run outcome while the underlying sidechain keeps streaming — on `completed` just as
+    // much as on `error`. Whether a result carries an outcome is the status owner's question, so it
+    // is asked rather than re-decided here: one precedence rule means a reported terminal status
+    // still wins on this surface exactly as it does in the store, instead of a second copy of the
+    // marker walk drifting until an interrupted run renders as finished here and as live there.
+    // `unavailable` is excluded on purpose: it is only reached once the process hosting the
+    // sidechain is gone, so that transcript is not streaming no matter how much of it arrived.
+    const isRunStillOpen = tool.state !== 'unavailable'
+        && !isTerminalSubagentStatus(deriveTranscriptExecutionRunStatus(tool));
+    if (isRunStillOpen && (messages?.length ?? 0) > 0) {
+        return (
+            <SubAgentSummarySection
+                tool={{ ...tool, state: 'running', result: null } as any}
+                metadata={null}
+                messages={messages ?? []}
+                detailLevel={detailLevel}
+                sessionId={sessionId}
+                messageId={messageId}
+                interaction={interaction}
                 opts={{ hideResultInlineWhenBackgroundRun: false }}
             />
         );
     }
 
     if (tool.state === 'error') {
-        // Abort-like errors happen when the outer SubAgentRun call was interrupted (e.g. turn cancel) while the
-        // underlying sidechain is still streaming. Prefer showing the sidechain transcript in this case.
-        if (resultHasRequestInterruptedSignal(tool.result) && (messages?.length ?? 0) > 0) {
-            return (
-                <SubAgentSummarySection
-                    tool={{ ...tool, state: 'running', result: null } as any}
-                    metadata={null}
-                    messages={messages ?? []}
-                    detailLevel={detailLevel}
-                    sessionId={sessionId}
-                    messageId={messageId}
-                    opts={{ hideResultInlineWhenBackgroundRun: false }}
-                />
-            );
-        }
-
         if (tool.result) {
             return (
                 <StructuredResultView

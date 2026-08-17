@@ -8,8 +8,10 @@ import {
     type SessionListRenderableSession,
 } from '@/sync/domains/session/listing/sessionListRenderable';
 import {
+    deriveSessionRuntimePresentationState,
     SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
 } from '@/sync/domains/session/attention/deriveSessionRuntimePresentationState';
+import { nowServerMs } from '@/sync/runtime/time';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime';
 
@@ -32,6 +34,8 @@ type MutableSessionListRowStoreState = {
     sessionMessages: Record<string, ReturnType<typeof selectSessionListRowStateSnapshot>['messages']>;
     sessionPending: Record<string, ReturnType<typeof selectSessionListRowStateSnapshot>['pending']>;
 };
+
+const EMPTY_RUNTIME_PRIORITY_ROW_SCOPES: readonly SessionListRowStateSnapshotScope[] = Object.freeze([]);
 
 // Visible rows do not need to rebuild on every unread-stable streaming progress timestamp.
 // Keep the store fully fresh, but let the row selector expose at most ~30s progress
@@ -181,6 +185,64 @@ function shouldReusePreviousProgressRenderable(input: Readonly<{
     return hasSameRelativeProgressLabels(previous, next, nowMs);
 }
 
+function isRuntimePriorityRenderable(
+    renderable: SessionListRenderableSession | undefined,
+    nowMs: number,
+): boolean {
+    if (!renderable) return false;
+    const runtimeStatus = deriveSessionRuntimePresentationState(renderable, nowMs);
+    return runtimeStatus.working
+        || (runtimeStatus.isOnline && runtimeStatus.backgroundActive)
+        || runtimeStatus.freshPermissionRequired
+        || runtimeStatus.freshActionRequired
+        || renderable.hasPendingPermissionRequests === true
+        || renderable.hasPendingUserActionRequests === true;
+}
+
+function areScopeListsEqual(
+    previous: readonly SessionListRowStateSnapshotScope[] | null,
+    next: readonly SessionListRowStateSnapshotScope[],
+): boolean {
+    if (previous === null || previous.length !== next.length) return false;
+    for (let index = 0; index < next.length; index += 1) {
+        const previousScope = previous[index];
+        const nextScope = next[index];
+        if (!previousScope || !nextScope) return false;
+        if (previousScope.sessionId !== nextScope.sessionId) return false;
+        if ((previousScope.serverId ?? null) !== (nextScope.serverId ?? null)) return false;
+    }
+    return true;
+}
+
+export function createSessionListRuntimePriorityRowScopeSelector(
+    scopes: readonly SessionListRowStateSnapshotScope[],
+    activeServerId: string | null | undefined,
+): (state: SessionListRowStoreStateSelectorInput) => readonly SessionListRowStateSnapshotScope[] {
+    const normalizedScopes = scopes.map(normalizeScope);
+    const overlayState: SessionListRowStoreState = { activeServerId };
+    let previousOutput: readonly SessionListRowStateSnapshotScope[] | null = null;
+
+    return (state) => {
+        const nowMs = nowServerMs();
+        let nextOutput: SessionListRowStateSnapshotScope[] | null = null;
+        for (const scope of normalizedScopes) {
+            if (!shouldReadActiveServerOverlay(overlayState, scope.serverId)) continue;
+            const renderable = state.sessionListRenderables?.[scope.sessionId];
+            if (!isRuntimePriorityRenderable(renderable, nowMs)) continue;
+            if (nextOutput === null) nextOutput = [];
+            nextOutput.push(scope);
+        }
+
+        const normalizedOutput = nextOutput ?? EMPTY_RUNTIME_PRIORITY_ROW_SCOPES;
+        if (areScopeListsEqual(previousOutput, normalizedOutput)) {
+            return previousOutput ?? EMPTY_RUNTIME_PRIORITY_ROW_SCOPES;
+        }
+
+        previousOutput = normalizedOutput;
+        return normalizedOutput;
+    };
+}
+
 export function createSessionListRowStoreStateSelector(
     scopes: readonly SessionListRowStateSnapshotScope[],
     activeServerId: string | null | undefined,
@@ -203,7 +265,10 @@ export function createSessionListRowStoreStateSelector(
         const sessionPending: MutableSessionListRowStoreState['sessionPending'] = {};
 
         let suppressedProgressRenderableUpdates = 0;
-        const nowMs = Date.now();
+        // Server-adjusted clock: the reuse/suppression rules below compare
+        // foreground progress and heartbeat anchors against server-clock
+        // renderable timestamps.
+        const nowMs = nowServerMs();
         for (let index = 0; index < normalizedScopes.length; index += 1) {
             const scope = normalizedScopes[index];
             const sessionId = scope.sessionId;

@@ -1,10 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TerminalHostStartupError } from '@/integrations/terminalHost/errors';
+import { ZellijActionTimeoutError } from '@/integrations/zellij/actions';
 import { ClaudeUnifiedTerminalManagedSettingsOptionError } from './buildClaudeUnifiedTerminalSpawn';
 import { ClaudeUnifiedTerminalHostDeadError } from './createClaudeUnifiedController';
+import { ClaudeUnifiedTerminalHookActivationError } from './claudeUnifiedHookActivation';
 import { ClaudeUnifiedTerminalReadinessTimeoutError } from './createClaudeUnifiedTerminalReadinessBridge';
 import { ClaudeUnifiedTerminalInjectionFailureError } from './terminalInjectionFailureError';
+
+const loggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+}));
+
+vi.mock('@/ui/logger', () => ({
+  logger: loggerMock,
+}));
+
 import {
   isClaudeUnifiedTerminalRuntimeIssueError,
   surfaceClaudeUnifiedTerminalRuntimeIssue,
@@ -17,6 +28,7 @@ function buildInjectionFailureError(
     batch: {
       message: 'hello',
       origin: { kind: 'ui_pending' },
+      ...(failureState === 'failed_ambiguous' ? { userMessageLocalIds: ['pending-local'] } : {}),
     },
     result: {
       status: 'failed',
@@ -26,6 +38,24 @@ function buildInjectionFailureError(
       recoverable: true,
     },
     failureState,
+  });
+}
+
+function buildRecoverableAmbiguousInjectionFailureError(): ClaudeUnifiedTerminalInjectionFailureError {
+  return new ClaudeUnifiedTerminalInjectionFailureError({
+    batch: {
+      message: 'hello',
+      origin: { kind: 'ui_pending' },
+      userMessageLocalIds: ['pending-local'],
+    },
+    result: {
+      status: 'failed',
+      reason: 'timeout',
+      phase: 'after_write_before_enter',
+      duplicateRisk: 'possible',
+      recoverable: true,
+    },
+    failureState: 'failed_ambiguous',
   });
 }
 
@@ -57,11 +87,17 @@ function buildTerminalHostStartupError(): TerminalHostStartupError {
 }
 
 describe('surfaceClaudeUnifiedTerminalRuntimeIssue', () => {
+  afterEach(() => {
+    loggerMock.debug.mockClear();
+  });
+
   it('classifies host-dead, terminal injection-failure, readiness-timeout, and host-startup failures as runtime issues', () => {
     expect(isClaudeUnifiedTerminalRuntimeIssueError(new ClaudeUnifiedTerminalHostDeadError())).toBe(true);
+    expect(isClaudeUnifiedTerminalRuntimeIssueError(new ClaudeUnifiedTerminalHookActivationError())).toBe(true);
     expect(isClaudeUnifiedTerminalRuntimeIssueError(buildInjectionFailureError())).toBe(true);
     expect(isClaudeUnifiedTerminalRuntimeIssueError(buildReadinessTimeoutError())).toBe(true);
     expect(isClaudeUnifiedTerminalRuntimeIssueError(buildTerminalHostStartupError())).toBe(true);
+    expect(isClaudeUnifiedTerminalRuntimeIssueError(new ZellijActionTimeoutError('list-panes'))).toBe(true);
     expect(isClaudeUnifiedTerminalRuntimeIssueError(
       new ClaudeUnifiedTerminalManagedSettingsOptionError([
         { code: 'managed_settings_option', option: '--settings' },
@@ -79,7 +115,47 @@ describe('surfaceClaudeUnifiedTerminalRuntimeIssue', () => {
   });
 
   it('does not classify recoverable ambiguous injection failures as terminal runtime issues', () => {
-    expect(isClaudeUnifiedTerminalRuntimeIssueError(buildInjectionFailureError('failed_ambiguous'))).toBe(false);
+    expect(isClaudeUnifiedTerminalRuntimeIssueError(buildRecoverableAmbiguousInjectionFailureError())).toBe(false);
+  });
+
+  it('classifies host-unreachable submit failures after Enter as terminal runtime issues', () => {
+    expect(isClaudeUnifiedTerminalRuntimeIssueError(
+      new ClaudeUnifiedTerminalInjectionFailureError({
+        batch: {
+          message: 'hello',
+          origin: { kind: 'ui_pending' },
+        },
+        result: {
+          status: 'failed',
+          reason: 'host_unreachable',
+          phase: 'after_enter_unknown',
+          duplicateRisk: 'possible',
+          recoverable: true,
+        },
+        failureState: 'failed_ambiguous',
+      }),
+    )).toBe(true);
+  });
+
+  it('classifies provider-acceptance timeouts without pending local ids as terminal runtime issues', () => {
+    expect(isClaudeUnifiedTerminalRuntimeIssueError(
+      new ClaudeUnifiedTerminalInjectionFailureError({
+        batch: {
+          message: 'hello',
+          origin: { kind: 'ui_pending' },
+          userMessageLocalIds: [],
+        },
+        result: {
+          status: 'failed',
+          reason: 'timeout',
+          phase: 'after_enter_unknown',
+          duplicateRisk: 'likely',
+          recoverable: true,
+        },
+        failureState: 'failed_ambiguous',
+      }),
+    )).toBe(true);
+    expect(isClaudeUnifiedTerminalRuntimeIssueError(buildInjectionFailureError('failed_ambiguous'))).toBe(true);
   });
 
   it('does not classify unrelated errors as runtime issues', () => {
@@ -91,6 +167,7 @@ describe('surfaceClaudeUnifiedTerminalRuntimeIssue', () => {
   it('surfaces a primary runtime issue through the session turn lifecycle for each classified error', async () => {
     for (const error of [
       new ClaudeUnifiedTerminalHostDeadError(),
+      new ClaudeUnifiedTerminalHookActivationError(),
       buildInjectionFailureError(),
       buildReadinessTimeoutError(),
       buildTerminalHostStartupError(),
@@ -119,6 +196,62 @@ describe('surfaceClaudeUnifiedTerminalRuntimeIssue', () => {
         allocateWhenIdle: true,
       });
     }
+  });
+
+  it('logs terminal host startup diagnostics before surfacing the runtime issue', async () => {
+    const startupError = new TerminalHostStartupError({
+      hostKind: 'zellij',
+      reason: 'startup_action_failed',
+      message: 'zellij run failed: run stderr',
+      diagnostics: {
+        action: 'run',
+        cmd: [
+          '/tools/zellij',
+          '-s',
+          'session-a',
+          'run',
+          '--',
+          '/managed/node',
+          'claude_local_launcher.cjs',
+        ],
+        exitCode: 2,
+        stderr: 'run stderr',
+        stdout: 'run stdout',
+        sessionName: 'session-a',
+        timeoutMs: 123,
+      },
+    });
+    const session = {
+      sessionTurnLifecycle: {
+        beginTurn: vi.fn(async () => ({ turnId: 't1' })),
+        completeTurn: vi.fn(async () => {}),
+        cancelTurn: vi.fn(async () => {}),
+        failTurn: vi.fn(async () => {}),
+      },
+    } as unknown as Parameters<typeof surfaceClaudeUnifiedTerminalRuntimeIssue>[0]['session'];
+
+    await expect(surfaceClaudeUnifiedTerminalRuntimeIssue({ error: startupError, session })).resolves.toBe(true);
+
+    expect(loggerMock.debug).toHaveBeenCalledWith(
+      '[unified]: Claude unified terminal host startup failed before injection',
+      expect.objectContaining({
+        hostKind: 'zellij',
+        reason: 'startup_action_failed',
+        action: 'run',
+        cmd: [
+          '/tools/zellij',
+          '-s',
+          'session-a',
+          'run',
+          '--',
+          '/managed/node',
+          'claude_local_launcher.cjs',
+        ],
+        exitCode: 2,
+        stderr: 'run stderr',
+        timeoutMs: 123,
+      }),
+    );
   });
 
   it('does not surface or touch the session for an unrelated error', async () => {
@@ -152,7 +285,7 @@ describe('surfaceClaudeUnifiedTerminalRuntimeIssue', () => {
     } as unknown as Parameters<typeof surfaceClaudeUnifiedTerminalRuntimeIssue>[0]['session'];
 
     const surfaced = await surfaceClaudeUnifiedTerminalRuntimeIssue({
-      error: buildInjectionFailureError('failed_ambiguous'),
+      error: buildRecoverableAmbiguousInjectionFailureError(),
       session,
     });
     expect(surfaced).toBe(false);

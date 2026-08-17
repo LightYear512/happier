@@ -27,9 +27,13 @@ type WebActivitySpinnerStyle = ViewStyle & {
 export type ActivitySpinnerProps = Omit<ActivityIndicatorProps, 'size'> & {
     size?: ActivityIndicatorProps['size'] | number;
     /**
-     * Keep the web spinner visible but stop the continuous CSS transform animation.
-     * Used for mounted offscreen list rows so overscan content does not force a
-     * browser frame on every refresh tick.
+     * Keep the spinner visible but stop it turning.
+     *
+     * Used wherever ambient motion must pause without the mark disappearing: a mounted offscreen
+     * list row, an entry that has stopped reporting. Honoured on every platform — web drops the CSS
+     * animation, native stops the `ActivityIndicator` while overriding `hidesWhenStopped` so the
+     * ring stays on screen. A paused spinner still says "this is the running state"; a missing one
+     * says the work ended.
      */
     animationEnabled?: boolean;
 };
@@ -48,12 +52,40 @@ function resolveSpinnerBorderWidth(size: number): number {
     return Math.max(1.5, Math.min(3, size / 8));
 }
 
+/**
+ * A vector icon draws its circle INSET in its em box, but a spinner's diameter IS its box. So a
+ * spinner and an Ionicons `checkmark-circle` given the same number render at visibly different
+ * sizes, and a status slot that swaps one for the other appears to change size as it settles.
+ *
+ * Measured from a rendered transcript at matched scale: a filled circle glyph declared at 16 draws
+ * ~12.8px of ink, next to a `size="small"` spinner's full 20px ring — the running state read 1.55x
+ * the size of the success state it turns into.
+ *
+ * Every status slot that pairs a spinner with a glyph derives the spinner from the glyph size here.
+ * Before this existed, four of them each guessed separately and all four disagreed.
+ */
+export const ICON_CIRCLE_INK_RATIO = 0.8;
+
+export function iconMatchedSpinnerSize(iconSize: number): number {
+    return Math.round(iconSize * ICON_CIRCLE_INK_RATIO);
+}
+
 export function ActivitySpinner(props: ActivitySpinnerProps) {
     const { theme } = useUnistyles();
     const resolvedColor = props.color ?? theme.colors.text.secondary;
 
     if (Platform.OS !== 'web') {
-        return <NativeActivityIndicator {...props} color={resolvedColor} />;
+        const { animationEnabled: nativeAnimationEnabled = true, ...nativeProps } = props;
+        return (
+            <NativeActivityIndicator
+                {...nativeProps}
+                color={resolvedColor}
+                // Only when the caller asked for a pause. A caller that set `animating={false}`
+                // itself keeps the default `hidesWhenStopped`, because hiding a stopped spinner is
+                // a legitimate thing to want and is not this flag's business.
+                {...(nativeAnimationEnabled ? null : { animating: false, hidesWhenStopped: false })}
+            />
+        );
     }
 
     const {

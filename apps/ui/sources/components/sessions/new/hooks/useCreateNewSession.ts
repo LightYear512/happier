@@ -5,7 +5,13 @@ import { Modal } from '@/modal';
 import { sync } from '@/sync/sync';
 import { useApplySettings } from '@/sync/store/settingsWriters';
 import { storage } from '@/sync/domains/state/storage';
-import { machineBash, machineResolveSpawnSessionByNonceUntilSettled, machineSpawnNewSession } from '@/sync/ops';
+import {
+    completeMachineSpawnAttemptCustody,
+    machineBash,
+    machineSpawnNewSession,
+    resetMachineSpawnAttemptCustody,
+} from '@/sync/ops';
+import type { MachineSpawnAttemptCustody } from '@/sync/ops/machines';
 import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
 import { normalizeSessionAuthoringConnectedServices } from '@/sync/domains/sessionAuthoring/sessionAuthoringNormalization';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -23,6 +29,7 @@ import { resolveEffectiveWindowsRemoteSessionLaunchMode } from '@/sync/domains/s
 import { getAgentCore, type AgentId } from '@/agents/catalog/catalog';
 import { buildSpawnEnvironmentVariablesFromUiState, buildSpawnSessionExtrasFromUiState, getAgentResumeExperimentsFromSettings, getNewSessionPreflightIssues } from '@/agents/catalog/catalog';
 import { transformProfileToEnvironmentVars } from '@/components/sessions/new/modules/profileHelpers';
+import type { NewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
 import { getMachineCapabilitiesSnapshot } from '@/hooks/server/useMachineCapabilitiesCache';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
@@ -39,6 +46,8 @@ import { resolvePromptInvocationComposerSendAction } from '@/sync/domains/input/
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import { sessionGoalClear, sessionGoalSet } from '@/sync/ops/sessionGoals';
+import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
+import { readNonBlankSessionControlIdentifier } from '@/sync/domains/sessionControl/opaqueIdentifiers';
 
 function getActiveNewSessionDraftScope() {
     return storage.getState().profileScope ?? null;
@@ -77,6 +86,8 @@ import { materializeNewSessionCheckout } from '@/components/sessions/new/modules
 import { rollbackNewSessionArtifacts } from '@/components/sessions/new/modules/rollbackNewSessionArtifacts';
 import { resolveConnectedServiceSwitchUnavailablePresentation } from '@/components/sessions/new/modules/connectedServiceSwitchUnavailable';
 import { followUpSpawnedSessionWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/followUpSpawnedSession';
+import { mergeMessageMetaOverrides } from '@/components/sessions/agentInput/structuredInputMentions';
+import { supportsSpawnPendingFirstInput } from '@/sync/domains/session/spawn/spawnSessionPayload';
 import {
     buildAutomationTemplateFromSessionAuthoringDraft,
     buildNewSessionAuthoringDraftFromResolvedInputs,
@@ -84,6 +95,7 @@ import {
 } from '@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters';
 import type { SessionAuthoringDraft } from '@/components/sessions/authoring/draft/sessionAuthoringDraft';
 import {
+    adoptNewSessionLaunchAttemptCustody,
     createNewSessionLaunchAttempt,
     isNewSessionLaunchAttemptInScope,
     markNewSessionLaunchAttemptComplete,
@@ -108,6 +120,18 @@ export type CreatedSessionFollowUpContext = Readonly<{
 export type HandleCreateSessionOptions = Readonly<{
     initialMessage?: 'send' | 'skip';
     inputTextOverride?: string;
+    /**
+     * The composer's structured-input envelope for the first turn (`mentions[]` and the legacy
+     * projection of it). This hook owns the first turn, so it is the only place that envelope
+     * can reach the message: without it an `@session` reference composed before the session
+     * existed would arrive as bare text with no envelope entry, which INV-5 renders as nothing.
+     *
+     * Ranges are validated against the SUBMITTED text at the request boundary
+     * (`sanitizeSessionUserMessageSendMeta`), element-wise, so a first turn this hook rewrites
+     * — a `/template` expansion, a `/goal` — drops the references that no longer describe their
+     * own token and keeps the rest (INV-4). That decision has one owner and is not repeated here.
+     */
+    structuredInputMetaOverrides?: Record<string, unknown>;
     afterCreated?: (context: CreatedSessionFollowUpContext) => void | Promise<void>;
     /**
      * D2: relaunch under the newly-selected connected-service account WITHOUT resume continuity, after
@@ -135,6 +159,10 @@ function buildNewSessionLaunchScopeKey(params: Readonly<{
         `profiles:${params.useProfiles ? 'on' : 'off'}`,
         `profile:${normalizeLaunchScopePart(params.selectedProfileId)}`,
     ].join('|');
+}
+
+function isFirstTurnFollowUpTimeout(error: unknown): boolean {
+    return isSocketIoAckTimeoutError(error);
 }
 
 function readNewSessionConnectedServicesOption(
@@ -178,7 +206,11 @@ export function useCreateNewSession(params: Readonly<{
     acpSessionModeId?: string | null;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1 | null;
 
-    sessionPrompt: string;
+    /**
+     * Live composer text handle. Read at submit time rather than taken as a render
+     * dependency, so typing does not re-run the new-session screen model.
+     */
+    promptStore: NewSessionPromptStore;
     setSessionPrompt?: (prompt: string) => void;
     resumeSessionId: string;
     agentNewSessionOptions?: Record<string, unknown> | null;
@@ -199,6 +231,9 @@ export function useCreateNewSession(params: Readonly<{
     allowedTargetServerIds?: ReadonlyArray<string>;
     draftScope?: ServerAccountScope | null;
     disableDraftPersistence?: () => void;
+    launchIntentSignature: string;
+    launchUserAttemptId?: string | null;
+    onLaunchUserAttemptIdChange?: (userAttemptId: string | null) => void;
 }>): Readonly<{
     handleCreateSession: (opts?: HandleCreateSessionOptions) => void;
 }> {
@@ -206,6 +241,30 @@ export function useCreateNewSession(params: Readonly<{
     const applySettings = useApplySettings();
     const latestParamsRef = React.useRef(params);
     const launchAttemptRef = React.useRef<NewSessionLaunchAttempt | null>(null);
+    const launchIntentSignature = params.launchIntentSignature;
+    const launchIntentSignatureRef = React.useRef(launchIntentSignature);
+    const invalidatedLaunchUserAttemptIdRef = React.useRef<string | null>(null);
+    if (launchIntentSignatureRef.current !== launchIntentSignature) {
+        launchIntentSignatureRef.current = launchIntentSignature;
+        launchAttemptRef.current = null;
+        invalidatedLaunchUserAttemptIdRef.current = typeof params.launchUserAttemptId === 'string'
+            ? params.launchUserAttemptId.trim() || null
+            : null;
+    }
+    const normalizedLaunchUserAttemptId = typeof params.launchUserAttemptId === 'string'
+        ? params.launchUserAttemptId.trim() || null
+        : null;
+    if (
+        invalidatedLaunchUserAttemptIdRef.current !== null
+        && normalizedLaunchUserAttemptId !== invalidatedLaunchUserAttemptIdRef.current
+    ) {
+        invalidatedLaunchUserAttemptIdRef.current = null;
+    }
+    const launchUserAttemptIdForCurrentIntent = normalizedLaunchUserAttemptId === invalidatedLaunchUserAttemptIdRef.current
+        ? null
+        : normalizedLaunchUserAttemptId;
+    const launchUserAttemptIdForCurrentIntentRef = React.useRef(launchUserAttemptIdForCurrentIntent);
+    launchUserAttemptIdForCurrentIntentRef.current = launchUserAttemptIdForCurrentIntent;
     const createInFlightRef = React.useRef(false);
     // Keep the latest params available synchronously so event handlers can't observe
     // a stale snapshot in the window between rerender and effect flush.
@@ -294,7 +353,7 @@ export function useCreateNewSession(params: Readonly<{
 
             const sessionPromptText = typeof opts?.inputTextOverride === 'string'
                 ? opts.inputTextOverride
-                : current.sessionPrompt;
+                : current.promptStore.getPrompt();
             const shouldSendInitialMessage = (opts?.initialMessage ?? 'send') !== 'skip';
             const shouldPrepareInitialMessage = shouldSendInitialMessage && sessionPromptText.trim();
             const resolvedInitialMessage = shouldPrepareInitialMessage
@@ -455,7 +514,7 @@ export function useCreateNewSession(params: Readonly<{
                 : undefined;
             const spawnPermissionMode = parsePermissionIntentAlias(current.permissionMode) ?? 'default';
             const spawnPermissionModeUpdatedAt = nowServerMs();
-            const normalizedAcpModeId = typeof current.acpSessionModeId === 'string' ? current.acpSessionModeId.trim() : '';
+            const normalizedAcpModeId = readNonBlankSessionControlIdentifier(current.acpSessionModeId) ?? '';
             const spawnModelId =
                 getAgentCore(current.agentType).model.supportsSelection === true &&
                 typeof current.modelMode === 'string' &&
@@ -561,8 +620,13 @@ export function useCreateNewSession(params: Readonly<{
                 return;
             }
 
+            // A retryable attempt may only be reused for the same text. The launch-intent
+            // signature deliberately excludes the live composer text (it is no longer a render
+            // input), so the text comparison that used to happen through the signature happens
+            // here, at the only place the previous attempt's identity is actually reused.
             const retryableLaunchAttempt = launchAttemptRef.current?.status === 'failed_retryable'
                 && isNewSessionLaunchAttemptInScope(launchAttemptRef.current, launchScopeKey)
+                && launchAttemptRef.current.prompt.prompt === normalizedSessionPrompt
                 ? launchAttemptRef.current
                 : null;
             let launchAttempt = retryableLaunchAttempt ?? createNewSessionLaunchAttempt({
@@ -570,11 +634,51 @@ export function useCreateNewSession(params: Readonly<{
                 displayText: normalizedSessionPrompt,
                 scopeKey: launchScopeKey,
                 meta: null,
+                attemptId: launchUserAttemptIdForCurrentIntentRef.current,
             });
+            if (!retryableLaunchAttempt && launchUserAttemptIdForCurrentIntentRef.current !== launchAttempt.attemptId) {
+                current.onLaunchUserAttemptIdChange?.(launchAttempt.attemptId);
+            }
             launchAttemptRef.current = launchAttempt;
+
+            const daemonOwnsFirstTurn = supportsSpawnPendingFirstInput(
+                current.selectedMachine?.daemonState?.startedWithCliVersion,
+            );
+            const firstTurnMetaOverrides = mergeMessageMetaOverrides((() => {
+                const agentCore = getAgentCore(current.agentType);
+                if (
+                    agentCore.model.supportsSelection
+                    && agentCore.model.nonAcpApplyScope === 'next_prompt'
+                    && current.modelMode
+                    && current.modelMode !== 'default'
+                ) {
+                    return { model: current.modelMode };
+                }
+
+                return null;
+            })(), opts?.structuredInputMetaOverrides) ?? null;
+            const pendingFirstInputMeta = {
+                ...(firstTurnMetaOverrides ?? {}),
+                ...(profilesActive && current.selectedProfileId
+                    ? { profileId: current.selectedProfileId }
+                    : {}),
+            };
+            let daemonFirstTurnText = '';
+            if (resolvedInitialMessage) {
+                if (daemonOwnsFirstTurn && resolvedInitialMessage.kind === 'template') {
+                    daemonFirstTurnText = (await expandPromptTemplateInvocation({
+                        targetArtifactId: resolvedInitialMessage.targetArtifactId,
+                        argsText: resolvedInitialMessage.rest,
+                    })).trim();
+                } else if (resolvedInitialMessage.kind === 'send') {
+                    daemonFirstTurnText = resolvedInitialMessage.text.trim();
+                }
+            }
+            let handedFirstTurnToDaemon = false;
 
             let actualPath = effectiveSelectedPath;
             let result: Awaited<ReturnType<typeof machineSpawnNewSession>>;
+            let operationCustody: MachineSpawnAttemptCustody | undefined;
             let shouldPreserveLaunchAttemptForSpawnRetry = false;
 
             if (shouldSpawnForNewSessionLaunchAttempt(launchAttempt)) {
@@ -601,7 +705,7 @@ export function useCreateNewSession(params: Readonly<{
                 const sessionPath = checkoutResult.sessionPath.trim() || trimmedEffectiveSelectedPath;
                 rollbackActualPath = actualPath;
 
-                result = await machineSpawnNewSession({
+                const spawnOptions = {
                     ...buildSpawnSessionOptionsFromAuthoringDraft({
                         draft: {
                             ...authoringDraft,
@@ -614,39 +718,55 @@ export function useCreateNewSession(params: Readonly<{
                     }),
                     ...spawnSessionExtras,
                     spawnNonce: launchAttempt.spawnNonce,
-                });
+                    userAttemptId: launchAttempt.attemptId,
+                    firstTurnLocalId: launchAttempt.firstTurnLocalId,
+                    attachmentMessageLocalId: launchAttempt.attachmentMessageLocalId,
+                    ...(daemonFirstTurnText
+                        ? {
+                            pendingFirstInput: {
+                                text: daemonFirstTurnText,
+                                localId: launchAttempt.firstTurnLocalId,
+                                ...(Object.keys(pendingFirstInputMeta).length > 0
+                                    ? { meta: pendingFirstInputMeta }
+                                    : {}),
+                            },
+                        }
+                        : {}),
+                };
+                handedFirstTurnToDaemon = daemonOwnsFirstTurn && daemonFirstTurnText.length > 0;
+                result = await machineSpawnNewSession(spawnOptions);
 
-                if (result.type === 'error' && result.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT) {
-                    const resolvedSpawn = await machineResolveSpawnSessionByNonceUntilSettled({
-                        machineId: current.selectedMachineId,
-                        serverId: resolvedTargetServerId,
-                        spawnNonce: launchAttempt.spawnNonce,
-                    });
-                    if (resolvedSpawn.status === 'success') {
-                        result = {
-                            type: 'success',
-                            sessionId: resolvedSpawn.sessionId,
-                        };
-                    } else {
-                        shouldPreserveLaunchAttemptForSpawnRetry = true;
+                operationCustody = result.spawnAttemptCustody;
+                if (
+                    operationCustody?.status === 'unresolved'
+                    || operationCustody?.status === 'completed'
+                ) {
+                    if (operationCustody.userAttemptId !== launchAttempt.attemptId) {
                         result = {
                             type: 'error',
-                            errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
-                            errorMessage: (() => {
-                                switch (resolvedSpawn.status) {
-                                    case 'pending':
-                                        return 'Session startup is still pending. Please retry in a moment.';
-                                    case 'unsupported':
-                                        return 'Session startup timed out and this daemon cannot resolve the original launch attempt. Please retry.';
-                                    case 'transport_error':
-                                        return 'Session startup timed out and the daemon could not be reached to resolve the launch attempt. Please retry.';
-                                    case 'not_found':
-                                    default:
-                                        return 'Session startup timed out before the created session could be confirmed. Please retry.';
-                                }
-                            })(),
+                            errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                            errorMessage: t('newSession.failedToStart'),
                         };
+                    } else {
+                        launchAttempt = adoptNewSessionLaunchAttemptCustody(launchAttempt, {
+                            userAttemptId: operationCustody.userAttemptId,
+                            spawnNonce: operationCustody.spawnNonce,
+                            targetFingerprint: operationCustody.targetFingerprint,
+                            createdSessionId: operationCustody.createdSessionId,
+                            firstTurnLocalId: operationCustody.firstTurnLocalId,
+                            attachmentMessageLocalId: operationCustody.attachmentMessageLocalId,
+                        });
+                        launchAttemptRef.current = launchAttempt;
                     }
+                }
+                if (
+                    result.type === 'error'
+                    && (
+                        result.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT
+                        || operationCustody?.status === 'unresolved'
+                    )
+                ) {
+                    shouldPreserveLaunchAttemptForSpawnRetry = true;
                 }
             } else {
                 const retrySessionId = launchAttempt.createdSessionId;
@@ -657,6 +777,17 @@ export function useCreateNewSession(params: Readonly<{
                     type: 'success',
                     sessionId: retrySessionId,
                 };
+                if (launchAttempt.spawnTargetFingerprint) {
+                    operationCustody = {
+                        status: 'completed',
+                        userAttemptId: launchAttempt.attemptId,
+                        spawnNonce: launchAttempt.spawnNonce,
+                        targetFingerprint: launchAttempt.spawnTargetFingerprint,
+                        createdSessionId: retrySessionId,
+                        firstTurnLocalId: launchAttempt.firstTurnLocalId,
+                        attachmentMessageLocalId: launchAttempt.attachmentMessageLocalId,
+                    };
+                }
             }
 
             const rollbackSpawnArtifacts = async (): Promise<string | null> => {
@@ -691,6 +822,7 @@ export function useCreateNewSession(params: Readonly<{
                 let postSpawnFollowUpRetry: (() => Promise<void>) | null = null;
                 let suppressPostSpawnFollowUpAlert = false;
                 let postSpawnFailurePhase: 'sending_first_turn' | 'uploading_attachments' = 'sending_first_turn';
+                let preserveLaunchAttemptForFirstTurnRetry = false;
                 let initialMessageText = '';
                 let postSpawnSessionRouteSuffix = '';
                 let postSpawnReplacementHref: string | null = null;
@@ -719,7 +851,7 @@ export function useCreateNewSession(params: Readonly<{
                     launchAttempt = markNewSessionLaunchAttemptSendingFirstTurn(launchAttempt);
                     launchAttemptRef.current = launchAttempt;
 
-                    if (resolvedInitialMessage) {
+                    if (!handedFirstTurnToDaemon && resolvedInitialMessage) {
                         if (resolvedInitialMessage.kind === 'template') {
                             initialMessageText = await expandPromptTemplateInvocation({
                                 targetArtifactId: resolvedInitialMessage.targetArtifactId,
@@ -734,28 +866,16 @@ export function useCreateNewSession(params: Readonly<{
                         }
                     }
 
-                    await followUpSpawnedSessionWithServerScope({
-                        sessionId: createdSessionId,
-                        targetServerId: resolvedTargetServerId,
-                        initialMessageText,
-                        messageLocalId: launchAttempt.firstTurnLocalId,
-                        metaOverrides: (() => {
-                            const agentCore = getAgentCore(current.agentType);
-                            if (
-                                agentCore.model.supportsSelection
-                                && agentCore.model.nonAcpApplyScope === 'next_prompt'
-                                && current.modelMode
-                                && current.modelMode !== 'default'
-                            ) {
-                                // Some providers only apply model overrides when processing a user prompt.
-                                // Seed the initial message so the first turn uses the selected model.
-                                return { model: current.modelMode };
-                            }
-
-                            return null;
-                        })(),
-                        profileId: profilesActive ? (current.selectedProfileId ?? '') : null,
-                    });
+                    if (!handedFirstTurnToDaemon) {
+                        await followUpSpawnedSessionWithServerScope({
+                            sessionId: createdSessionId,
+                            targetServerId: resolvedTargetServerId,
+                            initialMessageText,
+                            messageLocalId: launchAttempt.firstTurnLocalId,
+                            metaOverrides: firstTurnMetaOverrides,
+                            profileId: profilesActive ? (current.selectedProfileId ?? '') : null,
+                        });
+                    }
 
                     if (
                         resolvedInitialMessage
@@ -879,6 +999,23 @@ export function useCreateNewSession(params: Readonly<{
                     return;
                 }
 
+                if (
+                    postSpawnFollowUpError
+                    && postSpawnFailurePhase === 'sending_first_turn'
+                    && isFirstTurnFollowUpTimeout(postSpawnFollowUpError)
+                ) {
+                    launchAttempt = markNewSessionLaunchAttemptFailed(launchAttempt, {
+                        phase: postSpawnFailurePhase,
+                        error: postSpawnFollowUpError,
+                        retryable: true,
+                    });
+                    launchAttemptRef.current = launchAttempt;
+                    postSpawnFollowUpError = null;
+                    postSpawnFollowUpRetry = null;
+                    suppressPostSpawnFollowUpAlert = true;
+                    preserveLaunchAttemptForFirstTurnRetry = true;
+                }
+
                 if (postSpawnFollowUpError) {
                     const retryFailureClassification = classifyCurrentPostSpawnFailure(postSpawnFollowUpError);
                     launchAttempt = markNewSessionLaunchAttemptFailed(launchAttempt, {
@@ -899,10 +1036,19 @@ export function useCreateNewSession(params: Readonly<{
                     return;
                 }
 
-                launchAttempt = markNewSessionLaunchAttemptComplete(launchAttempt);
-                launchAttemptRef.current = null;
-                current.disableDraftPersistence?.();
-                clearNewSessionDraftForLaunchParams(current);
+                if (!preserveLaunchAttemptForFirstTurnRetry) {
+                    launchAttempt = markNewSessionLaunchAttemptComplete(launchAttempt);
+                    if (operationCustody?.status === 'completed') {
+                        await completeMachineSpawnAttemptCustody({
+                            machineId: current.selectedMachineId,
+                            serverId: resolvedTargetServerId,
+                            custody: operationCustody,
+                        });
+                    }
+                    launchAttemptRef.current = null;
+                    current.disableDraftPersistence?.();
+                    clearNewSessionDraftForLaunchParams(current);
+                }
 
                 const sessionRoute = buildScopedSessionRouteHref({
                     sessionId: createdSessionId,
@@ -934,8 +1080,8 @@ export function useCreateNewSession(params: Readonly<{
                     launchAttemptRef.current = launchAttempt;
                     current.setIsCreating(false);
                     showDaemonUnavailableAlert({
-                        titleKey: 'newSession.daemonRpcUnavailableTitle',
-                        bodyKey: 'newSession.daemonRpcUnavailableBody',
+                        titleKey: 'newSession.launchStillPendingTitle',
+                        bodyKey: 'newSession.launchStillPendingBody',
                         machine: current.selectedMachine,
                         onRetry: () => {
                             void handleCreateSession(opts);
@@ -947,6 +1093,21 @@ export function useCreateNewSession(params: Readonly<{
 
                 launchAttemptRef.current = null;
                 const rollbackErrorMessage = await rollbackSpawnArtifacts();
+                if (result.spawnAttemptCustody?.status === 'corrupt') {
+                    const shouldReset = await Modal.confirm(
+                        t('common.error'),
+                        result.errorMessage,
+                        {
+                            cancelText: t('common.cancel'),
+                            confirmText: t('common.reset'),
+                        },
+                    );
+                    if (shouldReset) {
+                        await resetMachineSpawnAttemptCustody({ serverId: resolvedTargetServerId });
+                    }
+                    current.setIsCreating(false);
+                    return;
+                }
                 // D2: a connected-service auth switch fail-closed because the resumed session could not
                 // be carried over under the new account. Recognize the STRUCTURED detail (never parse
                 // the message), explain WHY, and offer "start fresh under the new account".

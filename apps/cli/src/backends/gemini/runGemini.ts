@@ -14,13 +14,14 @@ import { logger } from '@/ui/logger';
 import { resolveHasTTY } from '@/ui/tty/resolveHasTTY';
 import { Credentials } from '@/persistence';
 import { createSessionMetadata } from '@/agent/runtime/createSessionMetadata';
-import { initialMachineMetadata } from '@/daemon/startDaemon';
+import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import { configuration } from '@/configuration';
 import packageJson from '../../../package.json';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { emitReadyIfIdle as emitReadyIfIdleShared } from '@/agent/runtime/emitReadyIfIdle';
 import { hashObject } from '@/utils/deterministicJson';
 import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
+import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
 import { sendReadyWithPushNotification } from '@/agent/runtime/sendReadyWithPushNotification';
 import { getSessionNotificationTitle } from '@/agent/runtime/readyNotificationContext';
 import { resolveReadyNotificationAssistantText } from '@/agent/runtime/readyNotificationAssistantText';
@@ -31,9 +32,15 @@ import { registerKillSessionHandler } from '@/rpc/handlers/killSession';
 import { stopCaffeinate } from '@/integrations/caffeinate';
 import { connectionState } from '@/api/offline/serverConnectionErrors';
 import { createSessionProviderInputConsumer } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
-import { resolveSessionPendingQueueMaxPopPerWake } from '@/agent/runtime/sessionInput/pendingQueueDrainPolicy';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
+import {
+  resolveSessionPendingQueueDeliveryTiming,
+  resolveSessionPendingQueueMaxPopPerWake,
+} from '@/agent/runtime/sessionInput/pendingQueueDrainPolicy';
 import type { MessageBatch } from '@/agent/runtime/sessionInput/types';
+import { normalizePendingDeliveryLocalIds } from '@/agent/runtime/session/pendingDelivery/undeliverableProviderPrompt';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
+import type { PendingQueueDeliveryBlockedReason } from '@/api/session/pendingQueueV2Transport';
 import { createCurrentSessionTranscriptPort } from '@/api/session/createCurrentSessionTranscriptPort';
 import { createStreamedTranscriptWriter } from '@/api/session/streamedTranscriptWriter';
 import { formatGeminiErrorForUi } from '@/backends/gemini/utils/formatGeminiErrorForUi';
@@ -53,8 +60,11 @@ import { shouldSendReadyPushNotification } from '@/settings/notifications/notifi
 import { resolveAttachedRunRuntimeContext } from '@/agent/runtime/resolveAttachedRunRuntimeContext';
 import { archiveAndCloseRuntimeSession } from '@/session/services/archiveAndCloseRuntimeSession';
 import { resolveTerminationArchiveDecision } from '@/agent/runtime/terminationArchivePolicy';
+import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { startSessionHeartbeatLoop } from '@/agent/runtime/session/startSessionHeartbeatLoop';
+import { readNewestSessionModelsMetadataStateV1 } from '@happier-dev/agents';
 
-import type { AgentBackend } from '@/agent';
+import type { GeminiBackendResult } from '@/backends/gemini/acp/backend';
 import type { AcpTurnOutcome } from '@/agent/acp/backend/turn/_types';
 import { abortPendingAcpPermissionRequests } from '@/agent/acp/backend/permissions/acpPermissionFinalization';
 import {
@@ -71,7 +81,8 @@ import {
   saveGeminiModelToConfig,
   getInitialGeminiModel
 } from '@/backends/gemini/utils/config';
-import { maybeUpdateGeminiSessionIdMetadata } from '@/backends/gemini/utils/geminiSessionIdMetadata';
+import { createAcpSessionIdentityBinding } from '@/agent/acp/runtime/sessionIdentityBinding';
+import { createVendorResumeIdMetadataPublisher } from '@/session/metadata/createVendorResumeIdMetadataPublisher';
 import { updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import {
   parseOptionsFromText,
@@ -88,9 +99,16 @@ import {
   resetGeminiTurnMessageStateForPrompt,
 } from '@/backends/gemini/runtime/geminiTurnMessageState';
 import { createGeminiBackendInstance } from '@/backends/gemini/runtime/createGeminiBackendInstance';
-import { ensureGeminiAcpSession } from '@/backends/gemini/runtime/ensureGeminiAcpSession';
+import {
+  ensureGeminiAcpSession,
+  importGeminiAcpSessionReplay,
+} from '@/backends/gemini/runtime/ensureGeminiAcpSession';
 import { resolveShouldPrependAppendSystemPromptOnNextFreshSessionPrompt } from '@/backends/gemini/runtime/freshSessionSystemPromptState';
 import { sendGeminiPromptWithRetry } from '@/backends/gemini/runtime/sendGeminiPromptWithRetry';
+import {
+  createGeminiAcpProviderInputOutcomeBridge,
+  type GeminiAcpProviderInputOutcomeBridge,
+} from '@/backends/gemini/runtime/geminiAcpProviderInputOutcome';
 import { createGeminiTerminalUi } from '@/backends/gemini/runtime/createGeminiTerminalUi';
 import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/ProviderEnforcedPermissionHandler';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/createProviderEnforcedPermissionHandler';
@@ -161,31 +179,13 @@ export async function runGemini(opts: {
   logger.debug(`Using machineId: ${machineId}`);
 
   //
-  // Best-effort: decode connected-services id_token email (used to select per-account Google Cloud Project config).
-  // Do NOT treat connected-service OAuth access_token as an API key; Gemini CLI uses oauth-personal via ~/.gemini/oauth_creds.json.
-  //
-  let currentUserEmail: string | undefined = undefined;
-  try {
-    const { resolveConnectedServiceCredentials } = await import('@/cloud/connectedServices/resolveConnectedServiceCredentials');
-    const { decodeJwtPayload } = await import('@/cloud/decodeJwtPayload');
-
-    const records = await resolveConnectedServiceCredentials({
-      credentials: opts.credentials,
-      api,
-      bindings: [{ serviceId: 'gemini', profileId: 'default' }],
-    });
-    const record = records.get('gemini');
-    if (record?.kind === 'oauth' && record.oauth.idToken) {
-      const payload = decodeJwtPayload(record.oauth.idToken);
-      const email = payload && typeof payload.email === 'string' ? payload.email : null;
-      if (email) {
-        currentUserEmail = email;
-        logger.debug(`[Gemini] Current user email: ${currentUserEmail}`);
-      }
-    }
-  } catch (error) {
-    logger.debug('[Gemini] Failed to fetch connected-services metadata (non-fatal):', error);
-  }
+  // Use only the identity carried by the exact selected materialization. Looking up an ambient
+  // `gemini/default` profile can bind Code Assist project resolution to a different account.
+  const { GEMINI_CONNECTED_SERVICE_PROVIDER_EMAIL_ENV } = await import(
+    '@/backends/gemini/connectedServices/materializeGeminiConnectedServiceAuth'
+  );
+  const materializedProviderEmail = process.env[GEMINI_CONNECTED_SERVICE_PROVIDER_EMAIL_ENV]?.trim();
+  const currentUserEmail = materializedProviderEmail || undefined;
 
   //
   // Create session
@@ -224,6 +224,11 @@ export async function runGemini(opts: {
   // When a swap is requested during processing, it's queued and applied after the current cycle
   let isProcessingMessage = false;
   let pendingSessionSwap: ApiSessionClient | null = null;
+  let providerInputOutcomeBridge: GeminiAcpProviderInputOutcomeBridge | null = null;
+
+  const bindProviderInputOutcomeProducer = (targetSession: ApiSessionClient): void => {
+    providerInputOutcomeBridge = createGeminiAcpProviderInputOutcomeBridge(targetSession);
+  };
 
   /**
    * Apply a pending session swap. Called between message processing cycles.
@@ -233,6 +238,7 @@ export async function runGemini(opts: {
     if (pendingSessionSwap) {
       logger.debug('[gemini] Applying pending session swap');
       session = pendingSessionSwap;
+      bindProviderInputOutcomeProducer(session);
       if (permissionHandler) {
         permissionHandler.updateSession(pendingSessionSwap);
       }
@@ -259,6 +265,7 @@ export async function runGemini(opts: {
       } else {
         // Safe to swap immediately
         session = newSession;
+        bindProviderInputOutcomeProducer(session);
         if (permissionHandler) {
           permissionHandler.updateSession(newSession);
         }
@@ -273,7 +280,16 @@ export async function runGemini(opts: {
   });
 
   session = initializedSession.session;
+  bindProviderInputOutcomeProducer(session);
   reconnectionHandle = initializedSession.reconnectionHandle;
+  const geminiSessionIdPublisher = createVendorResumeIdMetadataPublisher({
+    agentId: 'gemini',
+    getMetadataSnapshot: () => session.getMetadataSnapshot(),
+    updateMetadata: (updater) => session.updateMetadata(updater),
+  });
+  const geminiSessionIdentity = createAcpSessionIdentityBinding({
+    persistBound: geminiSessionIdPublisher.persistBound,
+  });
 
   const promptArtifactBodyCache = new Map<string, string | null>();
   const resolveFreshSessionSystemPrompt = async (baseOverride?: string | null): Promise<string> =>
@@ -317,7 +333,9 @@ export async function runGemini(opts: {
   const runtimeModelOverrideRef = { current: currentModelOverride ?? null, updatedAt: currentModelOverrideUpdatedAt };
   let runtimeOverridesSync: Awaited<ReturnType<typeof initializeRuntimeOverridesSynchronizer>> | null = null;
 
-  session.onUserMessage((message) => {
+  const turnMessageState = createGeminiTurnMessageState();
+
+  session.onUserMessage(async (message, deliveryInfo) => {
     // Resolve permission mode (validate) - same as Codex
     let messagePermissionMode = currentPermissionMode;
     if (message.meta?.permissionMode) {
@@ -383,22 +401,75 @@ export async function runGemini(opts: {
       localId: message.localId ?? null,
       replaySeedAllowed: parseSpecialCommand(originalUserMessage).type === null,
     };
-    messageQueue.push(originalUserMessage, mode);
+    const pendingProviderAction = deliveryInfo?.pendingProviderAction;
+    const rejectPendingQueueInputBeforeProviderEffect = (
+      reason: 'provider_rejected_before_acceptance' | 'steering_unavailable',
+    ): boolean => {
+      if (deliveryInfo?.providerAcceptancePending !== true) return false;
+      return providerInputOutcomeBridge?.observeRejectedBeforeEffect({
+        userMessageLocalIds: message.localId ? [message.localId] : [],
+        reason,
+      }) === true;
+    };
+    if (
+      pendingProviderAction === 'steer'
+    ) {
+      if (!rejectPendingQueueInputBeforeProviderEffect('steering_unavailable') && deliveryInfo?.providerAcceptancePending !== true) {
+        const localIds = message.localId ? [message.localId] : [];
+        await session.blockPendingMessageDelivery?.({
+          localIds,
+          reason: 'steering_unavailable',
+        });
+      }
+      return;
+    }
+    const queueDeliveryOptions = {
+      ...(pendingProviderAction ? { pendingProviderAction } : {}),
+      userMessageLocalId: message.localId ?? null,
+      providerAcceptancePending: deliveryInfo?.providerAcceptancePending === true,
+    };
+    if (pendingProviderAction === 'interrupt_and_send' && turnMessageState.thinking) {
+      const localIds = message.localId ? [message.localId] : [];
+      await (async () => {
+        let interrupted = false;
+        try {
+          interrupted = await handleAbort();
+        } catch {
+          interrupted = false;
+        }
+        if (!interrupted) {
+          if (!rejectPendingQueueInputBeforeProviderEffect('provider_rejected_before_acceptance') && deliveryInfo?.providerAcceptancePending !== true) {
+            await session.blockPendingMessageDelivery?.({
+              localIds,
+              reason: 'provider_rejected_before_acceptance',
+            });
+          }
+          return;
+        }
+        messageQueue.unshift(originalUserMessage, mode, queueDeliveryOptions);
+      })();
+      return;
+    }
+    if (pendingProviderAction) {
+      messageQueue.unshift(originalUserMessage, mode, queueDeliveryOptions);
+    } else {
+      messageQueue.push(originalUserMessage, mode, queueDeliveryOptions);
+    }
     
     // Record user message in conversation history for context preservation
     conversationHistory.addUserMessage(originalUserMessage);
   });
 
-  const turnMessageState = createGeminiTurnMessageState();
   const turnAssistantPreviewTracker = createTurnAssistantPreviewTracker();
   const transcriptStream = createStreamedTranscriptWriter({
     provider: 'gemini',
     session: createCurrentSessionTranscriptPort(() => session),
   });
-  session.keepAlive(turnMessageState.thinking, 'remote');
-  const keepAliveInterval = setInterval(() => {
-    session.keepAlive(turnMessageState.thinking, 'remote');
-  }, 2000);
+  const keepAliveInterval = startSessionHeartbeatLoop({
+    getThinking: () => turnMessageState.thinking,
+    getMode: () => 'remote',
+    keepAlive: (thinking, mode) => session.keepAlive(thinking, mode),
+  });
 
   // Resumed ACP sessions must not re-append the shared prompt library prompt.
   let shouldPrependAppendSystemPromptOnNextFreshSessionPrompt = true;
@@ -432,7 +503,17 @@ export async function runGemini(opts: {
 
   let abortController = new AbortController();
   let shouldExit = false;
-  let geminiBackend: AgentBackend | null = null;
+  let geminiBackend: GeminiBackendResult['backend'] | null = null;
+  let providerInputConsumer: SessionProviderInputConsumer<GeminiMode, string> | null = null;
+  let providerInputAdmissionClosed = false;
+  let providerInputDispatchDrain: Promise<void> = Promise.resolve();
+  const closeProviderInputAdmission = (): Promise<void> => {
+    providerInputAdmissionClosed = true;
+    if (providerInputConsumer) {
+      providerInputDispatchDrain = providerInputConsumer.closeProviderInputAdmissionAndWaitForDispatches();
+    }
+    return providerInputDispatchDrain;
+  };
   let acpSessionId: string | null = null;
   let wasSessionCreated = false;
   let storedResumeId: string | null = (() => {
@@ -442,10 +523,10 @@ export async function runGemini(opts: {
 
   const lastGeminiSessionIdPublished: { value: string | null } = { value: null };
 
-  async function handleAbort() {
+  async function handleAbort(): Promise<boolean> {
     if (!turnMessageState.thinking && !turnMessageState.isResponseInProgress) {
       logger.debug('[Gemini] Abort requested with no active turn; ignoring stale abort');
-      return;
+      return false;
     }
 
     logger.debug('[Gemini] Abort requested - stopping current task');
@@ -474,8 +555,10 @@ export async function runGemini(opts: {
         await geminiBackend.cancel(acpSessionId);
       }
       logger.debug('[Gemini] Abort completed - session remains active');
+      return true;
     } catch (error) {
       logger.debug('[Gemini] Error during abort:', error);
+      return false;
     } finally {
       abortController = new AbortController();
     }
@@ -524,20 +607,34 @@ export async function runGemini(opts: {
     metadata,
     fallbackDirectory: process.cwd(),
   });
+  const mcpSession = applyRunnerMcpSessionContext(session, {
+    getPermissionMode: () => currentPermissionMode ?? initialPermissionMode,
+    getBackendTarget: () => ({ kind: 'builtInAgent', agentId: 'gemini' }),
+    getCurrentSessionLocation: () => ({
+      path: runtimeContext.runtimeDirectory,
+      host: initialMachineMetadata.host,
+      machineId,
+    }),
+  });
 
   const { happierMcpServer, mcpServers } = await resolveRunnerMcpServers({
-    session,
+    session: mcpSession,
     credentials: opts.credentials,
     accountSettings: opts.accountSettingsContext?.settings ?? null,
     machineId,
     directory: runtimeContext.runtimeDirectory,
-    sessionMetadata: runtimeContext.sessionMetadataSnapshot ?? runtimeContext.resolvedMetadata,
+    sessionMetadata: mcpSession.getMetadataSnapshot?.() ?? runtimeContext.sessionMetadataSnapshot ?? runtimeContext.resolvedMetadata,
     commandMode: 'current-process',
   });
 
   terminationHandlers = registerRunnerTerminationHandlers({
     process,
     exit: (code) => process.exit(code),
+    sessionExitReport: { sessionId: session.sessionId },
+    onTerminationRequested: () => {
+      session.beginRuntimeTermination?.();
+      void closeProviderInputAdmission();
+    },
     onTerminate: async (event, outcome) => {
       shouldExit = true;
       await handleAbort();
@@ -560,6 +657,7 @@ export async function runGemini(opts: {
       // Best-effort cleanup (mirrors the finally block).
       logger.debug('[gemini]: Termination cleanup start');
       try {
+        await closeProviderInputAdmission();
         if (reconnectionHandle) {
           reconnectionHandle.cancel();
         }
@@ -603,7 +701,9 @@ export async function runGemini(opts: {
     pushSender: api.push(),
     getAccountSettings: () => opts.accountSettingsContext?.settings ?? null,
     getAccountSettingsSecretsReadKeys: () => opts.accountSettingsContext?.settingsSecretsReadKeys ?? [],
-    onAbortRequested: handleAbort,
+    onAbortRequested: async () => {
+      await handleAbort();
+    },
     alwaysAutoApproveToolNameIncludes: ['geminireasoning', 'codexreasoning'],
   });
 
@@ -622,7 +722,7 @@ export async function runGemini(opts: {
    * Set up message handler for Gemini backend
    * This function is called when backend is created or recreated
    */
-  function setupGeminiMessageHandler(backend: AgentBackend): void {
+  function setupGeminiMessageHandler(backend: GeminiBackendResult['backend']): void {
     backend.onMessage(
       createGeminiBackendMessageHandler({
         session,
@@ -636,9 +736,9 @@ export async function runGemini(opts: {
   }
 
   const adoptGeminiBackend = (
-    backendResult: { backend: AgentBackend; model?: string; modelSource: string },
+    backendResult: GeminiBackendResult,
     opts: { reason: 'initial' | 'mode-change'; modelToUse: string | null | undefined },
-  ): AgentBackend => {
+  ): GeminiBackendResult['backend'] => {
     const backend = backendResult.backend;
     setupGeminiMessageHandler(backend);
 
@@ -702,15 +802,20 @@ export async function runGemini(opts: {
 	      session: {
 	        materializeNextPendingMessageSafely: (materializeOpts) =>
 	          session.materializeNextPendingMessageSafely(materializeOpts),
-	        popPendingMessage: async () =>
-	          (await session.materializeNextPendingMessageSafely({ reconcileWhenEmpty: 'force' })).type === 'materialized',
 	        shouldAttemptPendingMaterialization: () => session.shouldAttemptPendingMaterialization?.() ?? true,
 	        reconcilePendingQueueState: (reconcileOpts) => session.reconcilePendingQueueState?.(reconcileOpts),
-	        waitForMetadataUpdate: (signal) => session.waitForMetadataUpdate(signal),
+	        waitForPendingEligibilityUpdate: (signal) => session.waitForPendingEligibilityUpdate(signal),
 	      },
 	      pendingDrainMaxPopPerWake: pendingQueueDrainMaxPopPerWake,
+	      resolvePendingQueueDeliveryTiming: () => resolveSessionPendingQueueDeliveryTiming(
+	        getActiveAccountSettingsSnapshot()?.settings ?? accountSettings,
+	      ),
 	      onMetadataUpdate: syncControlsFromMetadata,
 	    });
+      providerInputConsumer = inputConsumer;
+      if (providerInputAdmissionClosed) {
+        providerInputDispatchDrain = inputConsumer.closeProviderInputAdmissionAndWaitForDispatches();
+      }
 
     while (!shouldExit) {
       let message: MessageBatch<GeminiMode, string> | null = pending;
@@ -780,16 +885,15 @@ export async function runGemini(opts: {
         if (!activeBackend) {
           throw new Error('Gemini backend not initialized after mode change');
         }
-        const { sessionId } = await activeBackend.startSession();
-        acpSessionId = sessionId;
+        await geminiSessionIdentity.reset();
+        const openedSession = await geminiSessionIdentity.open({
+          intent: { kind: 'create' },
+          openSession: () => activeBackend.startSession(),
+        });
+        acpSessionId = openedSession.identity.vendorSessionId;
         logger.debug(`[gemini] New ACP session started: ${acpSessionId}`);
         shouldPrependAppendSystemPromptOnNextFreshSessionPrompt =
           resolveShouldPrependAppendSystemPromptOnNextFreshSessionPrompt({ startedFreshSession: true });
-        maybeUpdateGeminiSessionIdMetadata({
-          getGeminiSessionId: () => acpSessionId,
-          updateHappySessionMetadata: (updater) => session.updateMetadata(updater),
-          lastPublished: lastGeminiSessionIdPublished,
-        });
         
         // Update permission handler with current permission mode
         updatePermissionMode(message.mode.permissionMode);
@@ -810,6 +914,43 @@ export async function runGemini(opts: {
       let readyTurnContext: ReadyNotificationTurnContext | undefined;
       let promptTurnOutcome: AcpTurnOutcome | void = undefined;
       let promptTurnError: unknown = null;
+      let didAttemptProviderSend = false;
+      let didConfirmProviderAccepted = false;
+      let didBeginProviderPromptAttempt = false;
+      let didObserveEffectMayHaveOccurred = false;
+      const pendingDeliveryLocalIds = normalizePendingDeliveryLocalIds(message.userMessageLocalIds ?? []);
+      const providerOutcomeIdentity = pendingDeliveryLocalIds.length === 1
+        ? {
+            userMessageLocalIds: pendingDeliveryLocalIds,
+          }
+        : null;
+      let appliedModelIdForPrompt: string | null = null;
+      transcriptStream.setCommitProvenance({ kind: 'non_dependent', source: 'external' });
+      const confirmProviderAccepted = (): void => {
+        if (didConfirmProviderAccepted) return;
+        if (!providerOutcomeIdentity) return;
+        didConfirmProviderAccepted = providerInputOutcomeBridge?.observeAccepted({
+          ...providerOutcomeIdentity,
+          appliedModelId: appliedModelIdForPrompt,
+        }) === true;
+      };
+      const observeRejectedBeforeProviderEffect = (
+        reason: Extract<PendingQueueDeliveryBlockedReason, 'runtime_disposed_before_delivery' | 'provider_rejected_before_acceptance'>,
+      ): void => {
+        if (didConfirmProviderAccepted) return;
+        if (!providerOutcomeIdentity) return;
+        providerInputOutcomeBridge?.observeRejectedBeforeEffect({
+          ...providerOutcomeIdentity,
+          reason,
+        });
+      };
+      const observeEffectMayHaveOccurred = (): void => {
+        if (didConfirmProviderAccepted || didObserveEffectMayHaveOccurred) return;
+        if (!providerOutcomeIdentity) return;
+        didObserveEffectMayHaveOccurred = providerInputOutcomeBridge?.observeEffectMayHaveOccurred(
+          providerOutcomeIdentity,
+        ) === true;
+      };
       try {
         const startSeqExclusive = session.getLastObservedMessageSeq();
         const turnToken = session.beginTurnAssistantTextSnapshot({ startSeqExclusive });
@@ -838,26 +979,47 @@ export async function runGemini(opts: {
             if (!activeBackend) {
               throw new Error('Gemini backend not initialized before session bootstrap');
             }
-            const ensuredSession = await ensureGeminiAcpSession({
-              backend: activeBackend,
-              session,
-              permissionHandler,
-              messageBuffer,
-              storedResumeId,
-              currentPromptText: message.message,
-              onDebug: (msg) => logger.debug(msg),
+            const requestedResumeId = storedResumeId;
+            const openedSession = await geminiSessionIdentity.open({
+              intent: requestedResumeId
+                ? { kind: 'resume', expectedVendorSessionId: requestedResumeId }
+                : { kind: 'create' },
+              openSession: async () => {
+                const ensuredSession = await ensureGeminiAcpSession({
+                  backend: activeBackend,
+                  session,
+                  permissionHandler,
+                  messageBuffer,
+                  storedResumeId: requestedResumeId,
+                  currentPromptText: message.message,
+                  deferReplayImport: true,
+                  onDebug: (msg) => logger.debug(msg),
+                });
+                return {
+                  sessionId: ensuredSession.acpSessionId,
+                  replay: ensuredSession.deferredReplay ?? null,
+                };
+              },
             });
-            acpSessionId = ensuredSession.acpSessionId;
-            storedResumeId = ensuredSession.storedResumeId;
+            acpSessionId = openedSession.identity.vendorSessionId;
+            storedResumeId = requestedResumeId ? null : storedResumeId;
+            if (Array.isArray(openedSession.result.replay) && openedSession.result.replay.length > 0) {
+              try {
+                await importGeminiAcpSessionReplay({
+                  session,
+                  permissionHandler,
+                  remoteSessionId: acpSessionId,
+                  replay: openedSession.result.replay,
+                  currentPromptText: message.message,
+                });
+              } catch (error) {
+                logger.debug('[gemini] Failed to import ACP replay history (non-fatal)', { error });
+              }
+            }
             shouldPrependAppendSystemPromptOnNextFreshSessionPrompt =
               resolveShouldPrependAppendSystemPromptOnNextFreshSessionPrompt({
-                startedFreshSession: ensuredSession.startedFreshSession,
+                startedFreshSession: openedSession.identity.operation === 'create',
               });
-            maybeUpdateGeminiSessionIdMetadata({
-              getGeminiSessionId: () => acpSessionId,
-              updateHappySessionMetadata: (updater) => session.updateMetadata(updater),
-              lastPublished: lastGeminiSessionIdPublished,
-            });
             wasSessionCreated = true;
             currentModeHash = message.hash;
             
@@ -916,18 +1078,38 @@ export async function runGemini(opts: {
         }
 
         logger.debug(formatGeminiPromptDebugSummary(promptToSend));
-        
-        promptTurnOutcome = await sendGeminiPromptWithRetry({
-          backend: geminiBackend,
-          acpSessionId,
-          prompt: promptToSend,
-          messageBuffer,
-          session,
-          onDebug: (msg) => logger.debug(msg),
-          maxRetries: 3,
-          retryDelayMs: 2_000,
-          waitForResponseTimeoutMs: 120_000,
+
+        const dispatchOutcome = await inputConsumer.runProviderInputDispatch({
+          abortSignal: abortController.signal,
+          dispatch: async () => {
+            const modelState = readNewestSessionModelsMetadataStateV1(session.getMetadataSnapshot());
+            appliedModelIdForPrompt = message.mode.model
+              ?? (modelState?.provider === 'gemini' ? modelState.currentModelId : null);
+            didAttemptProviderSend = true;
+            return await sendGeminiPromptWithRetry({
+              backend: geminiBackend!,
+              acpSessionId: acpSessionId!,
+              prompt: promptToSend,
+              messageBuffer,
+              session,
+              onDebug: (msg) => logger.debug(msg),
+              maxRetries: 3,
+              retryDelayMs: 2_000,
+              waitForResponseTimeoutMs: 120_000,
+              onProviderPromptAccepted: confirmProviderAccepted,
+              onProviderPromptAttemptStarted: () => {
+                didBeginProviderPromptAttempt = true;
+              },
+              onProviderPromptEffectMayHaveOccurred: observeEffectMayHaveOccurred,
+            });
+          },
         });
+        if (dispatchOutcome.status === 'cancelled') {
+          const error = new Error('Provider input admission closed');
+          error.name = 'AbortError';
+          throw error;
+        }
+        promptTurnOutcome = dispatchOutcome.value;
         
         // Mark as not first message after sending prompt
         if (first) {
@@ -935,6 +1117,13 @@ export async function runGemini(opts: {
         }
       } catch (error) {
         promptTurnError = error;
+        if (didBeginProviderPromptAttempt || didObserveEffectMayHaveOccurred) {
+          observeEffectMayHaveOccurred();
+        } else {
+          observeRejectedBeforeProviderEffect(
+            didAttemptProviderSend ? 'provider_rejected_before_acceptance' : 'runtime_disposed_before_delivery',
+          );
+        }
         logger.debug('[gemini] Error in gemini session:', error);
         const isAbortError = error instanceof Error && error.name === 'AbortError';
 
@@ -1040,26 +1229,27 @@ export async function runGemini(opts: {
           });
         } else {
           const turnFailureError = promptTurnError ?? buildGeminiTurnOutcomeError(promptTurnOutcome);
-          // Connected-services producer: report the structured classification to the daemon so
-          // reactive usage-limit/throttle/auth recovery can engage (raw provider errors stay
-          // suppressed; only structured projections surface).
-          const runtimeAuthClassification = reportGeminiConnectedServiceRuntimeAuthFailureBestEffort({
+          // Connected-services producer: await the structured daemon result so handled recovery
+          // owns the visible projection and only an unhandled result reaches the existing fallback.
+          const runtimeAuthResult = await reportGeminiConnectedServiceRuntimeAuthFailureBestEffort({
             session,
             error: turnFailureError,
             logPrefix: '[gemini]',
           });
-          await surfacePrimarySessionRuntimeIssue({
-            provider: 'gemini',
-            session,
-            sessionSeq: session.getLastObservedMessageSeq(),
-            cause: 'status_error',
-            error: runtimeAuthClassification
-              ? Object.assign(
-                  turnFailureError instanceof Error ? turnFailureError : new Error(String(turnFailureError)),
-                  { runtimeAuthClassification },
-                )
-              : turnFailureError,
-          });
+          if (runtimeAuthResult?.recoveryReport?.handled !== true) {
+            await surfacePrimarySessionRuntimeIssue({
+              provider: 'gemini',
+              session,
+              sessionSeq: session.getLastObservedMessageSeq(),
+              cause: 'status_error',
+              error: runtimeAuthResult
+                ? Object.assign(
+                    turnFailureError instanceof Error ? turnFailureError : new Error(String(turnFailureError)),
+                    { runtimeAuthClassification: runtimeAuthResult.classification },
+                  )
+                : turnFailureError,
+            });
+          }
         }
         
         // Reset tracking flags
@@ -1093,6 +1283,7 @@ export async function runGemini(opts: {
 
   } finally {
     terminationHandlers?.dispose();
+    await closeProviderInputAdmission();
     // Clean up resources
     logger.debug('[gemini]: Final cleanup start');
 

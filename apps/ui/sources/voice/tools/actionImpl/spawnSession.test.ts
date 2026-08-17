@@ -21,6 +21,8 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 
 vi.mock('@/sync/ops/machines', () => ({
     machineSpawnNewSession: (params: unknown) => machineSpawnNewSessionMock(params),
+    machineSpawnNewSessionUntilResolved: (params: unknown) => machineSpawnNewSessionMock(params),
+    completeMachineSpawnAttemptCustody: vi.fn(async () => true),
 }));
 
 vi.mock('./spawnSessionPostProcess', () => ({
@@ -44,7 +46,6 @@ describe('spawnSessionForVoiceTool', () => {
                 id: 'machine-current',
                 active: true,
                 activeAt: Date.now(),
-                spawnReadinessStatus: 'ready',
                 metadata: { host: 'mac', displayName: 'Mac', homeDir: '/Users/test' },
             },
         };
@@ -73,7 +74,6 @@ describe('spawnSessionForVoiceTool', () => {
                 id: 'machine-current',
                 active: true,
                 activeAt: Date.now(),
-                spawnReadinessStatus: 'ready',
                 metadata: { host: 'mac', displayName: 'Mac', homeDir: '/Users/test' },
             },
         };
@@ -130,7 +130,6 @@ describe('spawnSessionForVoiceTool', () => {
                 id: 'machine-current',
                 active: true,
                 activeAt: Date.now(),
-                spawnReadinessStatus: 'ready',
                 metadata: { host: 'mac', displayName: 'Mac', homeDir: '/Users/test' },
             },
         };

@@ -73,6 +73,40 @@ describe('executionRuns protocol', () => {
     expect(parsed.intent).toBe('review');
   });
 
+  it('validates optional per-target connected-services selection on start requests', () => {
+    const parsed = ExecutionRunStartRequestSchema.parse({
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Do the thing.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      connectedServices: {
+        v: 1,
+        bindingsByServiceId: {
+          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
+        },
+      },
+    });
+    expect(parsed.connectedServices).toMatchObject({
+      v: 1,
+      bindingsByServiceId: {
+        'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
+      },
+    });
+
+    expect(() => ExecutionRunStartRequestSchema.parse({
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      connectedServices: { v: 1, bindingsByServiceId: { 'openai-codex': { source: 'connected' } } },
+    })).toThrow();
+  });
+
   it('validates optional voice replay seed requests on start requests', () => {
     const parsed = ExecutionRunStartRequestSchema.parse({
       intent: 'voice_agent',
@@ -402,6 +436,8 @@ describe('executionRuns protocol', () => {
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_busy')).toBe('execution_run_busy');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_failed')).toBe('execution_run_failed');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_budget_exceeded')).toBe('execution_run_budget_exceeded');
+    expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_protocol_unsupported')).toBe('execution_run_protocol_unsupported');
+    expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_target_unavailable')).toBe('execution_run_target_unavailable');
     expect(ExecutionRunTransportErrorCodeSchema.parse('run_depth_exceeded')).toBe('run_depth_exceeded');
     expect(ExecutionRunTransportErrorCodeSchema.parse('permission_denied')).toBe('permission_denied');
 

@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { View, ScrollView, Platform, useWindowDimensions } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { ToolCall, Message } from '@/sync/domains/messages/messageTypes';
 import { CodeView } from '@/components/ui/media/CodeView';
 import { Metadata } from '@/sync/domains/state/storageTypes';
@@ -17,35 +16,28 @@ import { useUnistyles } from 'react-native-unistyles';
 import { Text, TextSelectabilityScope } from '@/components/ui/text/Text';
 import { resolveToolHeaderTextPresentation } from '@/components/tools/shell/presentation/resolveToolHeaderTextPresentation';
 import { resolvePermissionPromptSurface, shouldShowGenericPermissionPromptForRequest } from '@/utils/sessions/permissions/permissionPromptPolicy';
-import { useEnsureSidechainsLoaded } from '@/hooks/session/useEnsureSidechainsLoaded';
-import { ChainTranscriptList } from '@/components/sessions/transcript/ChainTranscriptList';
-import { sync } from '@/sync/sync';
+import { SidechainTranscriptBody } from '@/components/sessions/transcript/sidechain/SidechainTranscriptBody';
 import { resolveToolTranscriptSidechainId } from './resolveToolTranscriptSidechainId';
-import {
-    SidechainHydrationInlineStatus,
-    shouldShowSidechainHydrationInlineStatus,
-} from './SidechainHydrationInlineStatus';
 import { isSubAgentTranscriptToolName } from '@happier-dev/protocol/tools/v2';
 import { resolveInactiveSessionToolCallFailure } from '../permissions/resolveInactiveSessionToolCallFailure';
 import { ToolError } from '@/components/tools/shell/presentation/ToolError';
 import { resolveToolPermissionTerminalErrorMessage } from '../permissions/resolveToolPermissionTerminalErrorMessage';
+import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import { Icon } from '@/components/ui/icons/Icon';
 
 
 interface ToolFullViewProps {
     tool: ToolCall;
+    owningMessageId: string;
     sessionId?: string;
     metadata?: Metadata | null;
     messages?: Message[];
     jumpChildId?: string | null;
     forcePermissionFooterInTranscript?: boolean;
-    interaction?: {
-        canSendMessages: boolean;
-        canApprovePermissions: boolean;
-        permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
-    };
+    interaction?: TranscriptInteraction;
 }
 
-export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChildId, forcePermissionFooterInTranscript = false, interaction }: ToolFullViewProps) {
+export function ToolFullView({ tool, owningMessageId, sessionId, metadata, messages = [], jumpChildId, forcePermissionFooterInTranscript = false, interaction }: ToolFullViewProps) {
     const { theme } = useUnistyles();
     const toolForRendering = React.useMemo<ToolCall>(() => {
         return resolveInactiveSessionToolCallFailure({
@@ -78,15 +70,6 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
         return resolveToolTranscriptSidechainId({ tool: toolForRendering, normalizedToolName });
     }, [normalizedToolName, toolForRendering]);
 
-    const sidechainHydration = useEnsureSidechainsLoaded({
-        enabled:
-            typeof sessionId === 'string' &&
-            sessionId.length > 0 &&
-            isSubAgentTranscriptToolName(normalizedToolName),
-        sessionId,
-        sidechainIds: [transcriptSidechainId],
-    });
-
     // Check if there's a specialized content view for this tool.
     // ToolFullView always renders the same tool renderer in `detailLevel="full"` mode.
     const SpecializedFullView = getToolViewComponent(normalizedToolName);
@@ -99,23 +82,10 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
 
     const normalizedSessionId = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
     const sidechainId = transcriptSidechainId;
-    const sidechainHydrationStatus = sidechainId
-        ? sidechainHydration.bySidechainId[sidechainId]?.status ?? sidechainHydration.status
-        : sidechainHydration.status;
-    const showSidechainHydrationStatus = isSubAgentTranscriptToolName(normalizedToolName)
-        && shouldShowSidechainHydrationInlineStatus({
-            messageCount: messages.length,
-            sidechainId,
-            status: sidechainHydrationStatus,
-        });
-    // Only treat the empty transcript as "still loading" while sidechain hydration is genuinely in
-    // flight. A loaded-but-empty subagent (or a terminal error/not_ready) must not spin forever in
-    // the `ChainTranscriptList` footer; the inline status above already surfaces error/unavailable.
-    const isSidechainHydrationInFlight =
-        isSubAgentTranscriptToolName(normalizedToolName)
-        && (sidechainHydrationStatus === 'loading'
-            || sidechainHydrationStatus === 'in_flight'
-            || sidechainHydrationStatus === 'retrying');
+    const normalizedOwningMessageId = owningMessageId.trim();
+    if (normalizedOwningMessageId.length === 0) {
+        throw new Error('ToolFullView requires a non-empty owningMessageId');
+    }
     const canRenderTaskTranscript =
         normalizedSessionId !== null &&
         isSubAgentTranscriptToolName(normalizedToolName) &&
@@ -125,21 +95,19 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
             ? 'transcript'
             : resolvePermissionPromptSurface(permissionPromptSurface);
 
-    const transcriptInteraction = React.useMemo(() => {
+    // The sidechain transcript is a transcript surface and must receive the *whole* interaction
+    // contract. Reconstructing it field-by-field silently drops every grant this file does not know
+    // about (`canFork`, `canOpenFiles`, `canPreviewMedia`), and those are read with exact-`true`
+    // checks downstream — so a dropped grant removes a valid affordance. Only tool navigation is
+    // owned here: the full view already *is* the tool detail surface.
+    const transcriptInteraction = React.useMemo<TranscriptInteraction>(() => {
         return {
-            canSendMessages: interaction?.canSendMessages ?? true,
-            canApprovePermissions: interaction?.canApprovePermissions ?? true,
-            permissionDisabledReason: interaction?.permissionDisabledReason,
+            canSendMessages: true,
+            canApprovePermissions: true,
+            ...interaction,
             disableToolNavigation: true,
         };
-    }, [interaction?.canApprovePermissions, interaction?.canSendMessages, interaction?.permissionDisabledReason]);
-
-    const loadOlderSidechain = React.useCallback(async () => {
-        if (!normalizedSessionId || !sidechainId) {
-            return { loaded: 0, hasMore: false, status: 'not_ready' as const };
-        }
-        return sync.loadOlderSidechainMessages(normalizedSessionId, sidechainId);
-    }, [normalizedSessionId, sidechainId]);
+    }, [interaction]);
 
     const showPermissionPromptsInTranscript = resolvedPermissionPromptSurface === 'transcript';
 
@@ -163,7 +131,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
     const debugSection = (
         <View style={styles.section}>
             <View style={styles.sectionHeader}>
-                <Ionicons name="code-slash" size={20} color={theme.colors.accent.orange} />
+                <Icon name="code" size={20} color={theme.colors.accent.orange} />
                 <Text style={styles.sectionTitle}>{t('tools.fullView.debug')}</Text>
                 <Text
                     style={[styles.toolId, { marginLeft: 8 }]}
@@ -194,42 +162,37 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
     );
 
     if (canRenderTaskTranscript && normalizedSessionId) {
-        const transcriptHeader = (
-            <>
-                {showSidechainHydrationStatus ? (
-                    <SidechainHydrationInlineStatus
-                        testID="tool-fullview-sidechain-hydration-status"
-                        status={sidechainHydrationStatus}
-                    />
-                ) : null}
-                {messages.length === 0 && SpecializedFullView ? (
-                    <TextSelectabilityScope selectable>
-                        <SpecializedFullView
-                            tool={toolForRendering}
-                            metadata={metadata || null}
-                            messages={messages}
-                            sessionId={sessionId}
-                            detailLevel="full"
-                            interaction={interaction}
-                        />
-                    </TextSelectabilityScope>
-                ) : null}
-            </>
-        );
+        const transcriptHeader = messages.length === 0 && SpecializedFullView ? (
+            <TextSelectabilityScope selectable>
+                <SpecializedFullView
+                    tool={toolForRendering}
+                    metadata={metadata || null}
+                    messages={messages}
+                    sessionId={sessionId}
+                    detailLevel="full"
+                    interaction={interaction}
+                />
+            </TextSelectabilityScope>
+        ) : null;
 
         return (
             <View style={[styles.container, { paddingHorizontal: screenWidth > 700 ? 16 : 0 }]}>
                 <View style={[styles.contentWrapper, { flex: 1, minHeight: 0 }]}>
                     <View style={styles.transcriptSection}>
-                        <ChainTranscriptList
+                        {/* The ONE sidechain transcript body. The details pane renders the same
+                            one for an imported workflow-agent sidecar, which has no tool call to
+                            anchor this view — so hydration, dataset identity, the empty-vs-loading
+                            answer and the list itself live there rather than here. */}
+                        <SidechainTranscriptBody
                             sessionId={normalizedSessionId}
+                            sidechainId={sidechainId}
+                            datasetIdentityFallback={normalizedOwningMessageId}
                             messages={messages}
                             metadata={metadata || null}
                             interaction={transcriptInteraction}
                             forcePermissionPromptsInTranscript={forcePermissionFooterInTranscript}
-                            isInitialLoadInFlight={isSidechainHydrationInFlight}
-                            loadOlder={sidechainId ? loadOlderSidechain : undefined}
                             jumpToMessageId={normalizedJumpChildId}
+                            hydrationStatusTestID="tool-fullview-sidechain-hydration-status"
                             header={transcriptHeader}
                             footer={
                                 <>
@@ -269,7 +232,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
                             {toolForRendering.description && (
                                 <View style={styles.section}>
                                     <View style={styles.sectionHeader}>
-                                        <Ionicons name="information-circle" size={20} color={theme.colors.accent.indigo} />
+                                        <Icon name="info" size={20} color={theme.colors.accent.indigo} />
                                         <Text style={styles.sectionTitle}>{t('tools.fullView.description')}</Text>
                                     </View>
                                     <Text style={styles.description}>{toolForRendering.description}</Text>
@@ -279,7 +242,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
                             {toolForRendering.input && (
                                 <View style={styles.section}>
                                     <View style={styles.sectionHeader}>
-                                        <Ionicons name="log-in" size={20} color={theme.colors.accent.indigo} />
+                                        <Icon name="sign-in" size={20} color={theme.colors.accent.indigo} />
                                         <Text style={styles.sectionTitle}>{t('tools.fullView.inputParams')}</Text>
                                     </View>
                                     <CodeView code={JSON.stringify(toolForRendering.input, null, 2)} />
@@ -290,7 +253,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
                             {toolForRendering.state === 'completed' && toolForRendering.result && (
                                 <View style={styles.section}>
                                     <View style={styles.sectionHeader}>
-                                        <Ionicons name="log-out" size={20} color={theme.colors.state.success.foreground} />
+                                        <Icon name="sign-out" size={20} color={theme.colors.state.success.foreground} />
                                         <Text style={styles.sectionTitle}>{t('tools.fullView.output')}</Text>
                                     </View>
                                     <CodeView
@@ -302,7 +265,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
                             {toolForRendering.state === 'running' && toolForRendering.result && (
                                 <View style={styles.section}>
                                     <View style={styles.sectionHeader}>
-                                        <Ionicons name="log-out" size={20} color={theme.colors.state.success.foreground} />
+                                        <Icon name="sign-out" size={20} color={theme.colors.state.success.foreground} />
                                         <Text style={styles.sectionTitle}>{t('tools.fullView.output')}</Text>
                                     </View>
                                     <StructuredResultView tool={toolForRendering} metadata={metadata || null} messages={messages} sessionId={sessionId} />
@@ -313,7 +276,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
                             {toolForRendering.state === 'error' && toolForRendering.result && (
                                 <View style={styles.section}>
                                     <View style={styles.sectionHeader}>
-                                        <Ionicons name="close-circle" size={20} color={theme.colors.state.danger.foreground} />
+                                        <Icon name="x-circle" size={20} color={theme.colors.state.danger.foreground} />
                                         <Text style={styles.sectionTitle}>{t('tools.fullView.error')}</Text>
                                     </View>
                                     <View style={styles.errorContainer}>
@@ -330,7 +293,7 @@ export function ToolFullView({ tool, sessionId, metadata, messages = [], jumpChi
                             {toolForRendering.state === 'completed' && !toolForRendering.result && (
                                 <View style={styles.section}>
                                     <View style={styles.emptyOutputContainer}>
-                                        <Ionicons name="checkmark-circle-outline" size={48} color={theme.colors.state.success.foreground} />
+                                        <Icon name="check-circle" size={48} color={theme.colors.state.success.foreground} />
                                         <Text style={styles.emptyOutputText}>{t('tools.fullView.completed')}</Text>
                                         <Text style={styles.emptyOutputSubtext}>{t('tools.fullView.noOutput')}</Text>
                                     </View>

@@ -1,12 +1,10 @@
 import * as React from 'react';
 import type { StyleProp, TextStyle } from 'react-native';
 import { Platform } from 'react-native';
+import { splitStreamingRevealTextParts } from 'react-native-enriched-markdown/lib/module/web/streamingReveal.js';
 
 import { Text } from '@/components/ui/text/Text';
-import {
-    readCommonPrefixLength,
-    splitStreamingRevealTextParts,
-} from './reveal/splitStreamingRevealTextParts';
+import { resolveAppendedSuffixRevealRanges } from './reveal/resolveAppendedSuffixRevealRanges';
 import { resolveStreamingTextRevealConfig, type StreamingTextRevealPreset } from './streamingTextRevealConfig';
 import { useWebRevealStyleInsertion } from './useWebRevealStyleInsertion';
 
@@ -45,11 +43,21 @@ export function StreamingTextReveal(props: {
         preset: props.preset,
     });
     const previousTextRef = React.useRef('');
-    const commonPrefixLength = readCommonPrefixLength(previousTextRef.current, props.text);
-    const parts = React.useMemo(() => splitStreamingRevealTextParts({
-        text: props.text,
-        commonPrefixLength,
-    }), [commonPrefixLength, props.text]);
+    const previousText = previousTextRef.current;
+    const parts = React.useMemo(() => {
+        // Plain text is a single appended-suffix reveal. `resolveAppendedSuffixRevealRanges`
+        // owns which characters are new (including the empty-baseline mount rule); the
+        // shared package splitter owns word semantics for both streaming surfaces
+        // (plain and enriched).
+        return splitStreamingRevealTextParts({
+            text: props.text,
+            startOffset: 0,
+            activeRanges: resolveAppendedSuffixRevealRanges({
+                previousText,
+                currentText: props.text,
+            }),
+        });
+    }, [previousText, props.text]);
 
     React.useEffect(() => {
         previousTextRef.current = props.text;
@@ -68,14 +76,9 @@ export function StreamingTextReveal(props: {
         );
     }
 
-    let cursor = 0;
     return (
         <Text selectable={props.selectable} style={props.style}>
             {parts.map((part, index) => {
-                const start = cursor;
-                const end = start + part.text.length;
-                cursor = end;
-
                 if (!part.animated) {
                     return part.text;
                 }
@@ -83,7 +86,7 @@ export function StreamingTextReveal(props: {
                 return React.createElement(
                     'span',
                     {
-                        key: index,
+                        key: `${part.startOffset}:${index}`,
                         'data-happier-streaming-text-reveal': 'word',
                         style: {
                             [REVEAL_TRANSLATE_Y_VAR]: `${revealConfig.translateYPx}px`,

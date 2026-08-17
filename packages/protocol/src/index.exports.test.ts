@@ -1,8 +1,37 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+
+import type {
+    RuntimeIdleAdmission,
+    SessionRuntimeActivityProjection,
+    SessionRuntimeActivitySnapshot,
+} from './index.js';
 
 import * as protocol from './index.js';
 
 describe('protocol package root exports', () => {
+    it('exports the unsuffixed session runtime activity contracts', () => {
+        expectTypeOf<SessionRuntimeActivityProjection>().not.toBeNever();
+        expectTypeOf<SessionRuntimeActivitySnapshot>().not.toBeNever();
+        expectTypeOf<RuntimeIdleAdmission>().not.toBeNever();
+
+        expect(protocol.SessionRuntimeActivitySnapshotSchema.parse({
+            state: 'idle',
+            activeCount: 0,
+        })).toEqual({ state: 'idle', activeCount: 0 });
+        expect(protocol.decideRuntimeIdleAdmission({
+            state: 'idle',
+            activeCount: 0,
+            observedAt: 1,
+            revision: 3,
+        })).toEqual({ decision: 'allow', revision: 3 });
+    });
+
+    it('exports independent session capability thresholds', () => {
+        expect(protocol.SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY).toBe(2);
+        expect(protocol.PENDING_INPUT_PROTOCOL_VERSION_V1).toBe(1);
+        expect(protocol.CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).toBe(426);
+    });
+
     it('exports scm commit limits and operation codes for CLI consumers', () => {
         expect(protocol.SCM_COMMIT_MESSAGE_MAX_LENGTH).toBe(4096);
         expect(protocol.SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY).toBe('NOT_REPOSITORY');
@@ -27,6 +56,9 @@ describe('protocol package root exports', () => {
 
     it('exports execution run streaming schemas', () => {
         expect(typeof (protocol as any).ExecutionRunTurnStreamStartRequestSchema).toBe('object');
+        expect(typeof (protocol as any).ExecutionRunTurnStreamStartV2RequestSchema).toBe('object');
+        expect(typeof (protocol as any).ExecutionRunUserTranscriptDirectiveSchema).toBe('object');
+        expect(typeof (protocol as any).ExecutionRunUserTranscriptCommitRequestSchema).toBe('object');
         expect(typeof (protocol as any).ExecutionRunTurnStreamReadResponseSchema).toBe('object');
         expect(typeof (protocol as any).ExecutionRunTurnStreamCancelRequestSchema).toBe('object');
     });
@@ -123,6 +155,26 @@ describe('protocol package root exports', () => {
         expect(typeof (protocol as any).SetSessionFolderAssignmentRequestSchema?.safeParse).toBe('function');
     });
 
+    it('exports session organization schemas', () => {
+        expect(typeof (protocol as any).SessionOrganizationSnapshotRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SessionOrganizationSnapshotResponseSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SessionOrganizationPinSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SessionOrganizationFolderSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SessionOrganizationTagSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SessionOrganizationOrderEntrySchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SessionOrganizationLabelSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SetSessionPinRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).ReorderSessionOrganizationRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).CreateOrUpdateSessionOrganizationFolderRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).DeleteSessionOrganizationFolderRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).CreateOrUpdateSessionOrganizationTagRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).DeleteSessionOrganizationTagRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).SetSessionTagAssignmentsRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).UpsertSessionOrganizationLabelRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).DeleteSessionOrganizationLabelRequestSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).ImportLegacySessionOrganizationRequestSchema?.safeParse).toBe('function');
+    });
+
     it('does not export the removed sync-only workspace replication RPC surface', () => {
         expect((protocol as any).WorkspaceReplicationEndpointSchema).toBeUndefined();
         expect((protocol as any).WorkspaceReplicationDiffSummarySchema).toBeUndefined();
@@ -202,6 +254,36 @@ describe('protocol package root exports', () => {
         expect(typeof (protocol as any).normalizeOpenCodeSessionTodosToWorkStateItems).toBe('function');
         expect(typeof (protocol as any).normalizeClaudeTaskEventToWorkStateItem).toBe('function');
         expect(typeof (protocol as any).SessionWorkStateGetResponseV1Schema?.safeParse).toBe('function');
+    });
+
+    it('exports the agent-activity vocabulary and its boundary adapters', () => {
+        expect(protocol.AGENT_ACTIVITY_STATUSES_V1).toContain('timedOut');
+        expect(protocol.AGENT_ACTIVITY_TONES_V1).toContain('attention');
+        expect(protocol.AGENT_ACTIVITY_KINDS_V1).toEqual(['workflow_run', 'workflow_agent']);
+        expect(protocol.resolveAgentActivityTone('waiting')).toBe('attention');
+        expect(protocol.fromExecutionRunStatus('timeout')).toBe('timedOut');
+        expect(protocol.fromWorkflowRunStatus('stopped')).toBe('cancelled');
+        expect(protocol.fromWorkflowAgentStatus('pending')).toBe('queued');
+        expect(protocol.fromSubagentStatus('terminated')).toBe('cancelled');
+    });
+
+    it('exports the agent-activity headline, its metadata key and the shared headline ordering owner', () => {
+        expect(protocol.SESSION_AGENT_ACTIVITY_HEADLINE_METADATA_KEY).toBe('sessionAgentActivityHeadlineV1');
+        expect(typeof protocol.SessionAgentActivityEntryV1Schema?.safeParse).toBe('function');
+        expect(typeof protocol.SessionAgentActivityHeadlineV1Schema?.safeParse).toBe('function');
+        expect(typeof protocol.buildSessionAgentActivityHeadline).toBe('function');
+        expect(typeof protocol.readSessionAgentActivityHeadlineFromMetadata).toBe('function');
+        // The shared ordering/bounding owner both headline builders call (PLAN 3.1).
+        expect(typeof protocol.partitionActivityHeadlineEntries).toBe('function');
+
+        const headline = protocol.buildSessionAgentActivityHeadline({
+            backendId: 'claude',
+            updatedAt: 2,
+            entries: [{ entryId: 'workflow_run:wf_1', kind: 'workflow_run', title: 'run', status: 'running', updatedAt: 1 }],
+        });
+        expect(protocol.readSessionAgentActivityHeadlineFromMetadata({
+            [protocol.SESSION_AGENT_ACTIVITY_HEADLINE_METADATA_KEY]: headline,
+        })?.primaryEntryId).toBe('workflow_run:wf_1');
     });
 
     it('exports connected-service settings schemas without the undeployed Codex-specific setting', () => {

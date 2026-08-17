@@ -54,6 +54,10 @@ describe("eventRouter payloads (protocol container)", () => {
                 lastActiveAt: new Date(1),
                 createdAt: new Date(1),
                 updatedAt: new Date(1),
+                runtimeActivityState: "active",
+                runtimeActivityRevision: 4n,
+                runtimeActivityActiveCount: 1,
+                runtimeActivityObservedAt: BigInt(2_000),
             },
             102,
             "upd-2",
@@ -62,7 +66,93 @@ describe("eventRouter payloads (protocol container)", () => {
         expect(UpdateContainerSchema.safeParse(payload).success).toBe(true);
         expect((payload.body as any).id).toBe("s1");
         expect((payload.body as any).sid).toBe("s1");
+        expect((payload.body as any).runtimeActivityActiveCount).toBe(1);
+        expect((payload.body as any).runtimeActivityObservedAt).toBe(2_000);
     });
+
+    it("buildNewSessionUpdate clears runtime activity timestamps when the aggregate is idle", () => {
+        const payload = buildNewSessionUpdate(
+            {
+                id: "s-idle",
+                seq: 1,
+                metadata: "enc-meta",
+                metadataVersion: 1,
+                agentState: null,
+                agentStateVersion: 1,
+                dataEncryptionKey: null,
+                active: false,
+                lastActiveAt: new Date(1),
+                createdAt: new Date(1),
+                updatedAt: new Date(1),
+                runtimeActivityState: "idle",
+                runtimeActivityRevision: 5n,
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: BigInt(2_000),
+            },
+            102,
+            "upd-idle",
+        );
+
+        expect(UpdateContainerSchema.safeParse(payload).success).toBe(true);
+        expect((payload.body as any).runtimeActivityActiveCount).toBe(0);
+        expect((payload.body as any).runtimeActivityObservedAt).toBe(2_000);
+    });
+
+
+    it("buildNewSessionUpdate rejects a malformed target projection without synthesizing unknown", () => {
+        expect(() => buildNewSessionUpdate(
+            {
+                id: "s-malformed",
+                seq: 1,
+                metadata: "enc-meta",
+                metadataVersion: 1,
+                agentState: null,
+                agentStateVersion: 1,
+                dataEncryptionKey: null,
+                active: true,
+                lastActiveAt: new Date(1),
+                createdAt: new Date(1),
+                updatedAt: new Date(1),
+                runtimeActivityState: null,
+                runtimeActivityRevision: 9n,
+                runtimeActivityActiveCount: 3,
+                runtimeActivityObservedAt: 2_000n,
+            },
+            102,
+            "upd-malformed",
+        )).toThrow();
+    });
+
+    it("buildUpdateSessionUpdate rejects a partial target projection", () => {
+        expect(() => buildUpdateSessionUpdate(
+            "s1",
+            103,
+            "upd-partial",
+            undefined,
+            undefined,
+            {
+                runtimeActivityState: "idle",
+                runtimeActivityRevision: 8,
+            },
+        )).toThrow();
+    });
+
+    it("buildUpdateSessionUpdate rejects a negative revision instead of coercing it to the unknown baseline", () => {
+        expect(() => buildUpdateSessionUpdate(
+            "s1",
+            103,
+            "upd-negative-revision",
+            undefined,
+            undefined,
+            {
+                runtimeActivityState: "unknown",
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: null,
+                runtimeActivityRevision: -1,
+            },
+        )).toThrow();
+    });
+
 
     it("buildUpdateSessionUpdate emits a full container", () => {
         const payload = buildUpdateSessionUpdate(
@@ -83,6 +173,11 @@ describe("eventRouter payloads (protocol container)", () => {
                 latestTurnId: "turn-1",
                 latestTurnStatus: "completed",
                 latestTurnStatusObservedAt: 456,
+                runtimeActivityState: "active",
+                runtimeActivityRevision: 6,
+                runtimeActivityActiveCount: 2,
+                runtimeActivityObservedAt: 500,
+                meaningfulActivityAt: 999,
                 archivedAt: 123,
             },
         );
@@ -101,7 +196,58 @@ describe("eventRouter payloads (protocol container)", () => {
         expect((payload.body as any).latestTurnId).toBe("turn-1");
         expect((payload.body as any).latestTurnStatus).toBe("completed");
         expect((payload.body as any).latestTurnStatusObservedAt).toBe(456);
+        expect((payload.body as any).runtimeActivityActiveCount).toBe(2);
+        expect((payload.body as any).runtimeActivityObservedAt).toBe(500);
+        expect((payload.body as any).meaningfulActivityAt).toBe(999);
         expect((payload.body as any).archivedAt).toBe(123);
+    });
+
+    it("buildUpdateSessionUpdate emits the target idle projection", () => {
+        const payload = buildUpdateSessionUpdate(
+            "s1",
+            103,
+            "upd-clear",
+            undefined,
+            undefined,
+            {
+                runtimeActivityState: "idle",
+                runtimeActivityRevision: 7,
+                runtimeActivityActiveCount: 0,
+                runtimeActivityObservedAt: 500,
+            },
+        );
+
+        expect(UpdateContainerSchema.safeParse(payload).success).toBe(true);
+        expect((payload.body as any).runtimeActivityActiveCount).toBe(0);
+        expect((payload.body as any).runtimeActivityObservedAt).toBe(500);
+    });
+
+    it.each([
+        { state: "active" as const, count: 2, observedAt: 500 },
+        { state: "unknown" as const, count: 0, observedAt: 600 },
+        { state: "idle" as const, count: 0, observedAt: 700 },
+    ])("buildUpdateSessionUpdate emits the target $state projection", ({ state, count, observedAt }) => {
+        const payload = buildUpdateSessionUpdate(
+            "s1",
+            103,
+            `upd-${state}`,
+            undefined,
+            undefined,
+            {
+                runtimeActivityState: state,
+                runtimeActivityRevision: 11,
+                runtimeActivityActiveCount: count,
+                runtimeActivityObservedAt: observedAt,
+            },
+        );
+
+        expect(UpdateContainerSchema.safeParse(payload).success).toBe(true);
+        expect(payload.body).toMatchObject({
+            runtimeActivityState: state,
+            runtimeActivityRevision: 11,
+            runtimeActivityActiveCount: count,
+            runtimeActivityObservedAt: observedAt,
+        });
     });
 
     it("buildDeleteSessionUpdate emits a full container", () => {
@@ -119,6 +265,7 @@ describe("eventRouter payloads (protocol container)", () => {
                 pendingVersion: 3,
                 pendingCount: 1,
                 meaningfulActivityAt,
+                pendingActivationRequestId: "pending-local-1",
             },
             105,
             "upd-5",
@@ -128,6 +275,7 @@ describe("eventRouter payloads (protocol container)", () => {
         expect((payload.body as any).sid).toBe("s1");
         expect((payload.body as any).sessionId).toBe("s1");
         expect((payload.body as any).meaningfulActivityAt).toBe(meaningfulActivityAt.getTime());
+        expect((payload.body as any).pendingActivationRequestId).toBe("pending-local-1");
     });
 
     it("buildNewMachineUpdate emits a full container", () => {

@@ -1,21 +1,23 @@
 import {
   ConnectedServiceAuthGroupIdSchema,
+  ConnectedServiceCredentialRevisionV1Schema,
   ConnectedServiceProfileIdSchema,
 } from '@happier-dev/protocol';
 import { z } from 'zod';
 
 export const CODEX_CHATGPT_AUTH_TOKENS_REFRESH_PATH =
   '/connected-service-auth/openai-codex/chatgpt-auth-tokens/refresh';
+export const CODEX_CHATGPT_AUTH_TOKENS_REFRESH_SERVICE_ID = 'openai-codex';
 
 export const CodexChatGptAuthTokensRefreshSelectionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('profile'),
-    serviceId: z.literal('openai-codex'),
+    serviceId: z.literal(CODEX_CHATGPT_AUTH_TOKENS_REFRESH_SERVICE_ID),
     profileId: ConnectedServiceProfileIdSchema,
   }),
   z.object({
     kind: z.literal('group'),
-    serviceId: z.literal('openai-codex'),
+    serviceId: z.literal(CODEX_CHATGPT_AUTH_TOKENS_REFRESH_SERVICE_ID),
     groupId: ConnectedServiceAuthGroupIdSchema,
     activeProfileId: ConnectedServiceProfileIdSchema,
     fallbackProfileId: ConnectedServiceProfileIdSchema,
@@ -30,6 +32,8 @@ export const CodexChatGptAuthTokensRefreshResponseSchema = z.object({
   accessToken: z.string().min(1),
   chatgptAccountId: z.string().nullable(),
   chatgptPlanType: z.string().nullable(),
+  credentialRevision: ConnectedServiceCredentialRevisionV1Schema.optional(),
+  selectionEpoch: z.number().int().nonnegative().optional(),
 });
 
 export type CodexChatGptAuthTokensRefreshResponse =

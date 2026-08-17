@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
+import { reloadConfiguration } from '@/configuration';
 
 import { codexPreflightSessionControlsProbeAdapter } from './codexPreflightSessionControlsProbeAdapter';
 
@@ -17,14 +18,19 @@ const envKeys = [
     'HAPPIER_CODEX_APP_SERVER_BIN',
     'HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS',
     'HAPPIER_FAKE_CODEX_APP_SERVER_DELAY_MS',
+    'HAPPIER_FAKE_CODEX_APP_SERVER_ENV_CAPTURE_FILE',
+    'HAPPIER_HOME_DIR',
     'OPENAI_API_KEY',
     'CODEX_API_KEY',
+    'CODEX_HOME',
+    'CODEX_SQLITE_HOME',
 ] as const;
 
 let envScope = createEnvKeyScope(envKeys);
 
 afterEach(() => {
     envScope.restore();
+    reloadConfiguration();
     envScope = createEnvKeyScope(envKeys);
 });
 
@@ -83,4 +89,46 @@ describe('codexPreflightSessionControlsProbeAdapter', () => {
             ]);
         });
     }
+
+    it('uses the materialized process environment supplied by the connected-service preflight owner', async () => {
+        tempDir = makeTempDir('happier-codex-preflight-materialized-home-');
+        process.env.HAPPIER_HOME_DIR = tempDir;
+        reloadConfiguration();
+
+        const codexHome = join(
+            tempDir,
+            'daemon',
+            'connected-services',
+            'materialized',
+            'csm_probe',
+            'codex',
+            'codex-home',
+        );
+        mkdirSync(codexHome, { recursive: true });
+
+        const captureFile = join(tempDir, 'captured-env.json');
+        process.env.HAPPIER_CODEX_APP_SERVER_BIN = fileURLToPath(new URL('./__fixtures__/fakeCodexAppServer.mjs', import.meta.url));
+        process.env.HAPPIER_FAKE_CODEX_APP_SERVER_DELAY_MS = '1';
+        process.env.HAPPIER_FAKE_CODEX_APP_SERVER_ENV_CAPTURE_FILE = captureFile;
+
+        const raw = await codexPreflightSessionControlsProbeAdapter.probeModelsRaw?.({
+            cwd: tempDir,
+            timeoutMs: 2_000,
+            backendTarget: undefined,
+            accountSettings: { codexBackendMode: 'appServer' },
+            processEnv: {
+                ...process.env,
+                CODEX_HOME: codexHome,
+                CODEX_SQLITE_HOME: codexHome,
+            },
+        });
+
+        expect(raw).toEqual(expect.any(Array));
+        expect(existsSync(captureFile)).toBe(true);
+        expect(JSON.parse(readFileSync(captureFile, 'utf8'))).toEqual({
+            CODEX_HOME: codexHome,
+            CODEX_SQLITE_HOME: codexHome,
+            CODEX_AUTH_FILE_PRESENT: false,
+        });
+    });
 });

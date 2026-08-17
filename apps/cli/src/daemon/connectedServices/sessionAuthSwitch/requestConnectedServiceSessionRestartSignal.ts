@@ -1,3 +1,7 @@
+import { CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES } from '@happier-dev/protocol';
+
+import { buildConnectedServiceUxDiagnostic } from '../diagnostics/connectedServiceUxDiagnostics';
+
 export type ConnectedServiceDaemonRestartTrigger =
   | 'manual_switch'
   | 'automatic_group_switch'
@@ -10,11 +14,29 @@ export type ConnectedServiceDaemonRestartDiagnosticStatus =
   | 'requested'
   | 'process_already_missing'
   | 'signal_failed'
-  | 'skipped_stale_owner';
+  | 'skipped_stale_owner'
+  | 'duplicate_restart_suppressed'
+  | 'terminal_restart_suppressed';
 
 export type ConnectedServiceSessionRestartSignalResult = Readonly<{
-  status: 'requested' | 'process_already_missing' | 'skipped_stale_owner';
+  status:
+    | 'requested'
+    | 'process_already_missing'
+    | 'skipped_stale_owner'
+    | 'skipped_duplicate_restart'
+    | 'skipped_terminal_restart';
 }>;
+
+export type ConnectedServiceRestartRequestedTranscriptEventOwner = 'switch_fsm' | 'restart_signal';
+
+export function shouldEmitConnectedServiceRestartRequestedSessionEvent(input: Readonly<{
+  owner: ConnectedServiceRestartRequestedTranscriptEventOwner;
+  signaled: boolean;
+}>): boolean {
+  // A switch attempt already has one canonical FSM event author. Direct refresh/recovery restart
+  // signals do not, so their signal owner remains responsible for the request-level transcript fact.
+  return input.signaled && input.owner === 'restart_signal';
+}
 
 export type ConnectedServiceDaemonRestartDiagnosticInput = Readonly<{
   trigger: ConnectedServiceDaemonRestartTrigger;
@@ -48,6 +70,21 @@ export type ConnectedServiceDaemonRestartDiagnosticRecorder = (
   record: ConnectedServiceDaemonRestartDiagnosticRecord,
 ) => void;
 
+export type ConnectedServiceSessionRestartAmplificationGuard = Readonly<{
+  reserve: (input: Readonly<{
+    pid: number;
+    diagnostic: ConnectedServiceDaemonRestartDiagnosticInput;
+  }>) => Readonly<{ status: 'reserved' | 'not_guarded' } | { status: 'duplicate' | 'terminal' }>;
+  completePid: (
+    pid: number,
+    outcome: Readonly<
+      | { status: 'success' | 'cleared' }
+      | { status: 'terminal'; reason: string }
+    >,
+  ) => void;
+  transferPid: (fromPid: number, toPid: number) => void;
+}>;
+
 function normalizeString(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -57,6 +94,107 @@ function normalizeString(value: string | null | undefined): string | null {
 function normalizeNumber(value: number | null | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return Math.trunc(value);
+}
+
+export function buildConnectedServiceRestartRequestedSessionEvent(
+  diagnostic: ConnectedServiceDaemonRestartDiagnosticInput,
+): Readonly<{
+  type: 'connected_service_account_switch_attempt';
+  ok: true;
+  action: 'restart_requested';
+  reason: string;
+  attemptedContinuityMode: 'restart';
+  outcome: 'observed';
+  outcomeAction: 'none';
+  errorCode: null;
+  groupGeneration?: number;
+  partialState: null;
+  diagnostic: ReturnType<typeof buildConnectedServiceUxDiagnostic>;
+}> {
+  const trigger = diagnostic.trigger;
+  const rawReason = normalizeString(diagnostic.reason) ?? trigger;
+  const generation = normalizeNumber(diagnostic.generation);
+  const serviceId = normalizeString(diagnostic.serviceId);
+  const agentId = normalizeString(diagnostic.agentId);
+  const profileId = normalizeString(diagnostic.profileId);
+  const groupId = normalizeString(diagnostic.groupId);
+  return {
+    type: 'connected_service_account_switch_attempt',
+    ok: true,
+    action: 'restart_requested',
+    reason: trigger,
+    attemptedContinuityMode: 'restart',
+    // A successful signal request is not proof that the process stopped or that a replacement
+    // adopted the target. The process supervisor emits those later facts independently.
+    outcome: 'observed',
+    outcomeAction: 'none',
+    errorCode: null,
+    ...(generation === null ? {} : { groupGeneration: generation }),
+    partialState: null,
+    diagnostic: buildConnectedServiceUxDiagnostic({
+      code: CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES.connectedServiceRestartRequested,
+      failurePhase: 'restart',
+      source: 'transcript_switch_attempt',
+      ...(serviceId ? { serviceId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(profileId ? { profileId } : {}),
+      ...(groupId ? { groupId } : {}),
+      retryable: true,
+      diagnostics: {
+        trigger,
+        reason: rawReason,
+        ...(generation === null ? {} : { groupGeneration: generation }),
+      },
+    }),
+  };
+}
+
+function buildAuthRecoveryRestartGuardKey(
+  diagnostic: ConnectedServiceDaemonRestartDiagnosticInput,
+): string | null {
+  if (diagnostic.trigger !== 'runtime_auth_recovery_restart') return null;
+  const sessionId = normalizeString(diagnostic.sessionId);
+  const serviceId = normalizeString(diagnostic.serviceId);
+  if (!sessionId || !serviceId) return null;
+  const generation = normalizeNumber(diagnostic.generation);
+  return [
+    sessionId,
+    serviceId,
+    generation === null ? 'generation:none' : `generation:${generation}`,
+  ].join('|');
+}
+
+export function createConnectedServiceSessionRestartAmplificationGuard(): ConnectedServiceSessionRestartAmplificationGuard {
+  const outstandingKeys = new Set<string>();
+  const terminalKeys = new Set<string>();
+  const keyByPid = new Map<number, string>();
+
+  return {
+    reserve: ({ pid, diagnostic }) => {
+      const key = buildAuthRecoveryRestartGuardKey(diagnostic);
+      if (!key) return { status: 'not_guarded' };
+      if (terminalKeys.has(key)) return { status: 'terminal' };
+      if (outstandingKeys.has(key)) return { status: 'duplicate' };
+      outstandingKeys.add(key);
+      keyByPid.set(pid, key);
+      return { status: 'reserved' };
+    },
+    completePid: (pid, outcome) => {
+      const key = keyByPid.get(pid);
+      if (!key) return;
+      keyByPid.delete(pid);
+      outstandingKeys.delete(key);
+      if (outcome.status === 'terminal' && outcome.reason === 'not_authenticated') {
+        terminalKeys.add(key);
+      }
+    },
+    transferPid: (fromPid, toPid) => {
+      const key = keyByPid.get(fromPid);
+      if (!key) return;
+      keyByPid.delete(fromPid);
+      keyByPid.set(toPid, key);
+    },
+  };
 }
 
 export function buildConnectedServiceDaemonRestartDiagnosticRecord(input: Readonly<{
@@ -115,11 +253,12 @@ export async function requestConnectedServiceSessionRestartSignal(params: Readon
   pid: number;
   processGroupPid?: number | null;
   delayMs: number;
-  shouldSignal?: () => boolean;
+  shouldSignal?: () => boolean | Promise<boolean>;
   onSignalFailure: (error: unknown) => void;
   onProcessAlreadyMissing?: () => void;
   restartDiagnostic?: ConnectedServiceDaemonRestartDiagnosticInput;
   recordRestartDiagnostic?: ConnectedServiceDaemonRestartDiagnosticRecorder;
+  restartAmplificationGuard?: ConnectedServiceSessionRestartAmplificationGuard;
   nowMs?: () => number;
 }>): Promise<ConnectedServiceSessionRestartSignalResult> {
   const nowMs = params.nowMs ?? Date.now;
@@ -136,10 +275,21 @@ export async function requestConnectedServiceSessionRestartSignal(params: Readon
     });
   };
 
-  const signal = (): ConnectedServiceSessionRestartSignalResult => {
-    if (params.shouldSignal && !params.shouldSignal()) {
+  const signal = async (): Promise<ConnectedServiceSessionRestartSignalResult> => {
+    if (params.shouldSignal && !await params.shouldSignal()) {
       recordDiagnostic('skipped_stale_owner');
       return { status: 'skipped_stale_owner' };
+    }
+    const reservation = params.restartDiagnostic
+      ? params.restartAmplificationGuard?.reserve({ pid: params.pid, diagnostic: params.restartDiagnostic })
+      : null;
+    if (reservation?.status === 'duplicate') {
+      recordDiagnostic('duplicate_restart_suppressed');
+      return { status: 'skipped_duplicate_restart' };
+    }
+    if (reservation?.status === 'terminal') {
+      recordDiagnostic('terminal_restart_suppressed');
+      return { status: 'skipped_terminal_restart' };
     }
     recordDiagnostic('requested');
     if (
@@ -159,10 +309,12 @@ export async function requestConnectedServiceSessionRestartSignal(params: Readon
       return { status: 'requested' };
     } catch (error) {
       if (isConnectedServiceRestartSignalStaleProcessError(error)) {
+        params.restartAmplificationGuard?.completePid(params.pid, { status: 'cleared' });
         recordDiagnostic('process_already_missing');
         params.onProcessAlreadyMissing?.();
         return { status: 'process_already_missing' };
       }
+      params.restartAmplificationGuard?.completePid(params.pid, { status: 'cleared' });
       recordDiagnostic('signal_failed');
       params.onSignalFailure(error);
       throw error;
@@ -170,13 +322,13 @@ export async function requestConnectedServiceSessionRestartSignal(params: Readon
   };
 
   if (params.delayMs <= 0) {
-    return signal();
+    return await signal();
   }
 
   return await new Promise<ConnectedServiceSessionRestartSignalResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       try {
-        resolve(signal());
+        void signal().then(resolve, reject);
       } catch (error) {
         reject(error);
       }

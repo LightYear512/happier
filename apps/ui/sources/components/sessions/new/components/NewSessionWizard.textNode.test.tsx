@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { collectUnexpectedRawTextNodes, renderScreen } from '@/dev/testkit';
 import { installNewSessionComponentsCommonModuleMocks, resetNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -45,17 +46,10 @@ vi.mock('react-native-safe-area-context', () => ({
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-vi.mock('react-native-reanimated', async () => {
-    const React = await import('react');
-    return {
-        __esModule: true,
-        default: {
-            View: (props: any) => React.createElement('AnimatedView', props, props.children),
-        },
-        useAnimatedStyle: (fn: any) => fn(),
-        useSharedValue: (initial: any) => ({ value: initial }),
-    };
-});
+// `react-native-reanimated` is a testkit-owned boundary: `sources/dev/vitestSetup.ts`
+// already installs `createReanimatedModuleMock()` for every suite. This file used to
+// shadow it with a three-export inline mock, which silently broke the moment production
+// reached for a fourth export (`useDerivedValue`). Do not reintroduce an inline mock here.
 
 vi.mock('expo-linear-gradient', () => ({
     LinearGradient: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
@@ -303,12 +297,12 @@ describe('NewSessionWizard', () => {
                 setFavoriteDirectories: () => {},
             } as any}
             footer={{
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
                 canCreate: false,
                 isCreating: false,
-                emptyAutocompletePrefixes: [],
+                emptyAutocompleteKinds: [],
                 emptyAutocompleteSuggestions: async () => [],
                 agentInputExtraActionChips: [],
             }}
@@ -418,12 +412,12 @@ describe('NewSessionWizard', () => {
                     setFavoriteDirectories: () => {},
                 } as any}
                 footer={{
-                    sessionPrompt: '',
+                    promptStore: createNewSessionPromptStore(''),
                     setSessionPrompt: () => {},
                     handleCreateSession: () => {},
                     canCreate: true,
                     isCreating: false,
-                    emptyAutocompletePrefixes: [],
+                    emptyAutocompleteKinds: [],
                     emptyAutocompleteSuggestions: async () => [],
                     sessionPromptInputMaxHeight: 200,
                     isResumeSupportChecking: false,
@@ -543,12 +537,12 @@ describe('NewSessionWizard', () => {
                 setFavoriteDirectories: () => {},
             } as any}
             footer={{
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
                 canCreate: false,
                 isCreating: false,
-                emptyAutocompletePrefixes: [],
+                emptyAutocompleteKinds: [],
                 emptyAutocompleteSuggestions: async () => [],
                 agentInputExtraActionChips: [],
             }}
@@ -657,12 +651,12 @@ describe('NewSessionWizard', () => {
                 setFavoriteDirectories: () => {},
             } as any}
             footer={{
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
                 canCreate: true,
                 isCreating: false,
-                emptyAutocompletePrefixes: [],
+                emptyAutocompleteKinds: [],
                 emptyAutocompleteSuggestions: async () => [],
                 sessionPromptInputMaxHeight: 200,
                 isResumeSupportChecking: false,
@@ -774,12 +768,12 @@ describe('NewSessionWizard', () => {
                 setFavoriteDirectories: () => {},
             } as any}
             footer={{
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
                 canCreate: false,
                 isCreating: false,
-                emptyAutocompletePrefixes: [],
+                emptyAutocompleteKinds: [],
                 emptyAutocompleteSuggestions: async () => [],
                 agentInputExtraActionChips: [],
             }}
@@ -920,12 +914,12 @@ describe('NewSessionWizard', () => {
                 setFavoriteDirectories: () => {},
             } as any}
             footer={{
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
                 canCreate: false,
                 isCreating: false,
-                emptyAutocompletePrefixes: [],
+                emptyAutocompleteKinds: [],
                 emptyAutocompleteSuggestions: async () => [],
                 agentInputExtraActionChips: [],
             }}
@@ -1040,12 +1034,12 @@ describe('NewSessionWizard', () => {
                     setFavoriteDirectories: () => {},
                 } as any}
                 footer={{
-                    sessionPrompt: '',
+                    promptStore: createNewSessionPromptStore(''),
                     setSessionPrompt: () => {},
                     handleCreateSession: () => {},
                     canCreate: true,
                     isCreating: false,
-                    emptyAutocompletePrefixes: [],
+                    emptyAutocompleteKinds: [],
                     emptyAutocompleteSuggestions: async () => [],
                     sessionPromptInputMaxHeight: 200,
                     isResumeSupportChecking: false,
@@ -1175,12 +1169,12 @@ describe('NewSessionWizard', () => {
                                 setFavoriteDirectories: () => {},
                             } as any}
                             footer={{
-                                sessionPrompt: '',
+                                promptStore: createNewSessionPromptStore(''),
                                 setSessionPrompt: () => {},
                                 handleCreateSession: () => {},
                                 canCreate: true,
                                 isCreating: false,
-                                emptyAutocompletePrefixes: [],
+                                emptyAutocompleteKinds: [],
                                 emptyAutocompleteSuggestions: async () => [],
                                 sessionPromptInputMaxHeight: 200,
                                 isResumeSupportChecking: false,
@@ -1327,12 +1321,12 @@ describe('NewSessionWizard', () => {
                             setFavoriteDirectories: () => {},
                         } as any}
                         footer={{
-                            sessionPrompt: '',
+                            promptStore: createNewSessionPromptStore(''),
                             setSessionPrompt: () => {},
                             handleCreateSession: () => {},
                             canCreate: false,
                             isCreating: false,
-                            emptyAutocompletePrefixes: [],
+                            emptyAutocompleteKinds: [],
                             emptyAutocompleteSuggestions: async () => [],
                             agentInputExtraActionChips: [],
                         }}
@@ -1485,12 +1479,12 @@ describe('NewSessionWizard', () => {
                         setFavoriteDirectories: () => {},
                     } as any}
                     footer={{
-                        sessionPrompt: '',
+                        promptStore: createNewSessionPromptStore(''),
                         setSessionPrompt: () => {},
                         handleCreateSession: () => {},
                         canCreate: false,
                         isCreating: false,
-                        emptyAutocompletePrefixes: [],
+                        emptyAutocompleteKinds: [],
                         emptyAutocompleteSuggestions: async () => [],
                         agentInputExtraActionChips: [],
                     }}
@@ -1635,12 +1629,12 @@ describe('NewSessionWizard', () => {
                         setFavoriteDirectories: () => {},
                     } as any}
                     footer={{
-                        sessionPrompt: '',
+                        promptStore: createNewSessionPromptStore(''),
                         setSessionPrompt: () => {},
                         handleCreateSession: () => {},
                         canCreate: false,
                         isCreating: false,
-                        emptyAutocompletePrefixes: [],
+                        emptyAutocompleteKinds: [],
                         emptyAutocompleteSuggestions: async () => [],
                         agentInputExtraActionChips: [],
                     }}
@@ -1770,12 +1764,12 @@ describe('NewSessionWizard', () => {
                 setFavoriteDirectories: () => {},
             } as any}
             footer={{
-                sessionPrompt: '',
+                promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
                 canCreate: false,
                 isCreating: false,
-                emptyAutocompletePrefixes: [],
+                emptyAutocompleteKinds: [],
                 emptyAutocompleteSuggestions: async () => [],
                 agentInputExtraActionChips: [],
             }}
@@ -1921,12 +1915,12 @@ describe('NewSessionWizard', () => {
                         setFavoriteDirectories: () => {},
                     } as any}
                     footer={{
-                        sessionPrompt: '',
+                        promptStore: createNewSessionPromptStore(''),
                         setSessionPrompt: () => {},
                         handleCreateSession: () => {},
                         canCreate: false,
                         isCreating: false,
-                        emptyAutocompletePrefixes: [],
+                        emptyAutocompleteKinds: [],
                         emptyAutocompleteSuggestions: async () => [],
                         agentInputExtraActionChips: [],
                     }}
@@ -2063,12 +2057,12 @@ describe('NewSessionWizard', () => {
                         setFavoriteDirectories: () => {},
                     } as any}
                     footer={{
-                        sessionPrompt: '',
+                        promptStore: createNewSessionPromptStore(''),
                         setSessionPrompt: () => {},
                         handleCreateSession: () => {},
                         canCreate: false,
                         isCreating: false,
-                        emptyAutocompletePrefixes: [],
+                        emptyAutocompleteKinds: [],
                         emptyAutocompleteSuggestions: async () => [],
                         agentInputExtraActionChips: [{
                             key: 'attachments-add',
@@ -2174,12 +2168,12 @@ describe('NewSessionWizard', () => {
                         setFavoriteDirectories: () => {},
                     } as any}
                     footer={{
-                        sessionPrompt: '',
+                        promptStore: createNewSessionPromptStore(''),
                         setSessionPrompt: () => {},
                         handleCreateSession: () => {},
                         canCreate: false,
                         isCreating: false,
-                        emptyAutocompletePrefixes: [],
+                        emptyAutocompleteKinds: [],
                         emptyAutocompleteSuggestions: async () => [],
                         agentInputExtraActionChips: [],
                     }}

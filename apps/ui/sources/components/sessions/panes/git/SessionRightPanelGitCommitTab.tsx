@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { FlatList, Platform, Pressable, View } from 'react-native';
-import { Octicons } from '@expo/vector-icons';
 
 import { SourceControlBranchSummary } from '@/components/sessions/files/SourceControlBranchSummary';
 import {
@@ -23,6 +22,8 @@ import { createAdvancedDebounce } from '@/utils/timing/debounce';
 import { filterDirectoryLikeScmFileStatuses, isDirectoryLikeScmFileStatus } from '@/scm/isDirectoryLikeScmFileStatus';
 import { sessionScmStashList } from '@/sync/ops';
 import { useKeyboardHeight } from '@/hooks/ui/useKeyboardHeight';
+import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export type SessionRightPanelGitCommitTabProps = Readonly<{
     theme: any;
@@ -527,7 +528,7 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
                         })}
                     >
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
-                            <Octicons name="archive" size={14} color={themeTextSecondary} />
+                            <Icon name="archive" size={14} color={themeTextSecondary} />
                             <Text
                                 numberOfLines={1}
                                 style={{ fontSize: 12, color: themeTextPrimary, ...Typography.default('semiBold') }}
@@ -539,7 +540,7 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
                             <Text style={{ fontSize: 12, color: themeTextSecondary, ...Typography.mono('semiBold') }}>
                                 {String(managedStashCount)}
                             </Text>
-                            <Octicons name="chevron-right" size={14} color={themeTextSecondary} />
+                            <Icon name="caret-right" size={14} color={themeTextSecondary} />
                         </View>
                     </Pressable>
                 ) : null}
@@ -612,30 +613,12 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
                                 />
                             )}
                             {props.onOpenReviewAllChanges ? (
-                                <Pressable
+                                <ToolbarButton
                                     testID="session-rightpanel-git-open-review"
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('files.toolbar.review')}
+                                    label={t('files.toolbar.review')}
+                                    icon={<Icon name="git-diff" size={14} color={themeTextSecondary} />}
                                     onPress={props.onOpenReviewAllChanges}
-                                    style={({ pressed }) => ({
-                                        flexDirection: 'row',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        paddingHorizontal: 10,
-                                        height: 30,
-                                        borderRadius: 10,
-                                        borderWidth: 1,
-                                        borderColor: themeBorderDefault,
-                                        backgroundColor: themeSurfaceBase,
-                                        opacity: pressed ? 0.78 : 1,
-                                        gap: 6,
-                                    })}
-                                >
-                                    <Octicons name="diff" size={14} color={themeTextSecondary} />
-                                    <Text style={{ fontSize: 12, color: themeTextSecondary, ...Typography.default('semiBold') }}>
-                                        {t('files.toolbar.review')}
-                                    </Text>
-                                </Pressable>
+                                />
                             ) : null}
                         </View>
                     </View>

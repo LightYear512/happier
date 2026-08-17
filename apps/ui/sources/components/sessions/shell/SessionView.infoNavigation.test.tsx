@@ -33,6 +33,7 @@ const resolveServerIdForSessionIdFromLocalCacheSpy = vi.hoisted(() =>
 );
 
 let workspaceLabelsV1: Record<string, string> = {};
+let sessionOrganizationProjection: any = null;
 let subagentSourceMessages: readonly any[] = [];
 
 installSessionShellCommonModuleMocks({
@@ -110,6 +111,7 @@ installSessionShellCommonModuleMocks({
             useSessionReviewCommentsDrafts: () => [],
             useWorkspaceReviewCommentsDrafts: () => [],
             useSessionUsage: () => null,
+            useSessionOrganizationProjection: () => sessionOrganizationProjection,
             useLocalSetting: <K extends keyof LocalSettings>(key: K) => localSettingsDefaults[key],
             useLocalSettingMutable: <K extends keyof LocalSettings>(key: K) => [
                 localSettingsDefaults[key],
@@ -164,9 +166,6 @@ vi.mock('expo-linear-gradient', () => ({
 }));
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
-}));
-vi.mock('@/components/ui/icons/DependabotIcon', () => ({
-    DependabotIcon: 'DependabotIcon',
 }));
 vi.mock('react-native-safe-area-context', () => ({
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -261,6 +260,11 @@ vi.mock('@/sync/domains/session/activeViewingSession', () => ({
     clearActiveViewingSessionId: () => {},
     markSessionVisible: () => {},
     markSessionHidden: () => {},
+    // `useSessionSurfaceActivation` reads the reset version through `useSyncExternalStore`. Without
+    // these the whole suite throws on render, so every assertion below was unreachable.
+    subscribeActiveViewingSessionReset: () => () => {},
+    getActiveViewingSessionResetVersion: () => 0,
+    registerSessionVisibleSurface: () => () => {},
 }));
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -351,6 +355,17 @@ const AppPaneProviderWrapper = ({ children }: { children?: React.ReactNode }) =>
     <AppPaneProvider>{children ?? null}</AppPaneProvider>
 );
 
+/**
+ * The session-info navigation is reached through the header's info control, which the header
+ * receives inside `rightElement`. It used to hang off the avatar; the navigation contract asserted
+ * below is the same one, read through the control that now owns it.
+ */
+function readOpenSessionInfoHandler(): (() => void) | undefined {
+    const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
+    return (headerProps?.rightElement as { props?: { onOpenSessionInfo?: () => void } } | undefined)
+        ?.props?.onOpenSessionInfo;
+}
+
 describe('SessionView info navigation', () => {
     beforeEach(() => {
         routerPushSpy.mockReset();
@@ -361,6 +376,18 @@ describe('SessionView info navigation', () => {
         ensureSidechainMessagesLoadedSpy.mockClear();
         ensureSidechainsLoadedCalls.length = 0;
         workspaceLabelsV1 = {};
+        sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 1,
+            pinnedSessionIds: [],
+            pinsBySessionId: {},
+            foldersById: {},
+            folderAssignmentsBySessionId: {},
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            orderEntriesByScopeKey: {},
+            labelsByLabelKey: {},
+        };
         subagentSourceMessages = [];
         resolveServerIdForSessionIdFromLocalCacheSpy.mockReset();
         resolveServerIdForSessionIdFromLocalCacheSpy.mockImplementation((sessionId: string) =>
@@ -385,10 +412,10 @@ describe('SessionView info navigation', () => {
             { wrapper: AppPaneProviderWrapper },
         );
 
-        const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-        expect(typeof headerProps?.onAvatarPress).toBe('function');
+        const openSessionInfo = readOpenSessionInfoHandler();
+        expect(typeof openSessionInfo).toBe('function');
 
-        headerProps?.onAvatarPress?.();
+        openSessionInfo?.();
 
         expect(routerPushSpy).not.toHaveBeenCalled();
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
@@ -410,10 +437,10 @@ describe('SessionView info navigation', () => {
             { wrapper: AppPaneProviderWrapper },
         );
 
-        const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-        expect(typeof headerProps?.onAvatarPress).toBe('function');
+        const openSessionInfo = readOpenSessionInfoHandler();
+        expect(typeof openSessionInfo).toBe('function');
 
-        headerProps?.onAvatarPress?.();
+        openSessionInfo?.();
 
         expect(routerPushSpy).not.toHaveBeenCalled();
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
@@ -430,10 +457,10 @@ describe('SessionView info navigation', () => {
             { wrapper: AppPaneProviderWrapper },
         );
 
-        const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-        expect(typeof headerProps?.onAvatarPress).toBe('function');
+        const openSessionInfo = readOpenSessionInfoHandler();
+        expect(typeof openSessionInfo).toBe('function');
 
-        headerProps?.onAvatarPress?.();
+        openSessionInfo?.();
 
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
         expect(routerNavigateSpy).toHaveBeenCalledWith('/session/s1/info?serverId=server-cache', expect.objectContaining({
@@ -485,9 +512,22 @@ describe('SessionView info navigation', () => {
         }));
     });
 
-    it('uses the renamed workspace label for the session header subtitle', async () => {
+    it('uses the server-backed renamed workspace label for the session header subtitle', async () => {
         workspaceLabelsV1 = {
-            wl_07600b8c: 'Renamed Workspace',
+            wl_07600b8c: 'Legacy Workspace',
+        };
+        sessionOrganizationProjection = {
+            ...sessionOrganizationProjection,
+            labelsByLabelKey: {
+                'server-cache:workspace:wl_07600b8c': {
+                    labelKind: 'workspace',
+                    scopeKey: 'wl_07600b8c',
+                    display: { t: 'plain', v: { label: 'Renamed Workspace' } },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+            },
         };
         const { SessionView } = await import('./SessionView');
 

@@ -1,6 +1,5 @@
 import React from 'react';
 import { View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -21,6 +20,7 @@ import { isAgentId, getAgentCore, type AgentId } from '@/agents/catalog/catalog'
 import { getProviderSettingsPlugin } from '@/agents/providers/registry/providerSettingsRegistry';
 import { getProviderLocalAuthPlugin } from '@/agents/providers/registry/providerLocalAuthRegistry';
 import type { ProviderSettingFieldDef } from '@/agents/providers/shared/providerSettingsPlugin';
+import type { ProviderLocalAuthLaunch } from '@/agents/providers/shared/providerLocalAuthPlugin';
 import { t } from '@/text';
 import {
     buildBackendTargetKey,
@@ -59,6 +59,11 @@ import {
     resolveProviderStateSharingAgentIds,
 } from '@/components/settings/connectedServices/ConnectedServicesProviderStateSharingSettings';
 import { ProviderSettingsFields } from '@/components/settings/providers/ProviderSettingsFields';
+import { Icon } from '@/components/ui/icons/Icon';
+import {
+    readConnectedServiceProfileKindFromServices,
+    resolveConnectedServiceProfileActionRoute,
+} from '@/sync/domains/connectedServices/resolveConnectedServiceProfileActionRoute';
 
 const PROVIDER_AUTH_TERMINAL_TAB_ID = 'provider-auth-terminal';
 
@@ -99,7 +104,7 @@ const ProviderSettingsNotFound = React.memo(function ProviderSettingsNotFound(pr
         <ItemList style={{ paddingTop: 0 }}>
             <ItemGroup>
                 <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 16 }}>
-                    <Ionicons name="warning-outline" size={48} color={props.theme.colors.state.danger.foreground} style={{ marginBottom: 16 }} />
+                    <Icon name="warning" size={48} color={props.theme.colors.state.danger.foreground} style={{ marginBottom: 16 }} />
                     <Text style={{ ...Typography.default('semiBold'), fontSize: 16, color: props.theme.colors.state.danger.foreground, textAlign: 'center', marginBottom: 8 }}>
                         {t('settingsProviders.notFoundTitle')}
                     </Text>
@@ -170,6 +175,14 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
             connectedServicesDefaultAuthByAgentIdV1: next,
         } as Partial<typeof settings>);
     }, [applySettings]);
+    const dismissPoolAdoptionSuggestion = React.useCallback((key: string) => {
+        applySettings({
+            connectedServicesDefaultAuthPoolAdoptionDismissedByKey: {
+                ...(settings.connectedServicesDefaultAuthPoolAdoptionDismissedByKey ?? {}),
+                [key]: true,
+            },
+        } as Partial<typeof settings>);
+    }, [applySettings, settings.connectedServicesDefaultAuthPoolAdoptionDismissedByKey]);
     const normalizedProviderStateSharingSettings = React.useMemo(
         () => ConnectedServicesProviderStateSharingSettingsV1Schema.parse(settings.connectedServicesProviderStateSharingSettingsV1),
         [settings.connectedServicesProviderStateSharingSettingsV1],
@@ -305,7 +318,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
             id: machine.id,
             title: machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id,
             subtitle: machine.id,
-            icon: <Ionicons name="laptop-outline" size={22} color={theme.colors.text.secondary} />,
+            icon: <Icon name="laptop" size={20} color={theme.colors.text.secondary} />,
         }));
     }, [activeServerMachines, theme.colors.text.secondary]);
     const cliAvailability = useCLIDetection(primaryMachine?.id ?? null, {
@@ -321,6 +334,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
         authPlugin,
         primaryMachine,
     });
+    const [selectedAuthLaunchKind, setSelectedAuthLaunchKind] = React.useState<ProviderLocalAuthLaunch['kind'] | null>(null);
     const providerCliAvailable = cliAvailability.available[providerId];
     const providerCliManagedInstalled = cliAvailability.resolutionSource[providerId] === 'managed';
     const providerCliCapabilityId = buildAgentCliCapabilityId(providerId);
@@ -402,6 +416,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
         });
     }, [cliAvailability, providerId]);
     const closeProviderAuthTerminal = React.useCallback(() => {
+        setSelectedAuthLaunchKind(null);
         pane.closeBottom();
         triggerProviderAuthRefreshes();
     }, [pane, triggerProviderAuthRefreshes]);
@@ -454,13 +469,13 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                     <Item
                         title={primaryMachineLabel ? `${primaryMachineLabel} · ${detectedCliStatus}` : detectedCliStatus}
                         subtitle={core.availability.experimental ? t('settingsProviders.channelExperimental') : t('settingsProviders.channelStable')}
-                        icon={<Ionicons name={statusIconName as any} size={29} color={statusIconColor} />}
+                        icon={<Icon name={statusIconName as any} size={29} color={statusIconColor} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.enabledTitle')}
                         subtitle={t('settingsProviders.enabledSubtitle')}
-                        icon={<Ionicons name="toggle-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="toggle-right" size={29} color={theme.colors.text.secondary} />}
                         rightElement={<Switch value={backendEnabled} onValueChange={setBackendEnabled} />}
                         showChevron={false}
                         onPress={() => setBackendEnabled(!backendEnabled)}
@@ -485,7 +500,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                         itemTrigger={{
                             title: t('settingsSession.permissions.defaultPermissionModeTitle'),
                             subtitle: getPermissionModeLabelForAgentType(providerId, permissionMode),
-                            icon: <Ionicons name="shield-checkmark-outline" size={29} color={theme.colors.state.success.foreground} />,
+                            icon: <Icon name="shield-check" size={29} color={theme.colors.state.success.foreground} />,
                         }}
                         items={getPermissionModeOptionsForAgentType(providerId).map((opt) => ({
                             id: opt.value,
@@ -493,7 +508,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                             subtitle: opt.description,
                             icon: (
                                 <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                    <Ionicons name={opt.icon as any} size={22} color={theme.colors.text.secondary} />
+                                    <Icon name={opt.icon as any} size={20} color={theme.colors.text.secondary} />
                                 </View>
                             ),
                         }))}
@@ -527,10 +542,19 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                                 pathname: '/settings/connected-services/[serviceId]',
                                 params: { serviceId },
                             })}
-                            onReconnectConnectedServiceProfile={(serviceId, profileId) => router.push({
-                                pathname: '/settings/connected-services/profile',
-                                params: { serviceId, profileId },
-                            })}
+                            onReconnectConnectedServiceProfile={(serviceId, profileId) => router.push(
+                                resolveConnectedServiceProfileActionRoute({
+                                    serviceId,
+                                    profileId,
+                                    profileKind: readConnectedServiceProfileKindFromServices({
+                                        connectedServicesV2: profile?.connectedServicesV2 ?? null,
+                                        serviceId,
+                                        profileId,
+                                    }),
+                                }),
+                            )}
+                            dismissedPoolAdoptionSuggestionKeys={settings.connectedServicesDefaultAuthPoolAdoptionDismissedByKey}
+                            onDismissPoolAdoptionSuggestion={dismissPoolAdoptionSuggestion}
                         />
                     </ItemGroup>
                 ) : null}
@@ -548,8 +572,12 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                         state={providerAuthentication}
                         showActions={supportsDesktopControls}
                         onCheckNow={() => cliAvailability.refresh({ bypassCache: true, includeLoginStatusForAgentIds: [providerId] })}
-                        onLaunchLogin={() => {
-                            if (!providerAuthentication.canLaunchLogin || !supportsDesktopControls) return;
+                        activeAuthLaunchKind={authTerminalOpen ? selectedAuthLaunchKind : null}
+                        onLaunchAuth={(kind) => {
+                            if (!providerAuthentication.canLaunchAuth || !supportsDesktopControls) return;
+                            const launch = providerAuthentication.authLaunches.find((candidate) => candidate.kind === kind);
+                            if (!launch) return;
+                            setSelectedAuthLaunchKind(kind);
                             pane.openBottom({ tabId: PROVIDER_AUTH_TERMINAL_TAB_ID });
                         }}
                     />
@@ -572,20 +600,20 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                         testID="settings-provider-target-machine"
                         title={t('settingsProviders.targetMachineTitle')}
                         subtitle={primaryMachineLabel ?? t('machine.detectedCliUnknown')}
-                        icon={<Ionicons name="desktop-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="desktop" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         testID="settings-provider-detected-cli"
                         title={t('settingsProviders.detectedCliTitle')}
                         subtitle={`${core.cli.detectKey} • ${detectedCliStatus}`}
-                        icon={<Ionicons name="code-slash-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="code" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.installSetupTitle')}
                         subtitle={installSetupSubtitle}
-                        icon={<Ionicons name="information-circle-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="info" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <ProviderCliInstallItem
@@ -613,7 +641,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                                 title: t('settingsProviders.cliSourcePreference.title'),
                                 subtitle: t('settingsProviders.cliSourcePreference.subtitle'),
                                 showSelectedSubtitle: false,
-                                icon: <Ionicons name="swap-horizontal-outline" size={29} color={theme.colors.text.secondary} />,
+                                icon: <Icon name="arrows-left-right" size={29} color={theme.colors.text.secondary} />,
                                 itemProps: {
                                     testID: 'settings-provider-cli-source-preference',
                                 },
@@ -625,7 +653,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                                     subtitle: t('settingsProviders.cliSourcePreference.options.systemFirst.subtitle'),
                                     icon: (
                                         <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                            <Ionicons name="desktop-outline" size={22} color={theme.colors.text.secondary} />
+                                            <Icon name="desktop" size={20} color={theme.colors.text.secondary} />
                                         </View>
                                     ),
                                 },
@@ -635,7 +663,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                                     subtitle: t('settingsProviders.cliSourcePreference.options.managedFirst.subtitle'),
                                     icon: (
                                         <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                            <Ionicons name="download-outline" size={22} color={theme.colors.text.secondary} />
+                                            <Icon name="download" size={20} color={theme.colors.text.secondary} />
                                         </View>
                                     ),
                                 },
@@ -650,7 +678,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                         <Item
                             title={t('settingsProviders.setupGuideUrlTitle')}
                             subtitle={core.cli.installBanner.guideUrl}
-                            icon={<Ionicons name="link-outline" size={29} color={theme.colors.text.secondary} />}
+                            icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
                             mode="info"
                             copy={core.cli.installBanner.guideUrl}
                         />
@@ -658,7 +686,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                     <Item
                         title={t('settingsProviders.connectedServiceTitle')}
                         subtitle={core.uiConnectedService.label}
-                        icon={<Ionicons name="cloud-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="cloud" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                 </ItemGroup>
@@ -671,49 +699,49 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                     <Item
                         title={t('settingsProviders.modelSelectionTitle')}
                         subtitle={core.model.supportsSelection ? t('settingsProviders.supported') : t('settingsProviders.notSupported')}
-                        icon={<Ionicons name="list-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="list" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.freeformModelIdsTitle')}
                         subtitle={core.model.supportsFreeform ? t('settingsProviders.allowed') : t('settingsProviders.notAllowed')}
-                        icon={<Ionicons name="create-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="pencil-simple" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.defaultModelTitle')}
                         subtitle={defaultModelLabel}
-                        icon={<Ionicons name="star-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="star" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.catalogModelListTitle')}
                         subtitle={catalogModelListText}
-                        icon={<Ionicons name="albums-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="stack" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.dynamicModelProbeTitle')}
                         subtitle={dynamicProbe}
-                        icon={<Ionicons name="pulse-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="pulse" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.nonAcpApplyScopeTitle')}
                         subtitle={nonAcpApplyScope}
-                        icon={<Ionicons name="arrow-forward-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="arrow-right" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.acpApplyBehaviorTitle')}
                         subtitle={acpApplyBehavior}
-                        icon={<Ionicons name="sync-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="arrows-clockwise" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                     <Item
                         title={t('settingsProviders.acpConfigOptionTitle')}
                         subtitle={core.model.acpModelConfigOptionId ?? t('settingsProviders.notAvailable')}
-                        icon={<Ionicons name="settings-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                 </ItemGroup>
@@ -725,7 +753,7 @@ const ProviderSettingsScreenInner = React.memo(function ProviderSettingsScreenIn
                             providerId={providerId}
                             machineId={providerAuthentication.machineId}
                             machineHomeDir={providerAuthentication.machineHomeDir}
-                            loginLaunch={providerAuthentication.loginLaunch}
+                            authLaunch={providerAuthentication.authLaunches.find((launch) => launch.kind === selectedAuthLaunchKind) ?? null}
                             onRequestClose={closeProviderAuthTerminal}
                             onTerminalExit={handleProviderAuthTerminalExit}
                         />

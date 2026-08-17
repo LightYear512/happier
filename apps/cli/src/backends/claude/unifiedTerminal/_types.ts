@@ -6,6 +6,7 @@ import type {
   TerminalPromptInput,
   TerminalTurnState,
 } from '@/agent/runtime/terminal/_types';
+import type { ClaudeScreenState } from './tuiControls/screenState';
 
 export type ClaudeUnifiedPromptOrigin = Readonly<{
   kind: 'ui_pending' | 'ui_immediate' | 'rpc';
@@ -28,6 +29,8 @@ export type ClaudeUnifiedPromptBatch<Mode = unknown> = Readonly<{
    * socket echo provides a durable seq.
    */
   userMessageLocalIds?: readonly string[];
+  pendingProviderAction?: import('@/agent/runtime/modeMessageQueue').PendingProviderAction;
+  providerAcceptancePending?: boolean;
 }>;
 
 export type ClaudeUnifiedPromptAcceptance = Readonly<{
@@ -35,16 +38,24 @@ export type ClaudeUnifiedPromptAcceptance = Readonly<{
   turnStateAtInjection: TerminalTurnState;
 }>;
 
+export type ClaudeUnifiedPromptDeliveryState = 'pending' | 'accepted' | 'retired';
+
 export type ClaudeUnifiedPromptAcceptedHandler<Mode = unknown> = (
   batch: ClaudeUnifiedPromptBatch<Mode>,
   acceptance: ClaudeUnifiedPromptAcceptance,
 ) => void | Promise<void>;
 
+export type ClaudeUnifiedPromptProviderAcceptancePendingHandler<Mode = unknown> = (
+  batch: ClaudeUnifiedPromptBatch<Mode>,
+  acceptance: ClaudeUnifiedPromptAcceptance,
+  observedAtMs?: number | undefined,
+) => void;
+
 export type ClaudeUnifiedPromptInjectedHandler<Mode = unknown> = (
   batch: ClaudeUnifiedPromptBatch<Mode>,
   acceptance: ClaudeUnifiedPromptAcceptance,
   result: Extract<TerminalInputInjectionResult, { status: 'injected' }>,
-) => void | Promise<void>;
+) => ClaudeUnifiedPromptInjectionFailureHandling | Promise<ClaudeUnifiedPromptInjectionFailureHandling>;
 
 export type ClaudeUnifiedPromptInjectionFailure<Mode = unknown> = Readonly<{
   batch: ClaudeUnifiedPromptBatch<Mode>;
@@ -52,9 +63,14 @@ export type ClaudeUnifiedPromptInjectionFailure<Mode = unknown> = Readonly<{
   failureState: 'failed_ambiguous' | 'failed_terminal';
 }>;
 
+export type ClaudeUnifiedPromptInjectionFailureHandling =
+  | Readonly<{ action: 'claimed_pending_delivery' }>
+  | Readonly<{ action: 'surfaced_runtime_issue' }>
+  | void;
+
 export type ClaudeUnifiedPromptInjectionFailureHandler<Mode = unknown> = (
   failure: ClaudeUnifiedPromptInjectionFailure<Mode>,
-) => void;
+) => ClaudeUnifiedPromptInjectionFailureHandling | Promise<ClaudeUnifiedPromptInjectionFailureHandling>;
 
 export type ClaudeUnifiedPromptInjectionOptions = Readonly<{
   /**
@@ -63,6 +79,15 @@ export type ClaudeUnifiedPromptInjectionOptions = Readonly<{
    * and the screen-state evaluation that authorized the steer already vetoed visible user drafts.
    */
   inFlightSteer?: boolean | undefined;
+}>;
+
+export type ClaudeUnifiedDeliveryBlocker = NonNullable<
+  Extract<TerminalInputInjectionResult, { status: 'deferred' }>['blocker']
+>;
+
+export type ClaudeUnifiedTerminalScreenObservation = Readonly<{
+  screenState: ClaudeScreenState;
+  userMessageLocalIds?: readonly string[] | undefined;
 }>;
 
 export type ClaudeUnifiedPromptInjector<Mode = unknown> = Readonly<{
@@ -95,14 +120,30 @@ export type ClaudeUnifiedInputArbiter<Mode = unknown> = Readonly<{
    */
   notifyTerminalComposerCleared(state?: Readonly<{ observedAtMs?: number | undefined }>): void;
   observePromptCustodyByTerminal(batch: ClaudeUnifiedPromptBatch<Mode>): Promise<boolean>;
+  /**
+   * Exact local id of the native queued-custody head that may be interrupted into the live turn.
+   * This is transient terminal truth, never a provider-acceptance or Pending settlement.
+   */
+  readPendingInputInterruptAndRunLocalId(): string | null;
+  /**
+   * Atomically revalidates and claims the exact current custody head. A successful claim is
+   * one-shot for the batch and authorizes only the provider-owned interrupt keypress.
+   */
+  claimPendingInputInterruptAndRun(localId: string): boolean;
   confirmPromptAcceptedByProvider(): Promise<boolean>;
   confirmPromptAcceptedByProviderIf(matcher: (batch: ClaudeUnifiedPromptBatch<Mode>) => boolean): Promise<boolean>;
+  observePendingProviderAcceptanceTerminalFailure(): Promise<boolean>;
   drainWhenSafe(): Promise<void>;
+  waitForPendingQueuePumpStateChange(options: Readonly<{
+    afterVersion: number;
+    abortSignal: AbortSignal;
+  }>): Promise<boolean>;
   snapshot(): ClaudeUnifiedInputArbiterSnapshot;
   dispose(): Promise<void> | void;
 }>;
 
 export type ClaudeUnifiedInputArbiterSnapshot = Readonly<{
+  pendingQueuePumpStateVersion: number;
   queuedCount: number;
   pendingInjectionCount: number;
   terminalCustodyCount: number;
@@ -113,11 +154,13 @@ export type ClaudeUnifiedInputArbiterSnapshot = Readonly<{
   userTyping: boolean;
   lastDeferredReason: string | null;
   lastFailureReason: string | null;
+  currentHeadBlocker: ClaudeUnifiedDeliveryBlocker | null;
   headInputState:
     | 'queued'
     | 'waiting_for_readiness'
     | 'injecting'
     | 'awaiting_provider_acceptance'
+    | 'terminal_custody'
     | 'submitted'
     | 'failed_retryable'
     | 'failed_ambiguous'
@@ -139,7 +182,7 @@ export type ClaudeUnifiedInputConsumer<Mode> = Readonly<{
 
 export type ClaudeUnifiedTerminalHost = Readonly<{
   evaluateLiveness(): Promise<TerminalHostLiveness>;
-  dispose(): Promise<void> | void;
+  preserve(): Promise<void> | void;
 }>;
 
 export type ClaudeUnifiedDisposable = Readonly<{

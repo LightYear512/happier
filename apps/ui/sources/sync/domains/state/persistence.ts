@@ -42,6 +42,7 @@ import {
     type ServerAccountScope,
 } from '../scope/serverAccountScope';
 import type { LocalPetSourceMetadata } from '../pets/localPetSourceMetadata';
+import { readNonBlankSessionControlIdentifier } from '@/sync/domains/sessionControl/opaqueIdentifiers';
 var persistedStorage: MMKV | null = null;
 
 const pendingSettingsSchemaByKey: Readonly<Record<string, z.ZodTypeAny>> = Object.freeze({
@@ -165,6 +166,8 @@ export type NewSessionAgentType = AgentId;
 
 export interface NewSessionDraft {
     input: string;
+    /** Opaque identity of the unresolved user launch intent; never contains prompt/config data. */
+    launchUserAttemptId?: string;
     selectedMachineId: string | null;
     selectedPath: string | null;
     entryIntent?: 'session' | 'automation' | null;
@@ -258,6 +261,33 @@ function parseDraftSecretStringOrNull(value: unknown): SecretString | null | und
     return undefined;
 }
 
+type DraftJsonValue = null | boolean | number | string | DraftJsonValue[] | { [key: string]: DraftJsonValue };
+
+function parseDraftJsonValue(value: unknown): DraftJsonValue | undefined {
+    if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+        return value;
+    }
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : undefined;
+    }
+    if (Array.isArray(value)) {
+        const items: DraftJsonValue[] = [];
+        for (const item of value) {
+            const parsed = parseDraftJsonValue(item);
+            if (parsed !== undefined) items.push(parsed);
+        }
+        return items;
+    }
+    if (!value || typeof value !== 'object') return undefined;
+
+    const out: Record<string, DraftJsonValue> = {};
+    for (const [key, rawNestedValue] of Object.entries(value as Record<string, unknown>)) {
+        const parsed = parseDraftJsonValue(rawNestedValue);
+        if (parsed !== undefined) out[key] = parsed;
+    }
+    return out;
+}
+
 function parseDraftAgentNewSessionOptionStateByAgentId(
     input: unknown,
 ): Record<string, Record<string, unknown>> | null {
@@ -274,10 +304,8 @@ function parseDraftAgentNewSessionOptionStateByAgentId(
             const key = typeof rawKey === 'string' ? rawKey.trim() : '';
             if (!key) continue;
 
-            // Only salvage JSON-safe primitives; objects can be added later if needed.
-            if (rawValue === null || typeof rawValue === 'boolean' || typeof rawValue === 'number' || typeof rawValue === 'string') {
-                options[key] = rawValue;
-            }
+            const parsedValue = parseDraftJsonValue(rawValue);
+            if (parsedValue !== undefined) options[key] = parsedValue;
         }
 
         if (Object.keys(options).length > 0) out[targetKey] = options;
@@ -737,6 +765,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
         }
 
         const input = typeof parsed.input === 'string' ? parsed.input : '';
+        const launchUserAttemptId = parseDraftNonEmptyString((parsed as any).launchUserAttemptId);
         const selectedMachineId = typeof parsed.selectedMachineId === 'string' ? parsed.selectedMachineId : null;
         const selectedPath = typeof parsed.selectedPath === 'string' ? parsed.selectedPath : null;
         const entryIntent = parseDraftEntryIntent((parsed as any).entryIntent);
@@ -758,13 +787,13 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
             ? parsed.permissionMode
             : 'default';
         const modelMode: ModelMode = isModelMode(parsed.modelMode)
-            ? String(parsed.modelMode).trim()
+            ? String(parsed.modelMode)
             : 'default';
         const rawAcpSessionModeId = (parsed as any).acpSessionModeId;
         const acpSessionModeId = rawAcpSessionModeId === null
             ? null
             : typeof rawAcpSessionModeId === 'string'
-                ? (rawAcpSessionModeId.trim() || null)
+                ? readNonBlankSessionControlIdentifier(rawAcpSessionModeId)
                 : null;
         const parsedMcpSelection = SessionMcpSelectionV1Schema.safeParse((parsed as any).mcpSelection);
         const mcpSelection = parsedMcpSelection.success ? parsedMcpSelection.data : undefined;
@@ -802,6 +831,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
 
         return {
             input,
+            ...(launchUserAttemptId ? { launchUserAttemptId } : {}),
             selectedMachineId,
             selectedPath,
             ...(entryIntent ? { entryIntent } : {}),

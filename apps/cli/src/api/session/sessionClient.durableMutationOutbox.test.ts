@@ -4,6 +4,11 @@ import { join } from 'node:path';
 
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1,
+  SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_V1,
+  SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1,
+} from '@happier-dev/protocol';
 
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
 import {
@@ -19,8 +24,25 @@ type UserScopedSocket = ReturnType<typeof createUserScopedSocket>;
 let sessionSocketStub: ApiSessionSocketStub | null = null;
 let userSocketStub: ApiSessionSocketStub | null = null;
 let supervisorConnect: null | (() => Promise<void>) = null;
+let supervisorControl: null | Readonly<{
+  start(): Promise<void>;
+  getState(): Readonly<{ phase: string }>;
+  stop(): Promise<void>;
+}> = null;
+let supervisorConnectedTransitions = 0;
 let tempHomeDir: string | null = null;
 const originalHappyHomeDir = process.env.HAPPIER_HOME_DIR;
+
+async function createRuntimePersistenceContext(sessionId: string) {
+  const { configuration } = await import('@/configuration');
+  const { createSessionMutationPersistenceContext, parseQueuedSessionMutation } = await import('./mutations/sessionMutationPersistence');
+  return createSessionMutationPersistenceContext({
+    activeServerDir: configuration.activeServerDir,
+    custody: 'runtime',
+    sessionId,
+    parseQueuedMutation: parseQueuedSessionMutation,
+  });
+}
 
 vi.mock('axios');
 
@@ -53,17 +75,25 @@ vi.mock('./connection/createSessionSocketTransport', () => ({
 vi.mock('@happier-dev/connection-supervisor', () => ({
   DEFAULT_MANAGED_CONNECTION_POLICY: {},
   createManagedConnectionSupervisor: (params: { createTransport: () => unknown; onConnected?: () => Promise<void> | void }) => {
+    let phase = 'idle';
     supervisorConnect = async () => {
       params.createTransport();
+      phase = 'online';
+      supervisorConnectedTransitions += 1;
       await params.onConnected?.();
     };
-    return {
+    supervisorControl = {
       start: async () => {
+        if (phase === 'online' || phase === 'connecting') return;
+        phase = 'connecting';
         await supervisorConnect?.();
       },
-      getState: () => ({ phase: 'online' }),
-      stop: async () => {},
+      getState: () => ({ phase }),
+      stop: async () => {
+        phase = 'shutting_down';
+      },
     };
+    return supervisorControl;
   },
 }));
 
@@ -117,17 +147,150 @@ describe('ApiSessionClient durable mutation outbox', () => {
     vi.resetModules();
     vi.mocked(axios.post).mockReset();
     supervisorConnect = null;
+    supervisorControl = null;
+    supervisorConnectedTransitions = 0;
     sessionSocketStub = null;
     userSocketStub = null;
     await useTempHappyHome();
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     process.env.HAPPIER_HOME_DIR = originalHappyHomeDir;
     if (tempHomeDir) {
       await rm(tempHomeDir, { recursive: true, force: true });
       tempHomeDir = null;
     }
+  });
+
+  it('models repeated start while online as a connection-supervisor no-op', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+
+    const { ApiSessionClient } = await import('./sessionClient');
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+
+    await expect.poll(() => supervisorConnectedTransitions).toBe(1);
+    expect(supervisorControl?.getState()).toEqual({ phase: 'online' });
+    await supervisorControl?.start();
+
+    expect(supervisorControl?.getState()).toEqual({ phase: 'online' });
+    expect(supervisorConnectedTransitions).toBe(1);
+    await client.close();
+  });
+
+  it('withholds current pending materialization until the initial Runtime Activity publisher snapshot is acknowledged', async () => {
+    const featuresResponse = createDeferred<Response>();
+    const fetchFeatures = vi.fn(async () => await featuresResponse.promise);
+    vi.stubGlobal('fetch', fetchFeatures);
+    const currentFeaturesResponse = new Response(JSON.stringify({
+      features: {
+        sharing: {
+          pendingQueueV2: { enabled: true },
+          pendingDeliveryState: { enabled: true },
+        },
+      },
+      capabilities: {
+        session: {
+          runtimeActivity: { protocolVersion: 2 },
+          pendingInput: { protocolVersion: 1 },
+        },
+      },
+    }), { status: 200 });
+
+    const runtimeActivityAck = createDeferred<void>();
+    const runtimeActivityRequest = createDeferred<Readonly<{
+      sessionId: string;
+      mutationId: string;
+      snapshot: Readonly<{ state: string; activeCount: number }>;
+    }>>();
+    let pendingMaterializeCount = 0;
+    let publisherRegistered = false;
+    sessionSocketStub = createApiSessionSocketStub({
+      id: 'session-socket-current',
+      connected: true,
+      emit: (event, args) => {
+        if (event !== 'ping') return;
+        const callback = args[0];
+        if (typeof callback === 'function') callback();
+      },
+      emitWithAck: async (event, payload) => {
+        if (event === 'ping') return { v: 1 };
+        if (event === 'session-runtime-activity-snapshot') {
+          const request = payload as Awaited<typeof runtimeActivityRequest.promise>;
+          runtimeActivityRequest.resolve(request);
+          await runtimeActivityAck.promise;
+          return {
+            status: 'applied',
+            sessionId: request.sessionId,
+            mutationId: request.mutationId,
+            projection: {
+              ...request.snapshot,
+              observedAt: 1,
+              revision: 1,
+            },
+          };
+        }
+        if (event === 'pending-materialize-next') {
+          pendingMaterializeCount += 1;
+          if (!publisherRegistered) {
+            return { ok: false, error: 'forbidden' };
+          }
+          return {
+            ok: true,
+            didMaterialize: false,
+            pendingCount: 0,
+            pendingBlockedCount: 0,
+            pendingVersion: 2,
+          };
+        }
+        if (event === 'session-runtime-activity-close') {
+          return { status: 'closed', sessionId: 's1' };
+        }
+        throw new Error(`Unexpected session socket ACK event: ${event}`);
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ id: 'user-socket', connected: false });
+
+    const { ApiSessionClient } = await import('./sessionClient');
+    const fixture = createPlainSessionFixture({
+      id: 's1',
+      pendingCount: 1,
+      pendingBlockedCount: 0,
+      pendingVersion: 1,
+    });
+    const client = new ApiSessionClient('tok', {
+      ...fixture,
+      metadata: { ...fixture.metadata, machineId: 'machine-1' },
+    });
+
+    await expect.poll(() => fetchFeatures).toHaveBeenCalledTimes(1);
+    await client.getRuntimeActivitySnapshotPublisher().publish({
+      state: 'idle',
+      activeCount: 0,
+    });
+    featuresResponse.resolve(currentFeaturesResponse);
+    await expect.poll(() => sessionSocketStub?.emitWithAck.mock.calls.map((call) => call[0]), {
+      timeout: 5_000,
+    }).toContain('session-runtime-activity-snapshot');
+    await runtimeActivityRequest.promise;
+    const beforePublisherAck = await client.materializeNextPendingMessageSafely({ reconcileWhenEmpty: 'force' });
+    const materializationsBeforePublisherAck = pendingMaterializeCount;
+
+    publisherRegistered = true;
+    runtimeActivityAck.resolve();
+    await expect.poll(() => (
+      (client as unknown as {
+        sessionSyncPendingInputServerContract: { mode?: unknown } | null;
+      }).sessionSyncPendingInputServerContract?.mode
+    )).toBe('session_sync_v2_pending_input_v1');
+    await expect(client.materializeNextPendingMessageSafely({ reconcileWhenEmpty: 'force' }))
+      .resolves.toEqual({ type: 'no_pending' });
+
+    await client.close();
+    expect(beforePublisherAck).toMatchObject({ type: 'retryable_transport' });
+    expect(materializationsBeforePublisherAck).toBe(0);
+    expect(pendingMaterializeCount).toBe(1);
   });
 
   it('does not queue a terminal session turn mutation when no turn is active', async () => {
@@ -194,6 +357,168 @@ describe('ApiSessionClient durable mutation outbox', () => {
     expect(deliveredEvents).toContain('session-turn-mutation');
     await expect.poll(() => readPersistedOutboxMutationCount('s1')).toBe(0);
     await client.close();
+  });
+
+  it('delivers a queued runtime Activity snapshot before following canonical turn and transcript mutations', async () => {
+    vi.mocked(axios.post).mockRejectedValue(new Error('server offline'));
+    const deliveredEvents: string[] = [];
+    sessionSocketStub = createApiSessionSocketStub({
+      connected: false,
+      emitWithAck: async (event: string, payload: unknown) => {
+        if (
+          event === 'session-runtime-activity-snapshot'
+          || event === 'session-turn-mutation'
+          || event === SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1
+        ) {
+          deliveredEvents.push(event);
+        }
+        if (event === 'ping') {
+          return { ok: true };
+        }
+        if (event === 'session-runtime-activity-snapshot') {
+          const request = payload as {
+            sessionId: string;
+            mutationId: string;
+            snapshot: { state: string; activeCount: number };
+          };
+          return {
+            status: 'applied',
+            sessionId: request.sessionId,
+            mutationId: request.mutationId,
+            projection: {
+              ...request.snapshot,
+              observedAt: 1,
+              revision: 1,
+            },
+          };
+        }
+        if (event === 'session-runtime-activity-close') {
+          return { status: 'closed', sessionId: 's1' };
+        }
+        if (event === SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1) {
+          return { ok: true, capability: SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_V1 };
+        }
+        if (event === SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1) {
+          return {
+            ok: true,
+            status: 'observed',
+            id: 'message-1',
+            seq: 1,
+            localId: (payload as { localId?: string }).localId ?? 'assistant-1',
+            didWrite: true,
+            ingestedAt: 1,
+          };
+        }
+        return { ok: true };
+      },
+    });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+
+    const { createSessionMutationOutbox } = await import('./mutations/createSessionMutationOutbox');
+    const { createRuntimeActivitySnapshotSessionMutationPublisher } = await import('./mutations/runtimeActivitySnapshotSessionMutationPublisher');
+    const {
+      createSessionTurnMutation,
+      createTranscriptMessageAppendMutation,
+    } = await import('./mutations/sessionMutationTypes');
+    const outbox = createSessionMutationOutbox({
+      token: 'tok',
+      sessionId: 's1',
+      getSocket: () => sessionSocketStub!,
+      requestReconnect: () => {},
+    });
+    await outbox.awaitReady();
+    await outbox.setSessionSyncPendingInputServerContract({
+      mode: 'session_sync_v2_pending_input_v1',
+      runtimeActivity: 'v2',
+      pendingInput: 'v1',
+      sessionConnectionEpoch: 1,
+      socket: sessionSocketStub,
+    });
+    const publisher = createRuntimeActivitySnapshotSessionMutationPublisher({ sessionId: 's1', journal: outbox });
+
+    await publisher.publish({
+      state: 'active',
+      activeCount: 1,
+    });
+    expect(outbox.readRuntimeActivitySnapshotTail()).toMatchObject({
+      sequence: 1,
+      custody: {
+        identity: {
+          mutationKey: 'runtime-activity-snapshot:s1',
+          admissionOrder: 1,
+        },
+        value: { state: 'active', activeCount: 1 },
+      },
+      settlement: null,
+    });
+    await outbox.enqueueSessionTurn(createSessionTurnMutation({
+      sessionId: 's1',
+      mutationId: 'turn-begin',
+      action: 'begin',
+      turnId: 'turn-1',
+      provider: 'codex',
+      providerTurnId: 'provider-turn-1',
+      observedAt: 1,
+    }));
+    await outbox.enqueueTranscriptMessage(createTranscriptMessageAppendMutation({
+      sessionId: 's1',
+      localId: 'assistant-1',
+      content: JSON.stringify({ type: 'message', message: 'authoritative assistant reply' }),
+      provenance: { kind: 'non_dependent', source: 'external' },
+      createdAt: 2,
+      updatedAt: 2,
+    }));
+    await outbox.enqueueSessionTurn(createSessionTurnMutation({
+      sessionId: 's1',
+      mutationId: 'turn-complete',
+      action: 'complete',
+      turnId: 'turn-1',
+      provider: 'codex',
+      providerTurnId: 'provider-turn-1',
+      observedAt: 3,
+    }));
+
+    await expect.poll(async () => (await readPersistedOutboxMutations('s1')).map((mutation) => (
+      (mutation as { kind?: unknown }).kind
+    ))).toEqual([
+      'runtime_activity_snapshot',
+      'session_turn',
+      'transcript_message_append',
+      'session_turn',
+    ]);
+    expect(deliveredEvents).toEqual([]);
+
+    sessionSocketStub.connected = true;
+    await outbox.flush('connect');
+
+    expect(deliveredEvents).toEqual([
+      'session-runtime-activity-snapshot',
+      'session-turn-mutation',
+      SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1,
+      'session-turn-mutation',
+    ]);
+    await expect.poll(() => readPersistedOutboxMutationCount('s1')).toBe(0);
+    expect(outbox.readRuntimeActivitySnapshotTail()).toMatchObject({
+      sequence: 2,
+      custody: null,
+      settlement: {
+        identity: {
+          mutationKey: 'runtime-activity-snapshot:s1',
+          admissionOrder: 1,
+        },
+        desiredValue: { state: 'active', activeCount: 1 },
+        result: 'applied',
+        committedProjection: {
+          state: 'active',
+          activeCount: 1,
+          observedAt: 1,
+          revision: 1,
+        },
+        committedRevision: 1,
+      },
+    });
+    await publisher.close();
+    await outbox.close();
   });
 
   it('keeps undelivered terminal session turn mutations persisted when the client closes', async () => {
@@ -343,7 +668,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
         mutationId: 'mutation-complete',
         observedAt: 200,
       });
-      await saveSessionMutationOutbox('s1', [
+      await saveSessionMutationOutbox(await createRuntimePersistenceContext('s1'), [
         {
           kind: 'session_turn',
           mutationId: begin.mutationId,
@@ -432,7 +757,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
         mutationId: 'mutation-begin',
         observedAt: 100,
       });
-      await saveSessionMutationOutbox('s1', [
+      await saveSessionMutationOutbox(await createRuntimePersistenceContext('s1'), [
         {
           kind: 'session_turn',
           mutationId: begin.mutationId,
@@ -509,7 +834,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
         mutationId: 'mutation-begin',
         observedAt: 100,
       });
-      await saveSessionMutationOutbox('s1', [
+      await saveSessionMutationOutbox(await createRuntimePersistenceContext('s1'), [
         {
           kind: 'session_turn',
           mutationId: begin.mutationId,
@@ -602,77 +927,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     } finally {
       httpDelivery.resolve({ status: 200, data: { ok: true } });
       await outbox?.close();
-    }
-  });
-
-  it('waits for pending lifecycle writes and session-end enqueue before closing the durable mutation outbox', async () => {
-    const cancelEnqueue = createDeferred<void>();
-    const sessionEndEnqueue = createDeferred<void>();
-    const outboxClose = createDeferred<void>();
-    const outboxEvents: string[] = [];
-    vi.doMock('./mutations/createSessionMutationOutbox', () => ({
-      createSessionMutationOutbox: () => ({
-        enqueueSessionTurn: async (mutation: { action: string }) => {
-          outboxEvents.push(`enqueue:${mutation.action}:start`);
-          if (mutation.action === 'cancel') {
-            await cancelEnqueue.promise;
-          }
-          outboxEvents.push(`enqueue:${mutation.action}:end`);
-        },
-        enqueueSessionEnd: async () => {
-          outboxEvents.push('enqueue:end-session:start');
-          await sessionEndEnqueue.promise;
-          outboxEvents.push('enqueue:end-session:end');
-        },
-        flush: async () => {
-          outboxEvents.push('flush');
-        },
-        close: async () => {
-          outboxEvents.push('outbox-close:start');
-          await outboxClose.promise;
-          outboxEvents.push('outbox-close:end');
-        },
-      }),
-    }));
-
-    sessionSocketStub = createApiSessionSocketStub({ connected: false });
-    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-
-    try {
-      const { ApiSessionClient } = await import('./sessionClient');
-      const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
-
-      await client.sessionTurnLifecycle.beginTurn({ provider: 'codex', providerTurnId: 'turn-1' });
-      client.sendSessionDeath();
-
-      let closeSettled = false;
-      const closePromise = client.close().then(() => {
-        closeSettled = true;
-      });
-
-      await expect.poll(() => outboxEvents).toContain('enqueue:cancel:start');
-      await expect.poll(() => outboxEvents).toContain('enqueue:end-session:start');
-      await expect.poll(() => closeSettled, { timeout: 50 }).toBe(false);
-      expect(outboxEvents).not.toContain('outbox-close:start');
-
-      cancelEnqueue.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(outboxEvents).not.toContain('outbox-close:start');
-
-      sessionEndEnqueue.resolve();
-      await expect.poll(() => outboxEvents).toContain('outbox-close:start');
-      outboxClose.resolve();
-      await closePromise;
-
-      expect(outboxEvents).toContain('enqueue:cancel:end');
-      expect(outboxEvents).toContain('enqueue:end-session:end');
-      expect(outboxEvents.at(-1)).toBe('outbox-close:end');
-    } finally {
-      cancelEnqueue.resolve();
-      sessionEndEnqueue.resolve();
-      outboxClose.resolve();
-      vi.doUnmock('./mutations/createSessionMutationOutbox');
-      vi.resetModules();
     }
   });
 
@@ -926,11 +1180,20 @@ describe('ApiSessionClient durable mutation outbox', () => {
     });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    let client: { close(): Promise<void>; sessionTurnLifecycle: { beginTurn(input: object): Promise<unknown>; failTurn(input: object): Promise<unknown> } } | null = null;
+    let client: {
+      close(): Promise<void>;
+      flush(): Promise<void>;
+      sessionTurnLifecycle: {
+        beginTurn(input: object): Promise<unknown>;
+        failTurn(input: object): Promise<unknown>;
+      };
+    } | null = null;
 
     try {
       const { ApiSessionClient } = await import('./sessionClient');
       client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+      await expect.poll(() => supervisorControl?.getState().phase).toBe('online');
+      await client.flush();
 
       await client.sessionTurnLifecycle.beginTurn({});
       await client.sessionTurnLifecycle.failTurn({});
@@ -1031,7 +1294,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
         mutationId: 'mutation-fail',
         observedAt: 200,
       });
-      await saveSessionMutationOutbox('s1', [
+      await saveSessionMutationOutbox(await createRuntimePersistenceContext('s1'), [
         {
           kind: 'session_turn',
           mutationId: fail.mutationId,
@@ -1145,7 +1408,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
     await client.close();
   });
 
-  it('flushes newer session-turn mutations without delivering superseded session-end mutations', async () => {
+  it('flushes persisted session-turn mutations without delivering legacy session-end requests', async () => {
     const postCalls: string[] = [];
     vi.mocked(axios.post).mockImplementation(async (url) => {
       const requestUrl = String(url);
@@ -1164,12 +1427,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
     });
     const { createSessionMutationOutbox } = await import('./mutations/createSessionMutationOutbox');
     const { saveSessionMutationOutbox } = await import('./mutations/sessionMutationPersistence');
-    const { createSessionEndMutation, createSessionTurnMutation } = await import('./mutations/sessionMutationTypes');
-
-    const staleEnd = createSessionEndMutation({
-      sessionId: 's1',
-      observedAt: 1_000,
-    });
+    const { createSessionTurnMutation } = await import('./mutations/sessionMutationTypes');
     const newerBegin = createSessionTurnMutation({
       sessionId: 's1',
       mutationId: 'begin-new',
@@ -1178,15 +1436,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
       provider: 'codex',
       observedAt: 2_000,
     });
-    await saveSessionMutationOutbox('s1', [
-      {
-        kind: 'session_end',
-        mutationId: staleEnd.mutationId,
-        payload: staleEnd,
-        createdAt: 1_000,
-        attempts: 3,
-        nextAttemptAt: 0,
-      },
+    await saveSessionMutationOutbox(await createRuntimePersistenceContext('s1'), [
       {
         kind: 'session_turn',
         mutationId: newerBegin.mutationId,

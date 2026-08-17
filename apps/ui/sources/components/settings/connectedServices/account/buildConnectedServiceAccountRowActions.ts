@@ -1,5 +1,8 @@
 import type { ItemAction } from '@/components/ui/lists/itemActions';
-import type { ConnectedServiceCredentialHealthStatusV1 } from '@happier-dev/protocol';
+import {
+    isConnectedServiceCredentialHealthStatusUsable,
+    type ConnectedServiceCredentialHealthStatusV1,
+} from '@happier-dev/protocol';
 import { t } from '@/text';
 
 /**
@@ -12,7 +15,7 @@ import { t } from '@/text';
  * affordance (account-detail row kebab, profile-detail header, inline rows) reads
  * it from here so the icon can never drift back to a refresh look.
  */
-export const CONNECTED_SERVICE_RECONNECT_ICON = 'log-in-outline';
+export const CONNECTED_SERVICE_RECONNECT_ICON = 'sign-in';
 
 export type ConnectedServiceAccountKind = 'token' | 'oauth' | null;
 
@@ -37,7 +40,7 @@ export function buildConnectedServiceAccountRowActions(params: Readonly<{
     onReplaceToken?: () => void;
     /** Re-run the OAuth connect flow (oauth accounts only). */
     onReconnect?: () => void;
-    /** Disconnect / remove the credential (connected accounts only). */
+    /** Disconnect / remove the credential (usable account records only). */
     onDisconnect?: () => void;
 }>): ItemAction[] {
     const { kind, status } = params;
@@ -47,7 +50,7 @@ export function buildConnectedServiceAccountRowActions(params: Readonly<{
         actions.push({
             id: 'open',
             title: t('connectedServices.detail.actions.openAccount'),
-            icon: 'open-outline',
+            icon: 'arrow-square-out',
             onPress: params.onOpen,
         });
     }
@@ -55,7 +58,7 @@ export function buildConnectedServiceAccountRowActions(params: Readonly<{
         actions.push({
             id: 'label',
             title: t('connectedServices.detail.actions.editLabel'),
-            icon: 'pencil-outline',
+            icon: 'pencil',
             onPress: params.onEditLabel,
         });
     }
@@ -63,7 +66,7 @@ export function buildConnectedServiceAccountRowActions(params: Readonly<{
         actions.push({
             id: 'replace-token',
             title: t('connectedServices.detail.actions.replaceToken'),
-            icon: 'key-outline',
+            icon: 'key',
             onPress: params.onReplaceToken,
         });
     }
@@ -75,11 +78,11 @@ export function buildConnectedServiceAccountRowActions(params: Readonly<{
             onPress: params.onReconnect,
         });
     }
-    if (status === 'connected' && params.onDisconnect) {
+    if (isConnectedServiceCredentialHealthStatusUsable(status) && params.onDisconnect) {
         actions.push({
             id: 'disconnect',
             title: t('modals.disconnect'),
-            icon: 'trash-outline',
+            icon: 'trash',
             destructive: true,
             onPress: params.onDisconnect,
         });

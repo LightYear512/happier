@@ -1,6 +1,5 @@
 import * as React from 'react';
 
-import { Ionicons } from '@expo/vector-icons';
 import { useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
 
@@ -15,7 +14,9 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useLocalSettings, useSettings } from '@/sync/domains/state/storage';
 import { useApplyLocalSettings, useApplySettings } from '@/sync/store/settingsWriters';
 import { t } from '@/text';
+import { sync } from '@/sync/sync';
 import { isTauriDesktop } from '@/utils/platform/tauri';
+import { runPushNotificationPermissionPriming } from '@/activity/notifications/permission/pushNotificationPermissionPriming';
 
 import {
     DEFAULT_NOTIFICATIONS_SETTINGS_V1,
@@ -34,6 +35,7 @@ import {
     updateNotificationChannelById,
 } from './notificationChannels';
 import { useTauriNotificationPermissionDiagnostics } from './useTauriNotificationPermissionDiagnostics';
+import { Icon } from '@/components/ui/icons/Icon';
 
 type ForegroundBehavior = 'full' | 'silent' | 'off';
 
@@ -94,6 +96,21 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
         });
         applyRemoteNotificationSettings(nextNotifications, webhookChannels);
     }, [applyRemoteNotificationSettings, notifications, webhookChannels]);
+
+    /**
+     * Enabling push here is the user's demonstrated intent, so it is the right moment to ask the OS
+     * — framed in-app first. Registration itself never prompts, so without this the setting could
+     * be on while the OS permission was never requested.
+     */
+    const handlePushEnabledChange = React.useCallback(async (value: boolean) => {
+        setNotifications({ pushEnabled: value });
+        if (!value) return;
+        await runPushNotificationPermissionPriming({
+            pushEnabled: true,
+            trigger: 'user_action',
+            onGranted: () => sync.onPushPermissionGranted(),
+        });
+    }, [setNotifications]);
 
     const setNotificationTopic = React.useCallback((
         topic: 'connectedServiceAccountSwitch' | 'connectedServiceQuotaBlocked' | 'connectedServiceQuotaRecovered',
@@ -279,7 +296,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     testID="settings-notifications-badges-enabled"
                     title={t('settingsNotifications.badges.enabledTitle')}
                     subtitle={t('settingsNotifications.badges.enabledSubtitle')}
-                    icon={<Ionicons name="albums-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="stack" size={29} color={theme.colors.accent.blue} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgesEnabled !== false}
@@ -291,7 +308,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.badges.unreadTitle')}
                     subtitle={t('settingsNotifications.badges.unreadSubtitle')}
-                    icon={<Ionicons name="mail-unread-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="envelope-simple-open" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgeShowUnread !== false}
@@ -304,7 +321,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.badges.permissionRequestsTitle')}
                     subtitle={t('settingsNotifications.badges.permissionRequestsSubtitle')}
-                    icon={<Ionicons name="hand-left-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgeShowPendingPermissionRequests !== false}
@@ -317,7 +334,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.badges.userActionsTitle')}
                     subtitle={t('settingsNotifications.badges.userActionsSubtitle')}
-                    icon={<Ionicons name="chatbox-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgeShowPendingUserActionRequests !== false}
@@ -330,7 +347,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.badges.queuedTitle')}
                     subtitle={t('settingsNotifications.badges.queuedSubtitle')}
-                    icon={<Ionicons name="hourglass-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="hourglass" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgeShowQueuedUserInput !== false}
@@ -343,7 +360,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.badges.friendRequestsTitle')}
                     subtitle={t('settingsNotifications.badges.friendRequestsSubtitle')}
-                    icon={<Ionicons name="people-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="users" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgeShowFriendRequestsInboxCount !== false}
@@ -356,7 +373,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.badges.desktopDotTitle')}
                     subtitle={t('settingsNotifications.badges.desktopDotSubtitle')}
-                    icon={<Ionicons name="ellipse-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="circle" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.activityBadgeShowDesktopNonNumericDot !== false}
@@ -376,7 +393,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     testID="settings-notifications-local-enabled"
                     title={t('common.enabled')}
                     subtitle={t('settingsNotifications.local.enabledSubtitle')}
-                    icon={<Ionicons name="phone-portrait-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.blue} />}
                     rightElement={(
                         <Switch
                             value={localSettings.localNotificationsEnabled !== false}
@@ -388,7 +405,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.local.readyTitle')}
                     subtitle={t('settingsNotifications.local.readySubtitle')}
-                    icon={<Ionicons name="checkmark-circle-outline" size={29} color={theme.colors.state.success.foreground} />}
+                    icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
                     rightElement={(
                         <Switch
                             value={localSettings.localNotificationsShowReady !== false}
@@ -401,7 +418,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.local.readyPreviewTitle')}
                     subtitle={t('settingsNotifications.local.readyPreviewSubtitle')}
-                    icon={<Ionicons name="chatbubble-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.localNotificationsShowReadyMessageText !== false}
@@ -414,7 +431,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.local.permissionRequestsTitle')}
                     subtitle={t('settingsNotifications.local.permissionRequestsSubtitle')}
-                    icon={<Ionicons name="hand-left-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.localNotificationsShowPendingPermissionRequests !== false}
@@ -427,7 +444,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.local.userActionsTitle')}
                     subtitle={t('settingsNotifications.local.userActionsSubtitle')}
-                    icon={<Ionicons name="chatbox-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={localSettings.localNotificationsShowPendingUserActionRequests !== false}
@@ -448,7 +465,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                         testID="settings-notifications-desktop-permission"
                         title={t('settingsNotifications.desktop.permission.title')}
                         subtitle={desktopPermissionSubtitle}
-                        icon={<Ionicons name="desktop-outline" size={29} color={desktopPermissionIconColor} />}
+                        icon={<Icon name="desktop" size={29} color={desktopPermissionIconColor} />}
                         onPress={desktopNotificationPermission.status === 'granted'
                             ? undefined
                             : () => { void desktopNotificationPermission.requestPermission(); }}
@@ -465,11 +482,11 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     testID="settings-notifications-push-enabled"
                     title={t('common.enabled')}
                     subtitle={t('settingsNotifications.push.enabledSubtitle')}
-                    icon={<Ionicons name="notifications-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="bell" size={29} color={theme.colors.accent.blue} />}
                     rightElement={(
                         <Switch
                             value={pushEnabled}
-                            onValueChange={(value) => setNotifications({ pushEnabled: Boolean(value) })}
+                            onValueChange={(value) => { void handlePushEnabledChange(Boolean(value)); }}
                         />
                     )}
                     showChevron={false}
@@ -478,7 +495,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     testID="settings-notifications-push-troubleshoot"
                     title={t('settingsNotifications.push.troubleshootTitle')}
                     subtitle={t('settingsNotifications.push.troubleshootSubtitle')}
-                    icon={<Ionicons name="help-circle-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="question" size={29} color={theme.colors.text.secondary} />}
                     onPress={openPushTroubleshooting}
                 />
             </ItemGroup>
@@ -491,7 +508,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     testID="settings-notifications-add-webhook"
                     title={t('settingsNotifications.webhooks.addTitle')}
                     subtitle={t('settingsNotifications.webhooks.addSubtitle')}
-                    icon={<Ionicons name="add-circle-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
                     onPress={() => { void handleAddWebhook(); }}
                     showChevron={false}
                 />
@@ -499,7 +516,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     <Item
                         title={t('settingsNotifications.webhooks.emptyTitle')}
                         subtitle={t('settingsNotifications.webhooks.emptySubtitle')}
-                        icon={<Ionicons name="link-outline" size={29} color={theme.colors.text.secondary} />}
+                        icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                 ) : (
@@ -511,7 +528,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                 subtitle={channel.enabled
                                     ? t('settingsNotifications.webhooks.enabledSubtitle')
                                     : t('settingsNotifications.webhooks.disabledSubtitle')}
-                                icon={<Ionicons name="link-outline" size={29} color={theme.colors.accent.blue} />}
+                                icon={<Icon name="link" size={29} color={theme.colors.accent.blue} />}
                                 rightElement={(
                                     <ItemRowActions
                                         title={channel.url}
@@ -520,13 +537,13 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                             {
                                                 id: 'edit',
                                                 title: t('common.edit'),
-                                                icon: 'pencil-outline',
+                                                icon: 'pencil',
                                                 onPress: () => { void handleEditWebhook(channel); },
                                             },
                                             {
                                                 id: 'delete',
                                                 title: t('common.delete'),
-                                                icon: 'trash-outline',
+                                                icon: 'trash',
                                                 destructive: true,
                                                 onPress: () => { void handleDeleteWebhook(channel); },
                                             },
@@ -538,7 +555,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                             <Item
                                 title={t('settingsNotifications.webhooks.enabledTitle')}
                                 subtitle={t('settingsNotifications.webhooks.channelEnabledSubtitle')}
-                                icon={<Ionicons name="notifications-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Switch
                                         value={channel.enabled !== false}
@@ -556,7 +573,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                 subtitle={hasConfiguredSecretStringValue(channel.signingSecret)
                                     ? t('settingsNotifications.webhooks.signingSecretConfiguredSubtitle')
                                     : t('settingsNotifications.webhooks.signingSecretEmptySubtitle')}
-                                icon={<Ionicons name="key-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="key" size={29} color={theme.colors.text.secondary} />}
                                 onPress={() => { void handleSetWebhookSigningSecret(channel); }}
                                 rightElement={hasConfiguredSecretStringValue(channel.signingSecret) ? (
                                     <ItemRowActions
@@ -566,7 +583,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                             {
                                                 id: 'clear-signing-secret',
                                                 title: t('settingsNotifications.webhooks.signingSecretClearAction'),
-                                                icon: 'close-circle-outline',
+                                                icon: 'x-circle',
                                                 onPress: () => { handleClearWebhookSigningSecret(channel); },
                                             },
                                         ]}
@@ -577,7 +594,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                             <Item
                                 title={t('settingsNotifications.webhooks.readyTitle')}
                                 subtitle={t('settingsNotifications.webhooks.readySubtitle')}
-                                icon={<Ionicons name="checkmark-circle-outline" size={29} color={theme.colors.state.success.foreground} />}
+                                icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
                                 rightElement={(
                                     <Switch
                                         value={channel.topics.ready !== false}
@@ -599,7 +616,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                             <Item
                                 title={t('settingsNotifications.webhooks.readyPreviewTitle')}
                                 subtitle={t('settingsNotifications.webhooks.readyPreviewSubtitle')}
-                                icon={<Ionicons name="chatbubble-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Switch
                                         value={channel.readyIncludeMessageText !== false}
@@ -616,7 +633,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                             <Item
                                 title={t('settingsNotifications.webhooks.permissionRequestsTitle')}
                                 subtitle={t('settingsNotifications.webhooks.permissionRequestsSubtitle')}
-                                icon={<Ionicons name="hand-left-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Switch
                                         value={channel.topics.permissionRequest !== false}
@@ -638,7 +655,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                             <Item
                                 title={t('settingsNotifications.webhooks.userActionsTitle')}
                                 subtitle={t('settingsNotifications.webhooks.userActionsSubtitle')}
-                                icon={<Ionicons name="chatbox-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Switch
                                         value={channel.topics.userActionRequest !== false}
@@ -664,7 +681,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                             testID={`settings-notifications-webhook-topic:${channel.id}:connectedServiceAccountSwitch`}
                                             title={t('settingsNotifications.connectedServices.accountSwitch.title')}
                                             subtitle={t('settingsNotifications.connectedServices.accountSwitch.subtitle')}
-                                            icon={<Ionicons name="swap-horizontal-outline" size={29} color={theme.colors.text.secondary} />}
+                                            icon={<Icon name="arrows-left-right" size={29} color={theme.colors.text.secondary} />}
                                             rightElement={(
                                                 <Switch
                                                     value={channel.topics.connectedServiceAccountSwitch !== false}
@@ -681,7 +698,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                                 testID={`settings-notifications-webhook-topic:${channel.id}:connectedServiceQuotaBlocked`}
                                                 title={t('settingsNotifications.connectedServices.quotaBlocked.title')}
                                                 subtitle={t('settingsNotifications.connectedServices.quotaBlocked.subtitle')}
-                                                icon={<Ionicons name="timer-outline" size={29} color={theme.colors.text.secondary} />}
+                                                icon={<Icon name="timer" size={29} color={theme.colors.text.secondary} />}
                                                 rightElement={(
                                                     <Switch
                                                         value={channel.topics.connectedServiceQuotaBlocked !== false}
@@ -695,7 +712,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                                 testID={`settings-notifications-webhook-topic:${channel.id}:connectedServiceQuotaRecovered`}
                                                 title={t('settingsNotifications.connectedServices.quotaRecovered.title')}
                                                 subtitle={t('settingsNotifications.connectedServices.quotaRecovered.subtitle')}
-                                                icon={<Ionicons name="checkmark-circle-outline" size={29} color={theme.colors.text.secondary} />}
+                                                icon={<Icon name="check-circle" size={29} color={theme.colors.text.secondary} />}
                                                 rightElement={(
                                                     <Switch
                                                         value={channel.topics.connectedServiceQuotaBlocked !== false && channel.topics.connectedServiceQuotaRecovered !== false}
@@ -724,7 +741,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                             testID="settings-notifications-connected-service-account-switch"
                             title={t('settingsNotifications.connectedServices.accountSwitch.title')}
                             subtitle={t('settingsNotifications.connectedServices.accountSwitch.subtitle')}
-                            icon={<Ionicons name="swap-horizontal-outline" size={29} color={theme.colors.text.secondary} />}
+                            icon={<Icon name="arrows-left-right" size={29} color={theme.colors.text.secondary} />}
                             rightElement={(
                                 <Switch
                                     value={notifications.connectedServiceAccountSwitch !== false}
@@ -741,7 +758,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                 testID="settings-notifications-connected-service-quota-blocked"
                                 title={t('settingsNotifications.connectedServices.quotaBlocked.title')}
                                 subtitle={t('settingsNotifications.connectedServices.quotaBlocked.subtitle')}
-                                icon={<Ionicons name="timer-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="timer" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Switch
                                         value={notifications.connectedServiceQuotaBlocked !== false}
@@ -755,7 +772,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                                 testID="settings-notifications-connected-service-quota-recovered"
                                 title={t('settingsNotifications.connectedServices.quotaRecovered.title')}
                                 subtitle={t('settingsNotifications.connectedServices.quotaRecovered.subtitle')}
-                                icon={<Ionicons name="checkmark-circle-outline" size={29} color={theme.colors.text.secondary} />}
+                                icon={<Icon name="check-circle" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Switch
                                         value={notifications.connectedServiceQuotaBlocked !== false && notifications.connectedServiceQuotaRecovered !== false}
@@ -777,7 +794,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.types.ready.title')}
                     subtitle={t('settingsNotifications.types.ready.subtitle')}
-                    icon={<Ionicons name="checkmark-circle-outline" size={29} color={theme.colors.state.success.foreground} />}
+                    icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
                     rightElement={(
                         <Switch
                             value={notifications.ready !== false}
@@ -790,7 +807,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.types.readyPreview.title')}
                     subtitle={t('settingsNotifications.types.readyPreview.subtitle')}
-                    icon={<Ionicons name="chatbubble-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={notifications.readyIncludeMessageText !== false}
@@ -803,7 +820,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.types.permissionRequests.title')}
                     subtitle={t('settingsNotifications.types.permissionRequests.subtitle')}
-                    icon={<Ionicons name="hand-left-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={notifications.permissionRequest !== false}
@@ -816,7 +833,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.types.userActions.title')}
                     subtitle={t('settingsNotifications.types.userActions.subtitle')}
-                    icon={<Ionicons name="chatbox-ellipses-outline" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={notifications.userActionRequest !== false}
@@ -835,7 +852,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.foregroundBehavior.full')}
                     subtitle={t('settingsNotifications.foregroundBehavior.fullDescription')}
-                    icon={<Ionicons name="volume-high-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="speaker-high" size={29} color={theme.colors.accent.blue} />}
                     selected={localSettings.localNotificationsForegroundBehavior === 'full'}
                     disabled={localSettings.localNotificationsEnabled === false}
                     onPress={() => setLocalSetting({ localNotificationsForegroundBehavior: 'full' })}
@@ -844,7 +861,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.foregroundBehavior.silent')}
                     subtitle={t('settingsNotifications.foregroundBehavior.silentDescription')}
-                    icon={<Ionicons name="volume-off-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="speaker-slash" size={29} color={theme.colors.accent.blue} />}
                     selected={localSettings.localNotificationsForegroundBehavior === 'silent'}
                     disabled={localSettings.localNotificationsEnabled === false}
                     onPress={() => setLocalSetting({ localNotificationsForegroundBehavior: 'silent' })}
@@ -853,7 +870,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 <Item
                     title={t('settingsNotifications.foregroundBehavior.off')}
                     subtitle={t('settingsNotifications.foregroundBehavior.offDescription')}
-                    icon={<Ionicons name="notifications-off-outline" size={29} color={theme.colors.accent.blue} />}
+                    icon={<Icon name="bell-slash" size={29} color={theme.colors.accent.blue} />}
                     selected={localSettings.localNotificationsForegroundBehavior === 'off'}
                     disabled={localSettings.localNotificationsEnabled === false}
                     onPress={() => setLocalSetting({ localNotificationsForegroundBehavior: 'off' })}

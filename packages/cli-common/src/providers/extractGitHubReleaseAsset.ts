@@ -1,8 +1,7 @@
-import { chmod, mkdir, readdir, rename } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readdir, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
-import { planArchiveExtraction } from '@happier-dev/release-runtime';
-import { runCommandStreaming } from '../process/runCommandStreaming.js';
+import { extractArchivePayloadToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
 
 function stripArchiveExtension(archiveName: string): string {
   const normalized = archiveName.trim();
@@ -51,34 +50,91 @@ async function moveExtractedEntryIntoPlace(params: Readonly<{
   await rename(extractedPath, params.outputPath);
 }
 
+type DeclaredArchiveEntry = Readonly<{
+  archivePath: string;
+  destinationPath: string;
+}>;
+
+function resolveDeclaredPath(rootDir: string, relativePath: string): string {
+  const segments = relativePath.split('/');
+  if (
+    relativePath.length === 0
+    || relativePath.includes('\\')
+    || segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new Error(`[github-release] invalid declared archive path: ${relativePath}`);
+  }
+  return join(rootDir, ...segments);
+}
+
+async function publishDeclaredArchiveEntries(params: Readonly<{
+  archiveEntries: ReadonlyArray<DeclaredArchiveEntry>;
+  extractDir: string;
+  outputDir: string;
+}>): Promise<void> {
+  const resolvedEntries = await Promise.all(params.archiveEntries.map(async (entry) => {
+    const sourcePath = resolveDeclaredPath(params.extractDir, entry.archivePath);
+    const sourceStat = await stat(sourcePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!sourceStat?.isFile()) {
+      throw new Error(`[github-release] required archive member is missing: ${entry.archivePath}`);
+    }
+    return {
+      sourcePath,
+      destinationPath: resolveDeclaredPath(params.outputDir, entry.destinationPath),
+    };
+  }));
+
+  for (const entry of resolvedEntries) {
+    await mkdir(dirname(entry.destinationPath), { recursive: true });
+    await copyFile(entry.sourcePath, entry.destinationPath);
+    if (process.platform !== 'win32') {
+      await chmod(entry.destinationPath, 0o755);
+    }
+  }
+}
+
 export async function extractGitHubReleaseAsset(params: Readonly<{
   archivePath: string;
   archiveName: string;
   extractDir: string;
   outputPath: string;
+  outputDir?: string;
+  archiveEntries?: ReadonlyArray<DeclaredArchiveEntry>;
+  archiveExtractionLimits?: Readonly<{
+    maxFileBytes: number;
+    maxExpandedBytes: number;
+  }>;
+  skipTarLinks?: boolean;
 }>): Promise<void> {
   const archiveName = params.archiveName.toLowerCase();
   await mkdir(params.extractDir, { recursive: true });
 
   if (archiveName.endsWith('.tar.gz') || archiveName.endsWith('.tar.xz') || archiveName.endsWith('.zip')) {
-    const extractionPlan = planArchiveExtraction({
+    await extractArchivePayloadToDirectory({
       archiveName: params.archiveName,
       archivePath: params.archivePath,
-      destDir: params.extractDir,
-      os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'darwin' : 'linux',
-    });
-    await runCommandStreaming({
-      cmd: extractionPlan.command.cmd,
-      args: extractionPlan.command.args,
-      context: 'github-release extract',
-    });
-    await moveExtractedEntryIntoPlace({
-      archiveName: params.archiveName,
       extractDir: params.extractDir,
-      outputPath: params.outputPath,
+      limits: params.archiveExtractionLimits,
+      tarLinkPolicy: params.skipTarLinks ? 'skip' : 'reject',
     });
-    if (process.platform !== 'win32') {
-      await chmod(params.outputPath, 0o755);
+    if (params.archiveEntries) {
+      await publishDeclaredArchiveEntries({
+        archiveEntries: params.archiveEntries,
+        extractDir: params.extractDir,
+        outputDir: params.outputDir ?? join(dirname(params.outputPath), '..'),
+      });
+    } else {
+      await moveExtractedEntryIntoPlace({
+        archiveName: params.archiveName,
+        extractDir: params.extractDir,
+        outputPath: params.outputPath,
+      });
+      if (process.platform !== 'win32') {
+        await chmod(params.outputPath, 0o755);
+      }
     }
     return;
   }

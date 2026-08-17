@@ -2,6 +2,7 @@ import { Fastify } from "../types";
 import { log } from "@/utils/logging/log";
 import { auth } from "@/app/auth/auth";
 import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
+import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
 
 function shouldLogAuthDecoratorDiagnostics(): boolean {
     return process.env.HAPPIER_AUTH_DECORATOR_DIAGNOSTIC_LOGS === "1"
@@ -15,7 +16,10 @@ export function enableAuthentication(app: Fastify) {
             // Never log bearer tokens or header contents.
             const logDiagnostics = shouldLogAuthDecoratorDiagnostics();
             if (logDiagnostics) {
-                log({ module: 'auth-decorator' }, `Auth check - path: ${request.url}, has header: ${!!authHeader}`);
+                log(
+                    { module: 'auth-decorator' },
+                    `Auth check - path: ${redactPublicShareCapabilityUrl(request.url)}, has header: ${!!authHeader}`,
+                );
             }
             if (!authHeader || !authHeader.startsWith('Bearer ')) {
                 log({ module: 'auth-decorator' }, `Auth failed - missing or invalid header`);

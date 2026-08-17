@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionConfigOption } from '@/agent/acp/AcpBackend';
 import type { EventMessage } from '@/agent/core/AgentMessage';
-import { createAcpRuntime } from '../createAcpRuntime';
+import { createTestAcpRuntime as createAcpRuntime } from '@/testkit/backends/acpRuntime';
 import type { Metadata } from '@/api/types';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { createBasicSessionClient, createSessionClientWithMetadata } from '@/testkit/backends/sessionFixtures';
@@ -177,7 +177,7 @@ describe('createAcpRuntime (configOptions)', () => {
     });
   });
 
-  it('trims string values before delegating setSessionConfigOption', async () => {
+  it('preserves exact nonblank config identifiers and values before delegating setSessionConfigOption', async () => {
     let lastSet: { sessionId: string; configId: string; value: unknown } | null = null;
     const backend = createFakeAcpRuntimeBackend({
       async setSessionConfigOption(sessionId: string, configId: string, value: unknown) {
@@ -197,9 +197,9 @@ describe('createAcpRuntime (configOptions)', () => {
     });
 
     await runtime.startOrLoad({ resumeId: null });
-    await runtime.setSessionConfigOption('mode', '  ask  ');
+    await runtime.setSessionConfigOption(' mode ', '  ask  ');
 
-    expect(lastSet).toEqual({ sessionId: 'sess_main', configId: 'mode', value: 'ask' });
+    expect(lastSet).toEqual({ sessionId: 'sess_main', configId: ' mode ', value: '  ask  ' });
   });
 
   it('refreshes acpSessionModelsV1 when config_options_state model changes', async () => {

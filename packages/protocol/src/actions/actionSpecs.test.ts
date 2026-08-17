@@ -22,6 +22,7 @@ const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   'session.work_state.get',
   'session.goal.get',
   'session.terminalComposer.clear',
+  'session.pendingInput.interruptAndRun',
   'session.usageLimit.checkNow',
   'session.usageLimit.consumeResetCredit',
   'session.vendor_plugin_catalog.list',
@@ -35,6 +36,11 @@ const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   'session.messages.recent.get',
   'agents.backends.list',
   'agents.models.list',
+  'agents.session_modes.list',
+  'agents.config_options.list',
+  'sessions.spawn.profiles.list',
+  'sessions.spawn.connected_services.list',
+  'sessions.spawn.mcp_servers.preview',
   'paths.list_recent',
   'machines.list',
   'servers.list',
@@ -101,6 +107,17 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'ui.voice_agent.teleport',
 ] as const;
 
+const EXTERNALLY_CONTROLLABLE_SESSION_AGENT_UNSUPPORTED_ACTIONS = {
+  'voice_agent.start': 'voice-agent launches are a separate user-facing runtime surface, not an in-session self-control primitive.',
+  'execution.run.get': 'execution run reads are available through session-scoped run list/wait/status paths; direct external get remains outside session-agent by policy.',
+  'session.spawn_picker': 'the interactive spawn picker remains UI/external-client only; in-session agents use session.spawn_new.',
+  'session.terminalComposer.clear': 'clearing a human terminal composer is an explicit human/UI decision.',
+  'session.pendingInput.interruptAndRun': 'interrupting a human-visible live provider turn is an explicit human/UI decision.',
+  'session.target.primary.set': 'target-state mutation changes the human-visible workspace target and stays external by default.',
+  'session.target.tracked.set': 'target-state mutation changes tracked workspace state and stays external by default.',
+  'approval.request.decide': 'agents must not approve or reject approval requests on their own behalf.',
+} as const satisfies Record<string, string>;
+
 function sorted(values: readonly string[]): string[] {
   return [...values].sort();
 }
@@ -126,6 +143,20 @@ describe('Action Spec Registry', () => {
     for (const spec of all) {
       // Runtime safety: registry objects must validate against the schema.
       ActionSpecSchema.parse(spec);
+    }
+  });
+
+  it('keeps externally controllable actions hidden from session_agent only by explicit catalog policy', () => {
+    const hiddenButExternallyControllable = listActionSpecs()
+      .filter((spec) => !spec.surfaces.session_agent && (spec.surfaces.mcp || spec.surfaces.cli))
+      .map((spec) => spec.id);
+
+    expect(sorted(hiddenButExternallyControllable)).toEqual(sorted(
+      Object.keys(EXTERNALLY_CONTROLLABLE_SESSION_AGENT_UNSUPPORTED_ACTIONS),
+    ));
+    for (const actionId of hiddenButExternallyControllable) {
+      expect(EXTERNALLY_CONTROLLABLE_SESSION_AGENT_UNSUPPORTED_ACTIONS[actionId]).toEqual(expect.any(String));
+      expect(EXTERNALLY_CONTROLLABLE_SESSION_AGENT_UNSUPPORTED_ACTIONS[actionId]?.length).toBeGreaterThan(20);
     }
   });
 
@@ -258,6 +289,12 @@ describe('Action Spec Registry', () => {
     expect(consumeResetCredit.surfaces.session_agent).toBe(true);
     expect(enable.inputSchema).toBe(SessionUsageLimitWaitResumeEnableRequestV1Schema);
     expect(cancel.inputSchema).toBe(SessionUsageLimitWaitResumeCancelRequestV1Schema);
+    expect(cancel.inputHints?.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'issueFingerprint' }),
+      expect.objectContaining({ path: 'armedAtMs' }),
+      expect.objectContaining({ path: 'runtimeAuthRecoveryAttemptId' }),
+    ]));
+    expect(cancel.examples?.mcp?.argsExample).toContain('armedAtMs');
     expect(checkNow.inputSchema).toBe(SessionUsageLimitCheckNowRequestV1Schema);
     expect(consumeResetCredit.inputSchema).toBe(SessionUsageLimitConsumeResetCreditRequestV1Schema);
     expect(checkNow.inputSchema.safeParse({
@@ -911,6 +948,206 @@ describe('Action Spec Registry', () => {
     expect(reconnect.inputSchema.parse(payload)).toEqual(payload);
   });
 
+  it('exposes session.spawn_new to in-session agents as a discoverable action', () => {
+    const spec = getActionSpec('session.spawn_new');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.bindings?.mcpToolName).toBe('session_spawn_new');
+  });
+
+  it('accepts only the public rich session.spawn_new action input contract', () => {
+    const spec = getActionSpec('session.spawn_new');
+
+    expect(spec.inputSchema.parse({
+      tag: 'spawn-qa',
+      tags: ['qa', 'agent'],
+      title: 'Rich spawn',
+      path: '/repo',
+      directory: '/repo',
+      host: 'dev-host',
+      machineId: 'machine-1',
+      agentId: 'claude',
+      backend: 'agent:claude',
+      target: 'agent:claude',
+      backendTargetKey: 'agent:claude',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      modelId: 'claude-opus-4-8',
+      prompt: 'Inspect the repository.',
+      initialPrompt: 'Inspect the repository.',
+      initialMessage: 'Inspect the repository.',
+      permissionMode: 'acceptEdits',
+      agentModeId: 'plan',
+      sessionConfigOptionOverrides: {
+        v: 1,
+        updatedAt: 10,
+        overrides: {
+          reasoning_effort: { updatedAt: 10, value: 'xhigh' },
+          ultracode: { updatedAt: 10, value: true },
+        },
+      },
+      configOptions: {
+        reasoning_effort: 'xhigh',
+        ultracode: true,
+      },
+      profileId: 'profile-1',
+      environmentVariables: { FEATURE_FLAG: 'enabled' },
+      connectedServices: {
+        v: 1,
+        bindingsByServiceId: {
+          github: { source: 'connected', selection: 'profile', profileId: 'default' },
+        },
+      },
+      connectedServicesUpdatedAt: 10,
+      mcpSelection: {
+        v: 1,
+        managedServersEnabled: false,
+        forceIncludeServerIds: ['repo-tools'],
+        forceExcludeServerIds: [],
+      },
+      transcriptStorage: 'persisted',
+      terminal: {
+        mode: 'tmux',
+        tmux: { sessionName: 'spawn-qa', isolated: true, tmpDir: null },
+      },
+      windowsRemoteSessionLaunchMode: 'hidden',
+      windowsRemoteSessionConsole: 'hidden',
+      windowsTerminalWindowName: 'Happier',
+      codexBackendMode: 'appServer',
+      agentRuntimeDescriptorV1: {
+        v: 1,
+        providerId: 'codex',
+        provider: {
+          backendMode: 'appServer',
+          providerExtra: {
+            owner: 'codex',
+            schemaId: 'codex.agentRuntimeDescriptorExtra',
+            v: 1,
+          },
+        },
+      },
+    })).toMatchObject({
+      directory: '/repo',
+      initialPrompt: 'Inspect the repository.',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      configOptions: { reasoning_effort: 'xhigh', ultracode: true },
+      terminal: { mode: 'tmux' },
+      codexBackendMode: 'appServer',
+      agentRuntimeDescriptorV1: {
+        v: 1,
+        providerId: 'codex',
+      },
+    });
+  });
+
+  it('normalizes supported session permission aliases and rejects unknown modes at the action boundary', () => {
+    const spec = getActionSpec('session.spawn_new');
+
+    expect(spec.inputSchema.parse({ permissionMode: 'read_only' })).toEqual({
+      permissionMode: 'read-only',
+    });
+    expect(spec.inputSchema.safeParse({ permissionMode: 'surprise-me' }).success).toBe(false);
+  });
+
+  it('rejects daemon-internal session.spawn_new plumbing fields', () => {
+    const spec = getActionSpec('session.spawn_new');
+    const internalFields = [
+      'spawnNonce',
+      'accountSettingsVersionHint',
+      'sessionId',
+      'existingSessionId',
+      'existingSessionAttachPayload',
+      'initialTranscriptAfterSeq',
+      'initialGoal',
+      'resume',
+      'attachMetadataIdentityPolicy',
+      'connectedServiceMaterializationIdentityV1',
+      'materializationDiagnostics',
+      'approvedNewDirectoryCreation',
+    ] as const;
+
+    for (const field of internalFields) {
+      expect(spec.inputSchema.safeParse({ initialMessage: 'Hello', [field]: 'internal' }).success).toBe(false);
+    }
+  });
+
+  it('rejects unknown session.spawn_new fields instead of silently passing them through', () => {
+    const spec = getActionSpec('session.spawn_new');
+
+    expect(spec.inputSchema.safeParse({
+      initialMessage: 'Hello',
+      unsupportedSpawnField: true,
+    }).success).toBe(false);
+  });
+
+  it('rejects conflicting session.spawn_new convenience aliases', () => {
+    const spec = getActionSpec('session.spawn_new');
+
+    expect(spec.inputSchema.safeParse({ path: '/repo-a', directory: '/repo-b' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ initialMessage: 'A', initialPrompt: 'B' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ initialMessage: 'A', prompt: 'B' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ agentId: 'codex', backendTargetKey: 'agent:claude' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({
+      backend: 'agent:codex',
+      target: 'agent:claude',
+    }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({
+      agentId: 'claude',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+    }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ backendTargetKey: 'claude' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ agentId: '   ' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ target: '   ' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ backend: '   ' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ target: 'customAcp' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ agentId: 'customAcp' }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({
+      agentId: 'customAcp',
+      backendTargetKey: 'acpBackend:review-bot',
+    }).success).toBe(true);
+    expect(spec.inputSchema.safeParse({
+      sessionConfigOptionOverrides: {
+        v: 1,
+        updatedAt: 10,
+        overrides: {
+          reasoning_effort: { updatedAt: 10, value: 'low' },
+        },
+      },
+      configOptions: {
+        reasoning_effort: 'xhigh',
+      },
+    }).success).toBe(false);
+  });
+
+  it('exposes session-agent spawn target discovery actions', () => {
+    for (const actionId of [
+      'paths.list_recent',
+      'machines.list',
+      'servers.list',
+      'sessions.spawn.profiles.list',
+      'sessions.spawn.connected_services.list',
+      'sessions.spawn.mcp_servers.preview',
+    ] as const) {
+      const spec = getActionSpec(actionId);
+      expect(spec.surfaces.session_agent).toBe(true);
+      expect(spec.surfaces.mcp).toBe(true);
+      expect(spec.surfaces.cli).toBe(true);
+    }
+  });
+
+  it('advertises spawn option sources from session.spawn_new input hints', () => {
+    const spec = getActionSpec('session.spawn_new');
+    const fields = Object.fromEntries((spec.inputHints?.fields ?? []).map((field) => [field.path, field]));
+
+    expect(fields.backendTargetKey?.optionsSourceId).toBe('agents.backends.enabled');
+    expect(fields.path?.optionsSourceId).toBe('sessions.spawn.paths.recent');
+    expect(fields.machineId?.optionsSourceId).toBe('sessions.spawn.machines.available');
+    expect(fields.modelId?.optionsSourceId).toBe('agents.models.available');
+    expect(fields.agentModeId?.optionsSourceId).toBe('agents.session_modes.available');
+    expect(fields.sessionConfigOptionOverrides?.optionsSourceId).toBe('agents.config_options.available');
+    expect(fields.profileId?.optionsSourceId).toBe('sessions.spawn.profiles.available');
+    expect(fields.connectedServices?.optionsSourceId).toBe('sessions.spawn.connected_services.available');
+    expect(fields.mcpSelection?.optionsSourceId).toBe('sessions.spawn.mcp_servers.preview');
+  });
+
   it('does not expose legacy voice_mediator intent in ExecutionRunIntentSchema', () => {
     expect(ExecutionRunIntentSchema.safeParse('voice_agent').success).toBe(true);
     expect(ExecutionRunIntentSchema.safeParse('voice_mediator').success).toBe(false);
@@ -1204,6 +1441,33 @@ describe('Action Spec Registry', () => {
       instructions: 'Do it.',
     });
     expect(parsed.permissionMode).toBe('workspace_write');
+  });
+
+  it('advertises and validates the canonical delegate permission modes at the tool boundary', () => {
+    const spec = getActionSpec('subagents.delegate.start');
+    const baseInput = {
+      backendTargetKeys: ['agent:pi'],
+      instructions: 'Do it.',
+    };
+
+    for (const permissionMode of ['read_only', 'default', 'workspace_write', 'yolo']) {
+      const parsed = (spec.inputSchema as z.ZodTypeAny).safeParse({ ...baseInput, permissionMode });
+      expect(parsed.success, permissionMode).toBe(true);
+    }
+
+    const invalid = (spec.inputSchema as z.ZodTypeAny).safeParse({
+      ...baseInput,
+      permissionMode: 'workspace_read',
+    });
+    expect(invalid.success).toBe(false);
+    if (!invalid.success) {
+      expect(invalid.error.issues[0]?.path).toEqual(['permissionMode']);
+      expect(invalid.error.issues[0]?.message).toContain('read_only');
+      expect(invalid.error.issues[0]?.message).toContain('workspace_write');
+    }
+
+    const permissionModeHint = spec.inputHints?.fields.find((field) => field.path === 'permissionMode');
+    expect(permissionModeHint?.description).toContain('read_only | default | workspace_write | yolo');
   });
 
   it('defaults voice agent start to long-lived streaming', () => {

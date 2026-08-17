@@ -19,6 +19,12 @@ describe('rmDist', () => {
     expect(resolveDistDir(['node', 'rmDist.mjs', 'build-out'])).toBe('build-out');
   });
 
+  it('uses an explicit build output directory from env when no arg is provided', () => {
+    expect(resolveDistDir(['node', 'rmDist.mjs'], { HAPPIER_CLI_BUILD_OUTPUT_DIR: '.tmp.cli-dist-build' })).toBe(
+      '.tmp.cli-dist-build',
+    );
+  });
+
   it('rejects absolute paths', () => {
     expect(resolveDistDir(['node', 'rmDist.mjs', '/'])).toBe('dist');
   });
@@ -64,7 +70,7 @@ describe('rmDist', () => {
       writeFileSync(join(rootDir, 'package-dist', 'index.mjs'), 'export const previous = true;\n', 'utf8');
       process.chdir(rootDir);
 
-      const lockPath = resolve(rootDir, '.project', 'tmp', 'cli-shared-deps-build.lock');
+      const lockPath = resolve(rootDir, '.project', 'tmp', 'cli-dist-build.lock');
       await withWorkspaceBundleLock(
         async () => {
           await expect(

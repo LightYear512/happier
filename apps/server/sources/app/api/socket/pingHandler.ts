@@ -2,7 +2,7 @@ import { log } from "@/utils/logging/log";
 import { Socket } from "socket.io";
 
 export function pingHandler(socket: Socket) {
-    socket.on('ping', async (callback: (response: any) => void) => {
+    socket.on('ping', async (callback: (response: Record<string, never>) => void) => {
         try {
             callback({});
         } catch (error) {

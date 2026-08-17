@@ -1,4 +1,3 @@
-import { Ionicons, Octicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as React from 'react';
 import { View } from 'react-native';
@@ -13,6 +12,8 @@ import { useFriendRequests } from '@/sync/domains/state/storage';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { desktopSidebarChromeStyles } from './desktopSidebarChromeStyles';
+import { DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX } from './desktopChromeMetrics';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 
 type SidebarHeaderActionsResult = Readonly<{
     headerActions: ItemAction[];
@@ -47,7 +48,7 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
                 inlineTestID: 'sidebar-inbox-button',
                 icon: (
                     <View style={[styles.iconButton, styles.notificationButton]}>
-                        <Octicons name="inbox" size={20} color={theme.colors.chrome.header.foreground} />
+                        <Icon name="mailbox" size={ICON_SIZE.md} color={theme.colors.chrome.header.foreground} />
                         {inboxHasContent ? <View style={styles.indicatorDot} /> : null}
                     </View>
                 ),
@@ -61,7 +62,7 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
                 title: t('tabs.friends'),
                 icon: (
                     <View style={[styles.iconButton, styles.notificationButton]}>
-                        <Ionicons name="people-outline" size={24} color={theme.colors.chrome.header.foreground} />
+                        <Icon name="users" size={ICON_SIZE.md} color={theme.colors.chrome.header.foreground} />
                         {friendRequestCount > 0 ? (
                             <View style={styles.badge}>
                                 <Text style={styles.badgeText}>
@@ -81,7 +82,7 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
             inlineTestID: 'nav-settings',
             icon: (
                 <View style={styles.iconButton}>
-                    <Ionicons name="cog-outline" size={24} color={theme.colors.chrome.header.foreground} />
+                    <Icon name="sliders-horizontal" size={ICON_SIZE.md} color={theme.colors.chrome.header.foreground} />
                 </View>
             ),
             onPress: () => navigate('/settings', 'SidebarView.nav.settings'),
@@ -93,7 +94,7 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
             inlineTestID: 'nav-new-session',
             icon: (
                 <View style={styles.trailingIconButton}>
-                    <Ionicons name="add-outline" size={24} color={theme.colors.chrome.header.foreground} />
+                    <Icon name="plus" size={ICON_SIZE.md} color={theme.colors.chrome.header.foreground} />
                 </View>
             ),
             onPress: () => navigate('/new', 'SidebarView.nav.newSession'),
@@ -125,7 +126,14 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
                 inlineTestID: 'sidebar-inbox-button',
                 icon: (
                     <View style={styles.topNotificationButton}>
-                        <Octicons name="inbox" size={15} color={theme.colors.chrome.header.foreground} />
+                        {/* The one glyph in the top strip that is built here rather than named, so
+                            it has to reach for the strip's size itself or it stays behind when the
+                            others move. */}
+                        <Icon
+                            name="mailbox"
+                            size={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                            color={theme.colors.chrome.header.foreground}
+                        />
                         {inboxHasContent ? <View style={styles.topIndicatorDot} /> : null}
                     </View>
                 ),
@@ -137,7 +145,7 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
             id: 'settings',
             title: t('settings.title'),
             inlineTestID: 'nav-settings',
-            icon: 'cog-outline' as const,
+            icon: 'sliders-horizontal' as const,
             onPress: () => navigate('/settings', 'SidebarView.nav.settings'),
         });
 
@@ -157,7 +165,7 @@ export function useSidebarHeaderActions(): SidebarHeaderActionsResult {
 
         return (
             <View style={[styles.iconButton, styles.notificationButton]}>
-                <Ionicons name="ellipsis-horizontal" size={14} color={theme.colors.chrome.header.foreground} />
+                <Icon name="dots-three" size={ICON_SIZE.md} color={theme.colors.chrome.header.foreground} />
                 {shouldShowBadge ? (
                     <View style={styles.badge}>
                         <Text style={styles.badgeText}>

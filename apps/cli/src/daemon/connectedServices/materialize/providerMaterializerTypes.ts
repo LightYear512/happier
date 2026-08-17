@@ -6,6 +6,10 @@ import type {
 import type { CatalogAgentId } from '@/backends/types';
 import type { ConnectedServiceResolvedSelection } from './materializeConnectedServicesForSpawn';
 import type { ConnectedServiceRefreshFailureCategory } from '../credentials/lifecycleTypes';
+import type {
+  ConnectedServiceGroupMutationTarget,
+} from '../credentials/createConnectedServiceGroupMutationCurrentnessValidator';
+import type { ConnectedServiceSharedGenerationMutationCurrentness } from '../credentials/lifecycleTypes';
 
 export type ConnectedServicesMaterializationDiagnostic = Readonly<{
   code: string;
@@ -22,6 +26,17 @@ export type ConnectedServicesMaterializationDiagnostic = Readonly<{
     providerErrorCode?: string;
   }>;
 }>;
+
+export const CONNECTED_SERVICE_MATERIALIZATION_REASONS = Object.freeze({
+  authoritativeGroupTargetSuperseded: 'authoritative_group_target_changed_before_materialization',
+} as const);
+
+export function isAuthoritativeGroupTargetSupersededMaterializationDiagnostic(
+  diagnostic: ConnectedServicesMaterializationDiagnostic,
+): boolean {
+  return diagnostic.severity === 'blocking'
+    && diagnostic.reason === CONNECTED_SERVICE_MATERIALIZATION_REASONS.authoritativeGroupTargetSuperseded;
+}
 
 export function isBlockingConnectedServicesMaterializationDiagnostic(
   diagnostic: ConnectedServicesMaterializationDiagnostic,
@@ -60,6 +75,9 @@ export type ConnectedServicesProviderMaterializerInput = Readonly<{
   vendorResumeId?: string | null;
   candidatePersistedSessionFile?: string | null;
   cleanupRoot: () => void;
+  validateGroupMutationCurrentness?: (
+    input: ConnectedServiceGroupMutationTarget,
+  ) => Promise<ConnectedServiceSharedGenerationMutationCurrentness>;
 }>;
 
 export type ConnectedServicesProviderMaterializer = (

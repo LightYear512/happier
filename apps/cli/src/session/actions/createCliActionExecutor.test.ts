@@ -32,6 +32,7 @@ const {
   sendSessionMessage,
   requestSessionStop,
   setSessionTitle,
+  setSessionPermissionMode,
   setSessionMode,
   getExecutionRun,
   listExecutionRuns,
@@ -49,6 +50,7 @@ const {
   sendSessionMessage: vi.fn(),
   requestSessionStop: vi.fn(),
   setSessionTitle: vi.fn(),
+  setSessionPermissionMode: vi.fn(),
   setSessionMode: vi.fn(),
   getExecutionRun: vi.fn(),
   listExecutionRuns: vi.fn(),
@@ -85,6 +87,10 @@ vi.mock('@/session/services/setSessionTitle', () => ({
   setSessionTitle,
 }));
 
+vi.mock('@/session/services/setSessionPermissionMode', () => ({
+  setSessionPermissionMode,
+}));
+
 vi.mock('@/session/services/setSessionMode', () => ({
   setSessionMode,
 }));
@@ -112,11 +118,16 @@ vi.mock('@/session/transport/rpc/sessionRpc', () => ({
 
 import { createCliActionExecutor } from './createCliActionExecutor';
 import {
+  MENTION_KIND_V1,
   accountSettingsParse,
+  buildMentionRefForKindV1,
   deriveBoxPublicKeyFromSeed,
   encodeBase64,
+  getActionSpec,
+  readMentionRefOpaqueForKindV1,
   sealEncryptedDataKeyEnvelopeV1,
 } from '@happier-dev/protocol';
+import { createPendingFirstInput } from '@/daemon/spawn/pendingFirstInput';
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 
 const env = process.env;
@@ -164,6 +175,36 @@ function createDataKeyExecutor(extra: Partial<Parameters<typeof createCliActionE
   });
 }
 
+function allowSessionAgentActions(...actionIds: string[]): void {
+  process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
+    v: 1,
+    actions: Object.fromEntries(
+      actionIds.map((actionId) => [
+        actionId,
+        { enabled: true, disabledSurfaces: [], disabledPlacements: [] },
+      ]),
+    ),
+  });
+}
+
+function expectSingleSpawnWithPendingFirstInput(text: string): void {
+  expect(spawnDaemonSession).toHaveBeenCalledTimes(1);
+  const request = spawnDaemonSession.mock.calls[0]?.[0] as {
+    spawnNonce?: unknown;
+    pendingFirstInput?: unknown;
+    initialPrompt?: unknown;
+  } | undefined;
+  expect(request?.spawnNonce).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/i));
+  if (typeof request?.spawnNonce !== 'string') {
+    throw new Error('expected spawn nonce');
+  }
+  expect(request.pendingFirstInput).toEqual(createPendingFirstInput({
+    text,
+    spawnNonce: request.spawnNonce,
+  }));
+  expect(request).not.toHaveProperty('initialPrompt');
+}
+
 describe('createCliActionExecutor', () => {
   beforeEach(() => {
     spawnDaemonSession.mockReset();
@@ -174,6 +215,7 @@ describe('createCliActionExecutor', () => {
     sendSessionMessage.mockReset();
     requestSessionStop.mockReset();
     setSessionTitle.mockReset();
+    setSessionPermissionMode.mockReset();
     setSessionMode.mockReset();
     getExecutionRun.mockReset();
     listExecutionRuns.mockReset();
@@ -361,6 +403,12 @@ describe('createCliActionExecutor', () => {
       ok: false,
       errorCode: 'action_disabled',
       error: 'action_disabled',
+      details: expect.objectContaining({
+        actionId: 'review.start',
+        reason: 'disabled_by_settings',
+        settingsState: 'disabled',
+        surface: 'cli',
+      }),
     });
   });
 
@@ -681,6 +729,9 @@ describe('createCliActionExecutor', () => {
   it('spawns a new session from the current session context with account connected-service defaults', async () => {
     const executor = createPlainExecutor({
       rawSession: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
         metadata: {
           machineId: 'machine-1',
           path: '/repo/current',
@@ -713,6 +764,20 @@ describe('createCliActionExecutor', () => {
       whenRefreshed: null,
     });
     spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-new' });
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-1',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
     fetchSessionById.mockResolvedValue({
       id: 'sess-new',
       createdAt: 1,
@@ -761,7 +826,7 @@ describe('createCliActionExecutor', () => {
       machineId: 'machine-1',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       modelId: 'gpt-5',
-      initialPrompt: 'Hello from CLI action',
+      modelUpdatedAt: expect.any(Number),
       connectedServices: {
         v: 1,
         bindingsByServiceId: {
@@ -775,6 +840,7 @@ describe('createCliActionExecutor', () => {
       },
       connectedServicesUpdatedAt: expect.any(Number),
     }));
+    expectSingleSpawnWithPendingFirstInput('Hello from CLI action');
     expect(updateSessionMetadataWithRetry).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess-new',
       token: 'token',
@@ -791,6 +857,581 @@ describe('createCliActionExecutor', () => {
         },
       },
     });
+  });
+
+  it('forwards rich session.spawn_new options through the daemon spawn path', async () => {
+    const executor = createPlainExecutor({
+      rawSession: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+        },
+      },
+    });
+    spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-rich' });
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-1',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        permissionMode: 'safe-yolo',
+        permissionModeUpdatedAt: 123,
+      },
+    });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-rich',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        backendTargetKey: 'agent:claude',
+        permissionMode: 'acceptEdits',
+        agentModeId: 'plan',
+        modelId: 'claude-opus-4-8',
+        sessionConfigOptionOverrides: {
+          v: 1,
+          updatedAt: 10,
+          overrides: {
+            reasoning_effort: { updatedAt: 10, value: 'xhigh' },
+            ultracode: { updatedAt: 10, value: true },
+          },
+        },
+        profileId: 'profile-1',
+        environmentVariables: { FEATURE_FLAG: 'enabled' },
+        mcpSelection: {
+          v: 1,
+          managedServersEnabled: false,
+          forceIncludeServerIds: ['repo-tools'],
+          forceExcludeServerIds: ['legacy-tool'],
+        },
+        transcriptStorage: 'persisted',
+        codexBackendMode: 'appServer',
+        agentRuntimeDescriptorV1: {
+          v: 1,
+          providerId: 'codex',
+          provider: {
+            backendMode: 'appServer',
+            providerExtra: {
+              owner: 'codex',
+              schemaId: 'codex.agentRuntimeDescriptorExtra',
+              v: 1,
+            },
+          },
+        },
+        initialMessage: 'Rich spawn',
+      },
+      { surface: 'cli', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/repo/current',
+      machineId: 'machine-1',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      permissionMode: 'acceptEdits',
+      permissionModeUpdatedAt: expect.any(Number),
+      agentModeId: 'plan',
+      agentModeUpdatedAt: expect.any(Number),
+      modelId: 'claude-opus-4-8',
+      modelUpdatedAt: expect.any(Number),
+      sessionConfigOptionOverrides: {
+        v: 1,
+        updatedAt: 10,
+        overrides: {
+          reasoning_effort: { updatedAt: 10, value: 'xhigh' },
+          ultracode: { updatedAt: 10, value: true },
+        },
+      },
+      profileId: 'profile-1',
+      environmentVariables: { FEATURE_FLAG: 'enabled' },
+      mcpSelection: {
+        v: 1,
+        managedServersEnabled: false,
+        forceIncludeServerIds: ['repo-tools'],
+        forceExcludeServerIds: ['legacy-tool'],
+      },
+      transcriptStorage: 'persisted',
+      codexBackendMode: 'appServer',
+      agentRuntimeDescriptorV1: {
+        v: 1,
+        providerId: 'codex',
+        provider: expect.objectContaining({
+          backendMode: 'appServer',
+        }),
+      },
+    }));
+    expectSingleSpawnWithPendingFirstInput('Rich spawn');
+  });
+
+  it('inherits the current session backend target for session-agent spawn when no explicit target is provided', async () => {
+    const executor = createPlainExecutor({
+      rawSession: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+          agentRuntimeDescriptorV1: { v: 1, providerId: 'claude' },
+        },
+      },
+      getCurrentSessionBackendTarget: () => ({ kind: 'configuredAcpBackend', backendId: 'review-bot' }),
+    });
+    spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-inherited-target' });
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-1',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        permissionMode: 'safe-yolo',
+        permissionModeUpdatedAt: 123,
+        agentRuntimeDescriptorV1: { v: 1, providerId: 'claude' },
+      },
+    });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-inherited-target',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        initialMessage: 'Spawn with inherited configured backend',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/repo/current',
+      machineId: 'machine-1',
+      backendTarget: { kind: 'configuredAcpBackend', backendId: 'review-bot' },
+      permissionMode: 'safe-yolo',
+      permissionModeUpdatedAt: 123,
+    }));
+    expectSingleSpawnWithPendingFirstInput('Spawn with inherited configured backend');
+  });
+
+  it('prefers the live raw-session metadata over stale fetched metadata for session-agent spawn inheritance', async () => {
+    const inheritedConfig = {
+      v: 1,
+      updatedAt: 10,
+      overrides: {
+        reasoning_effort: { updatedAt: 10, value: 'high' },
+        ultracode: { updatedAt: 10, value: false },
+      },
+    } as const;
+    const executor = createPlainExecutor({
+      rawSession: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+          modelOverrideV1: { v: 1, updatedAt: 124, modelId: 'claude-opus-parent' },
+          sessionConfigOptionOverridesV1: inheritedConfig,
+          profileId: 'parent-profile',
+          connectedServices: {
+            v: 1,
+            bindingsByServiceId: {
+              'claude-subscription': {
+                source: 'connected',
+                selection: 'profile',
+                profileId: 'claude-profile-1',
+              },
+            },
+          },
+          connectedServicesUpdatedAt: 125,
+          mcpSelectionV1: {
+            v: 1,
+            managedServersEnabled: false,
+            forceIncludeServerIds: ['repo-tools'],
+            forceExcludeServerIds: ['secret-env-server'],
+          },
+        },
+      },
+    });
+    spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-raw-session-preferred' });
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-1',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 1,
+      },
+    });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-raw-session-preferred',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        initialMessage: 'Use inherited parent context.',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/repo/current',
+      machineId: 'machine-1',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      permissionMode: 'safe-yolo',
+      permissionModeUpdatedAt: 123,
+      modelId: 'claude-opus-parent',
+      modelUpdatedAt: 124,
+      sessionConfigOptionOverrides: inheritedConfig,
+      profileId: 'parent-profile',
+      connectedServices: {
+        v: 1,
+        bindingsByServiceId: {
+          'claude-subscription': {
+            source: 'connected',
+            selection: 'profile',
+            profileId: 'claude-profile-1',
+          },
+        },
+      },
+      connectedServicesUpdatedAt: 125,
+      mcpSelection: {
+        v: 1,
+        managedServersEnabled: false,
+        forceIncludeServerIds: ['repo-tools'],
+        forceExcludeServerIds: ['secret-env-server'],
+      },
+    }));
+    expectSingleSpawnWithPendingFirstInput('Use inherited parent context.');
+  });
+
+  it('inherits configured ACP backend metadata for session-agent spawn when no live backend target is available', async () => {
+    const executor = createPlainExecutor({
+      rawSession: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+          acpConfiguredBackendV1: {
+            v: 1,
+            backendId: 'review-bot',
+            title: 'Review Bot',
+            updatedAt: 120,
+          },
+          agentRuntimeDescriptorV1: { v: 1, providerId: 'claude' },
+        },
+      },
+    });
+    spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-configured-metadata' });
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-1',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        permissionMode: 'safe-yolo',
+        permissionModeUpdatedAt: 123,
+        acpConfiguredBackendV1: {
+          v: 1,
+          backendId: 'review-bot',
+          title: 'Review Bot',
+          updatedAt: 120,
+        },
+        agentRuntimeDescriptorV1: { v: 1, providerId: 'claude' },
+      },
+    });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-configured-metadata',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        initialMessage: 'Spawn with metadata configured backend',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/repo/current',
+      machineId: 'machine-1',
+      backendTarget: { kind: 'configuredAcpBackend', backendId: 'review-bot' },
+      permissionMode: 'safe-yolo',
+      permissionModeUpdatedAt: 123,
+    }));
+    expectSingleSpawnWithPendingFirstInput('Spawn with metadata configured backend');
+  });
+
+  it('honors public spawn aliases and terminal launch fields at the CLI action boundary', async () => {
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          machineId: 'parent-machine',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+        },
+      },
+    });
+    spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-terminal' });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-terminal',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/explicit',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        directory: '/repo/explicit',
+        machineId: 'explicit-machine',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        prompt: 'Use public prompt alias',
+        configOptions: { reasoning_effort: 'xhigh' },
+        terminal: {
+          mode: 'tmux',
+          tmux: { sessionName: 'spawn-qa', isolated: true, tmpDir: null },
+        },
+        windowsRemoteSessionLaunchMode: 'hidden',
+        windowsRemoteSessionConsole: 'hidden',
+        windowsTerminalWindowName: 'Happier QA',
+      },
+      { surface: 'cli', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/repo/explicit',
+      machineId: 'explicit-machine',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      permissionMode: 'safe-yolo',
+      permissionModeUpdatedAt: 123,
+      sessionConfigOptionOverrides: expect.objectContaining({
+        v: 1,
+        updatedAt: expect.any(Number),
+        overrides: expect.objectContaining({
+          reasoning_effort: expect.objectContaining({
+            updatedAt: expect.any(Number),
+            value: 'xhigh',
+          }),
+        }),
+      }),
+      terminal: {
+        mode: 'tmux',
+        tmux: { sessionName: 'spawn-qa', isolated: true, tmpDir: null },
+      },
+      windowsRemoteSessionLaunchMode: 'hidden',
+      windowsRemoteSessionConsole: 'hidden',
+      windowsTerminalWindowName: 'Happier QA',
+    }));
+    expectSingleSpawnWithPendingFirstInput('Use public prompt alias');
+  });
+
+  it('denies explicit session-agent spawn overrides disallowed by spawn policy', async () => {
+    bootstrapAccountSettingsContext.mockResolvedValue({
+      source: 'server',
+      settings: accountSettingsParse({
+        sessionAgentSpawnPolicyV1: {
+          v: 1,
+          allowEnvironmentVariables: false,
+        },
+      }),
+      settingsVersion: 2,
+      loadedAtMs: 2,
+      settingsSecretsReadKeys: [],
+      whenRefreshed: null,
+    });
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+        },
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        backendTargetKey: 'agent:claude',
+        environmentVariables: { SECRET_TOKEN: 'do-not-log' },
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        type: 'error',
+        errorCode: 'spawn_policy_denied',
+        errorMessage: 'spawn_policy_denied',
+        details: {
+          field: 'environmentVariables',
+          surface: 'session_agent',
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('do-not-log');
+    expect(spawnDaemonSession).not.toHaveBeenCalled();
+  });
+
+  it('does not apply session-agent spawn override policy to CLI spawns', async () => {
+    bootstrapAccountSettingsContext.mockResolvedValue({
+      source: 'server',
+      settings: accountSettingsParse({
+        sessionAgentSpawnPolicyV1: {
+          v: 1,
+          allowEnvironmentVariables: false,
+        },
+      }),
+      settingsVersion: 2,
+      loadedAtMs: 2,
+      settingsSecretsReadKeys: [],
+      whenRefreshed: null,
+    });
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 123,
+        },
+      },
+    });
+    spawnDaemonSession.mockResolvedValue({ success: true, sessionId: 'sess-policy-cli' });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-policy-cli',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        backendTargetKey: 'agent:claude',
+        environmentVariables: { FEATURE_FLAG: 'enabled' },
+      },
+      { surface: 'cli', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        type: 'success',
+        sessionId: 'sess-policy-cli',
+      },
+    });
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      environmentVariables: { FEATURE_FLAG: 'enabled' },
+    }));
   });
 
   it('fails closed for session.spawn_new when nonce recovery is unsupported instead of using row-scan heuristics', async () => {
@@ -820,8 +1461,58 @@ describe('createCliActionExecutor', () => {
       ok: false,
     });
     expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledTimes(1);
-    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledWith(expect.stringMatching(/^[0-9a-f-]{36}$/i));
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledWith(
+      expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      expect.any(Number),
+    );
     expect(fetchSessionsPage).not.toHaveBeenCalled();
+  });
+
+  it('resumes an ambiguous action request by stable identity without submitting a second spawn', async () => {
+    const executor = createPlainExecutor({
+      rawSession: { metadata: { machineId: 'machine-1', path: '/repo/current', host: 'leeroy-mbp' } },
+    });
+    spawnDaemonSession.mockResolvedValue({
+      error: 'Request failed: /spawn-session, The socket connection was closed unexpectedly',
+    });
+    resolveDaemonSpawnSessionByNonce
+      .mockResolvedValueOnce({ status: 'unsupported' })
+      .mockResolvedValueOnce({ status: 'success', sessionId: 'sess-resumed-attempt' });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-resumed-attempt',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: { path: '/repo/current', host: 'leeroy-mbp' },
+    });
+    const context = {
+      surface: 'cli' as const,
+      defaultSessionId: 'sess-1',
+      actionRequestId: 'attempt-1',
+    };
+
+    await expect(executor.execute('session.spawn_new', {
+      path: '/repo/current',
+      backendTargetKey: 'agent:codex',
+    }, context)).resolves.toMatchObject({ ok: false });
+    const resumed = await executor.execute('session.spawn_new', {
+      path: '/repo/current',
+      backendTargetKey: 'agent:codex',
+    }, context);
+    expect(resumed).toMatchObject({
+      ok: true,
+      result: { type: 'success', sessionId: 'sess-resumed-attempt' },
+    });
+
+    expect(spawnDaemonSession).toHaveBeenCalledTimes(1);
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledTimes(2);
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledWith(
+      'session.spawn_new:sess-1:attempt-1',
+      expect.any(Number),
+    );
   });
 
   it('recovers session.spawn_new via spawn nonce resolution before fallback row scans', async () => {
@@ -884,7 +1575,7 @@ describe('createCliActionExecutor', () => {
     expect(fetchSessionsPage).not.toHaveBeenCalled();
   });
 
-  it('recovers session.spawn_new when daemon reports child exited before webhook', async () => {
+  it('preserves a terminal child-exit failure without attempting nonce recovery', async () => {
     const executor = createPlainExecutor({
       rawSession: {
         metadata: {
@@ -898,32 +1589,6 @@ describe('createCliActionExecutor', () => {
       error: 'Failed to spawn session: Child process exited before session webhook (pid=1234, code=null, signal=SIGKILL)',
       errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK',
     });
-    resolveDaemonSpawnSessionByNonce.mockResolvedValue({
-      status: 'success',
-      sessionId: 'sess-recovered-webhook-exit',
-    });
-    fetchSessionById.mockResolvedValue({
-      id: 'sess-recovered-webhook-exit',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      active: true,
-      activeAt: Date.now(),
-      pendingCount: 0,
-      metadataVersion: 1,
-      metadata: {
-        path: '/repo/current',
-        host: 'leeroy-mbp',
-      },
-    });
-    updateSessionMetadataWithRetry.mockResolvedValue({
-      version: 1,
-      metadata: {
-        machineId: 'machine-1',
-        path: '/repo/current',
-        host: 'leeroy-mbp',
-      },
-    });
-
     const result = await executor.execute(
       'session.spawn_new',
       {
@@ -933,15 +1598,9 @@ describe('createCliActionExecutor', () => {
       { surface: 'cli', defaultSessionId: 'sess-1' },
     );
 
-    expect(result).toMatchObject({
-      ok: true,
-      result: {
-        type: 'success',
-        sessionId: 'sess-recovered-webhook-exit',
-        created: true,
-      },
-    });
-    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: false });
+    expect(resolveDaemonSpawnSessionByNonce).not.toHaveBeenCalled();
+    expect(fetchSessionById).not.toHaveBeenCalled();
     expect(fetchSessionsPage).not.toHaveBeenCalled();
   });
 
@@ -1004,6 +1663,83 @@ describe('createCliActionExecutor', () => {
       },
     });
     expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledTimes(1);
+    expect(fetchSessionsPage).not.toHaveBeenCalled();
+  });
+
+  it('keeps one accepted spawn pending beyond three seconds until its session id resolves', async () => {
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          machineId: 'machine-1',
+          path: '/repo/current',
+          host: 'leeroy-mbp',
+        },
+      },
+    });
+    spawnDaemonSession.mockResolvedValue({
+      success: true,
+      status: 'pending',
+      spawnNonce: 'spawn-response-nonce',
+      sessionIdStatus: 'pending',
+    });
+    resolveDaemonSpawnSessionByNonce
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({
+        status: 'success',
+        sessionId: 'sess-recovered-ack-pending',
+      });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess-recovered-ack-pending',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      active: true,
+      activeAt: Date.now(),
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+    updateSessionMetadataWithRetry.mockResolvedValue({
+      version: 1,
+      metadata: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+      },
+    });
+
+    let nowMs = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      nowMs += 1_000;
+      return nowMs;
+    });
+    const result = await executor.execute(
+      'session.spawn_new',
+      {
+        path: '/repo/current',
+        backendTargetKey: 'agent:codex',
+      },
+      { surface: 'cli', defaultSessionId: 'sess-1' },
+    ).finally(() => nowSpy.mockRestore());
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        type: 'success',
+        sessionId: 'sess-recovered-ack-pending',
+        created: true,
+      },
+    });
+    expect(spawnDaemonSession).toHaveBeenCalledTimes(1);
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledTimes(5);
+    const sentSpawnNonce = spawnDaemonSession.mock.calls[0]?.[0]?.spawnNonce;
+    expect(sentSpawnNonce).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/i));
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenCalledWith(sentSpawnNonce, expect.any(Number));
     expect(fetchSessionsPage).not.toHaveBeenCalled();
   });
 
@@ -1095,6 +1831,221 @@ describe('createCliActionExecutor', () => {
       message: 'Hello',
       wait: false,
       timeoutMs: 10_000,
+    }));
+  });
+
+  it('delivers a composer session reference to the referenced session from a session agent (D-21)', async () => {
+    // The deterministic half of EU-7's completion gate. A real-model run *choosing* to call the
+    // tool is product QA, not this: a model may validly decline. What must be provable is that
+    // the id the reference carries is reachable and lands on that session, under the policy the
+    // reference block tells the agent about.
+    const referencedSessionId = readMentionRefOpaqueForKindV1(
+      MENTION_KIND_V1.session,
+      buildMentionRefForKindV1(MENTION_KIND_V1.session, 'sess-referenced'),
+    );
+    expect(referencedSessionId).toBe('sess-referenced');
+
+    const spec = getActionSpec('session.message.send');
+    expect(spec.surfaces.session_agent).toBe(true);
+    expect(spec.bindings?.mcpToolName).toBe('session_message_send');
+
+    allowSessionAgentActions('session.message.send');
+    const executor = createPlainExecutor();
+    sendSessionMessage.mockResolvedValue({
+      ok: true, sessionId: 'sess-referenced', localId: 'local-9', waited: false,
+    });
+
+    const result = await executor.execute(
+      'session.message.send',
+      { sessionId: referencedSessionId!, message: 'Ping from the referencing session' },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
+      idOrPrefix: 'sess-referenced',
+      message: 'Ping from the referencing session',
+    }));
+  });
+
+  it('rejects session.message.send permission overrides above the caller permission', async () => {
+    allowSessionAgentActions('session.message.send');
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          permissionMode: 'default',
+          permissionModeUpdatedAt: 10,
+        },
+      },
+    });
+
+    const result = await executor.execute(
+      'session.message.send',
+      {
+        sessionId: 'sess-2',
+        message: 'Escalate',
+        permissionModeOverride: 'yolo',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      error: 'permission_escalation_denied',
+    });
+    expect(sendSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid session.message.send permission overrides before calling the service', async () => {
+    allowSessionAgentActions('session.message.send');
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 10,
+        },
+      },
+    });
+
+    const result = await executor.execute(
+      'session.message.send',
+      {
+        sessionId: 'sess-2',
+        message: 'Invalid permission override',
+        permissionModeOverride: 'not-a-mode',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'invalid_parameters',
+    });
+    expect(sendSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects session.permission_mode.set above the caller permission', async () => {
+    allowSessionAgentActions('session.permission_mode.set');
+    const executor = createPlainExecutor({
+      rawSession: {
+        metadata: {
+          permissionMode: 'default',
+          permissionModeUpdatedAt: 10,
+        },
+      },
+    });
+
+    const result = await executor.execute(
+      'session.permission_mode.set',
+      {
+        sessionId: 'sess-2',
+        permissionMode: 'bypassPermissions',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      details: {
+        surface: 'session_agent',
+        requestedMode: 'bypassPermissions',
+        callerMode: 'default',
+      },
+    });
+    expect(setSessionPermissionMode).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for session-agent non-escalation when live caller permission is not supplied', async () => {
+    allowSessionAgentActions('session.permission_mode.set');
+    const executor = createPlainExecutor({
+      sessionId: 'sess-current',
+      rawSession: {
+        metadata: {
+          permissionMode: 'bypassPermissions',
+          permissionModeUpdatedAt: 1,
+        },
+      },
+    });
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-current',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 2,
+      metadata: {
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 2,
+      },
+    });
+
+    const result = await executor.execute(
+      'session.permission_mode.set',
+      {
+        sessionId: 'sess-2',
+        permissionMode: 'bypassPermissions',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-current' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      details: {
+        surface: 'session_agent',
+        requestedMode: 'bypassPermissions',
+        callerMode: 'default',
+      },
+    });
+    expect(fetchSessionById).not.toHaveBeenCalled();
+    expect(setSessionPermissionMode).not.toHaveBeenCalled();
+  });
+
+  it('prefers the running session permission mode over stale server metadata for non-escalation', async () => {
+    allowSessionAgentActions('session.permission_mode.set');
+    const executor = createPlainExecutor({
+      sessionId: 'sess-current',
+      getCallerPermissionMode: () => 'yolo',
+    } as any);
+    fetchSessionById.mockResolvedValueOnce({
+      id: 'sess-current',
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      pendingCount: 0,
+      metadataVersion: 2,
+      metadata: {
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 2,
+      },
+    });
+    setSessionPermissionMode.mockResolvedValueOnce({ ok: true, sessionId: 'sess-2' });
+
+    const result = await executor.execute(
+      'session.permission_mode.set',
+      {
+        sessionId: 'sess-2',
+        permissionMode: 'bypassPermissions',
+      },
+      { surface: 'session_agent', defaultSessionId: 'sess-current' },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        ok: true,
+        sessionId: 'sess-2',
+        permissionMode: 'yolo',
+      },
+    });
+    expect(fetchSessionById).not.toHaveBeenCalled();
+    expect(setSessionPermissionMode).toHaveBeenCalledWith(expect.objectContaining({
+      idOrPrefix: 'sess-2',
+      permissionMode: 'yolo',
     }));
   });
 
@@ -1196,6 +2147,52 @@ describe('createCliActionExecutor', () => {
       actionId: 'session.message.send',
     }));
     expect(sendSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects delegate run defaults above the caller permission', async () => {
+    const sessionId = 'sess-current-aaaaaaaaaaaa';
+    fetchSessionById.mockResolvedValue({
+      id: sessionId,
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      metadata: {
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 10,
+      },
+    });
+
+    const executor = createPlainExecutor({
+      sessionId,
+      rawSession: {
+        metadata: {
+          permissionMode: 'default',
+          permissionModeUpdatedAt: 10,
+        },
+      },
+    });
+
+    const result = await executor.execute(
+      'subagents.delegate.start',
+      {
+        sessionId,
+        backendTargetKeys: ['agent:claude'],
+        instructions: 'Review the implementation',
+      },
+      { surface: 'session_agent', defaultSessionId: sessionId },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      details: {
+        surface: 'session_agent',
+        requestedMode: 'workspace_write',
+        callerMode: 'default',
+      },
+    });
+    expect(startExecutionRun).not.toHaveBeenCalled();
   });
 
   it('uses a session-specific data key encryption context when starting execution runs in other sessions', async () => {

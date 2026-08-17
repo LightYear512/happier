@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 
 import { reloadConfiguration } from '@/configuration';
-import { clearDaemonState } from '@/persistence';
+import { clearDaemonStateForTests } from '@/persistence';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -126,7 +126,7 @@ describe('registerSessionSimulatorPreviewForCli', () => {
 
   afterEach(async () => {
     resetInMemoryAccountSettingsContextForTests();
-    await clearDaemonState();
+    await clearDaemonStateForTests();
     if (apiServer) {
       await new Promise<void>((resolve, reject) => apiServer!.close((error) => (error ? reject(error) : resolve())));
       apiServer = null;

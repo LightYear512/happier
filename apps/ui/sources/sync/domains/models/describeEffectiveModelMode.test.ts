@@ -119,4 +119,72 @@ describe('describeEffectiveModelMode', () => {
         expect(out.effectiveModelId).toBe(getAgentCore('codex').model.defaultMode);
         expect(out.notes.join(' ')).not.toMatch(/custom model ids|not validated/i);
     });
+
+    it('keeps the requested model selected while exposing the last provider-applied model separately', () => {
+        const out = describeEffectiveModelMode({
+            agentType: 'grok',
+            selectedModelId: 'model-b',
+            metadata: buildMetadata({
+                sessionModelsV1: {
+                    v: 1,
+                    provider: 'grok',
+                    updatedAt: 5,
+                    currentModelId: 'model-a',
+                    availableModels: [{ id: 'model-a', name: 'A' }, { id: 'model-b', name: 'B' }],
+                },
+                sessionAppliedModelV1: {
+                    v: 1,
+                    provider: 'grok',
+                    updatedAt: 4,
+                    modelId: 'model-a',
+                },
+            }),
+        });
+        expect(out.selectedModelId).toBe('model-b');
+        expect(out.appliedModelId).toBe('model-a');
+    });
+
+    it('does not treat configured-next model state as proof that a model was applied', () => {
+        const out = describeEffectiveModelMode({
+            agentType: 'grok',
+            selectedModelId: 'pending-model',
+            metadata: buildMetadata({
+                sessionModelsV1: {
+                    v: 1, provider: 'grok', updatedAt: 5, currentModelId: 'model-a',
+                    availableModels: [{ id: 'model-a', name: 'A' }],
+                },
+                acpSessionModelsV1: {
+                    v: 1, provider: 'grok', updatedAt: 6, currentModelId: 'model-b',
+                    availableModels: [{ id: 'model-b', name: 'B' }],
+                },
+            }),
+        });
+        expect(out.selectedModelId).toBe('pending-model');
+        expect(out.appliedModelId).toBeNull();
+    });
+
+    it('does not expose another provider applied model as the current model', () => {
+        const out = describeEffectiveModelMode({
+            agentType: 'codex',
+            selectedModelId: 'gpt-5.6-sol',
+            metadata: buildMetadata({
+                sessionModelsV1: {
+                    v: 1,
+                    provider: 'grok',
+                    updatedAt: 5,
+                    currentModelId: 'grok-build',
+                    availableModels: [{ id: 'grok-build', name: 'Grok Build' }],
+                },
+                sessionAppliedModelV1: {
+                    v: 1,
+                    provider: 'grok',
+                    updatedAt: 6,
+                    modelId: 'grok-build',
+                },
+            }),
+        });
+
+        expect(out.selectedModelId).toBe('gpt-5.6-sol');
+        expect(out.appliedModelId).toBeNull();
+    });
 });

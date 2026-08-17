@@ -2,9 +2,11 @@ import { z } from 'zod';
 import {
   AcpConfigOptionOverridesV1Schema,
   AgentRuntimeDescriptorV1Schema,
+  PendingFirstInputV1Schema,
   SessionInitialGoalRequestV1Schema,
   SessionAttachMetadataIdentityPolicySchema,
   SessionMcpSelectionV1Schema,
+  SpawnSessionExecutionAuthorizationSchema,
 } from '@happier-dev/protocol';
 
 import { PERMISSION_MODES } from '@/api/types';
@@ -41,24 +43,30 @@ export const SpawnSessionTerminalSchema = z.object({
   }).optional(),
 });
 
+export { SpawnSessionExecutionAuthorizationSchema };
+
 const SpawnDaemonSessionRequestCompatSchema = z.object({
   directory: z.string(),
   machineId: z.string().trim().min(1).optional(),
   spawnNonce: z.string().trim().min(1).optional(),
   accountSettingsVersionHint: z.number().int().min(0).optional(),
-  initialPrompt: z.string().optional(),
+  pendingFirstInput: PendingFirstInputV1Schema.optional(),
   sessionId: z.string().trim().min(1).optional(),
   existingSessionId: z.string().trim().min(1).optional(),
   initialTranscriptAfterSeq: z.number().int().min(0).optional(),
+  executionAuthorization: SpawnSessionExecutionAuthorizationSchema.optional(),
   initialGoal: SessionInitialGoalRequestV1Schema.optional(),
   attachMetadataIdentityPolicy: SessionAttachMetadataIdentityPolicySchema.optional(),
+  approvedNewDirectoryCreation: z.boolean().optional(),
   resume: z.string().trim().min(1).optional(),
   experimentalCodexAcp: z.boolean().optional(),
   codexBackendMode: z.enum(['mcp', 'acp', 'appServer']).optional(),
   agentRuntimeDescriptorV1: AgentRuntimeDescriptorV1Schema.optional(),
   permissionMode: SpawnSessionPermissionModeSchema.optional(),
   permissionModeUpdatedAt: z.number().int().optional(),
-  agentModeId: z.string().trim().min(1).optional(),
+  agentModeId: z.string().refine((value) => value.trim().length > 0, {
+    message: 'Agent mode ID must not be blank',
+  }).optional(),
   agentModeUpdatedAt: z.number().int().optional(),
   modelId: z.string().optional(),
   modelUpdatedAt: z.number().int().optional(),
@@ -113,13 +121,14 @@ const SPAWN_SESSION_OPTION_KEYS = [
   'directory',
   'spawnNonce',
   'accountSettingsVersionHint',
-  'initialPrompt',
+  'pendingFirstInput',
   'sessionId',
   'resume',
   'codexBackendMode',
   'agentRuntimeDescriptorV1',
   'existingSessionId',
   'initialTranscriptAfterSeq',
+  'executionAuthorization',
   'initialGoal',
   'attachMetadataIdentityPolicy',
   'permissionMode',

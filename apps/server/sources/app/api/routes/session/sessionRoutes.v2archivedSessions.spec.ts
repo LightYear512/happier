@@ -10,6 +10,9 @@ describe("sessionRoutes v2 archived sessions listing", () => {
     beforeEach(() => {
         resetSessionRouteMocks();
         sessionFindMany.mockReset();
+        // The list read is issued as one statement per (visibility arm x activity branch); every
+        // branch this test does not stub explicitly must still answer with an empty page.
+        sessionFindMany.mockResolvedValue([]);
     });
 
     it("filters to archived sessions and includes archivedAt", async () => {
@@ -29,6 +32,10 @@ describe("sessionRoutes v2 archived sessions listing", () => {
                     metadataVersion: 1,
                     agentState: null,
                     agentStateVersion: 0,
+                    runtimeActivityState: "unknown",
+                    runtimeActivityActiveCount: 0,
+                    runtimeActivityObservedAt: null,
+                    runtimeActivityRevision: 0,
                     dataEncryptionKey: null,
                     pendingCount: 0,
                     pendingVersion: 0,

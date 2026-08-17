@@ -206,7 +206,7 @@ function mockCommonDeps() {
     }));
 
     vi.doMock('@/sync/domains/models/describeEffectiveModelMode', () => ({
-        describeEffectiveModelMode: () => ({ effectiveModelId: 'default' }),
+        describeEffectiveModelMode: () => ({ selectedModelId: 'default', appliedModelId: null, effectiveModelId: 'default' }),
     }));
 
     vi.doMock('@/sync/domains/permissions/permissionModeOptions', () => ({
@@ -335,7 +335,7 @@ describe('AgentInput (action bar scroll layout)', () => {
                     onResumeClick={() => {}}
                     currentPath="/tmp"
                     resumeSessionId="s2"
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />)).tree;
 
@@ -372,7 +372,7 @@ describe('AgentInput (action bar scroll layout)', () => {
                     onResumeClick={() => {}}
                     currentPath="/tmp"
                     resumeSessionId="s2"
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />)).tree;
 
@@ -416,7 +416,7 @@ describe('AgentInput (action bar scroll layout)', () => {
                     resumeSessionId="session-1"
                     onAbort={() => {}}
                     showAbortButton
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />)).tree;
 
@@ -481,7 +481,7 @@ describe('AgentInput (action bar scroll layout)', () => {
                         controlId: 'delivery',
                         render: () => React.createElement('View', { testID: 'agent-input-delivery-chip' }),
                     }]}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />)).tree;
 

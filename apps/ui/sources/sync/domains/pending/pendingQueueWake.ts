@@ -6,7 +6,8 @@ import type { ResumeCapabilityOptions } from '@/agents/runtime/resumeCapabilitie
 import type { PermissionModeOverrideForSpawn } from '@/sync/domains/permissions/permissionModeOverride';
 import { buildResumeSessionBaseOptionsFromSession } from '@/sync/domains/session/resume/resumeSessionBase';
 import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/deriveSessionRuntimePresentationState';
+import { deriveSessionInputReadinessState } from '@/sync/domains/session/control/deriveSessionInputReadinessState';
+import { getSessionLocalControlState } from '@/sync/domains/session/control/sessionLocalControl';
 import {
     deriveLatestPendingRequestObservedAtFromSession,
 } from '@/sync/domains/session/pending/listPendingSessionRequests';
@@ -37,14 +38,18 @@ export function getPendingQueueWakeResumeOptions(opts: {
 }): PendingQueueWakeResumeOptions | null {
     const { sessionId, session, resumeCapabilityOptions, resumeTargetOverride, permissionOverride, canWakeMachineId } = opts;
 
-    // Only gate waking on "idle" when the session is actively running.
+    // Only gate waking on foreground input readiness when the session is actively running.
     // For inactive/archived sessions, `thinking` / `agentState.requests` can be stale; blocking wake would
     // strand pending-queue messages until the user sends another message (or the state refreshes).
     const isSessionActive = session.active === true && session.presence === 'online';
     if (isSessionActive) {
+        const localControl = getSessionLocalControlState(session);
+        if (localControl?.attached === true && localControl.remoteWritable !== true) {
+            return null;
+        }
         const requests = session.agentState?.requests;
         const hasRuntimeRequests = Boolean(requests && Object.keys(requests).length > 0);
-        const runtimeStatus = deriveSessionRuntimePresentationState({
+        const inputReadiness = deriveSessionInputReadinessState({
             active: session.active,
             activeAt: session.activeAt,
             presence: session.presence,
@@ -52,16 +57,11 @@ export function getPendingQueueWakeResumeOptions(opts: {
             thinkingAt: session.thinkingAt,
             latestTurnStatus: session.latestTurnStatus,
             latestTurnStatusObservedAt: session.latestTurnStatusObservedAt,
-            meaningfulActivityAt: session.meaningfulActivityAt,
             hasPendingPermissionRequests: hasRuntimeRequests,
             hasPendingUserActionRequests: hasRuntimeRequests,
             pendingRequestObservedAt: deriveLatestPendingRequestObservedAtFromSession(session),
         }, opts.nowMs ?? Date.now());
-        if (
-            runtimeStatus.working
-            || runtimeStatus.freshPermissionRequired
-            || runtimeStatus.freshActionRequired
-        ) {
+        if (!inputReadiness.canWakePendingQueue) {
             return null;
         }
     }

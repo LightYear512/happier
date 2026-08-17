@@ -47,6 +47,29 @@ export const ConnectedServiceCredentialHealthStatusV1Schema = z.enum([
 ]);
 export type ConnectedServiceCredentialHealthStatusV1 = z.infer<typeof ConnectedServiceCredentialHealthStatusV1Schema>;
 
+export function normalizeConnectedServiceCredentialHealthStatus(
+    raw: unknown,
+): ConnectedServiceCredentialHealthStatusV1 {
+    if (raw === 'connected') return 'connected';
+    if (raw === 'refreshing') return 'refreshing';
+    if (raw === 'refresh_failed_retryable') return 'refresh_failed_retryable';
+    return 'needs_reauth';
+}
+
+export function isConnectedServiceCredentialHealthStatusReconnectRequired(
+    status: ConnectedServiceCredentialHealthStatusV1 | null | undefined,
+): boolean {
+    return status === 'needs_reauth';
+}
+
+export function isConnectedServiceCredentialHealthStatusUsable(
+    status: ConnectedServiceCredentialHealthStatusV1 | null | undefined,
+): boolean {
+    return status === 'connected'
+        || status === 'refreshing'
+        || status === 'refresh_failed_retryable';
+}
+
 export const ConnectedServiceCredentialRefreshFailureKindV1Schema = z.enum([
     'invalid_grant',
     'invalid_client',
@@ -73,6 +96,99 @@ export const ConnectedServiceCredentialHealthV1Schema = z.object({
     providerErrorCode: z.string().trim().min(1).max(128).optional(),
 }).strict();
 export type ConnectedServiceCredentialHealthV1 = z.infer<typeof ConnectedServiceCredentialHealthV1Schema>;
+
+/**
+ * Opaque server-owned revision for one connected-service credential value.
+ * It is intentionally independent from row timestamps and refresh-lease bookkeeping.
+ */
+export const ConnectedServiceCredentialRevisionV1Schema = z
+    .string()
+    .regex(/^csr_[A-Za-z0-9_-]{22,64}$/);
+export type ConnectedServiceCredentialRevisionV1 = z.infer<typeof ConnectedServiceCredentialRevisionV1Schema>;
+
+export const ConnectedServiceExecutionAuthorityV1Schema = z.enum([
+    'passive_projection',
+    'fresh_user_action',
+    'runtime_recovery',
+]);
+export type ConnectedServiceExecutionAuthorityV1 = z.infer<typeof ConnectedServiceExecutionAuthorityV1Schema>;
+
+export const ConnectedServiceCredentialMutationGuardV1Schema = z.object({
+    expectedCredentialRevision: ConnectedServiceCredentialRevisionV1Schema.nullable().optional(),
+    refreshLeaseOwnerId: z.string().trim().min(1).max(256).optional(),
+}).strict().superRefine((value, context) => {
+    if (value.refreshLeaseOwnerId && typeof value.expectedCredentialRevision !== 'string') {
+        context.addIssue({
+            code: 'custom',
+            message: 'refreshLeaseOwnerId requires expectedCredentialRevision',
+            path: ['expectedCredentialRevision'],
+        });
+    }
+});
+export type ConnectedServiceCredentialMutationGuardV1 = z.infer<typeof ConnectedServiceCredentialMutationGuardV1Schema>;
+
+export const ConnectedServiceCredentialRevisionedMutationSuccessV1Schema = z.object({
+    success: z.literal(true),
+    credentialRevision: ConnectedServiceCredentialRevisionV1Schema,
+}).strict();
+export const ConnectedServiceCredentialLegacyMutationSuccessV1Schema = z.object({
+    success: z.literal(true),
+}).strict();
+export const ConnectedServiceCredentialMutationSuccessV1Schema =
+    ConnectedServiceCredentialRevisionedMutationSuccessV1Schema;
+export const ConnectedServiceCredentialCompatibleMutationSuccessV1Schema = z.union([
+    ConnectedServiceCredentialRevisionedMutationSuccessV1Schema,
+    ConnectedServiceCredentialLegacyMutationSuccessV1Schema,
+]);
+export type ConnectedServiceCredentialMutationSuccessV1 = z.infer<typeof ConnectedServiceCredentialMutationSuccessV1Schema>;
+export type ConnectedServiceCredentialCompatibleMutationSuccessV1 =
+    z.infer<typeof ConnectedServiceCredentialCompatibleMutationSuccessV1Schema>;
+
+export type ConnectedServiceCredentialRevisionBoundaryV1 =
+    | Readonly<{
+        revisionSemantics: 'revisioned';
+        credentialRevision: ConnectedServiceCredentialRevisionV1;
+      }>
+    | Readonly<{
+        revisionSemantics: 'legacy_unfenced';
+        credentialRevision: null;
+      }>;
+
+/**
+ * Translates the exact server-v0.2.1 no-revision shape from
+ * 4913c1e533c872a0712ba1c25b3104fd470aacc2 into an explicit unfenced semantic
+ * state. A missing revision must never be treated as a successful CAS fence.
+ * Remove the legacy branch when exact 0.2.1 leaves the supported predecessor window.
+ */
+export function readConnectedServiceCredentialRevisionBoundaryV1(
+    value: object,
+): ConnectedServiceCredentialRevisionBoundaryV1 | null {
+    if (!('credentialRevision' in value)) {
+        return { revisionSemantics: 'legacy_unfenced', credentialRevision: null };
+    }
+    const parsed = ConnectedServiceCredentialRevisionV1Schema.safeParse(value.credentialRevision);
+    if (!parsed.success) return null;
+    return { revisionSemantics: 'revisioned', credentialRevision: parsed.data };
+}
+
+export const ConnectedServiceCredentialMutationSupersededV1Schema = z.object({
+    error: z.literal('connect_credential_mutation_superseded'),
+    reason: z.enum(['revision_mismatch', 'refresh_lease_lost']),
+    credentialRevision: ConnectedServiceCredentialRevisionV1Schema.nullable(),
+}).strict();
+export type ConnectedServiceCredentialMutationSupersededV1 = z.infer<typeof ConnectedServiceCredentialMutationSupersededV1Schema>;
+
+export const ConnectedServiceCredentialMutationResponseV1Schema = z.union([
+    ConnectedServiceCredentialMutationSuccessV1Schema,
+    ConnectedServiceCredentialMutationSupersededV1Schema,
+]);
+export type ConnectedServiceCredentialMutationResponseV1 = z.infer<typeof ConnectedServiceCredentialMutationResponseV1Schema>;
+export const ConnectedServiceCredentialCompatibleMutationResponseV1Schema = z.union([
+    ConnectedServiceCredentialCompatibleMutationSuccessV1Schema,
+    ConnectedServiceCredentialMutationSupersededV1Schema,
+]);
+export type ConnectedServiceCredentialCompatibleMutationResponseV1 =
+    z.infer<typeof ConnectedServiceCredentialCompatibleMutationResponseV1Schema>;
 
 const OauthCredentialPayloadSchema = z.object({
     accessToken: z.string().min(1),
@@ -331,6 +447,26 @@ export const ConnectedServiceQuotaMeterV1Schema = z
 
 export type ConnectedServiceQuotaMeterV1 = z.infer<typeof ConnectedServiceQuotaMeterV1Schema>;
 
+export const ConnectedServiceUsageSourceBindingKindV1Schema = z.enum(['profile', 'group_member']);
+export type ConnectedServiceUsageSourceBindingKindV1 = z.infer<typeof ConnectedServiceUsageSourceBindingKindV1Schema>;
+
+export const ConnectedServiceUsageSourceV1Schema = z.discriminatedUnion('bindingKind', [
+    z.object({
+        serviceId: ConnectedServiceIdSchema,
+        profileId: ConnectedServiceProfileIdSchema,
+        bindingKind: z.literal('profile'),
+    }).strict(),
+    z.object({
+        serviceId: ConnectedServiceIdSchema,
+        profileId: ConnectedServiceProfileIdSchema,
+        bindingKind: z.literal('group_member'),
+        groupId: z.string().trim().min(1),
+        groupGeneration: z.number().int().nonnegative().optional(),
+    }).strict(),
+]);
+
+export type ConnectedServiceUsageSourceV1 = z.infer<typeof ConnectedServiceUsageSourceV1Schema>;
+
 export const ConnectedServiceQuotaSnapshotV1Schema = z
     .object({
         v: z.literal(1),
@@ -363,7 +499,7 @@ export type SealedConnectedServiceQuotaSnapshotV1 = z.infer<typeof SealedConnect
 export const ConnectedServiceAuthGroupPolicyV1Schema = z
     .object({
         v: z.literal(1).default(1),
-        strategy: z.enum(['priority', 'least_limited', 'manual']).default('priority'),
+        strategy: z.enum(['priority', 'least_limited', 'manual']).default('least_limited'),
         autoSwitch: z.boolean().default(false),
         switchOn: z
             .object({
@@ -393,12 +529,7 @@ export const ConnectedServiceAuthGroupPolicyV1Schema = z
         recoveryMode: z
             .enum(['off', 'wait_until_reset', 'switch_then_resume', 'switch_or_wait'])
             .default('switch_or_wait'),
-        recoveryPromptMode: z.literal('standard').default('standard'),
         resumePromptMode: z.enum(['standard', 'off', 'custom']).default('standard'),
-        effectiveMeterStrategy: z
-            .enum(['most_constrained', 'primary', 'secondary', 'daily', 'weekly', 'session'])
-            .default('most_constrained'),
-        memberRuntimeStatePersistence: z.literal('server_state_json').default('server_state_json'),
     })
     .strict();
 
@@ -428,12 +559,7 @@ export const ConnectedServiceAuthGroupPolicyPatchV1Schema = z
         preTurnProbeMode: z.enum(['never', 'when_stale', 'always_for_group']).optional(),
         preTurnProbeOrder: z.enum(['current_first_then_candidates', 'candidates_first_then_current']).optional(),
         recoveryMode: z.enum(['off', 'wait_until_reset', 'switch_then_resume', 'switch_or_wait']).optional(),
-        recoveryPromptMode: z.literal('standard').optional(),
         resumePromptMode: z.enum(['standard', 'off', 'custom']).optional(),
-        effectiveMeterStrategy: z
-            .enum(['most_constrained', 'primary', 'secondary', 'daily', 'weekly', 'session'])
-            .optional(),
-        memberRuntimeStatePersistence: z.literal('server_state_json').optional(),
     })
     .strict();
 
@@ -505,6 +631,7 @@ export const ConnectedServiceAuthGroupV1Schema = z
         policy: ConnectedServiceAuthGroupPolicyV1Schema,
         activeProfileId: ConnectedServiceProfileIdSchema.nullable(),
         generation: z.number().int().nonnegative(),
+        runtimeStateRevision: z.number().int().nonnegative(),
         state: ConnectedServiceAuthGroupStateV1Schema,
         createdAt: z.number().int().nonnegative(),
         updatedAt: z.number().int().nonnegative(),
@@ -620,6 +747,7 @@ const ConnectedServiceAuthGroupMemberRuntimeStatePatchV1Schema = z
 export const ConnectedServiceAuthGroupRuntimeStatePatchRequestV1Schema = z
     .object({
         expectedGeneration: z.number().int().nonnegative().optional(),
+        expectedRuntimeStateRevision: z.number().int().nonnegative().optional(),
         state: ConnectedServiceAuthGroupStatePatchV1Schema.optional(),
         memberStates: z.array(ConnectedServiceAuthGroupMemberRuntimeStatePatchV1Schema).default([]),
     })
@@ -656,6 +784,8 @@ export const ConnectedServiceAuthGroupErrorCodeV1Schema = z.enum([
     'connect_group_profile_runtime_cooldown',
     'connect_group_generation_conflict',
     'connect_group_generation_required',
+    'connect_group_runtime_state_revision_conflict',
+    'connect_group_runtime_state_revision_required',
     'connect_group_fallback_disabled',
     'connect_group_runtime_fallback_unsupported',
     'connect_credential_referenced_by_group',
@@ -666,6 +796,7 @@ export type ConnectedServiceAuthGroupErrorCodeV1 = z.infer<typeof ConnectedServi
 export const ConnectedServiceAuthGroupErrorResponseV1Schema = z.object({
     error: ConnectedServiceAuthGroupErrorCodeV1Schema,
     generation: z.number().int().min(0).optional(),
+    runtimeStateRevision: z.number().int().min(0).optional(),
     resetAtMs: z.number().int().nonnegative().optional(),
 }).strict();
 

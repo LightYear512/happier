@@ -46,6 +46,7 @@ const formatter: ConnectedServiceQuotaGaugeLabelFormatter = {
     remainingWithReset: ({ percent, reset }) => `${percent} left · resets in ${reset}`,
     used: ({ used, limit }) => `${used}/${limit} used`,
     durationNow: () => 'now',
+    durationOutdated: () => 'outdated',
     durationDaysHours: ({ days, hours }) => `${days}d ${hours}h`,
     durationHoursMinutes: ({ hours, minutes }) => `${hours}h ${minutes}m`,
     durationHours: ({ hours }) => `${hours}h`,
@@ -75,6 +76,33 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(viewModel?.badgeLabel).toBe('12% left');
         expect(viewModel?.tone).toBe('warning');
         expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['daily', 'weekly']);
+    });
+
+    it('keeps model-specific Claude usage windows visible in account usage rows', () => {
+        const viewModel = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: {
+                ...snapshot([
+                    meter({ meterId: 'five_hour', label: '5-hour', utilizationPct: 10, unit: 'unknown' }),
+                    meter({ meterId: 'seven_day', label: 'Weekly', utilizationPct: 25, unit: 'unknown' }),
+                    meter({ meterId: 'seven_day_fable', label: 'Weekly (Fable)', utilizationPct: 61, unit: 'unknown' }),
+                ]),
+                serviceId: 'claude-subscription',
+            },
+            windowMode: 'most_constrained',
+            nowMs: 2_000,
+            formatter,
+        });
+
+        expect(viewModel?.effectiveMeter.meterId).toBe('seven_day_fable');
+        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual([
+            'five_hour',
+            'seven_day',
+            'seven_day_fable',
+        ]);
+        expect(viewModel?.allMeterRows.find((row) => row.meterId === 'seven_day_fable')).toMatchObject({
+            label: 'Weekly (Fable)',
+            detailRightLabel: '39% left',
+        });
     });
 
     it('does not compare quota windows against rate or capacity families in most-constrained mode', () => {
@@ -166,6 +194,27 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(viewModel?.allMeterRows[0]?.usedLimitSemantics).toBe('used');
         expect(viewModel?.allMeterRows[0]?.detailRightLabel).toBe('18% left · resets in 2h');
         expect(viewModel?.allMeterRows[0]?.usedLimitLabel).toBe('82/100 used');
+    });
+
+    it('drops the reset clause when the reset boundary already elapsed instead of composing "resets in outdated"', () => {
+        const viewModel = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: snapshot([
+                meter({
+                    meterId: 'weekly',
+                    label: 'Weekly',
+                    used: 35,
+                    limit: 100,
+                    // Snapshot predates its own reset boundary: the reset timestamp is in the past.
+                    resetsAt: 1_000,
+                }),
+            ]),
+            windowMode: 'weekly',
+            nowMs: 2_000,
+            formatter,
+        });
+
+        expect(viewModel?.detailRightLabel).toBe('65% left');
+        expect(viewModel?.allMeterRows[0]?.detailRightLabel).toBe('65% left');
     });
 
     it('uses first-class remaining and used percentages from provider quota meters', () => {
@@ -740,6 +789,46 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(selected?.sourceKind).toBe('native_runtime_evidence');
         expect(selected?.snapshot.profileId).toBe('backup');
         expect(selected?.snapshot.meters[0]?.remainingPct).toBe(18);
+    });
+
+    it('keeps fresher connected account usage ahead of stale runtime quota evidence', () => {
+        const freshProfileSnapshot: ConnectedServiceQuotaSnapshotV1 = {
+            ...snapshot([
+                meter({ meterId: 'weekly', label: 'Weekly', used: 10, limit: 100, remainingPct: 90 }),
+            ]),
+            fetchedAt: 100_000,
+            staleAfterMs: 60_000,
+        };
+
+        const selected = selectConnectedServiceSessionProviderUsageGaugeSource({
+            providerId: 'codex',
+            connectedServiceSnapshot: freshProfileSnapshot,
+            connectedServiceRefProvenance: 'connected_binding_profile',
+            runtimeIssue: {
+                v: 1,
+                scope: 'primary_session',
+                status: 'failed',
+                code: 'usage_limit',
+                source: 'usage_limit',
+                occurredAt: 1_000,
+                provider: 'codex',
+                usageLimit: {
+                    v: 1,
+                    resetAtMs: 30_000,
+                    retryAfterMs: null,
+                    quotaScope: 'account',
+                    recoverability: 'wait',
+                    limitCategory: 'usage_limit',
+                    quotaSnapshotRef: { serviceId: 'openai-codex', profileId: 'backup', groupId: 'main', fetchedAtMs: 1_000 },
+                    effectiveMeterId: 'weekly',
+                    effectiveRemainingPct: 18,
+                },
+            },
+        });
+
+        expect(selected?.sourceKind).toBe('connected_service_profile');
+        expect(selected?.snapshot.profileId).toBe('work');
+        expect(selected?.snapshot.meters[0]?.remainingPct).toBe(90);
     });
 
     it('classifies session gauge sources from ref provenance through the gauge-source matrix', () => {

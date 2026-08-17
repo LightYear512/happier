@@ -52,6 +52,50 @@ describe('sessionControl contract exports', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('accepts current and legacy session_stop result shapes while rejecting mismatched outcomes', () => {
+    const schema = (protocol as any).SessionStopEnvelopeSchema;
+    const envelope = (data: unknown) => ({
+      v: 1,
+      ok: true,
+      kind: 'session_stop',
+      data,
+    });
+
+    expect(schema.safeParse(envelope({ sessionId: 'sess_123', stopped: true })).success).toBe(true);
+    expect(schema.safeParse(envelope({ sessionId: 'sess_123', stopped: false })).success).toBe(true);
+    expect(schema.safeParse(envelope({
+      sessionId: 'sess_123',
+      stopped: false,
+      stopOutcome: {
+        status: 'stopped_projection_unconfirmed',
+        reason: 'relay_inactive_not_observed',
+      },
+    })).success).toBe(true);
+    for (const reason of ['target_daemon_unavailable', 'target_session_not_found']) {
+      expect(schema.safeParse(envelope({
+        sessionId: 'sess_123',
+        stopped: false,
+        stopOutcome: { status: 'physical_stop_unconfirmed', reason },
+      })).success).toBe(true);
+    }
+
+    for (const reason of [
+      'terminal_control_serviceability_retirement_failed',
+      'terminal_attachment_descriptor_retirement_failed',
+    ]) {
+      expect(schema.safeParse(envelope({
+        sessionId: 'sess_123',
+        stopped: false,
+        stopOutcome: { status: 'stopped_cleanup_incomplete', reason },
+      })).success).toBe(true);
+      expect(schema.safeParse(envelope({
+        sessionId: 'sess_123',
+        stopped: false,
+        stopOutcome: { status: 'physical_stop_unconfirmed', reason },
+      })).success).toBe(false);
+    }
+  });
+
   it('validates primary turn status and sanitized runtime issue fields on session summaries', () => {
     expect(typeof (protocol as any).TurnTerminalStatusV1Schema?.safeParse).toBe('function');
     expect(typeof (protocol as any).PrimaryTurnStatusV1Schema?.safeParse).toBe('function');
@@ -91,6 +135,30 @@ describe('sessionControl contract exports', () => {
       lastRuntimeIssue: runtimeIssue,
     });
     expect(summaryParsed.success).toBe(true);
+  });
+
+  it('declares the target runtime activity projection fields on session summaries', () => {
+    const summaryShape = (protocol as any).SessionSummarySchema.shape;
+    expect(typeof summaryShape.runtimeActivityState?.safeParse).toBe('function');
+    expect(typeof summaryShape.runtimeActivityRevision?.safeParse).toBe('function');
+    expect(typeof summaryShape.runtimeActivityActiveCount?.safeParse).toBe('function');
+    expect(typeof summaryShape.runtimeActivityObservedAt?.safeParse).toBe('function');
+    expect(summaryShape.runtimeActivitySourceClass).toBeUndefined();
+
+    const summaryParsed = (protocol as any).SessionSummarySchema.safeParse({
+      id: 'sess_runtime_activity',
+      createdAt: 1,
+      updatedAt: 2,
+      active: false,
+      activeAt: 0,
+      encryption: { type: 'dataKey' },
+      runtimeActivityState: 'active',
+      runtimeActivityRevision: 3,
+      runtimeActivityActiveCount: 2,
+      runtimeActivityObservedAt: 1_000,
+    });
+    expect(summaryParsed.success).toBe(true);
+    expect(summaryParsed.data.runtimeActivityActiveCount).toBe(2);
   });
 
   it('exports and validates session turn schemas', () => {
@@ -454,6 +522,10 @@ describe('sessionControl contract exports', () => {
       latestTurnStatus: 'failed',
       latestTurnStatusObservedAt: 456,
       lastRuntimeIssue: runtimeIssue,
+      runtimeActivityState: 'active',
+      runtimeActivityRevision: 4,
+      runtimeActivityActiveCount: 2,
+      runtimeActivityObservedAt: 1_000,
     });
 
     expect(parsed.success).toBe(true);
@@ -475,6 +547,21 @@ describe('sessionControl contract exports', () => {
     });
     expect(invalidTurnStatusObservedAtParsed.success).toBe(false);
 
+    const minimalRecordParsed = (protocol as any).V2SessionRecordSchema.safeParse({
+      id: 'sess_123',
+      seq: 7,
+      createdAt: 1,
+      updatedAt: 2,
+      active: false,
+      activeAt: 0,
+      metadata: '{}',
+      metadataVersion: 1,
+      agentState: null,
+      agentStateVersion: 1,
+      dataEncryptionKey: null,
+    });
+    expect(minimalRecordParsed.success).toBe(true);
+
     const invalidAttentionProjectionParsed = (protocol as any).V2SessionRecordSchema.safeParse({
       id: 'sess_123',
       seq: 7,
@@ -492,6 +579,43 @@ describe('sessionControl contract exports', () => {
     });
     expect(invalidAttentionProjectionParsed.success).toBe(false);
 
+    const invalidRuntimeActivityParsed = (protocol as any).V2SessionRecordSchema.safeParse({
+      id: 'sess_123',
+      seq: 7,
+      createdAt: 1,
+      updatedAt: 2,
+      active: true,
+      activeAt: 2,
+      metadata: '{}',
+      metadataVersion: 1,
+      agentState: null,
+      agentStateVersion: 1,
+      dataEncryptionKey: null,
+      runtimeActivityActiveCount: 1,
+      runtimeActivityObservedAt: 1_000,
+    });
+    expect(invalidRuntimeActivityParsed.success).toBe(false);
+
+    const conflictingRuntimeActivityParsed = (protocol as any).V2SessionRecordSchema.safeParse({
+      id: 'sess_123',
+      seq: 7,
+      createdAt: 1,
+      updatedAt: 2,
+      active: false,
+      activeAt: 0,
+      metadata: '{}',
+      metadataVersion: 1,
+      agentState: null,
+      agentStateVersion: 1,
+      dataEncryptionKey: null,
+      runtimeActivityState: 'idle',
+      runtimeActivityActiveCount: 0,
+      runtimeActivityObservedAt: 1_000,
+      runtimeActivityRevision: 4,
+      runtimeActivitySourceClass: 'agent_detached_task',
+    });
+    expect(conflictingRuntimeActivityParsed.success).toBe(false);
+
     const invalidActivityParsed = (protocol as any).V2SessionRecordSchema.safeParse({
       id: 'sess_123',
       seq: 7,
@@ -507,6 +631,48 @@ describe('sessionControl contract exports', () => {
       dataEncryptionKey: null,
     });
     expect(invalidActivityParsed.success).toBe(false);
+  });
+
+  it('declares the unread-entry instant on v2 session records instead of passing it through', () => {
+    // `unreadSince` is the server-materialized instant a session entered the unread
+    // state — the stable key the session list orders unread rows by. It was dropped
+    // from two hand-maintained allow-lists (the server row selects and the client
+    // record rebuild) while this schema stayed silent about it, and consumers derive
+    // their drift guards from `V2SessionRecordSchema.shape`. An undeclared field is
+    // therefore invisible to those guards, and reaches readers as an unvalidated
+    // passthrough key typed `unknown`. Declaring it arms the guards and makes an
+    // out-of-contract value fail at the boundary that owns the contract.
+    const schema = protocol.V2SessionRecordSchema;
+    const baseRecord = {
+      id: 'sess_123',
+      seq: 7,
+      createdAt: 1,
+      updatedAt: 2,
+      active: false,
+      activeAt: 0,
+      metadata: '{}',
+      metadataVersion: 1,
+      agentState: null,
+      agentStateVersion: 1,
+      dataEncryptionKey: null,
+    };
+
+    expect(Object.keys(schema.shape)).toContain('unreadSince');
+
+    const stampedParsed = schema.safeParse({ ...baseRecord, unreadSince: 1_700_000_000_000 });
+    expect(stampedParsed.success).toBe(true);
+    expect(stampedParsed.success && stampedParsed.data.unreadSince).toBe(1_700_000_000_000);
+
+    // Cleared (read) rows and older servers that never send the field must both stay valid:
+    // the declaration is additive and optional, so it cannot reject a supported payload.
+    expect(schema.safeParse({ ...baseRecord, unreadSince: null }).success).toBe(true);
+    expect(schema.safeParse(baseRecord).success).toBe(true);
+
+    // Same contract as the sibling date-derived instants (`pendingRequestObservedAt`,
+    // `latestReadyEventAt`): a non-integer, negative or non-numeric value is not a stamp.
+    expect(schema.safeParse({ ...baseRecord, unreadSince: -1 }).success).toBe(false);
+    expect(schema.safeParse({ ...baseRecord, unreadSince: 1.5 }).success).toBe(false);
+    expect(schema.safeParse({ ...baseRecord, unreadSince: 'not-a-number' }).success).toBe(false);
   });
 
   it('validates a session_wait envelope shape', () => {
@@ -698,6 +864,60 @@ describe('sessionControl contract exports', () => {
     expect((protocol as any).isHiddenSystemSession({ metadata: null })).toBe(false);
     expect((protocol as any).isHiddenSystemSession({ metadata: { systemSessionV1: { v: 1, key: 'carrier' } } })).toBe(false);
     expect((protocol as any).isHiddenSystemSession({ metadata: { systemSessionV1: { v: 1, key: 'carrier', hidden: true } } })).toBe(true);
+  });
+
+  it('reads systemSessionV1 independently of malformed sibling metadata keys', () => {
+    // The system-session marker read must not depend on unrelated metadata fields
+    // being well-formed: a corrupt recovery blob must not hide a system session.
+    const parsed = (protocol as any).readSystemSessionMetadataFromMetadata({
+      metadata: {
+        systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
+        sessionUsageLimitRecoveryV1: { v: 'corrupt', nonsense: true },
+        sessionContinuationRecoveryV1: 42,
+      },
+    });
+    expect(parsed).toEqual({ v: 1, key: 'voice_conversation', hidden: true });
+    expect((protocol as any).isHiddenSystemSession({
+      metadata: {
+        systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
+        sessionUsageLimitRecoveryV1: 42,
+      },
+    })).toBe(true);
+  });
+
+  it('returns null system-session metadata for non-object, absent, and malformed markers', () => {
+    const read = (metadata: unknown) => (protocol as any).readSystemSessionMetadataFromMetadata({ metadata });
+    expect(read(null)).toBeNull();
+    expect(read(undefined)).toBeNull();
+    expect(read('metadata-string')).toBeNull();
+    expect(read(7)).toBeNull();
+    expect(read({})).toBeNull();
+    expect(read({ systemSessionV1: null })).toBeNull();
+    expect(read({ systemSessionV1: { v: 2, key: 'x' } })).toBeNull();
+    expect(read({ systemSessionV1: { v: 1 } })).toBeNull();
+  });
+
+  it('drops legacy connected-service quota refs from parsed session metadata while preserving provider-account usage refs', () => {
+    const parsed = (protocol as any).SessionMetadataSchema.safeParse({
+      connectedServiceQuotaRefsV1: {
+        v: 1,
+        refs: [{ v: 1, serviceId: 'openai-codex', profileId: 'work' }],
+        updatedAtMs: 123,
+      },
+      providerAccountUsageRefsV1: {
+        v: 1,
+        recordIds: ['paug_v1_McZJ2eL8Y7kqW-CJ0J0vNuQ7cQmMMn9M2f2KqGm2jQ0'],
+        updatedAtMs: 456,
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.providerAccountUsageRefsV1).toEqual({
+      v: 1,
+      recordIds: ['paug_v1_McZJ2eL8Y7kqW-CJ0J0vNuQ7cQmMMn9M2f2KqGm2jQ0'],
+      updatedAtMs: 456,
+    });
+    expect('connectedServiceQuotaRefsV1' in parsed.data).toBe(false);
   });
 
   it('encodes and decodes v2 session list cursors', () => {

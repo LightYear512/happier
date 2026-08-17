@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { VoiceAssistantActionSchema } from './voiceActions.js';
 import { BackendTargetRefSchema } from './backendTargets/backendTargetRef.js';
+import { PendingLocalIdSchema } from './sessionMessages/pendingLocalId.js';
 import {
   ExecutionRunClassSchema,
   type ExecutionRunClass,
@@ -79,6 +80,8 @@ export const ExecutionRunTransportErrorCodeSchema = z.enum([
   'execution_run_busy',
   'execution_run_failed',
   'execution_run_budget_exceeded',
+  'execution_run_protocol_unsupported',
+  'execution_run_target_unavailable',
   'run_depth_exceeded',
   'permission_denied',
 ]);
@@ -212,6 +215,35 @@ export const ExecutionRunTurnStreamStartRequestSchema = z.object({
   resume: z.boolean().optional(),
 }).passthrough();
 export type ExecutionRunTurnStreamStartRequest = z.infer<typeof ExecutionRunTurnStreamStartRequestSchema>;
+
+export const ExecutionRunUserTranscriptDirectiveSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('persist'),
+    localId: PendingLocalIdSchema,
+  }).passthrough(),
+  z.object({
+    mode: z.literal('suppress'),
+  }).passthrough(),
+]);
+export type ExecutionRunUserTranscriptDirective = z.infer<typeof ExecutionRunUserTranscriptDirectiveSchema>;
+
+export const ExecutionRunTurnStreamStartV2RequestSchema = ExecutionRunTurnStreamStartRequestSchema.extend({
+  userTranscript: ExecutionRunUserTranscriptDirectiveSchema,
+});
+export type ExecutionRunTurnStreamStartV2Request = z.infer<typeof ExecutionRunTurnStreamStartV2RequestSchema>;
+
+export const ExecutionRunUserTranscriptCommitRequestSchema = z.object({
+  runId: z.string().min(1),
+  message: z.string().min(1),
+  displayMessage: z.string().min(1).optional(),
+  localId: PendingLocalIdSchema,
+}).passthrough();
+export type ExecutionRunUserTranscriptCommitRequest = z.infer<typeof ExecutionRunUserTranscriptCommitRequestSchema>;
+
+export const ExecutionRunUserTranscriptCommitResponseSchema = z.object({
+  ok: z.literal(true),
+}).passthrough();
+export type ExecutionRunUserTranscriptCommitResponse = z.infer<typeof ExecutionRunUserTranscriptCommitResponseSchema>;
 
 export const ExecutionRunTurnStreamStartResponseSchema = z.object({
   streamId: z.string().min(1),

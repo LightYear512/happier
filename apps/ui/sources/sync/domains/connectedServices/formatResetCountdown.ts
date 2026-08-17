@@ -14,11 +14,23 @@ const DAY_MS = 24 * HOUR_MS;
 
 export type ResetCountdownFormatter = Readonly<{
     durationNow: () => string;
+    durationOutdated: () => string;
     durationDaysHours: (params: Readonly<{ days: number; hours: number }>) => string;
     durationHoursMinutes: (params: Readonly<{ hours: number; minutes: number }>) => string;
     durationHours: (params: Readonly<{ hours: number }>) => string;
     durationMinutes: (params: Readonly<{ minutes: number }>) => string;
 }>;
+
+/**
+ * True when a reset timestamp exists but already elapsed (or is malformed): the usage snapshot
+ * predates its own reset boundary, so "resets in …" phrasing must not be composed around it
+ * (observed live as the nonsense label "resets in outdated").
+ */
+export function isResetCountdownOutdated(nowMs: number, resetsAtMs: number | null): boolean {
+    if (!resetsAtMs) return false;
+    const delta = resetsAtMs - nowMs;
+    return !Number.isFinite(delta) || delta < 0;
+}
 
 export function formatResetCountdown(
     nowMs: number,
@@ -27,7 +39,9 @@ export function formatResetCountdown(
 ): string | null {
     if (!resetsAtMs) return null;
     const delta = resetsAtMs - nowMs;
-    if (!Number.isFinite(delta) || delta <= 0) return formatter.durationNow();
+    if (!Number.isFinite(delta)) return formatter.durationOutdated();
+    if (delta < 0) return formatter.durationOutdated();
+    if (delta === 0) return formatter.durationNow();
 
     const totalMinutes = Math.floor(delta / MINUTE_MS);
     const days = Math.floor(totalMinutes / (60 * 24));

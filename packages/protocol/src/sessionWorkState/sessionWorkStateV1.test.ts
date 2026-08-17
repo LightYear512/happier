@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     readDisplayableSessionWorkStateV1,
+    SessionWorkStateGoalCapabilitiesV1Schema,
     SessionWorkStateItemV1Schema,
     SessionWorkStateStatusV1Schema,
     SessionWorkStateV1Schema,
@@ -77,6 +78,24 @@ describe('SessionWorkStateV1', () => {
         });
 
         expect(item.statusReason).toBe('budgetLimited');
+        expect(SessionWorkStateItemV1Schema.parse({
+            id: 'goal:blocked',
+            kind: 'goal',
+            origin: 'vendor',
+            status: 'blocked',
+            statusReason: 'blocked',
+            title: 'Provider-blocked goal',
+            updatedAt: 2,
+        }).statusReason).toBe('blocked');
+        expect(SessionWorkStateItemV1Schema.parse({
+            id: 'goal:usage-limited',
+            kind: 'goal',
+            origin: 'vendor',
+            status: 'blocked',
+            statusReason: 'usageLimited',
+            title: 'Usage-limited goal',
+            updatedAt: 3,
+        }).statusReason).toBe('usageLimited');
         expect(() =>
             SessionWorkStateItemV1Schema.parse({
                 id: 'goal:thread-1',
@@ -88,6 +107,52 @@ describe('SessionWorkStateV1', () => {
                 updatedAt: 1,
             }),
         ).toThrow();
+    });
+
+    // G-6: a Claude goal left `active` when the CLI session tears down gracefully is republished with
+    // `statusReason:'interrupted'` (status STAYS active — the goal may legitimately resume) so the UI
+    // can render an "(interrupted)" affordance. Provider-neutral, additive to the shared enum.
+    it('accepts the provider-neutral `interrupted` status reason on an active goal', () => {
+        const item = SessionWorkStateItemV1Schema.parse({
+            id: 'goal:claude',
+            kind: 'goal',
+            origin: 'vendor',
+            status: 'active',
+            statusReason: 'interrupted',
+            title: 'Interrupted-on-shutdown goal',
+            updatedAt: 1,
+        });
+
+        expect(item.statusReason).toBe('interrupted');
+    });
+
+    it('treats provider-derived goal capabilities as optional and additive', () => {
+        const withoutCapabilities = SessionWorkStateItemV1Schema.parse({
+            id: 'goal:thread-1',
+            kind: 'goal',
+            origin: 'vendor',
+            status: 'active',
+            title: 'Goal without capabilities',
+            updatedAt: 1,
+        });
+        expect(withoutCapabilities.goalCapabilities).toBeUndefined();
+
+        const withCapabilities = SessionWorkStateItemV1Schema.parse({
+            id: 'goal:claude',
+            kind: 'goal',
+            origin: 'derived',
+            backendId: 'claude',
+            status: 'active',
+            title: 'Goal with capabilities',
+            updatedAt: 2,
+            goalCapabilities: { canEdit: true, canStop: false, canClear: true },
+        });
+        expect(withCapabilities.goalCapabilities).toEqual({ canEdit: true, canStop: false, canClear: true });
+    });
+
+    it('parses a partial goal capability shape and rejects non-boolean members', () => {
+        expect(SessionWorkStateGoalCapabilitiesV1Schema.parse({ canEdit: true })).toEqual({ canEdit: true });
+        expect(() => SessionWorkStateGoalCapabilitiesV1Schema.parse({ canEdit: 'yes' })).toThrow();
     });
 
     it('builds stable vendor and deterministic fallback item ids', () => {

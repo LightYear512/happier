@@ -124,6 +124,44 @@ describe('computeSessionConfigOptionControls', () => {
         });
     });
 
+    it('preserves exact nonblank config and option identifiers through metadata controls', () => {
+        const metadata = createMetadata({
+            sessionConfigOptionsV1: {
+                v: 1,
+                provider: 'cursor',
+                updatedAt: 1,
+                configOptions: [{
+                    id: ' effort ',
+                    name: 'Effort',
+                    type: 'select',
+                    currentValue: ' high ',
+                    options: [
+                        { value: ' high ', name: 'High exact' },
+                        { value: 'high', name: 'High distinct' },
+                    ],
+                }],
+            },
+            sessionConfigOptionOverridesV1: {
+                v: 1,
+                updatedAt: 2,
+                overrides: { ' effort ': { updatedAt: 2, value: ' high ' } },
+            },
+        });
+
+        expect(computeSessionConfigOptionControls({ agentId: 'cursor', metadata })?.[0]).toMatchObject({
+            option: {
+                id: ' effort ',
+                currentValue: ' high ',
+                options: [
+                    { value: ' high ', name: 'High exact' },
+                    { value: 'high', name: 'High distinct' },
+                ],
+            },
+            requestedValue: ' high ',
+            effectiveValue: ' high ',
+        });
+    });
+
     it('normalizes legacy Extra High option labels without changing the option value', () => {
         const metadata = createMetadata({
             sessionConfigOptionsV1: {
@@ -338,6 +376,40 @@ describe('computeSessionConfigOptionControls', () => {
 
         const res = computeSessionConfigOptionControls({ agentId: 'opencode', metadata });
         expect(res?.[0]?.effectiveValue).toBe('true');
+    });
+
+    it('uses the newest valid aliases throughout the composed config control', () => {
+        const metadata = createMetadata({
+            sessionConfigOptionsV1: {
+                v: 1,
+                provider: 'opencode',
+                updatedAt: 10,
+                configOptions: [{ id: 'telemetry', name: 'Telemetry', type: 'boolean', currentValue: 'false' }],
+            },
+            acpConfigOptionsV1: {
+                v: 1,
+                provider: 'opencode',
+                updatedAt: 20,
+                configOptions: [{ id: 'telemetry', name: 'Telemetry', type: 'boolean', currentValue: 'true' }],
+            },
+            sessionConfigOptionOverridesV1: {
+                v: 1,
+                updatedAt: Number.NaN,
+                overrides: { telemetry: { updatedAt: 30, value: 'false' } },
+            },
+            acpConfigOptionOverridesV1: {
+                v: 1,
+                updatedAt: 40,
+                overrides: { telemetry: { updatedAt: 40, value: 'false' } },
+            },
+        });
+
+        expect(computeSessionConfigOptionControls({ agentId: 'opencode', metadata })?.[0]).toMatchObject({
+            option: { currentValue: 'true' },
+            requestedValue: 'false',
+            effectiveValue: 'false',
+            isPending: true,
+        });
     });
 });
 

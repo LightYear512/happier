@@ -1,7 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  ConnectedServiceCredentialHealthStatusV1Schema,
+  ConnectedServiceCredentialRevisionV1Schema,
+  ProviderAccountUsageRecordIdSchema,
   readConnectedServiceLimitCategoryV1,
   SessionUsageLimitRecoveryResumePromptModeV1Schema,
   type SessionUsageLimitRecoveryResumePromptModeV1,
@@ -9,6 +12,7 @@ import {
 
 import { configuration } from '@/configuration';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
+import { normalizeConnectedServiceAccessTokenFingerprint } from '../../refresh/credentialFreshness/tokenFingerprint';
 
 import {
   ConnectedServiceRuntimeAuthFailureKindSchema,
@@ -16,6 +20,7 @@ import {
   type ConnectedServiceRuntimeLimitCategory,
   type ConnectedServiceRuntimeQuotaScope,
 } from '../types';
+import { readStableRuntimeAuthFailureClassificationIdentity } from '../runtimeAuthFailureReportIdentity';
 import type {
   DrainRuntimeAuthFailureReportOutboxItemResult,
   DrainRuntimeAuthFailureReportOutboxItemsResult,
@@ -26,12 +31,15 @@ import type {
   RuntimeAuthFailureReportOutboxRecoveryAction,
   RuntimeAuthFailureReportOutboxReport,
 } from './runtimeAuthFailureReportOutboxTypes';
+import { withRuntimeAuthFailureReportOutboxFileLock } from './runtimeAuthFailureReportOutboxFileLock';
 
 const OUTBOX_SCHEMA_VERSION = 1;
 const OUTBOX_DIR_BASENAME = 'connected-service-runtime-auth-report-outbox';
 const QUARANTINE_DIR_BASENAME = 'quarantine';
 const SAFE_STRING_MAX_LENGTH = 512;
 const SAFE_ACTION_URL_MAX_LENGTH = 2_048;
+const REPORT_ID_MAX_LENGTH = 256;
+export const DEFAULT_RUNTIME_AUTH_FAILURE_REPORT_OUTBOX_TTL_MS = 24 * 60 * 60_000;
 
 const QUOTA_SCOPES = new Set<ConnectedServiceRuntimeQuotaScope>([
   'account',
@@ -83,6 +91,12 @@ function readNullableSafeProviderString(value: unknown): string | null {
 }
 
 function readNullableTimestampMs(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
+}
+
+function readNullableNonNegativeInt(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return Math.max(0, Math.trunc(value));
@@ -141,6 +155,20 @@ function readRecoveryAction(value: unknown): RuntimeAuthFailureReportOutboxRecov
   return null;
 }
 
+function readCredentialHealthStatus(
+  value: unknown,
+): NonNullable<RuntimeAuthFailureReportOutboxClassification['credentialHealthStatus']> | null {
+  const parsed = ConnectedServiceCredentialHealthStatusV1Schema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function readProviderAccountUsageRecordId(
+  value: unknown,
+): NonNullable<RuntimeAuthFailureReportOutboxClassification['providerAccountUsageRecordId']> | null {
+  const parsed = ProviderAccountUsageRecordIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 function sanitizeClassification(value: unknown): RuntimeAuthFailureReportOutboxClassification | null {
   if (!isRecord(value)) return null;
   const kind = readKind(value.kind);
@@ -152,8 +180,18 @@ function sanitizeClassification(value: unknown): RuntimeAuthFailureReportOutboxC
   const retryAfterMs = readNullableTimestampMs(value.retryAfterMs);
   const quotaScope = readQuotaScope(value.quotaScope);
   const providerLimitId = readNullableSafeProviderString(value.providerLimitId);
+  const sourceProviderAccountId = readNullableSafeProviderString(value.sourceProviderAccountId);
+  const failingAccessTokenFingerprint = normalizeConnectedServiceAccessTokenFingerprint(
+    value.failingAccessTokenFingerprint,
+  );
+  const sourceAccountLabel = sourceProviderAccountId
+    ? readNullableSafeProviderString(value.sourceAccountLabel)
+    : null;
+  const activeProfileId = readNullableString(value.activeProfileId);
+  const sourceKey = readNullableSafeProviderString(value.sourceKey);
   const action = readSafeAction(value.action);
   const recoveryAction = readRecoveryAction(value.recoveryAction);
+  const credentialRevision = ConnectedServiceCredentialRevisionV1Schema.safeParse(value.credentialRevision);
 
   return {
     kind,
@@ -161,10 +199,28 @@ function sanitizeClassification(value: unknown): RuntimeAuthFailureReportOutboxC
     serviceId,
     profileId: readNullableString(value.profileId),
     groupId: readNullableString(value.groupId),
+    ...(value.groupGeneration === undefined ? {} : { groupGeneration: readNullableNonNegativeInt(value.groupGeneration) }),
+    ...(value.credentialRevision === undefined
+      ? {}
+      : { credentialRevision: credentialRevision.success ? credentialRevision.data : null }),
+    ...(value.activeProfileId === undefined ? {} : { activeProfileId }),
+    ...(value.credentialHealthStatus === undefined
+      ? {}
+      : { credentialHealthStatus: readCredentialHealthStatus(value.credentialHealthStatus) }),
+    ...(value.identityProofVersion === undefined
+      ? {}
+      : { identityProofVersion: readNullableNonNegativeInt(value.identityProofVersion) }),
+    ...(value.sourceKey === undefined ? {} : { sourceKey }),
+    ...(value.providerAccountUsageRecordId === undefined
+      ? {}
+      : { providerAccountUsageRecordId: readProviderAccountUsageRecordId(value.providerAccountUsageRecordId) }),
     resetsAtMs: readNullableTimestampMs(value.resetsAtMs),
     ...(value.retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(quotaScope ? { quotaScope } : {}),
     ...(value.providerLimitId === undefined ? {} : { providerLimitId }),
+    ...(sourceProviderAccountId ? { sourceProviderAccountId } : {}),
+    ...(sourceProviderAccountId && value.sourceAccountLabel !== undefined ? { sourceAccountLabel } : {}),
+    ...(failingAccessTokenFingerprint ? { failingAccessTokenFingerprint } : {}),
     ...(value.action === undefined ? {} : { action }),
     planType: readNullableSafeProviderString(value.planType),
     rateLimits: null,
@@ -191,17 +247,29 @@ function buildReportKey(input: Readonly<{
   sessionId: string;
   classification: RuntimeAuthFailureReportOutboxClassification;
 }>): string {
+  const classificationIdentity = readStableRuntimeAuthFailureClassificationIdentity(input.classification);
   const fingerprint = {
     sessionId: input.sessionId,
-    serviceId: input.classification.serviceId,
-    profileId: input.classification.profileId,
-    groupId: input.classification.groupId,
-    kind: input.classification.kind,
-    limitCategory: input.classification.limitCategory ?? null,
-    resetsAtMs: input.classification.resetsAtMs,
-    retryAfterMs: input.classification.retryAfterMs ?? null,
-    quotaScope: input.classification.quotaScope ?? null,
-    providerLimitId: input.classification.providerLimitId ?? null,
+    ...(classificationIdentity ?? {
+      kind: input.classification.kind,
+      serviceId: input.classification.serviceId,
+      profileId: input.classification.profileId,
+      groupId: input.classification.groupId,
+      groupGeneration: input.classification.groupGeneration ?? null,
+      credentialRevision: input.classification.credentialRevision ?? null,
+      activeProfileId: input.classification.activeProfileId ?? null,
+      credentialHealthStatus: input.classification.credentialHealthStatus ?? null,
+      identityProofVersion: input.classification.identityProofVersion ?? null,
+      sourceKey: input.classification.sourceKey ?? null,
+      providerAccountUsageRecordId: input.classification.providerAccountUsageRecordId ?? null,
+      limitCategory: input.classification.limitCategory ?? null,
+      providerLimitId: input.classification.providerLimitId ?? null,
+      sourceProviderAccountId: input.classification.sourceProviderAccountId ?? null,
+      recoveryActionKind: input.classification.recoveryAction?.kind ?? null,
+      resetsAtMsBucket: typeof input.classification.resetsAtMs === 'number' && Number.isFinite(input.classification.resetsAtMs)
+        ? Math.floor(input.classification.resetsAtMs / 60_000)
+        : null,
+    }),
     action: input.classification.action ?? null,
     recoveryAction: input.classification.recoveryAction ?? null,
     source: input.classification.source,
@@ -213,16 +281,30 @@ function buildFileId(reportKey: string): string {
   return `report-${hashText(reportKey).slice(0, 32)}`;
 }
 
+function buildRuntimeAuthFailureReportId(): string {
+  return `runtime-auth-report:${randomUUID()}`;
+}
+
+function readReportId(value: unknown): string | null {
+  const reportId = readBoundedString(value, REPORT_ID_MAX_LENGTH);
+  return reportId?.startsWith('runtime-auth-report:') ? reportId : null;
+}
+
 function sanitizeReport(report: RuntimeAuthFailureReportOutboxReport): RuntimeAuthFailureReportOutboxItem | null {
   const sessionId = readBoundedString(report.sessionId);
   const classification = sanitizeClassification(report.classification);
   if (!sessionId || !classification) return null;
-  const reportKey = buildReportKey({ sessionId, classification });
+  const reportKey = buildReportKey({
+    sessionId,
+    classification,
+  });
+  const reportId = readReportId(report.reportId) ?? buildRuntimeAuthFailureReportId();
   const resumePromptMode = readResumePromptMode(report.resumePromptMode);
   return {
     schemaVersion: OUTBOX_SCHEMA_VERSION,
     fileId: buildFileId(reportKey),
     reportKey,
+    reportId,
     sessionId,
     switchesThisTurn: readNonNegativeInt(report.switchesThisTurn, 0),
     ...(resumePromptMode ? { resumePromptMode } : {}),
@@ -251,14 +333,17 @@ function normalizePersistedItem(value: unknown): RuntimeAuthFailureReportOutboxI
   if (value.schemaVersion !== OUTBOX_SCHEMA_VERSION) return null;
   const fileId = readBoundedString(value.fileId);
   const reportKey = readBoundedString(value.reportKey);
+  const reportId = readReportId(value.reportId)
+    ?? (reportKey ? `runtime-auth-report:legacy:${hashText(reportKey)}` : null);
   const sessionId = readBoundedString(value.sessionId);
   const classification = sanitizeClassification(value.classification);
-  if (!fileId || !fileId.startsWith('report-') || !reportKey || !sessionId || !classification) return null;
+  if (!fileId || !fileId.startsWith('report-') || !reportKey || !reportId || !sessionId || !classification) return null;
   const resumePromptMode = readResumePromptMode(value.resumePromptMode);
   return {
     schemaVersion: OUTBOX_SCHEMA_VERSION,
     fileId,
     reportKey,
+    reportId,
     sessionId,
     switchesThisTurn: readNonNegativeInt(value.switchesThisTurn, 0),
     ...(resumePromptMode ? { resumePromptMode } : {}),
@@ -308,6 +393,7 @@ export async function enqueueRuntimeAuthFailureReportOutboxItem(input: Readonly<
   outboxDir?: string;
   report: RuntimeAuthFailureReportOutboxReport;
   nowMs?: () => number;
+  incrementAttemptCount?: boolean;
 }>): Promise<EnqueueRuntimeAuthFailureReportOutboxItemResult> {
   const sanitized = sanitizeReport(input.report);
   if (!sanitized) return { status: 'rejected', reason: 'unclassified_report' };
@@ -315,16 +401,24 @@ export async function enqueueRuntimeAuthFailureReportOutboxItem(input: Readonly<
   const outboxDir = resolveOutboxDir(input);
   const timestampMs = nowFrom(input);
   await mkdir(outboxDir, { recursive: true });
-  const existing = await readExistingItem(outboxDir, sanitized.fileId);
-  const item: RuntimeAuthFailureReportOutboxItem = {
-    ...sanitized,
-    switchesThisTurn: sanitized.switchesThisTurn,
-    attemptCount: (existing?.attemptCount ?? 0) + 1,
-    createdAtMs: existing?.createdAtMs ?? timestampMs,
-    updatedAtMs: timestampMs,
-  };
-  await writeJsonAtomic(itemPath(outboxDir, item.fileId), item);
-  return { status: 'enqueued', item };
+  const path = itemPath(outboxDir, sanitized.fileId);
+  return await withRuntimeAuthFailureReportOutboxFileLock(path, async () => {
+    const existing = await readExistingItem(outboxDir, sanitized.fileId);
+    const existingIsFresh = existing !== null
+      && timestampMs - existing.updatedAtMs <= DEFAULT_RUNTIME_AUTH_FAILURE_REPORT_OUTBOX_TTL_MS;
+    const canReuseExisting = existingIsFresh;
+    const item: RuntimeAuthFailureReportOutboxItem = {
+      ...sanitized,
+      reportId: canReuseExisting ? existing.reportId : sanitized.reportId,
+      switchesThisTurn: sanitized.switchesThisTurn,
+      attemptCount: (canReuseExisting ? existing.attemptCount : 0)
+        + (input.incrementAttemptCount === false && canReuseExisting ? 0 : 1),
+      createdAtMs: canReuseExisting ? existing.createdAtMs : timestampMs,
+      updatedAtMs: timestampMs,
+    };
+    await writeJsonAtomic(path, item);
+    return { status: 'enqueued', item };
+  });
 }
 
 export async function readRuntimeAuthFailureReportOutboxItems(input: Readonly<{
@@ -354,14 +448,22 @@ export async function readRuntimeAuthFailureReportOutboxItems(input: Readonly<{
 export async function removeRuntimeAuthFailureReportOutboxItem(input: Readonly<{
   outboxDir?: string;
   reportKey: string;
+  expectedItem?: RuntimeAuthFailureReportOutboxItem;
 }>): Promise<void> {
   const reportKey = readBoundedString(input.reportKey);
   if (!reportKey) return;
   const outboxDir = resolveOutboxDir(input);
   const fileId = buildFileId(reportKey);
-  await unlink(itemPath(outboxDir, fileId)).catch((error) => {
-    const err = error as NodeJS.ErrnoException;
-    if (err?.code !== 'ENOENT') throw error;
+  const path = itemPath(outboxDir, fileId);
+  await withRuntimeAuthFailureReportOutboxFileLock(path, async () => {
+    if (input.expectedItem) {
+      const current = await readExistingItem(outboxDir, fileId);
+      if (!current || stableStringify(current) !== stableStringify(input.expectedItem)) return;
+    }
+    await unlink(path).catch((error) => {
+      const err = error as NodeJS.ErrnoException;
+      if (err?.code !== 'ENOENT') throw error;
+    });
   });
 }
 
@@ -380,6 +482,7 @@ export async function removeRuntimeAuthFailureReportOutboxItemsForSession(input:
       await removeRuntimeAuthFailureReportOutboxItem({
         ...(input.outboxDir ? { outboxDir: input.outboxDir } : {}),
         reportKey: item.reportKey,
+        expectedItem: item,
       });
     }));
 }
@@ -392,8 +495,6 @@ export function resolveRuntimeAuthFailureReportOutboxKey(report: RuntimeAuthFail
 // RD-REC-6 / P3: reports not (re-)observed within this window are dead-lettered at
 // drain time instead of redelivering at every daemon start forever. `updatedAtMs`
 // is the freshness anchor: re-enqueueing the same report key refreshes it.
-export const DEFAULT_RUNTIME_AUTH_FAILURE_REPORT_OUTBOX_TTL_MS = 24 * 60 * 60_000;
-
 export async function drainRuntimeAuthFailureReportOutboxItems(input: Readonly<{
   outboxDir?: string;
   deliver: (item: RuntimeAuthFailureReportOutboxItem) => Promise<DrainRuntimeAuthFailureReportOutboxItemResult>;
@@ -432,6 +533,7 @@ export async function drainRuntimeAuthFailureReportOutboxItems(input: Readonly<{
       await removeRuntimeAuthFailureReportOutboxItem({
         ...(input.outboxDir ? { outboxDir: input.outboxDir } : {}),
         reportKey: item.reportKey,
+        expectedItem: item,
       });
       if (result.status === 'delivered') {
         delivered += 1;

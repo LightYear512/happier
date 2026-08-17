@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { StructuredQuestionAnswersV1Schema } from '../structuredQuestionAnswersV1.js';
 import type { KnownCanonicalToolNameV2 } from './names.js';
 import { ToolHappyMetaV2Schema, ToolHappierMetaV2Schema } from './meta.js';
 
@@ -16,12 +17,18 @@ const UrlSchema = z.string().min(1);
 export const BashInputV2Schema = BaseEnvelopeSchema.extend({
   command: z.string().min(1).optional(),
   timeout: z.number().int().positive().optional(),
+  // A *request* to detach the command. Only the result's `backgroundTaskId` attests that the
+  // provider actually detached it, so renderers must not treat this flag as proof.
+  run_in_background: z.boolean().optional(),
 }).passthrough();
 
 export const BashResultV2Schema = BaseEnvelopeSchema.extend({
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   exit_code: z.number().int().optional(),
+  // Present only when the provider detached the command. This is the join key between the `Bash`
+  // tool result and the background-task ledger/record that tracks the detached process.
+  backgroundTaskId: z.string().optional(),
   errorMessage: z.string().optional(),
 }).passthrough();
 
@@ -219,6 +226,39 @@ export const TaskResultV2Schema = BaseEnvelopeSchema.extend({
 export const SubAgentInputV2Schema = TaskInputV2Schema;
 export const SubAgentResultV2Schema = TaskResultV2Schema;
 
+/**
+ * Background-task control tools.
+ *
+ * Field sets are taken from the Claude Agent SDK's generated tool schemas
+ * (`TaskOutputInput`, `TaskStopInput`, `TaskStopOutput`) and nothing is added beyond them. The SDK
+ * publishes **no** `TaskOutputOutput` in its `ToolOutputSchemas` union, and the Happier Claude
+ * launcher additionally blanks `TaskOutput` tool-result content to keep the transcript compact, so
+ * the result envelope stays deliberately open rather than claiming a shape.
+ */
+export const TaskOutputInputV2Schema = BaseEnvelopeSchema.extend({
+  task_id: z.string().optional(),
+  block: z.boolean().optional(),
+  timeout: z.number().optional(),
+}).passthrough();
+
+export const TaskOutputResultV2Schema = BaseEnvelopeSchema.extend({
+  errorMessage: z.string().optional(),
+}).passthrough();
+
+export const TaskStopInputV2Schema = BaseEnvelopeSchema.extend({
+  task_id: z.string().optional(),
+  // Deprecated by the SDK in favour of `task_id`; still accepted on the wire.
+  shell_id: z.string().optional(),
+}).passthrough();
+
+export const TaskStopResultV2Schema = BaseEnvelopeSchema.extend({
+  message: z.string().optional(),
+  task_id: z.string().optional(),
+  task_type: z.string().optional(),
+  command: z.string().optional(),
+  errorMessage: z.string().optional(),
+}).passthrough();
+
 export const ReasoningInputV2Schema = BaseEnvelopeSchema.extend({
   text: z.string().optional(),
 }).passthrough();
@@ -240,12 +280,15 @@ export const AskUserQuestionInputV2Schema = BaseEnvelopeSchema.extend({
     multiSelect: z.boolean(),
     options: z.array(z.object({
       label: z.string(),
+      value: z.string().optional(),
+      choice: z.string().optional(),
       description: z.string().optional(),
     }).passthrough()),
   }).passthrough()).optional(),
 }).passthrough();
 
 export const AskUserQuestionResultV2Schema = BaseEnvelopeSchema.extend({
+  structuredAnswersV1: StructuredQuestionAnswersV1Schema.optional(),
   answers: z.record(z.string(), z.string()).optional(),
 }).passthrough();
 
@@ -380,6 +423,25 @@ export const WorkspaceIndexingPermissionInputV2Schema = BaseEnvelopeSchema.exten
   toolCall: z.unknown().optional(),
 }).passthrough();
 
+// Dynamic Workflow run. The provider-native input carries a workflow `script`; the result
+// carries the canonical tool-use/task ids used to join the transcript card to the durable
+// `activity/workflow_run.v1` snapshot. Kept permissive/passthrough — the workflow detail is
+// normalized into provider-agnostic activity records, not parsed from this envelope by UI.
+export const WorkflowInputV2Schema = BaseEnvelopeSchema.extend({
+  script: z.string().optional(),
+  name: z.string().optional(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+}).passthrough();
+
+export const WorkflowResultV2Schema = BaseEnvelopeSchema.extend({
+  task_id: z.string().optional(),
+  tool_use_id: z.string().optional(),
+  run_id: z.string().optional(),
+  status: z.string().optional(),
+  summary: z.string().optional(),
+}).passthrough();
+
 export const ChangeTitleInputV2Schema = BaseEnvelopeSchema.extend({
   title: z.string().optional(),
 }).passthrough();
@@ -407,6 +469,9 @@ const TOOL_INPUT_SCHEMAS: Record<KnownCanonicalToolNameV2, z.ZodTypeAny> = {
   TodoRead: TodoReadInputV2Schema,
   SubAgent: SubAgentInputV2Schema,
   Task: TaskInputV2Schema,
+  TaskOutput: TaskOutputInputV2Schema,
+  TaskStop: TaskStopInputV2Schema,
+  Workflow: WorkflowInputV2Schema,
   Reasoning: ReasoningInputV2Schema,
   EnterPlanMode: EnterPlanModeInputV2Schema,
   ExitPlanMode: ExitPlanModeInputV2Schema,
@@ -439,6 +504,9 @@ const TOOL_RESULT_SCHEMAS: Record<KnownCanonicalToolNameV2, z.ZodTypeAny> = {
   TodoRead: TodoResultV2Schema,
   SubAgent: SubAgentResultV2Schema,
   Task: TaskResultV2Schema,
+  TaskOutput: TaskOutputResultV2Schema,
+  TaskStop: TaskStopResultV2Schema,
+  Workflow: WorkflowResultV2Schema,
   Reasoning: ReasoningResultV2Schema,
   EnterPlanMode: BaseEnvelopeSchema.passthrough(),
   ExitPlanMode: BaseEnvelopeSchema.passthrough(),

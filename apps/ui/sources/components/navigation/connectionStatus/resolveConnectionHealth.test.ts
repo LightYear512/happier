@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { resolveConnectionHealth } from './resolveConnectionHealth';
 
 describe('resolveConnectionHealth', () => {
-    it('treats endpoint shutting_down as server_unreachable even if the socket is connected', () => {
+    it('treats endpoint offline as server_unreachable even if the socket is connected', () => {
         const result = resolveConnectionHealth({
-            endpointStatus: 'shutting_down',
+            endpointStatus: 'offline',
             socketStatus: 'connected',
             machineGroups: [{ machineCount: 2, onlineCount: 2, status: 'idle' }],
         });
@@ -66,6 +66,20 @@ describe('resolveConnectionHealth', () => {
         });
 
         expect(result.kind).toBe('server_unreachable');
+    });
+
+    it('treats planned server restarts as a neutral reconnect while preserving known machines', () => {
+        const result = resolveConnectionHealth({
+            endpointStatus: 'offline',
+            endpointReason: 'server_restarting',
+            socketStatus: 'disconnected',
+            machineGroups: [{ machineCount: 2, onlineCount: 2, status: 'idle' }],
+        });
+
+        expect(result.kind).toBe('server_restarting');
+        expect(result.machineCount).toBe(2);
+        expect(result.onlineCount).toBe(2);
+        expect(result.hasUnknownMachines).toBe(false);
     });
 
     it('returns auth_required for terminal auth sync errors before generic server errors', () => {

@@ -43,7 +43,12 @@ export type AgentInputComposerAttachmentBadge = Readonly<{
     removeAccessibilityLabel?: string;
 }>;
 
-export type AgentInputStatusBadgeTone = 'neutral' | 'active' | 'paused' | 'warning' | 'complete';
+/**
+ * `danger` is distinct from `warning` on purpose: warning means a person is being asked for
+ * something, danger means something already went wrong. The agent-activity badge shows both in one
+ * row ("1 needs you · 1 failed" vs "1 agent failed") and they must not read the same.
+ */
+export type AgentInputStatusBadgeTone = 'neutral' | 'active' | 'paused' | 'warning' | 'danger' | 'complete';
 export type AgentInputStatusBadgeEmphasis = 'quiet' | 'prominent';
 
 export type AgentInputStatusBadge = Readonly<{
@@ -51,6 +56,12 @@ export type AgentInputStatusBadge = Readonly<{
     label: string;
     testID?: string;
     accessibilityLabel?: string;
+    accessibilityHint?: string;
+    /**
+     * Set by badges that toggle a companion surface (e.g. a composer banner) so assistive tech can
+     * announce the collapsed/expanded state without the label having to spell out the action.
+     */
+    accessibilityState?: Readonly<{ expanded: boolean }>;
     tone?: AgentInputStatusBadgeTone;
     emphasis?: AgentInputStatusBadgeEmphasis;
     icon?: (tint: string) => React.ReactNode;
@@ -145,6 +156,7 @@ export type AgentInputExtraActionChip = Readonly<{
         edgeFades?: AgentInputContentPopoverConfig['edgeFades'];
         edgeIndicators?: AgentInputContentPopoverConfig['edgeIndicators'];
         initialVisibility?: AgentInputContentPopoverConfig['initialVisibility'];
+        reserveKeyboardInset?: AgentInputContentPopoverConfig['reserveKeyboardInset'];
     }>;
     composerAttachmentBadge?: AgentInputComposerAttachmentBadge;
     render: (ctx: AgentInputExtraActionChipRenderContext) => React.ReactNode;

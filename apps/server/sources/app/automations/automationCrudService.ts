@@ -1,19 +1,54 @@
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { db } from "@/storage/db";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 
 import { emitAutomationAssignmentUpdated, emitAutomationDelete, emitAutomationRunUpdated, emitAutomationRunUpdatedToMachineOnly, emitAutomationUpsert } from "./automationChangePublisher";
 import { replaceAutomationAssignmentsTx } from "./automationAssignmentService";
 import { enqueueImmediateRunTx, enqueueNextScheduledRunIfMissingTx, resolveScheduledRunDueAt } from "./automationRunQueueService";
 import { validateExistingSessionAutomationTargetTx } from "./automationExistingSessionValidation";
+import { assertAutomationTemplateEnvelopeForAccountMode } from "./automationValidation";
 import type { AutomationListItem, AutomationPatchInput, AutomationRunItem, AutomationScheduleInput, AutomationUpsertInput } from "./automationTypes";
 
+export class AutomationDisabledError extends Error {
+    constructor() {
+        super("Automation is paused");
+        this.name = "AutomationDisabledError";
+    }
+}
+
+async function assertAutomationTemplateMatchesCurrentAccountModeTx(
+    tx: Tx,
+    params: Readonly<{ accountId: string; templateCiphertext: string }>,
+): Promise<void> {
+    const account = await tx.account.findUnique({
+        where: { id: params.accountId },
+        select: { publicKey: true, encryptionMode: true },
+    });
+    if (!account) {
+        throw new Error("Account not found");
+    }
+
+    assertAutomationTemplateEnvelopeForAccountMode(
+        params.templateCiphertext,
+        resolveEffectiveAccountEncryptionModeFromAccountRow(account),
+    );
+}
+
 function resolveScheduleDbFields(schedule: AutomationScheduleInput): Readonly<{
-    scheduleKind: "cron" | "interval";
+    scheduleKind: "cron" | "interval" | "manual";
     scheduleExpr: string | null;
     everyMs: number | null;
     timezone: string | null;
 }> {
+    if (schedule.kind === "manual") {
+        return {
+            scheduleKind: "manual",
+            scheduleExpr: null,
+            everyMs: null,
+            timezone: null,
+        };
+    }
     if (schedule.kind === "interval") {
         return {
             scheduleKind: "interval",
@@ -142,6 +177,11 @@ export async function createAutomation(params: {
     input: AutomationUpsertInput;
 }): Promise<AutomationListItem> {
     return await inTx(async (tx) => {
+        await assertAutomationTemplateMatchesCurrentAccountModeTx(tx, {
+            accountId: params.accountId,
+            templateCiphertext: params.input.templateCiphertext,
+        });
+
         await validateExistingSessionAutomationTargetTx({
             tx,
             accountId: params.accountId,
@@ -227,6 +267,13 @@ export async function updateAutomation(params: {
             return null;
         }
 
+        if (typeof params.input.templateCiphertext === "string") {
+            await assertAutomationTemplateMatchesCurrentAccountModeTx(tx, {
+                accountId: params.accountId,
+                templateCiphertext: params.input.templateCiphertext,
+            });
+        }
+
         const effectiveTargetType = params.input.targetType ?? existing.targetType;
         const effectiveTemplateCiphertext = params.input.templateCiphertext ?? existing.templateCiphertext;
         await validateExistingSessionAutomationTargetTx({
@@ -271,10 +318,18 @@ export async function updateAutomation(params: {
         // Pausing an automation should prevent already-scheduled queued runs from executing.
         // Claimed/running runs are left intact so in-flight work can complete safely.
         if (params.input.enabled === false) {
-            await tx.automationRun.deleteMany({
+            const cancelledAt = new Date();
+            await tx.automationRun.updateMany({
                 where: {
                     automationId: existing.id,
                     state: "queued",
+                },
+                data: {
+                    state: "cancelled",
+                    finishedAt: cancelledAt,
+                    errorCode: "automation_paused",
+                    errorMessage: "Automation was paused before this run started",
+                    updatedAt: cancelledAt,
                 },
             });
         }
@@ -440,6 +495,7 @@ export async function setAutomationEnabled(params: {
 export async function runAutomationNow(params: {
     accountId: string;
     automationId: string;
+    idempotencyKey?: string | null;
 }): Promise<AutomationRunItem | null> {
     return await inTx(async (tx) => {
         const automation = await tx.automation.findFirst({
@@ -447,10 +503,28 @@ export async function runAutomationNow(params: {
                 id: params.automationId,
                 accountId: params.accountId,
             },
-            select: { id: true, accountId: true },
+            select: { id: true, accountId: true, enabled: true },
         });
         if (!automation) {
             return null;
+        }
+
+        const idempotencyKey = params.idempotencyKey?.trim() || null;
+        if (idempotencyKey) {
+            const existingRun = await tx.automationRun.findUnique({
+                where: {
+                    automationId_idempotencyKey: {
+                        automationId: automation.id,
+                        idempotencyKey,
+                    },
+                },
+            });
+            if (existingRun) {
+                return existingRun as AutomationRunItem;
+            }
+        }
+        if (!automation.enabled) {
+            throw new AutomationDisabledError();
         }
 
         const now = new Date();
@@ -459,6 +533,7 @@ export async function runAutomationNow(params: {
             automationId: automation.id,
             accountId: automation.accountId,
             now,
+            idempotencyKey,
         });
 
         const assignedMachines = await tx.automationAssignment.findMany({

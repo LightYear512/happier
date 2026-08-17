@@ -14,6 +14,7 @@ import type { CLIAvailability } from '@/hooks/auth/useCLIDetection';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
+import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -323,12 +324,12 @@ function buildWizardProps(): NewSessionWizardTestProps {
             setFavoriteDirectories: () => {},
         },
         footer: {
-            sessionPrompt: '',
+            promptStore: createNewSessionPromptStore(''),
             setSessionPrompt: () => {},
             handleCreateSession: () => {},
             canCreate: true,
             isCreating: false,
-            emptyAutocompletePrefixes: [],
+            emptyAutocompleteKinds: [],
             emptyAutocompleteSuggestions: async () => [],
             agentInputExtraActionChips: [],
             submitAccessibilityLabel: 'Create',

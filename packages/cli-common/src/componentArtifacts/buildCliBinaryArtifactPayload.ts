@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
@@ -11,9 +11,14 @@ import {
   resolveWorkspaceBundlesFromPackageJson,
   vendorBundledPackageRuntimeDependencies,
 } from '../workspaces/index.js';
-import type { BundledWorkspacePackage } from './ensureBundledWorkspacePackagesBuilt.js';
+import type {
+  BundledWorkspacePackage,
+  EnsureWorkspacePackagesBuiltByName,
+} from './ensureBundledWorkspacePackagesBuilt.js';
 import { withCliDistBuildLock } from './withCliDistBuildLock.js';
 import { ensureBundledWorkspacePackagesBuilt } from './ensureBundledWorkspacePackagesBuilt.js';
+import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload.js';
+import { recordCliBinaryArtifactRuntimeAssetBuildManifest } from './refreshCliBinaryArtifactRuntimeAssetBuildManifest.js';
 import { shouldReuseCliDistSnapshot } from './shouldReuseCliDistSnapshot.js';
 
 const CLI_RUNTIME_SIDECAR_ENTRIES = [
@@ -26,6 +31,7 @@ const CLI_RUNTIME_SIDECAR_ENTRIES = [
   ['ripgrep_launcher.cjs'],
   ['statusline_forwarder.cjs'],
   ['terminal_launch_spec_runner.cjs'],
+  ['node_pty_relay.cjs'],
   ['runtime'],
   ['shims'],
 ] as const;
@@ -131,7 +137,15 @@ function syncCliBundledWorkspacePackagesForCompile(cliDir: string, workspaceBund
   }
 }
 
+async function reclaimAbandonedCliDistSnapshots(cliDir: string): Promise<void> {
+  const entries = await readdir(cliDir, { withFileTypes: true });
+  await Promise.all(entries
+    .filter((entry) => entry.name.startsWith('.dist.hstack-snapshot-') && (entry.isDirectory() || entry.isSymbolicLink()))
+    .map((entry) => rm(join(cliDir, entry.name), { recursive: true, force: true })));
+}
+
 async function snapshotCliDistDir(params: Readonly<{ cliDir: string; distDir: string }>): Promise<string> {
+  await reclaimAbandonedCliDistSnapshots(params.cliDir);
   const snapshotDir = await mkdtemp(join(params.cliDir, '.dist.hstack-snapshot-'));
   let liveDistRenamed = false;
   try {
@@ -163,17 +177,21 @@ export async function buildCliBinaryArtifactPayload({
   payloadDir,
   target = resolveCurrentBinaryTarget({ availableTargets: CLI_BINARY_TARGETS }),
   externals = [],
+  releaseVersion = '',
   runCommand = execOrThrow,
   commandProbe = commandExists,
   compileBinary = compileBunBinary,
+  ensureWorkspacePackagesBuiltByName,
 }: {
   repoRoot: string;
   payloadDir: string;
   target?: BinaryTarget;
   externals?: string[];
+  releaseVersion?: string;
   runCommand?: RunCommand;
   commandProbe?: (cmd: string) => boolean;
   compileBinary?: typeof compileBunBinary;
+  ensureWorkspacePackagesBuiltByName?: EnsureWorkspacePackagesBuiltByName;
 }): Promise<{ executableName: string; entrypoint: string }> {
   const bunCommand = resolveBunCommand({ commandProbe });
   if (!bunCommand) {
@@ -190,81 +208,99 @@ export async function buildCliBinaryArtifactPayload({
     repoRoot,
     hostPackageDir: cliDir,
   });
-  const snapshotDistDir = await withCliDistBuildLock<string>(async ({ waited }) => {
-    await ensureBundledWorkspacePackagesBuilt({
-      repoRoot,
-      bundles: workspaceBundles.map(({ packageName, srcDir }) => ({ packageName, srcDir })),
-      yarn,
-      runCommand,
+  const executableName = resolveExecutableName({ baseName: 'happier', target });
+  const mergedExternals = [...new Set([...CLI_RUNTIME_EXTERNAL_PACKAGES, ...externals.map((value) => String(value ?? '').trim()).filter(Boolean)])];
+
+  await withCliDistBuildLock(async ({ heldLockValue }) => {
+    const runCommandWithHeldDistLock: RunCommand = (cmd, args, options = {}) => runCommand(cmd, args, {
+      ...options,
+      env: {
+        ...process.env,
+        ...(options.env ?? {}),
+        HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue,
+      },
     });
-    syncCliBundledWorkspacePackagesForCompile(cliDir, workspaceBundles);
-
-    if (!existsSync(distDir) && existsSync(distBackupDir)) {
-      await rename(distBackupDir, distDir);
-    }
-
-    // If the CLI dist entrypoint is already present, prefer snapshotting it instead of rebuilding.
-    // Rebuilding `apps/cli` is expensive and can disrupt long-running processes in dev checkouts.
-    if (await shouldReuseCliDistSnapshot({
-      distEntrypointPath: entrypoint,
-      inputPaths: [
-        join(cliDir, 'src'),
-        join(cliDir, 'package.json'),
-        ...workspaceBundles.map(({ srcDir }) => join(srcDir, 'dist')),
-      ],
-    })) {
-      return await snapshotCliDistDir({ cliDir, distDir });
-    }
-
-    const hadDistBeforeBuild = existsSync(distDir);
-    if (hadDistBeforeBuild) {
-      await rm(distBackupDir, { recursive: true, force: true });
-      await rename(distDir, distBackupDir);
-    }
-
+    let snapshotDistDir: string | null = null;
     try {
-      await runCommand(yarn.cmd, [...yarn.args, '--cwd', 'apps/cli', 'build'], { cwd: repoRoot });
-      await ensureFileExists(entrypoint);
-      if (hadDistBeforeBuild) {
-        await rm(distBackupDir, { recursive: true, force: true });
-      }
-    } catch (error) {
-      if (hadDistBeforeBuild && existsSync(distBackupDir)) {
-        await rm(distDir, { recursive: true, force: true });
+      await ensureBundledWorkspacePackagesBuilt({
+        repoRoot,
+        bundles: workspaceBundles.map(({ packageName, srcDir }) => ({ packageName, srcDir })),
+        ensureWorkspacePackagesBuiltByName,
+      });
+      syncCliBundledWorkspacePackagesForCompile(cliDir, workspaceBundles);
+
+      if (!existsSync(distDir) && existsSync(distBackupDir)) {
         await rename(distBackupDir, distDir);
       }
-      throw error;
+
+      // If the CLI dist entrypoint is already present, prefer snapshotting it instead of rebuilding.
+      // Rebuilding `apps/cli` is expensive and can disrupt long-running processes in dev checkouts.
+      if (await shouldReuseCliDistSnapshot({
+        distEntrypointPath: entrypoint,
+        expectedBuildVersion: releaseVersion,
+        inputPaths: [
+          join(cliDir, 'src'),
+          join(cliDir, 'package.json'),
+          ...workspaceBundles.map(({ srcDir }) => join(srcDir, 'dist')),
+        ],
+      })) {
+        snapshotDistDir = await snapshotCliDistDir({ cliDir, distDir });
+      } else {
+        const hadDistBeforeBuild = existsSync(distDir);
+        if (hadDistBeforeBuild) {
+          await rm(distBackupDir, { recursive: true, force: true });
+          await rename(distDir, distBackupDir);
+        }
+
+        try {
+          await runCommandWithHeldDistLock(yarn.cmd, [...yarn.args, '--cwd', 'apps/cli', 'build'], {
+            cwd: repoRoot,
+            ...(releaseVersion ? { env: { HAPPIER_CLI_BUILD_VERSION: releaseVersion } } : {}),
+          });
+          await ensureFileExists(entrypoint);
+          if (hadDistBeforeBuild) {
+            await rm(distBackupDir, { recursive: true, force: true });
+          }
+        } catch (error) {
+          if (hadDistBeforeBuild && existsSync(distBackupDir)) {
+            await rm(distDir, { recursive: true, force: true });
+            await rename(distBackupDir, distDir);
+          }
+          throw error;
+        }
+        snapshotDistDir = await snapshotCliDistDir({ cliDir, distDir });
+      }
+
+      await rm(payloadDir, { recursive: true, force: true });
+      await mkdir(payloadDir, { recursive: true });
+      await compileBinary({
+        entrypoint: join(snapshotDistDir, 'index.mjs'),
+        bunTarget: target.bunTarget,
+        outfile: join(payloadDir, executableName),
+        cwd: repoRoot,
+        externals: mergedExternals,
+        bunCommand,
+        runCommand,
+      });
+      await rm(join(payloadDir, 'node_modules'), { recursive: true, force: true });
+      await copyCliNodeRuntimePayload(repoRoot, payloadDir, snapshotDistDir, workspaceBundles, { yarn, runCommand });
+    } finally {
+      if (snapshotDistDir) {
+        await rm(snapshotDistDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
-    return await snapshotCliDistDir({ cliDir, distDir });
   }, { lockPath });
 
-  const snapshotEntrypoint = join(snapshotDistDir, 'index.mjs');
+  await copyCliRuntimeSidecars(repoRoot, payloadDir);
+  await copyCliRuntimeTools(repoRoot, payloadDir, target);
+  await finalizeRuntimeArtifactPayload(payloadDir);
+  recordCliBinaryArtifactRuntimeAssetBuildManifest({
+    payloadDir,
+    relativePath: executableName,
+  });
 
-  try {
-    await rm(payloadDir, { recursive: true, force: true });
-    await mkdir(payloadDir, { recursive: true });
-
-    const executableName = resolveExecutableName({ baseName: 'happier', target });
-    const mergedExternals = [...new Set([...CLI_RUNTIME_EXTERNAL_PACKAGES, ...externals.map((value) => String(value ?? '').trim()).filter(Boolean)])];
-    await compileBinary({
-      entrypoint: snapshotEntrypoint,
-      bunTarget: target.bunTarget,
-      outfile: join(payloadDir, executableName),
-      cwd: repoRoot,
-      externals: mergedExternals,
-      bunCommand,
-      runCommand,
-    });
-    await rm(join(payloadDir, 'node_modules'), { recursive: true, force: true });
-    await copyCliNodeRuntimePayload(repoRoot, payloadDir, snapshotDistDir, workspaceBundles, { yarn, runCommand });
-    await copyCliRuntimeSidecars(repoRoot, payloadDir);
-    await copyCliRuntimeTools(repoRoot, payloadDir, target);
-
-    return {
-      executableName,
-      entrypoint: executableName,
-    };
-  } finally {
-    await rm(snapshotDistDir, { recursive: true, force: true }).catch(() => {});
-  }
+  return {
+    executableName,
+    entrypoint: executableName,
+  };
 }

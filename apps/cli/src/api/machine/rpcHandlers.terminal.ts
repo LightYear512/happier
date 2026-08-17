@@ -24,9 +24,19 @@ import { readDaemonTerminalPtyConfig } from '@/daemon/terminalPty/terminalPtyCon
 import { createTerminalPtySessionManager, type TerminalPtySessionManager } from '@/daemon/terminalPty/terminalPtySessionManager';
 import { createNodePtyProvider } from '@/integrations/pty/ptyProvider';
 import { profileAuthSessions, type ProfileAuthSessionStore } from '@/auth/provision/profileAuthSessionStore';
+import { buildHappyCliSubprocessLaunchSpec } from '@/utils/spawnHappyCLI';
 
 function err(errorCode: DaemonTerminalErrorCode): { ok: false; errorCode: DaemonTerminalErrorCode; error: DaemonTerminalErrorCode } {
   return { ok: false, errorCode, error: errorCode };
+}
+
+function compactStringEnv(env: NodeJS.ProcessEnv | undefined): Readonly<Record<string, string>> | undefined {
+  if (!env) return undefined;
+  const compact: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') compact[key] = value;
+  }
+  return compact;
 }
 
 export function registerMachineTerminalRpcHandlers(params: Readonly<{
@@ -38,6 +48,7 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     accessPolicy?: FilesystemAccessPolicy;
     sessionManager?: TerminalPtySessionManager;
     profileAuthSessions?: Pick<ProfileAuthSessionStore, 'get'>;
+    buildHappyCliSubprocessLaunchSpecFn?: typeof buildHappyCliSubprocessLaunchSpec;
   }>;
 }>): void {
   const { rpcHandlerManager } = params;
@@ -65,6 +76,34 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     });
     return sessionManager;
   };
+  const buildHappyCliSubprocessLaunchSpecFn =
+    params.deps?.buildHappyCliSubprocessLaunchSpecFn ?? buildHappyCliSubprocessLaunchSpec;
+
+  const resolveLaunch = (input: Readonly<{
+    terminalKey?: string;
+    launch?: Readonly<{ kind: 'session_attach'; sessionId: string }>;
+  }>): Readonly<{
+    terminalKey: string;
+    launch?: Readonly<{ file: string; args: readonly string[]; env?: Readonly<Record<string, string>> }>;
+  }> | null => {
+    if (input.launch?.kind === 'session_attach') {
+      const sessionId = input.launch.sessionId;
+      try {
+        const launchSpec = buildHappyCliSubprocessLaunchSpecFn(['attach', sessionId]);
+        return {
+          terminalKey: `session-attach:${sessionId}`,
+          launch: {
+            file: launchSpec.filePath,
+            args: launchSpec.args,
+            ...(launchSpec.env ? { env: launchSpec.env } : {}),
+          },
+        };
+      } catch {
+        return null;
+      }
+    }
+    return input.terminalKey ? { terminalKey: input.terminalKey } : null;
+  };
 
   const resolveCwd = (cwdInput: unknown): { ok: true; cwd: string } | ReturnType<typeof err> => {
     const raw = typeof cwdInput === 'string' && cwdInput.trim().length > 0 ? cwdInput.trim() : workingDirectory;
@@ -84,13 +123,14 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
 
   const resolveProfileAuthLaunch = (
     profileAuthSessionId: string | undefined,
-    terminalKey: string,
+    terminalKey: string | undefined,
   ): {
     ok: true;
     launch: NonNullable<Parameters<TerminalPtySessionManager['ensure']>[0]['launch']>;
     cwd: string;
   } | ReturnType<typeof err> | null => {
     if (!profileAuthSessionId) return null;
+    if (!terminalKey) return err('terminal_invalid_request');
     const session = profileAuthSessionStore.get(profileAuthSessionId);
     if (!session) return err('terminal_invalid_request');
     if (session.terminalKey !== terminalKey) {
@@ -103,7 +143,7 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
         file: session.command,
         args: session.args,
         cwd: session.cwd ?? session.profileDir,
-        env: session.env,
+        ...(compactStringEnv(session.env) ? { env: compactStringEnv(session.env) } : {}),
         ...(session.initialInput != null ? { initialInput: session.initialInput } : {}),
         ...(session.terminalOutputResponder ? { outputResponder: session.terminalOutputResponder } : {}),
       },
@@ -122,14 +162,20 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
       ? { ok: true as const, cwd: profileAuthLaunch.cwd }
       : resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
+    const resolvedLaunch = resolveLaunch(parsed.data);
+    if (!resolvedLaunch) return err('terminal_spawn_failed');
 
     return getSessionManager().ensure({
-      terminalKey: parsed.data.terminalKey,
+      terminalKey: resolvedLaunch.terminalKey,
       cwd: cwd.cwd,
       cols: parsed.data.cols,
       rows: parsed.data.rows,
-      ...(profileAuthLaunch ? {} : { initialCommand: parsed.data.initialCommand }),
-      ...(profileAuthLaunch ? { launch: profileAuthLaunch.launch } : {}),
+      ...(profileAuthLaunch
+        ? { launch: profileAuthLaunch.launch }
+        : {
+            initialCommand: parsed.data.initialCommand,
+            ...(resolvedLaunch.launch ? { launch: resolvedLaunch.launch } : {}),
+          }),
     });
   });
 
@@ -179,14 +225,20 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
       ? { ok: true as const, cwd: profileAuthLaunch.cwd }
       : resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
+    const resolvedLaunch = resolveLaunch(parsed.data);
+    if (!resolvedLaunch) return err('terminal_spawn_failed');
 
     return getSessionManager().restart({
-      terminalKey: parsed.data.terminalKey,
+      terminalKey: resolvedLaunch.terminalKey,
       cwd: cwd.cwd,
       cols: parsed.data.cols,
       rows: parsed.data.rows,
-      ...(profileAuthLaunch ? {} : { initialCommand: parsed.data.initialCommand }),
-      ...(profileAuthLaunch ? { launch: profileAuthLaunch.launch } : {}),
+      ...(profileAuthLaunch
+        ? { launch: profileAuthLaunch.launch }
+        : {
+            initialCommand: parsed.data.initialCommand,
+            ...(resolvedLaunch.launch ? { launch: resolvedLaunch.launch } : {}),
+          }),
     });
   });
 }

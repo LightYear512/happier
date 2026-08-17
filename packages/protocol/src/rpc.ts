@@ -1,8 +1,10 @@
 export const RPC_METHODS = {
   SPAWN_HAPPY_SESSION: 'spawn-happy-session',
+  SPAWN_HAPPY_SESSION_PROVIDER_SAFE: 'spawn-happy-session.provider-safe.v1',
   STOP_SESSION: 'stop-session',
   STOP_DAEMON: 'stop-daemon',
   DAEMON_SPAWN_SESSION_RESOLVE: 'daemon.spawnSession.resolve',
+  DAEMON_SPAWN_SESSION_ABANDON: 'daemon.spawnSession.abandon',
   PROFILE_PROVISION: 'daemon.profileProvision',
   PROFILE_PROVISION_POLL_PROGRESS: 'daemon.profileProvisionPollProgress',
   SESSION_SWITCH_PROFILE: 'daemon.sessionSwitchProfile',
@@ -74,12 +76,22 @@ export const RPC_METHODS = {
   DAEMON_SESSION_USAGE_LIMIT_CHECK_NOW: 'daemon.sessionUsageLimit.checkNow',
   DAEMON_CONNECTED_SERVICE_QUOTA_RECOVERY_CREDIT_CONSUME: 'daemon.connectedServiceQuota.recoveryCredit.consume',
   DAEMON_SESSION_CONNECTED_SERVICE_AUTH_SWITCH: 'daemon.sessionConnectedServiceAuth.switch',
+  DAEMON_SESSION_RUNNER_STATUS_GET: 'daemon.sessionRunner.status.get',
+  DAEMON_SESSION_RUNNER_RESTART: 'daemon.sessionRunner.restart',
+  DAEMON_SESSION_RUNNER_RESTART_ALL: 'daemon.sessionRunner.restartAll',
   DAEMON_SESSION_HANDOFF_START: 'daemon.sessionHandoff.start',
   DAEMON_SESSION_HANDOFF_PREPARE_TARGET: 'daemon.sessionHandoff.prepareTarget',
   DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET: 'daemon.sessionHandoff.prepareTargetResult.get',
   DAEMON_SESSION_HANDOFF_COMMIT: 'daemon.sessionHandoff.commit',
   DAEMON_SESSION_HANDOFF_ABORT: 'daemon.sessionHandoff.abort',
   DAEMON_SESSION_HANDOFF_STATUS_GET: 'daemon.sessionHandoff.status.get',
+  DAEMON_SESSION_HANDOFF_CAPABILITY_V2_GET: 'daemon.sessionHandoff.capability.v2.get',
+  DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V2: 'daemon.sessionHandoff.prepareTarget.v2',
+  DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET_V2: 'daemon.sessionHandoff.prepareTargetResult.get.v2',
+  DAEMON_SESSION_HANDOFF_TARGET_RESUME_V2: 'daemon.sessionHandoff.targetResume.v2',
+  DAEMON_SESSION_HANDOFF_TARGET_CONFIRM_V2: 'daemon.sessionHandoff.targetConfirm.v2',
+  DAEMON_SESSION_HANDOFF_COMMIT_V2: 'daemon.sessionHandoff.commit.v2',
+  DAEMON_SESSION_HANDOFF_ABORT_V2: 'daemon.sessionHandoff.abort.v2',
   SESSION_CONTINUE_WITH_REPLAY: 'session.continueWithReplay',
   SESSION_FORK: 'session.fork',
   BASH: 'bash',
@@ -152,9 +164,91 @@ export const RPC_METHODS = {
 
 export type RpcMethod = (typeof RPC_METHODS)[keyof typeof RPC_METHODS];
 
+export const SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS = {
+  SESSION_WRITE: 'session.write',
+} as const;
+
+export type SocketRpcAuthorizationContextKind =
+  (typeof SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS)[keyof typeof SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS];
+
+export type SocketRpcSessionWriteAuthorizationContext = Readonly<{
+  kind: typeof SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE;
+  sessionId: string;
+}>;
+
+export type SocketRpcAuthorizationContext = SocketRpcSessionWriteAuthorizationContext;
+
+const MAX_SOCKET_RPC_AUTHORIZATION_SESSION_ID_LENGTH = 512;
+
+const SOCKET_RPC_SESSION_WRITE_AUTHORIZATION_METHODS = new Set<string>([
+  RPC_METHODS.STOP_SESSION,
+  RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART,
+]);
+
+const SOCKET_RPC_PROVIDER_STARTING_METHODS = new Set<string>([
+  RPC_METHODS.SPAWN_HAPPY_SESSION,
+  RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE,
+  RPC_METHODS.SESSION_CONTINUE_WITH_REPLAY,
+  RPC_METHODS.SESSION_FORK,
+  RPC_METHODS.DAEMON_SESSION_CONNECTED_SERVICE_AUTH_SWITCH,
+  RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART,
+  RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART_ALL,
+  RPC_METHODS.DAEMON_SESSION_USAGE_LIMIT_WAIT_RESUME_ENABLE,
+  RPC_METHODS.DAEMON_SESSION_USAGE_LIMIT_CHECK_NOW,
+  RPC_METHODS.DAEMON_SESSION_HANDOFF_TARGET_RESUME_V2,
+  RPC_METHODS.DAEMON_DIRECT_SESSION_TAKEOVER,
+  RPC_METHODS.DAEMON_DIRECT_SESSION_TAKEOVER_PERSIST,
+]);
+
+function normalizeSocketRpcSessionId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > MAX_SOCKET_RPC_AUTHORIZATION_SESSION_ID_LENGTH) return null;
+  return trimmed;
+}
+
+export function parseSocketRpcAuthorizationContext(value: unknown): SocketRpcAuthorizationContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind !== SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE) return null;
+  const sessionId = normalizeSocketRpcSessionId(record.sessionId);
+  if (!sessionId) return null;
+  return {
+    kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
+    sessionId,
+  };
+}
+
+export function resolveSocketRpcSessionWriteAuthorizationMethod(method: string): string | null {
+  const trimmed = method.trim();
+  if (SOCKET_RPC_SESSION_WRITE_AUTHORIZATION_METHODS.has(trimmed)) return trimmed;
+
+  const separatorIndex = trimmed.indexOf(':');
+  if (separatorIndex <= 0 || separatorIndex >= trimmed.length - 1) return null;
+  const unprefixedMethod = trimmed.slice(separatorIndex + 1);
+  return SOCKET_RPC_SESSION_WRITE_AUTHORIZATION_METHODS.has(unprefixedMethod)
+    ? unprefixedMethod
+    : null;
+}
+
+export function resolveSocketRpcProviderStartingMethod(method: string): string | null {
+  const trimmed = method.trim();
+  if (SOCKET_RPC_PROVIDER_STARTING_METHODS.has(trimmed)) return trimmed;
+
+  const separatorIndex = trimmed.indexOf(':');
+  if (separatorIndex <= 0 || separatorIndex >= trimmed.length - 1) return null;
+  const unprefixedMethod = trimmed.slice(separatorIndex + 1);
+  return SOCKET_RPC_PROVIDER_STARTING_METHODS.has(unprefixedMethod)
+    ? unprefixedMethod
+    : null;
+}
+
 export const RPC_ERROR_CODES = {
   METHOD_NOT_AVAILABLE: 'RPC_METHOD_NOT_AVAILABLE',
   METHOD_NOT_FOUND: 'RPC_METHOD_NOT_FOUND',
+  FORBIDDEN: 'RPC_FORBIDDEN',
+  SESSION_MACHINE_CONTROL_UNAVAILABLE: 'RPC_SESSION_MACHINE_CONTROL_UNAVAILABLE',
 } as const;
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[keyof typeof RPC_ERROR_CODES];
@@ -162,17 +256,24 @@ export type RpcErrorCode = (typeof RPC_ERROR_CODES)[keyof typeof RPC_ERROR_CODES
 export const RPC_ERROR_MESSAGES = {
   METHOD_NOT_AVAILABLE: 'RPC method not available',
   METHOD_NOT_FOUND: 'Method not found',
+  FORBIDDEN: 'Forbidden',
+  SESSION_MACHINE_CONTROL_UNAVAILABLE: 'Session machine control unavailable',
 } as const;
 
 // Session-scoped RPC method names (used with `${sessionId}:${method}` over socket RPC).
 export const SESSION_RPC_METHODS = {
+  SESSION_PERMISSION_RESPOND_LEGACY: 'permission',
+  SESSION_STRUCTURED_QUESTION_RESPOND_V1: 'session.structuredQuestion.respond.v1',
   SESSION_USER_MESSAGE_SEND: 'session.userMessage.send',
   SESSION_PENDING_QUEUE_MATERIALIZE_NEXT: 'session.pendingQueue.materializeNext',
+  SESSION_PENDING_QUEUE_WAKE_CAPABILITY_GET_V1: 'session.pendingQueue.wakeCapability.v1.get',
+  SESSION_PENDING_QUEUE_WAKE_V1: 'session.pendingQueue.wake.v1',
   SESSION_WORK_STATE_GET: 'session.workState.get',
   SESSION_GOAL_GET: 'session.goal.get',
   SESSION_GOAL_SET: 'session.goal.set',
   SESSION_GOAL_CLEAR: 'session.goal.clear',
   SESSION_TERMINAL_COMPOSER_CLEAR: 'session.terminalComposer.clear',
+  SESSION_PENDING_INPUT_INTERRUPT_AND_RUN: 'session.pendingInput.interruptAndRun',
   SESSION_REVIEW_START_INLINE: 'session.review.startInline',
   SESSION_CONNECTED_SERVICE_AUTH_INVALIDATE_TRANSPORTS: 'session.connectedServiceAuth.invalidateTransports',
   SESSION_CONNECTED_SERVICE_AUTH_APPLY_GENERATION: 'session.connectedServiceAuth.applyGeneration',
@@ -187,6 +288,8 @@ export const SESSION_RPC_METHODS = {
   EXECUTION_RUN_ENSURE_OR_START: 'execution.run.ensureOrStart',
   EXECUTION_RUN_SEND: 'execution.run.send',
   EXECUTION_RUN_STREAM_START: 'execution.run.stream.start',
+  EXECUTION_RUN_STREAM_START_V2: 'execution.run.stream.start.v2',
+  EXECUTION_RUN_USER_TRANSCRIPT_COMMIT_V1: 'execution.run.userTranscript.commit.v1',
   EXECUTION_RUN_STREAM_READ: 'execution.run.stream.read',
   EXECUTION_RUN_STREAM_CANCEL: 'execution.run.stream.cancel',
   EXECUTION_RUN_STOP: 'execution.run.stop',
@@ -201,6 +304,11 @@ export const SESSION_RPC_METHODS = {
   SESSION_ROLLBACK: 'session.rollback',
   EPHEMERAL_TASK_RUN: 'ephemeral.task.run',
 } as const;
+
+export function isDelegatedSessionApprovalRpcMethod(methodSuffix: string): boolean {
+  return methodSuffix === SESSION_RPC_METHODS.SESSION_PERMISSION_RESPOND_LEGACY
+    || methodSuffix === SESSION_RPC_METHODS.SESSION_STRUCTURED_QUESTION_RESPOND_V1;
+}
 
 export function isRpcMethodNotFoundResult(value: unknown): value is { error: string; errorCode?: string } {
   if (!value || typeof value !== 'object') return false;

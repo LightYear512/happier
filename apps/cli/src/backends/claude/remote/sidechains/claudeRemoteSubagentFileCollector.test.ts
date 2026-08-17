@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, symlink, writeFile, appendFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile, appendFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -87,7 +87,7 @@ describe('ClaudeRemoteSubagentFileCollector', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [{ type: 'tool_use', id: 'tool_agent_1', name: 'Agent', input: { team_name: 'team-test', name: 'Alpha' } }],
+          content: [{ type: 'tool_use', id: ' tool_agent_1\n', name: 'Agent', input: { team_name: 'team-test', name: 'Alpha' } }],
         },
         parent_tool_use_id: null,
         session_id: 'sess_1',
@@ -97,7 +97,7 @@ describe('ClaudeRemoteSubagentFileCollector', () => {
         type: 'user',
         message: {
           role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: 'tool_agent_1', content: 'Spawned.' }],
+          content: [{ type: 'tool_result', tool_use_id: ' tool_agent_1\n', content: 'Spawned.' }],
         },
         tool_use_result: { status: 'teammate_spawned', agent_id: agentId, team_name: 'team-test', name: 'Alpha' },
         parent_tool_use_id: null,
@@ -108,11 +108,11 @@ describe('ClaudeRemoteSubagentFileCollector', () => {
 
       expect(imported).toHaveLength(1);
       expect(imported[0]?.body?.type).toBe('assistant');
-      expect(imported[0]?.body?.sidechainId).toBe('tool_agent_1');
+      expect(imported[0]?.body?.sidechainId).toBe(' tool_agent_1\n');
       expect(imported[0]?.meta).toMatchObject({
         importedFrom: 'claude-subagent-file',
         claudeAgentId: agentId,
-        sidechainId: 'tool_agent_1',
+        sidechainId: ' tool_agent_1\n',
       });
     } finally {
       collector.cleanup();
@@ -310,6 +310,202 @@ describe('ClaudeRemoteSubagentFileCollector', () => {
       expect(imported).toHaveLength(2);
       expect(imported[1]?.body?.uuid).toBe('a2');
       expect(imported[1]?.body?.sidechainId).toBe('tool_task_1');
+    } finally {
+      collector.cleanup();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports source-keyed activity with provider task id candidates for imported subagent JSONL rows', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happy-subagent-sidechain-activity-'));
+    const agentId = 'aa5e728';
+    const providerTaskId = 'background_task_1';
+    const jsonlPath = join(dir, `agent-${agentId}.jsonl`);
+
+    const assistant = {
+      type: 'assistant',
+      uuid: 'a1',
+      isSidechain: true,
+      agentId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+    };
+
+    await writeFile(jsonlPath, makeJsonl([assistant]), 'utf8');
+
+    const imported: Array<{ body: RawJSONLines; meta: Record<string, unknown> }> = [];
+    const sourceActivity = vi.fn();
+    const collector = new ClaudeRemoteSubagentFileCollector({
+      emitImported: (body: RawJSONLines, meta: Record<string, unknown>) => imported.push({ body, meta }),
+      onSourceActivity: sourceActivity,
+      watchFile: () => () => {},
+      resolveJsonlPathForAgentId: ({ agentId: requested }) => (requested === agentId ? jsonlPath : null),
+    });
+
+    try {
+      collector.observe(taskToolUseMessage());
+      collector.observe({
+        type: 'user',
+        tool_use_result: {
+          status: 'async_launched',
+          isAsync: true,
+          backgroundTaskId: providerTaskId,
+          agentId,
+          outputFile: jsonlPath,
+        },
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool_task_1',
+              content: 'Agent is now running and will receive instructions via mailbox.',
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+        session_id: 'sess_1',
+      } as any);
+
+      await collector.syncAll();
+
+      expect(imported).toHaveLength(1);
+      expect(sourceActivity).toHaveBeenCalledWith({
+        status: 'active',
+        sidechainId: 'tool_task_1',
+        agentId,
+        providerTaskIds: [providerTaskId, agentId, 'tool_task_1'],
+        resolvedJsonlPath: expect.stringContaining(`agent-${agentId}.jsonl`),
+      });
+
+      await collector.syncAll();
+      expect(sourceActivity).toHaveBeenCalledTimes(1);
+    } finally {
+      collector.cleanup();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports terminal source activity when a followed subagent JSONL closes after completion', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happy-subagent-sidechain-terminal-'));
+    const agentId = 'aa5e728';
+    const providerTaskId = 'background_task_terminal';
+    const jsonlPath = join(dir, `agent-${agentId}.jsonl`);
+
+    await writeFile(jsonlPath, makeJsonl([{
+      type: 'assistant',
+      uuid: 'a1',
+      isSidechain: true,
+      agentId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+    }]), 'utf8');
+
+    const sourceActivity = vi.fn();
+    const collector = new ClaudeRemoteSubagentFileCollector({
+      emitImported: () => {},
+      onSourceActivity: sourceActivity,
+      watchFile: () => () => {},
+      followPolicy: { sidechainCompletionGraceMs: 1 },
+    });
+
+    try {
+      collector.observe(taskToolUseMessage());
+      collector.observe({
+        type: 'user',
+        tool_use_result: {
+          status: 'completed',
+          backgroundTaskId: providerTaskId,
+          agentId,
+          outputFile: jsonlPath,
+        },
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool_task_1',
+              content: 'Async agent completed successfully.',
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+        session_id: 'sess_1',
+      } as any);
+
+      await collector.syncAll();
+
+      await waitFor(() => {
+        expect(sourceActivity).toHaveBeenCalledWith({
+          status: 'terminal',
+          sidechainId: 'tool_task_1',
+          agentId,
+          providerTaskIds: [providerTaskId, agentId, 'tool_task_1'],
+          resolvedJsonlPath: expect.stringContaining(`agent-${agentId}.jsonl`),
+        });
+      });
+    } finally {
+      collector.cleanup();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-import historical sidechain rows when a followed JSONL file is replaced', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happy-subagent-sidechains-replaced-'));
+    const agentId = 'aa5e728';
+    const jsonlPath = join(dir, `agent-${agentId}.jsonl`);
+    const replacementPath = join(dir, `agent-${agentId}.replacement.jsonl`);
+    const outputSymlinkPath = join(dir, `${agentId}.output`);
+    const now = Date.now();
+
+    const a1 = {
+      type: 'assistant',
+      uuid: 'a1',
+      timestamp: new Date(now).toISOString(),
+      isSidechain: true,
+      agentId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'initial' }] },
+    };
+    const oldReplay = {
+      type: 'assistant',
+      uuid: 'old-replay',
+      timestamp: new Date(now - 120_000).toISOString(),
+      isSidechain: true,
+      agentId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'historical replay' }] },
+    };
+    const fresh = {
+      type: 'assistant',
+      uuid: 'fresh-after-replace',
+      timestamp: new Date(now + 1_000).toISOString(),
+      isSidechain: true,
+      agentId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'fresh after replace' }] },
+    };
+
+    await writeFile(jsonlPath, makeJsonl([a1]), 'utf8');
+    await symlink(jsonlPath, outputSymlinkPath);
+
+    const imported: Array<{ body: RawJSONLines; meta: Record<string, unknown> }> = [];
+    const collector = new ClaudeRemoteSubagentFileCollector({
+      emitImported: (body: RawJSONLines, meta: Record<string, unknown>) => imported.push({ body, meta }),
+      watchFile: () => () => {},
+    });
+
+    try {
+      collector.observe(taskToolUseMessage());
+      collector.observe(
+        taskToolResultMessage(
+          `Async agent launched successfully.\nagentId: ${agentId}\noutput_file: ${outputSymlinkPath}\n`,
+        ),
+      );
+
+      await collector.syncAll();
+      expect(imported.map((entry) => entry.body.uuid)).toEqual(['a1']);
+
+      await writeFile(replacementPath, makeJsonl([oldReplay, fresh]), 'utf8');
+      await rename(replacementPath, jsonlPath);
+
+      await collector.syncAll();
+      expect(imported.map((entry) => entry.body.uuid)).toEqual(['a1', 'fresh-after-replace']);
     } finally {
       collector.cleanup();
       await rm(dir, { recursive: true, force: true });
@@ -584,6 +780,159 @@ describe('ClaudeRemoteSubagentFileCollector', () => {
       expect(imported).toHaveLength(1);
       expect(imported[0]?.body?.type).toBe('assistant');
       expect(imported[0]?.body?.sidechainId).toBe('tool_task_1');
+    } finally {
+      collector.cleanup();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Registration by id — the entry point a caller uses when it ALREADY KNOWS the file.
+ *
+ * Every sidechain this collector imports used to be discovered the same way: watch a `Task`/`Agent`
+ * tool use, wait for its result, resolve the agent's JSONL. A workflow agent has no such tool call —
+ * its run has ONE `Workflow` call and many `agent-<id>.jsonl` sidecars — but the journal follower is
+ * already holding the directory those files sit in. These cases prove the handover lands on the SAME
+ * import path (follow, dedupe, mark, emit) rather than a second importer.
+ */
+describe('ClaudeRemoteSubagentFileCollector.registerSidechainFile', () => {
+  it('imports a file handed to it directly, with no tool call anywhere', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happy-workflow-sidechains-'));
+    const jsonlPath = join(dir, 'agent-a1.jsonl');
+    const sidechainId = 'workflow_agent_sidechain:toolu_wf:a1';
+
+    const promptRoot = {
+      type: 'user',
+      uuid: 'u0',
+      isSidechain: true,
+      agentId: 'a1',
+      message: { role: 'user', content: 'You are lane one. Do the thing.' },
+    };
+    const assistant = {
+      type: 'assistant',
+      uuid: 'a1-msg',
+      isSidechain: true,
+      agentId: 'a1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'lane one working' }] },
+    };
+    await writeFile(jsonlPath, makeJsonl([promptRoot, assistant]), 'utf8');
+
+    const imported: Array<{ body: RawJSONLines; meta: Record<string, unknown> }> = [];
+    const collector = new ClaudeRemoteSubagentFileCollector({
+      emitImported: (body: RawJSONLines, meta: Record<string, unknown>) => imported.push({ body, meta }),
+      watchFile: () => () => {},
+    });
+
+    try {
+      await collector.registerSidechainFile({
+        sidechainId,
+        agentId: 'a1',
+        filePath: jsonlPath,
+        source: 'workflow-agent',
+      });
+      await collector.syncAll();
+
+      // The prompt is KEPT for a workflow agent. The skip exists because the remote launcher
+      // synthesises a prompt root from the `Task` tool_use; nothing synthesises one here, so
+      // skipping it would drop the only record that says what the agent was asked to do.
+      expect(imported.map((entry) => entry.body.type)).toEqual(['user', 'assistant']);
+      for (const entry of imported) {
+        expect(entry.body.isSidechain).toBe(true);
+        expect(entry.body.sidechainId).toBe(sidechainId);
+        expect(entry.meta).toMatchObject({
+          importedFrom: 'claude-subagent-file',
+          claudeAgentId: 'a1',
+          sidechainId,
+        });
+      }
+    } finally {
+      collector.cleanup();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps three agents of one run in three disjoint sidechains', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happy-workflow-sidechains-'));
+    const agentIds = ['a1', 'a2', 'a3'];
+    await Promise.all(agentIds.map((agentId) => writeFile(
+      join(dir, `agent-${agentId}.jsonl`),
+      makeJsonl([{
+        type: 'assistant',
+        uuid: `${agentId}-msg`,
+        isSidechain: true,
+        message: { role: 'assistant', content: [{ type: 'text', text: `work from ${agentId}` }] },
+      }]),
+      'utf8',
+    )));
+
+    const imported: Array<{ body: RawJSONLines; meta: Record<string, unknown> }> = [];
+    const collector = new ClaudeRemoteSubagentFileCollector({
+      emitImported: (body: RawJSONLines, meta: Record<string, unknown>) => imported.push({ body, meta }),
+      watchFile: () => () => {},
+    });
+
+    try {
+      for (const agentId of agentIds) {
+        await collector.registerSidechainFile({
+          sidechainId: `workflow_agent_sidechain:toolu_wf:${agentId}`,
+          agentId,
+          filePath: join(dir, `agent-${agentId}.jsonl`),
+          source: 'workflow-agent',
+        });
+      }
+      await collector.syncAll();
+
+      const bySidechain = new Map<string, string[]>();
+      for (const entry of imported) {
+        const id = String(entry.body.sidechainId);
+        const texts = ((entry.body as any).message?.content ?? []).map((part: any) => part.text);
+        bySidechain.set(id, [...(bySidechain.get(id) ?? []), ...texts]);
+      }
+
+      expect([...bySidechain.keys()].sort()).toEqual([
+        'workflow_agent_sidechain:toolu_wf:a1',
+        'workflow_agent_sidechain:toolu_wf:a2',
+        'workflow_agent_sidechain:toolu_wf:a3',
+      ]);
+      expect(bySidechain.get('workflow_agent_sidechain:toolu_wf:a1')).toEqual(['work from a1']);
+      expect(bySidechain.get('workflow_agent_sidechain:toolu_wf:a2')).toEqual(['work from a2']);
+      expect(bySidechain.get('workflow_agent_sidechain:toolu_wf:a3')).toEqual(['work from a3']);
+    } finally {
+      collector.cleanup();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-import when the same file is registered again', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happy-workflow-sidechains-'));
+    const jsonlPath = join(dir, 'agent-a1.jsonl');
+    await writeFile(jsonlPath, makeJsonl([{
+      type: 'assistant',
+      uuid: 'a1-msg',
+      isSidechain: true,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'once' }] },
+    }]), 'utf8');
+
+    const imported: RawJSONLines[] = [];
+    const collector = new ClaudeRemoteSubagentFileCollector({
+      emitImported: (body: RawJSONLines) => imported.push(body),
+      watchFile: () => () => {},
+    });
+
+    try {
+      const register = () => collector.registerSidechainFile({
+        sidechainId: 'workflow_agent_sidechain:toolu_wf:a1',
+        agentId: 'a1',
+        filePath: jsonlPath,
+        source: 'workflow-agent',
+      });
+      await register();
+      await collector.syncAll();
+      await register();
+      await collector.syncAll();
+
+      expect(imported).toHaveLength(1);
     } finally {
       collector.cleanup();
       await rm(dir, { recursive: true, force: true });

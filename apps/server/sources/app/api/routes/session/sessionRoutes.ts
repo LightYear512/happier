@@ -4,16 +4,17 @@ import { registerSessionDeleteRoute } from "./registerSessionDeleteRoute";
 import { registerSessionArchiveRoutes } from "./registerSessionArchiveRoutes";
 import { registerSessionListingRoutes } from "./registerSessionListingRoutes";
 import { registerSessionFolderAssignmentRoutes } from "./registerSessionFolderAssignmentRoutes";
+import { registerSessionOrganizationRoutes } from "./registerSessionOrganizationRoutes";
 import { registerSessionMessageRoutes } from "./registerSessionMessageRoutes";
 import { registerSessionPatchRoute } from "./registerSessionPatchRoute";
 import { registerSessionDevPreviewRoutes } from "./registerSessionDevPreviewRoutes";
 import { registerSessionReadStateRoutes } from "./registerSessionReadStateRoutes";
 import { registerSessionTurnRoutes } from "./registerSessionTurnRoutes";
-import { registerSessionEndRoute } from "./registerSessionEndRoute";
 import { registerSessionSystemRecordRoutes } from "./registerSessionSystemRecordRoutes";
 
 export function sessionRoutes(app: Fastify) {
     registerSessionListingRoutes(app);
+    registerSessionOrganizationRoutes(app);
     registerSessionFolderAssignmentRoutes(app);
     registerSessionCreateOrLoadRoute(app);
     registerSessionArchiveRoutes(app);
@@ -21,7 +22,6 @@ export function sessionRoutes(app: Fastify) {
     registerSessionSystemRecordRoutes(app);
     registerSessionPatchRoute(app);
     registerSessionTurnRoutes(app);
-    registerSessionEndRoute(app);
     registerSessionDevPreviewRoutes(app);
     registerSessionReadStateRoutes(app);
     registerSessionDeleteRoute(app);

@@ -7,7 +7,15 @@ import { commandExistsOnPath } from '../process/index.js';
 import { buildLaunchdPlistXml } from './launchd.js';
 import { mergeServiceEnvWithPath } from './path.js';
 import { renderSystemdServiceUnit } from './systemd.js';
-import { buildWindowsScheduledTaskPowerShellAction, renderWindowsScheduledTaskWrapperPs1 } from './windows.js';
+import {
+  buildReadWindowsScheduledTaskStatusPowerShellCommand,
+  buildRemoveWindowsScheduledTaskIfPresentPowerShellCommand,
+  buildStopWindowsScheduledTaskIfRunningPowerShellCommand,
+  buildWindowsScheduledTaskPowerShellAction,
+  parseWindowsScheduledTaskStatusPowerShellJson,
+  renderWindowsScheduledTaskWrapperPs1,
+  splitQualifiedWindowsScheduledTaskName,
+} from './windows.js';
 
 export type ServiceMode = 'user' | 'system';
 
@@ -28,6 +36,7 @@ export type ServiceSpec = Readonly<{
   runAsUser?: string;
   stdoutPath?: string;
   stderrPath?: string;
+  restartPolicy?: 'always' | 'on-failure' | 'no';
 }>;
 
 export type ServiceDefinition = Readonly<{
@@ -38,8 +47,19 @@ export type ServiceDefinition = Readonly<{
 }>;
 
 export type PlannedWrite = Readonly<{ path: string; contents: string; mode?: number }>;
-export type PlannedCommand = Readonly<{ cmd: string; args: readonly string[]; allowFail?: boolean }>;
+export type PlannedCommand = Readonly<{
+  cmd: string;
+  args: readonly string[];
+  allowFail?: boolean;
+  expectedFailure?: 'service-absent';
+  completePlanOnExpectedFailure?: boolean;
+}>;
 export type ServicePlan = Readonly<{ writes: PlannedWrite[]; commands: PlannedCommand[] }>;
+export type ServiceRegistrationState = 'registered' | 'absent';
+
+function windowsPowerShellCommandArgs(command: string): readonly string[] {
+  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command];
+}
 
 export function resolveServiceBackend(params: Readonly<{ platform?: NodeJS.Platform; mode?: ServiceMode }> = {}): ServiceBackend {
   const p = String(params.platform ?? '').trim() || process.platform;
@@ -65,6 +85,7 @@ function normalizeSpec(spec: ServiceSpec): Required<ServiceSpec> {
     runAsUser: String(spec?.runAsUser ?? '').trim(),
     stdoutPath: String(spec?.stdoutPath ?? '').trim(),
     stderrPath: String(spec?.stderrPath ?? '').trim(),
+    restartPolicy: spec?.restartPolicy ?? 'always',
   };
 }
 
@@ -89,6 +110,23 @@ function windowsWrapperPathForLabel(params: Readonly<{ homeDir: string; label: s
   return `${base}\\.happier\\services\\${params.label}.ps1`;
 }
 
+export function resolveServiceDefinitionPath(params: Readonly<{
+  platform?: NodeJS.Platform;
+  mode?: ServiceMode;
+  homeDir: string;
+  label: string;
+}>): string {
+  const backend = resolveServiceBackend({ platform: params.platform, mode: params.mode });
+  const mode: ServiceMode = backend.endsWith('-system') ? 'system' : 'user';
+  if (backend === 'systemd-user' || backend === 'systemd-system') {
+    return systemdUnitPathForLabel({ homeDir: params.homeDir, label: params.label, mode });
+  }
+  if (backend === 'launchd-user' || backend === 'launchd-system') {
+    return launchdPlistPathForLabel({ homeDir: params.homeDir, label: params.label, mode });
+  }
+  return windowsWrapperPathForLabel({ homeDir: params.homeDir, label: params.label, mode });
+}
+
 export function buildServiceDefinition(params: Readonly<{ backend: ServiceBackend; homeDir: string; spec: ServiceSpec }>): ServiceDefinition {
   const s = normalizeSpec(params.spec);
   const backend = String(params.backend ?? '').trim() as ServiceBackend;
@@ -108,13 +146,13 @@ export function buildServiceDefinition(params: Readonly<{ backend: ServiceBacken
 
   if (backend === 'systemd-user' || backend === 'systemd-system') {
     const mode: ServiceMode = backend === 'systemd-system' ? 'system' : 'user';
-    const path = systemdUnitPathForLabel({ homeDir: params.homeDir, label: s.label, mode });
+    const path = resolveServiceDefinitionPath({ platform: 'linux', mode, homeDir: params.homeDir, label: s.label });
     const contents = renderSystemdServiceUnit({
       description: s.description,
       execStart: s.programArgs,
       workingDirectory: s.workingDirectory,
       env: mergedEnv,
-      restart: 'always',
+      restart: s.restartPolicy,
       runAsUser: s.runAsUser,
       stdoutPath: s.stdoutPath,
       stderrPath: s.stderrPath,
@@ -125,7 +163,7 @@ export function buildServiceDefinition(params: Readonly<{ backend: ServiceBacken
 
   if (backend === 'launchd-user' || backend === 'launchd-system') {
     const mode: ServiceMode = backend === 'launchd-system' ? 'system' : 'user';
-    const path = launchdPlistPathForLabel({ homeDir: params.homeDir, label: s.label, mode });
+    const path = resolveServiceDefinitionPath({ platform: 'darwin', mode, homeDir: params.homeDir, label: s.label });
     const contents = buildLaunchdPlistXml({
       label: s.label,
       programArgs: s.programArgs,
@@ -140,7 +178,7 @@ export function buildServiceDefinition(params: Readonly<{ backend: ServiceBacken
 
   if (backend === 'schtasks-user' || backend === 'schtasks-system') {
     const mode: ServiceMode = backend === 'schtasks-system' ? 'system' : 'user';
-    const path = windowsWrapperPathForLabel({ homeDir: params.homeDir, label: s.label, mode });
+    const path = resolveServiceDefinitionPath({ platform: 'win32', mode, homeDir: params.homeDir, label: s.label });
     const contents = renderWindowsScheduledTaskWrapperPs1({
       workingDirectory: s.workingDirectory,
       programArgs: s.programArgs,
@@ -242,7 +280,12 @@ export function planServiceAction(params: Readonly<{
       return { writes, commands };
     }
     if (action === 'uninstall') {
-      commands.push({ cmd: 'systemctl', args: [...prefix, 'disable', '--now', unitName], allowFail: true });
+      commands.push({
+        cmd: 'systemctl',
+        args: [...prefix, 'disable', '--now', unitName],
+        expectedFailure: 'service-absent',
+        completePlanOnExpectedFailure: true,
+      });
       commands.push({ cmd: 'systemctl', args: [...prefix, 'daemon-reload'] });
       return { writes, commands };
     }
@@ -280,11 +323,22 @@ export function planServiceAction(params: Readonly<{
     }
     if (action === 'uninstall' || action === 'stop') {
       if (preferBootstrap) {
-        commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`], allowFail: true });
-        commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}`, definitionPath], allowFail: true });
-        commands.push({ cmd: 'launchctl', args: ['remove', label], allowFail: true });
+        if (action === 'uninstall') {
+          // Address the registered job directly so teardown still works if a historical uninstall
+          // already removed the plist before confirming bootout.
+          commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}/${label}`], expectedFailure: 'service-absent' });
+          commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`], expectedFailure: 'service-absent' });
+        } else {
+          commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`], allowFail: true });
+          commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}`, definitionPath], allowFail: true });
+          commands.push({ cmd: 'launchctl', args: ['remove', label], allowFail: true });
+        }
       } else {
-        commands.push({ cmd: 'launchctl', args: persistent ? ['unload', '-w', definitionPath] : ['unload', definitionPath], allowFail: true });
+        commands.push({
+          cmd: 'launchctl',
+          args: persistent ? ['unload', '-w', definitionPath] : ['unload', definitionPath],
+          ...(action === 'uninstall' ? { expectedFailure: 'service-absent' } : { allowFail: true }),
+        });
       }
       return { writes, commands };
     }
@@ -301,6 +355,12 @@ export function planServiceAction(params: Readonly<{
 
   if (backend === 'schtasks-user' || backend === 'schtasks-system') {
     const name = taskName || `Happier\\${label}`;
+    const stopIfRunning = {
+      cmd: 'powershell.exe',
+      args: windowsPowerShellCommandArgs(buildStopWindowsScheduledTaskIfRunningPowerShellCommand({
+        qualifiedTaskName: name,
+      })),
+    } satisfies PlannedCommand;
     const mode: ServiceMode = backend === 'schtasks-system' ? 'system' : 'user';
     if (action === 'install') {
       if (!definitionPath) throw new Error('definitionPath is required for schtasks install');
@@ -320,13 +380,19 @@ export function planServiceAction(params: Readonly<{
         ps,
         ...(mode === 'system' ? ['/RU', 'SYSTEM', '/RL', 'HIGHEST'] : []),
       ];
+      commands.push(stopIfRunning);
       commands.push({ cmd: 'schtasks', args });
       commands.push({ cmd: 'schtasks', args: ['/Run', '/TN', name] });
       return { writes, commands };
     }
     if (action === 'uninstall') {
-      commands.push({ cmd: 'schtasks', args: ['/End', '/TN', name], allowFail: true });
-      commands.push({ cmd: 'schtasks', args: ['/Delete', '/F', '/TN', name], allowFail: true });
+      commands.push(stopIfRunning);
+      commands.push({
+        cmd: 'powershell.exe',
+        args: windowsPowerShellCommandArgs(buildRemoveWindowsScheduledTaskIfPresentPowerShellCommand({
+          qualifiedTaskName: name,
+        })),
+      });
       return { writes, commands };
     }
     if (action === 'start') {
@@ -334,11 +400,11 @@ export function planServiceAction(params: Readonly<{
       return { writes, commands };
     }
     if (action === 'stop') {
-      commands.push({ cmd: 'schtasks', args: ['/End', '/TN', name], allowFail: true });
+      commands.push(stopIfRunning);
       return { writes, commands };
     }
     if (action === 'restart') {
-      commands.push({ cmd: 'schtasks', args: ['/End', '/TN', name], allowFail: true });
+      commands.push(stopIfRunning);
       commands.push({ cmd: 'schtasks', args: ['/Run', '/TN', name] });
       return { writes, commands };
     }
@@ -405,6 +471,16 @@ export async function applyServicePlan(plan: ServicePlan, options: Readonly<{ ru
 
     if (status !== 0) {
       if (c.allowFail) continue;
+      if (c.expectedFailure === 'service-absent' && isBenignServiceAbsenceFailure({
+        cmd: c.cmd,
+        args: c.args,
+        status,
+        stdout: res.stdout,
+        stderr: res.stderr,
+      })) {
+        if (c.completePlanOnExpectedFailure) return;
+        continue;
+      }
       const knownFailure = explainKnownServiceCommandFailure({ cmd: c.cmd, args: c.args, stderr: res.stderr });
       if (knownFailure) {
         throw new Error(knownFailure);
@@ -416,6 +492,73 @@ export async function applyServicePlan(plan: ServicePlan, options: Readonly<{ ru
       throw new Error(`[service] command failed (${status ?? 'unknown'}): ${c.cmd} ${c.args.join(' ')}${details}`.trim());
     }
   }
+}
+
+export function isBenignServiceAbsenceFailure(params: Readonly<{
+  cmd: string;
+  args: readonly string[];
+  status: number | null;
+  stdout: unknown;
+  stderr: unknown;
+}>): boolean {
+  if (params.status === 0) return false;
+  const output = `${String(params.stdout ?? '')}\n${String(params.stderr ?? '')}`;
+  if (params.cmd === 'systemctl') {
+    const action = params.args.find((arg) => !String(arg).startsWith('-')) ?? '';
+    if (action !== 'disable' && action !== 'show') return false;
+    return /(?:unit|unit file).*(?:does not exist|not found|not loaded)|could not be found/i.test(output);
+  }
+  if (params.cmd === 'launchctl') {
+    const action = String(params.args[0] ?? '');
+    if (!['bootout', 'disable', 'print'].includes(action)) return false;
+    return /could not find (?:specified )?service|service.*not found|no such process/i.test(output);
+  }
+  return false;
+}
+
+export function inspectServiceRegistration(params: Readonly<{
+  backend: ServiceBackend;
+  label: string;
+  taskName?: string;
+  uid?: number | null;
+}>): ServiceRegistrationState {
+  const backend = params.backend;
+  const label = String(params.label ?? '').trim();
+  if (!label) throw new Error('[service] label is required for registration inspection');
+  const uid = resolveUid(params.uid);
+  let cmd: string;
+  let args: string[];
+  if (backend === 'systemd-user' || backend === 'systemd-system') {
+    cmd = 'systemctl';
+    args = [...(backend === 'systemd-user' ? ['--user'] : []), 'show', `${label}.service`, '--property=LoadState', '--value'];
+  } else if (backend === 'launchd-user' || backend === 'launchd-system') {
+    const domain = backend === 'launchd-user' ? (uid != null ? `gui/${uid}` : '') : 'system';
+    if (!domain) throw new Error('[service] cannot inspect launchd user registration without a uid');
+    cmd = 'launchctl';
+    args = ['print', `${domain}/${label}`];
+  } else {
+    const qualifiedTaskName = String(params.taskName ?? '').trim() || `Happier\\${label}`;
+    const { taskName, taskPath } = splitQualifiedWindowsScheduledTaskName(qualifiedTaskName);
+    cmd = 'powershell.exe';
+    args = [...windowsPowerShellCommandArgs(buildReadWindowsScheduledTaskStatusPowerShellCommand({ taskName, taskPath }))];
+  }
+  if (!commandExistsOnPath(cmd, { path: process.env.PATH })) throw new Error(`[service] command not found: ${cmd}`);
+  const res = spawnSync(cmd, args, { encoding: 'utf8', env: buildServiceCommandEnv({ cmd, args, env: process.env, uid }) });
+  if (res.error) throw new Error(`[service] failed to inspect ${label}: ${res.error.message}`);
+  const status = typeof res.status === 'number' ? res.status : null;
+  const stdout = String(res.stdout ?? '').trim();
+  if (status === 0) {
+    if (cmd === 'systemctl' && /^not-found$/i.test(stdout)) return 'absent';
+    if (cmd === 'powershell.exe') {
+      const snapshot = parseWindowsScheduledTaskStatusPowerShellJson(stdout);
+      if (!snapshot) throw new Error(`[service] failed to parse Windows scheduled task status for ${label}`);
+      return snapshot.exists ? 'registered' : 'absent';
+    }
+    return 'registered';
+  }
+  if (isBenignServiceAbsenceFailure({ cmd, args, status, stdout: res.stdout, stderr: res.stderr })) return 'absent';
+  const detail = String(res.stderr ?? res.stdout ?? '').trim();
+  throw new Error(`[service] failed to inspect ${label}: ${cmd} ${args.join(' ')}${detail ? `\n${detail}` : ''}`);
 }
 
 function explainKnownServiceCommandFailure(params: Readonly<{

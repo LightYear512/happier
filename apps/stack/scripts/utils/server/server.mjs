@@ -1,5 +1,8 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
+const DEFAULT_SERVER_MIGRATION_TIMEOUT_MS = 30 * 60_000;
+const MAX_SERVER_MIGRATION_TIMEOUT_MS = 24 * 60 * 60_000;
+
 function isCanonicalHappierHealthPayload(payload) {
   return payload?.service === 'happier-server' && payload?.status === 'ok';
 }
@@ -8,6 +11,33 @@ function isServerStartupHealthPayload(payload) {
   if (!payload || typeof payload !== 'object') return false;
   if (isCanonicalHappierHealthPayload(payload)) return true;
   return payload?.status === 'ok';
+}
+
+async function fetchHappierMonitoringEndpoint(baseUrl, endpoint) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 1500);
+  try {
+    const url = baseUrl.replace(/\/+$/, '') + endpoint;
+    const res = await fetch(url, { method: 'GET', signal: ctl.signal });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    return {
+      ok: res.ok && isCanonicalHappierHealthPayload(json),
+      ready: res.ok && isServerStartupHealthPayload(json),
+      status: res.status,
+      json,
+      text,
+    };
+  } catch {
+    return { ok: false, ready: false, status: null, json: null, text: null };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export function getServerComponentName({ kv } = {}) {
@@ -29,30 +59,11 @@ export function getServerComponentName({ kv } = {}) {
 }
 
 export async function fetchHappierHealth(baseUrl) {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 1500);
-  try {
-    const url = baseUrl.replace(/\/+$/, '') + '/health';
-    const res = await fetch(url, { method: 'GET', signal: ctl.signal });
-    const text = await res.text();
-    let json = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
-    return {
-      ok: res.ok && isCanonicalHappierHealthPayload(json),
-      ready: res.ok && isServerStartupHealthPayload(json),
-      status: res.status,
-      json,
-      text,
-    };
-  } catch {
-    return { ok: false, ready: false, status: null, json: null, text: null };
-  } finally {
-    clearTimeout(t);
-  }
+  return await fetchHappierMonitoringEndpoint(baseUrl, '/health');
+}
+
+export async function fetchHappierReadiness(baseUrl) {
+  return await fetchHappierMonitoringEndpoint(baseUrl, '/ready');
 }
 
 export async function isHappierServerRunning(baseUrl) {
@@ -90,8 +101,92 @@ export function resolveServerReadyTimeoutMs({ serverComponentName = '', env = pr
   return serverComponentName === 'happier-server-light' ? 120_000 : 60_000;
 }
 
-export async function waitForServerReady(url, { timeoutMs = 60_000, intervalMs = 300, childProcess = null } = {}) {
-  const deadline = Date.now() + timeoutMs;
+export function resolveServerMigrationTimeoutMs({ env = process.env } = {}) {
+  const configured = Number.parseInt(String(env?.HAPPIER_STACK_SERVER_MIGRATION_TIMEOUT_MS ?? '').trim(), 10);
+  if (Number.isFinite(configured) && configured >= 1_000 && configured <= MAX_SERVER_MIGRATION_TIMEOUT_MS) {
+    return configured;
+  }
+  // Large SQLite schema changes can legitimately exceed ordinary startup readiness.
+  // Keep that lifetime finite by default while allowing operators to tune it for their database.
+  return DEFAULT_SERVER_MIGRATION_TIMEOUT_MS;
+}
+
+export function createServerReadinessDeadline({
+  readinessTimeoutMs,
+  migrationTimeoutMs,
+  nowImpl = Date.now,
+} = {}) {
+  const rawReadyMs = Number(readinessTimeoutMs);
+  const rawMigrationMs = Number(migrationTimeoutMs);
+  const readyMs = Number.isFinite(rawReadyMs) && rawReadyMs > 0 ? Math.trunc(rawReadyMs) : 60_000;
+  const migrationMs = Number.isFinite(rawMigrationMs) && rawMigrationMs > 0
+    ? Math.min(Math.trunc(rawMigrationMs), MAX_SERVER_MIGRATION_TIMEOUT_MS)
+    : DEFAULT_SERVER_MIGRATION_TIMEOUT_MS;
+  let phase = 'pending';
+  let deadlineMs = null;
+  let migrationStarted = false;
+  let migrationCompleted = false;
+  const now = () => {
+    const value = Number(nowImpl?.());
+    return Number.isFinite(value) ? value : Date.now();
+  };
+
+  const startReadiness = () => {
+    if (deadlineMs === null) {
+      phase = 'readiness';
+      deadlineMs = now() + readyMs;
+    }
+    return deadlineMs;
+  };
+
+  const observeSignal = (signal) => {
+    if (signal === 'migration_started' && !migrationStarted) {
+      migrationStarted = true;
+      phase = 'migration';
+      deadlineMs = now() + migrationMs;
+    } else if (signal === 'migration_completed' && migrationStarted && !migrationCompleted) {
+      migrationCompleted = true;
+      phase = 'readiness';
+      deadlineMs = now() + readyMs;
+    }
+    return signal;
+  };
+
+  return {
+    startReadiness,
+    observeSignal,
+    observeLine({ line } = {}) {
+      let signal = null;
+      try {
+        signal = JSON.parse(String(line ?? ''))?.happierStackTransition ?? null;
+      } catch {
+        return null;
+      }
+      return observeSignal(signal);
+    },
+    getDeadlineMs() {
+      return startReadiness();
+    },
+    getPhase() {
+      return phase;
+    },
+    isExpired() {
+      return now() >= startReadiness();
+    },
+  };
+}
+
+export async function waitForServerReady(url, {
+  timeoutMs = 60_000,
+  intervalMs = 300,
+  childProcess = null,
+  startupDeadline = null,
+} = {}) {
+  const deadline = startupDeadline ?? createServerReadinessDeadline({
+    readinessTimeoutMs: timeoutMs,
+    migrationTimeoutMs: timeoutMs,
+  });
+  deadline.startReadiness();
   let earlyExitError = null;
   const onExit = (code, signal) => {
     earlyExitError = new Error(formatServerReadyEarlyExit(url, code, signal));
@@ -105,31 +200,27 @@ export async function waitForServerReady(url, { timeoutMs = 60_000, intervalMs =
   }
 
   try {
-    while (Date.now() < deadline) {
+    while (!deadline.isExpired()) {
       if (earlyExitError) {
         throw earlyExitError;
       }
-      // Runtime-backed stacks and modern server builds expose startup liveness on /health even when
-      // the root route serves the app shell instead of the legacy welcome page.
-      // Prefer that contract, but keep the older root-page probe as a fallback for source/dev flows.
+      // Runtime-backed stacks and modern server builds expose startup readiness on /ready.
+      // Promotion must not accept root-page liveness because the app shell can serve before DB readiness.
       // eslint-disable-next-line no-await-in-loop
-      const health = await fetchHappierHealth(url);
-      if (health.ready) {
-        return;
+      const readiness = await fetchHappierReadiness(url);
+      if (earlyExitError) {
+        throw earlyExitError;
       }
-      try {
-        const res = await fetch(url, { method: 'GET' });
-        const text = await res.text();
-        if (res.ok && text.includes('Welcome to Happier Server!')) {
-          return;
-        }
-      } catch {
-        // ignore
+      if (readiness.ready) {
+        return;
       }
       await delay(intervalMs);
     }
     if (earlyExitError) {
       throw earlyExitError;
+    }
+    if (deadline.getPhase() === 'migration') {
+      throw new Error(`Server migration timed out before readiness at ${url}`);
     }
     throw new Error(`Timed out waiting for server at ${url}`);
   } finally {

@@ -39,6 +39,82 @@ describe('serializeAxiosErrorForLog', () => {
     expect(serialized).not.toHaveProperty('data');
   });
 
+  it('includes safe machine-readable response error fields without logging request or response bodies', () => {
+    const config = createAxiosConfig({
+      method: 'post',
+      url: 'https://api.example.test/v2/connect/provider-account-usage/record?token=secret',
+      headers: new AxiosHeaders({ Authorization: 'Bearer SECRET', 'Content-Type': 'application/json' }),
+      data: { sealed: { ciphertext: 'SECRET_CIPHERTEXT' } },
+    });
+    const err = new AxiosError(
+      'Request failed with status 400',
+      'ERR_BAD_REQUEST',
+      config,
+      undefined,
+      {
+        status: 400,
+        statusText: 'Bad Request',
+        headers: {},
+        config,
+        data: {
+          error: 'invalid-params',
+          reason: 'connected_service_usage_source_incompatible',
+          message: 'secret should not be logged',
+        },
+      },
+    );
+
+    const serialized = serializeAxiosErrorForLog(err);
+
+    expect(serialized).toEqual(expect.objectContaining({
+      status: 400,
+      responseError: 'invalid-params',
+      responseReason: 'connected_service_usage_source_incompatible',
+    }));
+    expect(serialized).not.toHaveProperty('data');
+    expect(serialized).not.toHaveProperty('headers');
+    expect(JSON.stringify(serialized)).not.toContain('SECRET_CIPHERTEXT');
+    expect(JSON.stringify(serialized)).not.toContain('secret should not be logged');
+  });
+
+  it('preserves safe settlement correlation and retry diagnostics without logging the response body', () => {
+    const config = createAxiosConfig({
+      method: 'post',
+      url: 'https://api.example.test/v2/sessions/s1/pending/local-1/delivery/accepted',
+      data: { selector: { localId: 'secret-local-id' } },
+    });
+    const err = new AxiosError(
+      'Request failed with status 503',
+      'ERR_BAD_RESPONSE',
+      config,
+      undefined,
+      {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'retry-after': '9' },
+        config,
+        data: {
+          error: 'transaction-unavailable',
+          retryAfterMs: 1_250,
+          correlationId: 'req-accepted-busy',
+          message: 'secret response detail',
+        },
+      },
+    );
+
+    const serialized = serializeAxiosErrorForLog(err);
+
+    expect(serialized).toEqual(expect.objectContaining({
+      status: 503,
+      responseError: 'transaction-unavailable',
+      responseRetryAfterMs: 1_250,
+      responseCorrelationId: 'req-accepted-busy',
+    }));
+    expect(serialized).not.toHaveProperty('data');
+    expect(JSON.stringify(serialized)).not.toContain('secret-local-id');
+    expect(JSON.stringify(serialized)).not.toContain('secret response detail');
+  });
+
   it('redacts Telegram bot tokens embedded in path segments', () => {
     const err = new AxiosError('boom', 'ECONNRESET', createAxiosConfig({
       method: 'post',

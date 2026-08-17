@@ -1,11 +1,11 @@
 import type { McpServerConfig } from '@/agent';
 import type { AcpPermissionHandler } from '@/agent/acp/AcpBackend';
 import { createCatalogProviderAcpRuntime } from '@/agent/acp/runtime/createCatalogProviderAcpRuntime';
+import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { PermissionMode } from '@/api/types';
 import type { MessageBuffer } from '@/ui/ink/messageBuffer';
 
-import { maybeUpdateQwenSessionIdMetadata } from '@/backends/qwen/utils/qwenSessionIdMetadata';
 
 export function createQwenAcpRuntime(params: {
   directory: string;
@@ -18,9 +18,8 @@ export function createQwenAcpRuntime(params: {
   memoryRecallGuidanceEnabled?: boolean;
   getPermissionMode?: () => PermissionMode | null | undefined;
   pendingQueueDrainMaxPopPerWake?: number;
+  providerInputConsumer: SessionProviderInputConsumer<unknown, unknown>;
 }) {
-  const lastPublishedQwenSessionId = { value: null as string | null };
-
   return createCatalogProviderAcpRuntime({
     provider: 'qwen',
     loggerLabel: 'QwenACP',
@@ -29,6 +28,7 @@ export function createQwenAcpRuntime(params: {
     messageBuffer: params.messageBuffer,
     mcpServers: params.mcpServers,
     permissionHandler: params.permissionHandler,
+    sessionIdentity: { kind: 'manifest-metadata' },
     onThinkingChange: params.onThinkingChange,
     memoryRecallGuidance: {
       enabled: params.memoryRecallGuidanceEnabled === true,
@@ -36,12 +36,6 @@ export function createQwenAcpRuntime(params: {
     },
     getPermissionMode: params.getPermissionMode,
     pendingQueueDrainMaxPopPerWake: params.pendingQueueDrainMaxPopPerWake,
-    onSessionIdChange: (nextSessionId) => {
-      maybeUpdateQwenSessionIdMetadata({
-        getQwenSessionId: () => nextSessionId,
-        updateHappySessionMetadata: (updater) => params.session.updateMetadata(updater),
-        lastPublished: lastPublishedQwenSessionId,
-      });
-    },
+    providerInputConsumer: params.providerInputConsumer,
   });
 }

@@ -26,6 +26,29 @@ function resolveFlashListRoot(): string {
   return dirname(packageJsonPath);
 }
 
+type FlashListRecyclerViewManager<T> = Readonly<{
+  computeVisibleIndices: () => { toArray: () => number[] };
+  getIsFirstLayoutComplete: () => boolean;
+  getRenderStack: () => ReadonlyMap<string, unknown>;
+  modifyChildrenLayout: (layoutInfo: unknown[], dataLength: number) => boolean;
+  props: FlashListRecyclerViewManagerProps<T>;
+  updateLayoutParams: (windowSize: { height: number; width: number }, firstItemOffset: number) => void;
+  updateProps: (props: FlashListRecyclerViewManagerProps<T>) => void;
+}>;
+
+type FlashListRecyclerViewManagerProps<T> = Readonly<{
+  data: T[];
+  estimatedItemSize: number;
+  horizontal: boolean;
+  keyExtractor: (item: T, index: number) => string;
+  overrideItemLayout: (layout: { size?: number }) => void;
+  renderItem: (info: { item: T; index: number }) => unknown;
+}>;
+
+type FlashListRecyclerViewManagerConstructor = new <T>(
+  props: FlashListRecyclerViewManagerProps<T>,
+) => FlashListRecyclerViewManager<T>;
+
 describe('flash-list commitLayout guard patch', () => {
   it('keeps the patch file aligned with the installed @shopify/flash-list version', () => {
     const flashListRoot = resolveFlashListRoot();
@@ -42,6 +65,7 @@ describe('flash-list commitLayout guard patch', () => {
     const patchContent = readFileSync(patchPath, 'utf8');
     expect(patchContent).toContain('HAPPIER PATCH(flash-list-commit-layout-guard)');
     expect(patchContent).toContain('dist/recyclerview/RecyclerView.js');
+    expect(patchContent).toContain('dist/recyclerview/ViewHolderCollection.js');
   });
 
   it('ships an installed RecyclerView with the guarded commitLayout path applied', () => {
@@ -54,12 +78,71 @@ describe('flash-list commitLayout guard patch', () => {
     // The guard marker must be present in the runtime entry actually resolved by Metro
     // (package "main" points at dist/).
     expect(distRecyclerView).toContain('HAPPIER PATCH(flash-list-commit-layout-guard)');
+    expect(distRecyclerView).not.toContain('HAPPIER PATCH(flash-list-first-reveal-commit)');
 
     // The pathological shape — commitLayout() invoked unconditionally in the else branch of the
     // layout effect — must be gone: every commitLayout call site in the layout effect must be
     // reachable only behind the pending-commit guard.
     expect(distRecyclerView).toContain('hasPendingCommitRef');
     expect(distRecyclerView).toContain('hasCommittedOnceRef');
+  });
+
+  it('ships an installed RecyclerView that cannot reveal data-bearing empty render stacks', () => {
+    const flashListRoot = resolveFlashListRoot();
+    const distRecyclerView = readFileSync(
+      join(flashListRoot, 'dist/recyclerview/RecyclerView.js'),
+      'utf8',
+    );
+
+    // A zero-height first web layout can keep renderStack empty until the browser reports a
+    // measurable viewport. The parent reveal commit must not turn opacity on for data-bearing
+    // empty content; it should stay pending until RecyclerViewManager has rendered holders.
+    expect(distRecyclerView).toContain('HAPPIER PATCH(flash-list-nonempty-render-stack-commit)');
+    expect(distRecyclerView).toContain('getRenderStack().size > 0');
+  });
+
+  it('keeps a zero-height first viewport from completing progressive render vacuously', async () => {
+    const flashListRoot = resolveFlashListRoot();
+    const recyclerViewManagerModule = (await import(
+      '../../../../../node_modules/@shopify/flash-list/dist/recyclerview/RecyclerViewManager.js'
+    )) as unknown as { RecyclerViewManager: FlashListRecyclerViewManagerConstructor };
+    const data = [{ id: 'message-1' }, { id: 'message-2' }, { id: 'message-3' }];
+    const manager = new recyclerViewManagerModule.RecyclerViewManager({
+      data,
+      estimatedItemSize: 80,
+      horizontal: false,
+      keyExtractor: (item) => item.id,
+      overrideItemLayout: (layout) => {
+        layout.size = 80;
+      },
+      renderItem: () => null,
+    });
+
+    manager.updateProps(manager.props);
+    manager.updateLayoutParams({ width: 400, height: 0 }, 1_000);
+
+    const didModifyChildrenLayout = manager.modifyChildrenLayout([], data.length);
+
+    expect(manager.computeVisibleIndices().toArray()).toEqual([]);
+    expect(manager.getRenderStack().size).toBe(0);
+    expect(manager.getIsFirstLayoutComplete()).toBe(false);
+    expect(didModifyChildrenLayout).toBe(true);
+  });
+
+  it('ships a ViewHolderCollection that reveals populated measured content without a parent commit', () => {
+    const flashListRoot = resolveFlashListRoot();
+    const distViewHolderCollection = readFileSync(
+      join(flashListRoot, 'dist/recyclerview/ViewHolderCollection.js'),
+      'utf8',
+    );
+
+    // The blank-list regression reproduced on iOS with data/renderStack intact and the
+    // ViewHolderCollection container native alpha stuck at 0. The opacity owner must own a
+    // one-time self reveal once it has data, a container layout, and rendered holders.
+    expect(distViewHolderCollection).toContain('HAPPIER PATCH(flash-list-view-holder-self-reveal)');
+    expect(distViewHolderCollection).toContain('shouldRevealMeasuredContent');
+    expect(distViewHolderCollection).toContain('renderStack.size > 0');
+    expect(distViewHolderCollection).toContain('setRenderId(1)');
   });
 });
 
@@ -88,9 +171,8 @@ describe('flash-list offset-correction hook patch (N1.1 evidence)', () => {
       'utf8',
     );
 
-    // Marker + the global slot the app-side bridge owns — always-on since N2d.1: the prepend
-    // transaction's corrector-deference signal rides this hook in production
-    // (sources/components/sessions/transcript/scroll/flashListOffsetCorrectionHook.ts).
+    // Marker + the global slot stay present for the burn-in fallback patch, even though the
+    // transcript no longer subscribes to this signal.
     expect(distController).toContain('HAPPIER PATCH(flash-list-offset-correction-hook)');
     expect(distController).toContain('__HAPPIER_FLASHLIST_OFFSET_CORRECTION_HOOK__');
 
@@ -103,6 +185,7 @@ describe('flash-list offset-correction hook patch (N1.1 evidence)', () => {
     expect(distController).toContain('"initial-scroll-index"');
     expect(distController).toContain('"correction-applied"');
     expect(distController).toContain('"correction-skipped-paused"');
+    expect(distController).toContain('"correction-skipped-happier-paused"');
     expect(distController).toContain('"correction-skipped-animation"');
   });
 });

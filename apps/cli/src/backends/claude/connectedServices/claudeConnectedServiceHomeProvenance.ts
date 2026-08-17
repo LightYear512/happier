@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { ConnectedServiceCredentialRecordV1 } from '@happier-dev/protocol';
+import {
+  ConnectedServiceCredentialRevisionV1Schema,
+  type ConnectedServiceCredentialRecordV1,
+  type ConnectedServiceCredentialRevisionV1,
+} from '@happier-dev/protocol';
 
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 
@@ -26,9 +30,20 @@ type ClaudeConnectedServiceHomeSelectionProvenance =
     }>;
 
 export type ClaudeConnectedServiceHomeSelectionDescriptor =
-  ClaudeConnectedServiceHomeSelectionProvenance & Readonly<{
-    serviceId: 'claude-subscription';
-  }>;
+  | Readonly<{
+      kind: 'profile';
+      serviceId: 'claude-subscription';
+      profileId: string;
+    }>
+  | Readonly<{
+      kind: 'group';
+      serviceId: 'claude-subscription';
+      groupId: string;
+      activeProfileId: string;
+      fallbackProfileId: string;
+      generation: number;
+      credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
+    }>;
 
 export type ClaudeConnectedServiceHomeProvenanceV1 = Readonly<{
   v: 1;
@@ -36,8 +51,22 @@ export type ClaudeConnectedServiceHomeProvenanceV1 = Readonly<{
   credentialProfileId: string;
   credentialCreatedAt: number;
   credentialFingerprint?: string | undefined;
+  credentialRevision?: ConnectedServiceCredentialRevisionV1 | undefined;
+  generation?: number | undefined;
   selection: ClaudeConnectedServiceHomeSelectionProvenance;
 }>;
+
+export function isClaudeConnectedServiceHomeGenerationSuperseded(input: Readonly<{
+  incomingSelection: ClaudeConnectedServiceHomeSelectionDescriptor;
+  existingProvenance: ClaudeConnectedServiceHomeProvenanceV1 | null;
+}>): boolean {
+  if (input.incomingSelection.kind !== 'group') return false;
+  const existing = input.existingProvenance;
+  return existing?.selection.kind === 'group'
+    && existing.selection.groupId === input.incomingSelection.groupId
+    && typeof existing.generation === 'number'
+    && existing.generation > input.incomingSelection.generation;
+}
 
 function readObject(value: unknown): Record<string, unknown> | null {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -72,6 +101,7 @@ export function resolveClaudeConnectedServiceHomeProvenancePath(claudeConfigDir:
 export function buildClaudeConnectedServiceHomeProvenance(params: Readonly<{
   record: ConnectedServiceCredentialRecordV1;
   selectionDescriptor: ClaudeConnectedServiceHomeSelectionDescriptor;
+  credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
 }>): ClaudeConnectedServiceHomeProvenanceV1 {
   const credentialFingerprint = buildCredentialFingerprint(params.record);
   if (params.selectionDescriptor.kind === 'group') {
@@ -81,6 +111,10 @@ export function buildClaudeConnectedServiceHomeProvenance(params: Readonly<{
       credentialProfileId: params.record.profileId,
       credentialCreatedAt: params.record.createdAt,
       ...(credentialFingerprint ? { credentialFingerprint } : {}),
+      ...(params.credentialRevision ?? params.selectionDescriptor.credentialRevision
+        ? { credentialRevision: params.credentialRevision ?? params.selectionDescriptor.credentialRevision ?? undefined }
+        : {}),
+      generation: params.selectionDescriptor.generation,
       selection: {
         kind: 'group',
         groupId: params.selectionDescriptor.groupId,
@@ -110,6 +144,8 @@ export function parseClaudeConnectedServiceHomeProvenance(
   const credentialProfileId = readNonBlankString(root.credentialProfileId);
   const credentialCreatedAt = readFiniteNumber(root.credentialCreatedAt);
   const credentialFingerprint = readCredentialFingerprint(root.credentialFingerprint);
+  const credentialRevision = ConnectedServiceCredentialRevisionV1Schema.safeParse(root.credentialRevision);
+  const generation = readFiniteNumber(root.generation);
   const selection = readObject(root.selection);
   if (!credentialProfileId || credentialCreatedAt === null || !selection) return null;
   if (selection.kind === 'profile') {
@@ -121,6 +157,8 @@ export function parseClaudeConnectedServiceHomeProvenance(
       credentialProfileId,
       credentialCreatedAt,
       ...(credentialFingerprint ? { credentialFingerprint } : {}),
+      ...(credentialRevision.success ? { credentialRevision: credentialRevision.data } : {}),
+      ...(generation !== null ? { generation: Math.trunc(generation) } : {}),
       selection: {
         kind: 'profile',
         profileId,
@@ -138,6 +176,8 @@ export function parseClaudeConnectedServiceHomeProvenance(
       credentialProfileId,
       credentialCreatedAt,
       ...(credentialFingerprint ? { credentialFingerprint } : {}),
+      ...(credentialRevision.success ? { credentialRevision: credentialRevision.data } : {}),
+      ...(generation !== null ? { generation: Math.trunc(generation) } : {}),
       selection: {
         kind: 'group',
         groupId,
@@ -175,6 +215,11 @@ export function matchesClaudeConnectedServiceHomeProvenance(
       expected.credentialFingerprint !== undefined
       && actual.credentialFingerprint !== expected.credentialFingerprint
     )
+    || (
+      expected.credentialRevision !== undefined
+      && actual.credentialRevision !== expected.credentialRevision
+    )
+    || (expected.generation !== undefined && actual.generation !== expected.generation)
     || actual.selection.kind !== expected.selection.kind
   ) {
     return false;

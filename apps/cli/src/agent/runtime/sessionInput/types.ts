@@ -1,30 +1,27 @@
 import type { MaterializeNextPendingResult } from '@/api/session/sessionClientPort';
-import type { PendingMaterializationActiveTurnPolicy } from '@/api/session/pendingMaterializationActiveTurnPolicy';
+import type { PendingForegroundSteerability } from '@/api/session/pendingForegroundSteerability';
 import type { PendingQueueReconcileWhenEmpty } from '@/api/session/pendingQueueReadPolicy';
+import type { SessionPendingQueueDeliveryTiming } from '@happier-dev/protocol';
 
 export type MessageBatch<Mode, Message> = {
   message: Message;
   mode: Mode;
   isolate: boolean;
   hash: string;
-  /**
-   * Owed-delivery watermark attribution (A3-HIGH-1): max server user-row seq among the queue
-   * items consumed into this batch (null/absent when none carried one). Consumed by the
-   * provider-acceptance seam to persist the delivered-watermark only for rows that actually
-   * reached the provider.
-   */
+  /** Transcript/turn anchor only. Never provider-acceptance or settlement authority. */
   maxUserMessageSeq?: number | null;
-  /**
-   * Local ids for the same consumed user rows. Provider-acceptance confirmation uses this when
-   * the server seq is assigned by a later socket echo.
-   */
+  /** Opaque identities for consumed rows; provider outcomes require exactly one nonblank value. */
   userMessageLocalIds?: readonly string[];
+  /** Exact current-vs-old custody marker; not a selectable materialization policy. */
+  providerAcceptancePending?: boolean;
+  pendingProviderAction?: import('@/agent/runtime/modeMessageQueue').PendingProviderAction;
 };
 
 export type PendingMaterializationReconcileWhenEmpty = PendingQueueReconcileWhenEmpty;
-export type { PendingMaterializationActiveTurnPolicy };
+export type { PendingForegroundSteerability };
 
 export type PendingMaterializationResult = MaterializeNextPendingResult;
+export type PendingQueueDeliveryTiming = SessionPendingQueueDeliveryTiming;
 
 export type DrainPendingStoppedReason =
   | 'aborted'
@@ -42,8 +39,10 @@ export type DrainPendingOptions = {
   abortSignal?: AbortSignal | undefined;
   shouldContinue?: (() => boolean) | undefined;
   logPrefix?: string | undefined;
-  activeTurnDeliveryPolicy?: PendingMaterializationActiveTurnPolicy | undefined;
-  resolveActiveTurnDeliveryPolicy?: (() => PendingMaterializationActiveTurnPolicy | undefined) | undefined;
+  activeTurnSteerability?: PendingForegroundSteerability | undefined;
+  resolveActiveTurnSteerability?: (() => PendingForegroundSteerability) | undefined;
+  pendingQueueDeliveryTiming?: PendingQueueDeliveryTiming | undefined;
+  resolvePendingQueueDeliveryTiming?: (() => PendingQueueDeliveryTiming | undefined) | undefined;
 };
 
 export type DrainPendingResult = {
@@ -51,7 +50,17 @@ export type DrainPendingResult = {
   stoppedReason: DrainPendingStoppedReason;
 };
 
+export type ActiveTurnPendingPumpOptions = Omit<DrainPendingOptions, 'abortSignal'> & {
+  abortSignal: AbortSignal;
+};
+
 export interface SessionProviderInputConsumer<Mode, Message> {
   waitForNextInput(opts: { abortSignal: AbortSignal }): Promise<MessageBatch<Mode, Message> | null>;
+  runProviderInputDispatch<Value>(opts: Readonly<{
+    abortSignal: AbortSignal;
+    dispatch: () => Promise<Value>;
+  }>): Promise<Readonly<{ status: 'dispatched'; value: Value }> | Readonly<{ status: 'cancelled' }>>;
+  closeProviderInputAdmissionAndWaitForDispatches(): Promise<void>;
   drainPending(opts?: DrainPendingOptions): Promise<DrainPendingResult>;
+  pumpPendingWhileActive(opts: ActiveTurnPendingPumpOptions): Promise<void>;
 }

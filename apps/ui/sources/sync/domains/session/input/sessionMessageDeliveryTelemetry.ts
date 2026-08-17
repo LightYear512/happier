@@ -68,14 +68,16 @@ export function recordSessionMessageDeliveryDecision(params: Readonly<{
     telemetry.record('ui.sessionMessage.delivery.decision', {
         sessionId: params.sessionId,
         callerSurface: params.callerSurface?.trim() || 'unknown',
-        requestedLocalId: params.localId?.trim() || null,
+        requestedLocalId: typeof params.localId === 'string' && params.localId.trim().length > 0
+            ? params.localId
+            : null,
         mode: params.selectedMode,
         decisionReason: params.decisionReason?.trim() || 'unknown',
         configuredMode: params.configuredMode,
         explicitMode: params.explicitMode ?? 'none',
         busySteerSendPolicy: params.busySteerSendPolicy ?? DEFAULT_BUSY_STEER_SEND_POLICY,
         forceImmediate: params.forceImmediate === true,
-        pendingRequested: requestedMode === 'server_pending',
+        pendingRequested: requestedMode === 'server_pending' || requestedMode === 'interrupt',
         pendingSupportState: getPendingSupportState(session),
         supportRefreshAttempted: params.supportRefreshAttempted === true,
         supportRefreshSucceeded: params.supportRefreshSucceeded === true,

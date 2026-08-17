@@ -40,9 +40,19 @@ import {
 } from '../domains/session/readCursor/resolveSessionReadableSeq';
 import { resolveSessionWorkspacePath } from '../domains/session/resolveSessionWorkspacePath';
 import { buildSessionMetadataStabilitySignature } from '../domains/session/metadata/sessionMetadataStability';
+import {
+  buildSessionOrganizationProjection,
+  type SessionOrganizationProjection,
+} from '../domains/session/organization';
 import type { ReviewCommentDraft } from '../domains/input/reviewComments/reviewCommentTypes';
 import type { SessionActionDraft } from '../domains/sessionActions/sessionActionDraftTypes';
 import { buildSessionMessageRouteId, resolveSessionMessageRouteId } from '../domains/messages/messageRouteIds';
+import {
+  buildMessageLegacySignature,
+  buildMessageRefsSelectionKey,
+  createMessagesByRefsSelector,
+  type MessageStoreRef,
+} from './messageSelection';
 import { useApplyLocalSettings, useApplySettings } from './settingsWriters';
 import type { PrimaryTurnStatusV1 } from '@happier-dev/protocol';
 import type { StorageState } from './types';
@@ -59,8 +69,9 @@ import { isMachineVisibleForLaunchSelection } from '../domains/machines/identity
 import { resolveServerIdForSessionIdFromLocalState } from '../runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import { buildWorkspaceCacheKey, type WorkspaceScopeBase } from '../domains/workspaces/workspaceScope';
 import { buildSessionFolderAssignmentKey } from '../domains/session/folders';
-import { readDisplayMachineIdForSession, readDisplayPathForSession } from '../ops/sessionMachineTarget';
-import { encodeSessionRecentPathEntry, type SessionRecentPathEntry } from '@/utils/sessions/recentPathEntries';
+import { buildSessionRecentPathEntries } from '../domains/session/listing/sessionRecentPathEntries';
+import { createProjectForSessionResolver, resolveProjectForSession } from '../runtime/orchestration/projectForSessionResolver';
+import type { SessionRecentPathEntry } from '@/utils/sessions/recentPathEntries';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import {
   buildSessionRealtimeScmScopeFromSnapshot,
@@ -72,13 +83,17 @@ import {
   agentTextLooksLikeExecutionRunSignal,
   shouldIncludeSubagentSourceMessage,
 } from '../domains/session/subagents/subagentSourceMessageDetection';
+import { readExecutionRunResultStatus } from '../domains/session/subagents/executionRuns/executionRunSubagentStatus';
 import {
   compareTranscriptMessagesOldestFirst,
   normalizeTranscriptSeq,
 } from '../domains/messages/transcriptOrdering';
 import { readStoredSessionMessagesFromStateLike } from '../domains/messages/readStoredSessionMessages';
+import { registerSessionTranscriptDerivedCacheClear } from '../runtime/sessionTranscriptDerivedCaches';
 import type { MachineDisplayRenderable } from '../domains/machines/machineDisplayRenderable';
 import type { AgentEvent } from '../typesRaw';
+
+export type { MessageStoreRef } from './messageSelection';
 
 const EMPTY_OPEN_APPROVAL_SESSION_IDS: ReadonlyArray<string> = Object.freeze([]);
 const EMPTY_OPEN_APPROVAL_ARTIFACTS_FOR_SESSION: ReadonlyArray<OpenApprovalArtifactForSession> = Object.freeze([]);
@@ -90,12 +105,20 @@ export type SessionAgentEventSource = Readonly<{
 }>;
 
 type SessionAgentEventSourceCacheEntry = Readonly<{
-  sourceRef: StorageState['sessionMessages'][string];
+  sourceVersion: number;
   signature: string;
   events: ReadonlyArray<SessionAgentEventSource>;
 }>;
 
 const sessionAgentEventSourceCache = new Map<string, SessionAgentEventSourceCacheEntry>();
+
+function trimSessionAgentEventSourceCache(): void {
+  while (sessionAgentEventSourceCache.size > SESSION_MESSAGES_ARRAY_CACHE_MAX) {
+    const oldestKey = sessionAgentEventSourceCache.keys().next().value;
+    if (typeof oldestKey !== 'string') break;
+    sessionAgentEventSourceCache.delete(oldestKey);
+  }
+}
 
 function buildConnectedServiceAccountSwitchEventSignature(
   message: Extract<Message, { kind: 'agent-event' }>,
@@ -128,44 +151,95 @@ export function useSessionsReady(): boolean {
   return getStorage()((state) => state.isDataReady);
 }
 
+/**
+ * Derived here, in the selector zustand runs as its snapshot-equality check on every `setState`.
+ *
+ * That is affordable because the derivation is genuinely a *read* and it is skipped outright when
+ * neither of its two source records moved:
+ *
+ *  - `createProjectForSessionResolver` computes the project key `addSession` would file a session
+ *    under instead of registering it; the store's own `getProjectForSession` writes three `Map`s
+ *    per path-bearing session, which is what made this selector a write.
+ *  - the display resolver indexes the store's id-keyed machine record instead of rebuilding an
+ *    index per session, so the walk allocates nothing.
+ *  - `getStableSessionRecentPathEntries` returns the previous array whenever `sessions` and
+ *    `machines` still hold the same object identities, and re-uses it when a rebuild produced the
+ *    same entries — so a plain `Object.is` snapshot check is enough and no `useShallow` (which
+ *    builds two entry `Map`s per publish) is involved.
+ *
+ * `hooks.useSessions.test.tsx` pins both counts — `addSession` calls and `Map` constructions — at
+ * zero for an unrelated publish *and* for a publish that forces the full rebuild.
+ *
+ * A store-owned projection field was tried instead and removed: it bought nothing measurable on
+ * device and cost a hand-maintained invariant — every machine or session field the display
+ * resolver ever starts reading would have had to be added to a change gate, silently going stale
+ * if it were not. Keying on whole-record identity has no such failure mode.
+ *
+ * `null` still means "not hydrated yet", which recent-path consumers read as "keep the last known
+ * paths" rather than "there are none".
+ */
 export function useSessionRecentPathEntries(): SessionRecentPathEntry[] | null {
-  return getStorage()(
-    useShallow((state) => {
-      if (!state.isDataReady) return null;
-
-      const entries: Array<{ key: SessionRecentPathEntry; createdAt: number }> = [];
-      for (const session of Object.values(state.sessions)) {
-        const machineId = readDisplayMachineIdForSession({
-          sessionId: session.id,
-          metadata: session.metadata ?? null,
-        });
-        const path = readDisplayPathForSession({
-          sessionId: session.id,
-          metadata: session.metadata ?? null,
-        });
-        if (!machineId || !path) continue;
-
-        const createdAt = session.createdAt || 0;
-        entries.push({
-          key: encodeSessionRecentPathEntry({
-            sessionId: session.id,
-            machineId,
-            path,
-            createdAt,
-          }),
-          createdAt,
-        });
-      }
-
-      return entries
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .map((entry) => entry.key);
-    }),
-  );
+  return getStorage()((state) => (state.isDataReady ? getStableSessionRecentPathEntries(state) : null));
 }
 
 export function useSession(id: string): Session | null {
   return getStorage()(useShallow((state) => state.sessions[id] ?? null));
+}
+
+export type SessionReferenceTarget = Readonly<{
+  /**
+   * `true` only when this viewer has positive evidence the session is gone. A cache miss is not
+   * evidence: see the note below.
+   */
+  deleted: boolean;
+  metadata: SessionListRenderableSession['metadata'] | Session['metadata'] | null;
+}>;
+
+/**
+ * The exact projection a transcript session reference consumes. A reference's identity is the
+ * session id, so only two things can change what it renders: whether that session is still
+ * present for this viewer, and the metadata its title is derived from. Turn-lifecycle churn
+ * (thinking, agentState, seq, presence, updatedAt) changes neither, so a reference chip must
+ * not re-render for it.
+ *
+ * **A cache miss is not evidence that the session is gone**, which is the whole content of this
+ * hook. Both session maps are list-scoped caches, and neither is a record of what exists:
+ *
+ * - `sessionListRenderables` holds one entry per row the session list currently covers. A
+ *   replace-mode `/v2/sessions` page evicts every previously-known row it omits inside its
+ *   removal window (`replaceSessionListRenderables` → `planSessionListRenderableReplacement`),
+ *   and that endpoint filters `archivedAt: null` **server-side**, so archiving a session is by
+ *   itself enough to empty this map of it.
+ * - `sessions` holds only the full records this run hydrated, which is a deliberately small set
+ *   (`sessionListEagerHydrationCount: 4`, `sessionListBackgroundHydrationMaxRows: 0` in
+ *   `sync/runtime/syncTuning.ts`). Measured on the running app at the moment an archived
+ *   reference broke: `sessions \ sessionListRenderables` was **empty** and
+ *   `sessionListRenderables \ sessions` held 97 rows — `sessions` is in practice a *subset*, so
+ *   it can never rescue a row the renderable eviction removed. That is why answering presence
+ *   from either map, or from their union, produced the same false "Unavailable session" for an
+ *   archived target twice over.
+ *
+ * An archived session is fully readable: opening `/session/<id>` from exactly that
+ * both-maps-empty state loads and renders it. So an uncached reference stays pressable, and the
+ * session route — which already answers a genuinely missing id with its own explicit
+ * "Session isn't available" screen — owns the failure the client cannot predict.
+ *
+ * `deleted` therefore comes from `deletedSessionIds`, written only by `deleteSession` — reached
+ * on a `delete-session` update, a `session-share-revoked` update, or an exact session fetch
+ * answering `not_found`, which is the server telling this viewer it cannot have the session at
+ * all. That is the same ground the route states. `metadata` is whichever cached copy exists so
+ * a known session still shows its live title; it is always a *stored* object, never a projection,
+ * so the selection stays referentially stable.
+ */
+export function useSessionReferenceTarget(sessionId: string): SessionReferenceTarget {
+  return getStorage()(
+    useShallow((state) => ({
+      deleted: state.deletedSessionIds[sessionId] === true,
+      metadata: state.sessionListRenderables[sessionId]?.metadata
+        ?? state.sessions[sessionId]?.metadata
+        ?? null,
+    })),
+  );
 }
 
 const sessionForkSupportSourceCache = new Map<string, Readonly<{
@@ -250,6 +324,47 @@ export function useSessionFolderAssignmentsBySessionKey(): Record<string, string
   return getStorage()(useShallow((state) => state.sessionFolderAssignmentsBySessionKey));
 }
 
+export function useSessionOrganizationProjection(serverId: string | null | undefined): SessionOrganizationProjection | null {
+  const normalizedServerId = typeof serverId === 'string' && serverId.trim().length > 0 ? serverId.trim() : null;
+  const snapshot = getStorage()(
+    useShallow((state) => ({
+      schemaVersionByServerId: state.sessionOrganizationSchemaVersionByServerId,
+      snapshotVersionByServerId: state.sessionOrganizationSnapshotVersionByServerId,
+      pinsBySessionKey: state.sessionOrganizationPinsBySessionKey,
+      foldersByFolderKey: state.sessionOrganizationFoldersByFolderKey,
+      folderAssignmentsBySessionKey: state.sessionOrganizationFolderAssignmentsBySessionKey,
+      tagsByTagKey: state.sessionOrganizationTagsByTagKey,
+      tagAssignmentsBySessionKey: state.sessionOrganizationTagAssignmentsBySessionKey,
+      orderEntriesByScopeKey: state.sessionOrganizationOrderEntriesByScopeKey,
+      labelsByLabelKey: state.sessionOrganizationLabelsByLabelKey,
+    })),
+  );
+
+  return React.useMemo(() => {
+    if (!normalizedServerId) return null;
+    return buildSessionOrganizationProjection(snapshot, normalizedServerId);
+  }, [normalizedServerId, snapshot]);
+}
+
+export function useSessionOrganizationPinnedSessionKeys(): readonly string[] {
+  return getStorage()(
+    useShallow((state) => Object.keys(state.sessionOrganizationPinsBySessionKey).sort()),
+  );
+}
+
+export function useSessionOrganizationSnapshotVersions(serverId: string | null | undefined): Readonly<{
+  schemaVersion: number | null;
+  version: number | null;
+}> {
+  const normalizedServerId = typeof serverId === 'string' && serverId.trim().length > 0 ? serverId.trim() : null;
+  return getStorage()(
+    useShallow((state) => ({
+      schemaVersion: normalizedServerId ? state.sessionOrganizationSchemaVersionByServerId[normalizedServerId] ?? null : null,
+      version: normalizedServerId ? state.sessionOrganizationSnapshotVersionByServerId[normalizedServerId] ?? null : null,
+    })),
+  );
+}
+
 export function useSessionServerId(sessionId: string): string | null {
   return getStorage()((state) => resolveServerIdForSessionIdFromLocalState({
     sessions: state.sessions as Record<string, { serverId?: unknown } | null>,
@@ -286,6 +401,16 @@ type SessionSubagentSourceMessagesCacheEntry = Readonly<{
 const sessionSubagentSourceMessagesCache = new Map<string, SessionSubagentSourceMessagesCacheEntry>();
 const sessionSubagentSourceMessageSignatureCache = new WeakMap<Message, string>();
 
+// These module-scoped caches can root a session's materialized Message objects
+// outside the store. Register them with the canonical transcript-memory release
+// seam so bounded-retention eviction and deleteSession free them together with
+// the store entry.
+registerSessionTranscriptDerivedCacheClear((sessionId) => {
+  sessionAgentEventSourceCache.delete(sessionId);
+  sessionMessagesArrayCache.delete(sessionId);
+  sessionSubagentSourceMessagesCache.delete(sessionId);
+});
+
 function stringifySignatureValue(value: unknown): string {
   try {
     return JSON.stringify(value ?? null) ?? 'null';
@@ -302,31 +427,6 @@ function buildExecutionRunSignalTextSignature(text: string): string {
     signal: agentTextLooksLikeExecutionRunSignal(text),
     runIds,
   });
-}
-
-function readSubagentSourceResultStatus(value: unknown, depth = 0): string | null {
-  if (depth > 5 || value == null) return null;
-  if (typeof value === 'string') {
-    const directMatch = value.match(/\bstatus\s*:\s*"?([a-z_]+)"?/i);
-    return directMatch ? String(directMatch[1]).trim().toLowerCase() : null;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const status = readSubagentSourceResultStatus(item, depth + 1);
-      if (status) return status;
-    }
-    return null;
-  }
-  if (typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    const directStatus = typeof record.status === 'string' ? String(record.status).trim().toLowerCase() : '';
-    if (directStatus) return directStatus;
-    for (const item of Object.values(record)) {
-      const status = readSubagentSourceResultStatus(item, depth + 1);
-      if (status) return status;
-    }
-  }
-  return null;
 }
 
 function appendSubagentSourceMessageSignature(parts: string[], message: Message): void {
@@ -365,8 +465,13 @@ function appendSubagentSourceMessageSignature(parts: string[], message: Message)
     description: tool?.description ?? null,
     permissionStatus: tool?.permission?.status ?? null,
     input: tool?.input ?? null,
+    // A still-running run streams its result, so the signature carries only the field the roster
+    // derivation actually reads — the structured status the execution-run manager wrote — through
+    // that derivation's own owner. Reading it any other way (a regex over the payload's prose, a
+    // walk for any nested key named `status`) is D-3: a subagent that *writes about* a status
+    // would change the signature and hand every consumer a fresh array to re-derive.
     result: tool?.state === 'running'
-      ? { status: readSubagentSourceResultStatus(tool?.result) }
+      ? { status: readExecutionRunResultStatus(tool?.result) }
       : tool?.result ?? null,
   }));
   const signature = messageParts.join('\u0001');
@@ -542,16 +647,20 @@ export function useSessionConnectedServiceAccountSwitchEvents(
       if (!enabled) return EMPTY_SESSION_AGENT_EVENTS;
       const sessionMessages = state.sessionMessages[sessionId];
       const cached = sessionAgentEventSourceCache.get(sessionId);
-      if (cached && cached.sourceRef === sessionMessages) {
+      const sourceVersion = sessionMessages?.agentEventSourceVersion ?? sessionMessages?.messagesVersion ?? 0;
+      if (sessionMessages && cached && cached.sourceVersion === sourceVersion) {
+        sessionAgentEventSourceCache.delete(sessionId);
+        sessionAgentEventSourceCache.set(sessionId, cached);
         return cached.events;
       }
       if (!sessionMessages || sessionMessages.messageIdsOldestFirst.length === 0) {
         if (sessionMessages) {
           sessionAgentEventSourceCache.set(sessionId, {
-            sourceRef: sessionMessages,
+            sourceVersion,
             signature: 'empty',
             events: EMPTY_SESSION_AGENT_EVENTS,
           });
+          trimSessionAgentEventSourceCache();
         } else {
           sessionAgentEventSourceCache.delete(sessionId);
         }
@@ -573,29 +682,32 @@ export function useSessionConnectedServiceAccountSwitchEvents(
 
       if (events.length === 0) {
         sessionAgentEventSourceCache.set(sessionId, {
-          sourceRef: sessionMessages,
+          sourceVersion,
           signature: 'none',
           events: EMPTY_SESSION_AGENT_EVENTS,
         });
+        trimSessionAgentEventSourceCache();
         return EMPTY_SESSION_AGENT_EVENTS;
       }
 
       const signature = signatureParts.join('|');
       if (cached?.signature === signature) {
         sessionAgentEventSourceCache.set(sessionId, {
-          sourceRef: sessionMessages,
+          sourceVersion,
           signature,
           events: cached.events,
         });
+        trimSessionAgentEventSourceCache();
         return cached.events;
       }
 
       const next = events;
       sessionAgentEventSourceCache.set(sessionId, {
-        sourceRef: sessionMessages,
+        sourceVersion,
         signature,
         events: next,
       });
+      trimSessionAgentEventSourceCache();
       return next;
     })
   );
@@ -643,6 +755,17 @@ export function useSessionCatchingUpNewer(sessionId: string, enabled: boolean = 
   });
 }
 
+/**
+ * Tail-contiguity floor for the session's MAIN chain (tail-reset discontinuity walk).
+ * Null when the full loaded set is contiguous with the live tail.
+ */
+export function useSessionTailContiguousFloorSeq(sessionId: string): number | null {
+  return getStorage()((state) => {
+    const floorSeq = state.sessionTailContiguousFloorSeq[sessionId];
+    return typeof floorSeq === 'number' && Number.isFinite(floorSeq) && floorSeq > 0 ? floorSeq : null;
+  });
+}
+
 export function useSessionMessagesById(sessionId: string, enabled: boolean = true): Record<string, Message> {
   const snapshot = getStorage()(
     useShallow((state) => {
@@ -678,18 +801,65 @@ export function useSessionMetadata(sessionId: string): Session['metadata'] | nul
   return getStorage()((state) => state.sessions[sessionId]?.metadata ?? null);
 }
 
-export function useSessionMessagesReducerState(sessionId: string) {
-  const snapshot = getStorage()(
+export type SessionInteractionSource = Readonly<{
+  accessLevel: Session['accessLevel'];
+  canApprovePermissions: Session['canApprovePermissions'];
+  active: Session['active'];
+}>;
+
+/**
+ * The exact projection `deriveTranscriptInteractionFromSession` consumes. Transcript rows
+ * subscribe to this instead of the whole `Session` record: turn-lifecycle churn (thinking,
+ * agentState, agentStateVersion, updatedAt, seq, presence) cannot change interaction rights,
+ * so a row must not re-render for it.
+ */
+export function useSessionInteractionSource(sessionId: string): SessionInteractionSource | null {
+  return getStorage()(
+    useShallow((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return null;
+      return {
+        accessLevel: session.accessLevel,
+        canApprovePermissions: session.canApprovePermissions,
+        active: session.active,
+      };
+    })
+  );
+}
+
+/**
+ * The session's reducer state together with the revision counter that is its only change signal.
+ *
+ * `sessionMessages[sessionId].reducerState` is mutated in place for streaming performance: every
+ * commit re-publishes the same object and bumps `reducerVersion`
+ * (`sync/store/domains/messages.ts`). Its identity therefore never changes, and a `useMemo` keyed
+ * on the state alone can never recompute — which is exactly how the Agents pane's activity preview
+ * became unrefreshable. Derivations must list `reducerVersion` in their dependencies;
+ * `useResolvedSessionMessageRouteId` below shows the same shape over `messagesVersion`.
+ *
+ * Both values come from one subscription so the reducer state never has to be cloned to signal a
+ * change: cloning would break the referential stability transcript rows memoize on.
+ */
+export function useSessionMessagesReducerSnapshot(sessionId: string) {
+  return getStorage()(
     useShallow((state) => {
       const session = state.sessionMessages[sessionId];
       return {
         reducerState: session?.reducerState ?? null,
-        reducerVersion: (session as any)?.reducerVersion ?? 0,
+        reducerVersion: session?.reducerVersion ?? 0,
       };
     })
   );
+}
 
-  return snapshot.reducerState;
+/**
+ * Reducer state only, for consumers that read it during render and so need no change signal.
+ * A consumer that memoizes over it must also key on one: {@link useSessionMessagesReducerSnapshot}
+ * when the derivation depends on reducer-only state such as sidechains or permissions,
+ * {@link useSessionMessagesVersion} when it only follows committed transcript messages.
+ */
+export function useSessionMessagesReducerState(sessionId: string) {
+  return useSessionMessagesReducerSnapshot(sessionId).reducerState;
 }
 
 export function useSessionLatestThinkingMessageId(sessionId: string): string | null {
@@ -844,25 +1014,6 @@ export function useSessionPendingMessages(
   );
 }
 
-const legacyMessageSignatureCache = new WeakMap<Message, Readonly<{
-  messagesVersion: number;
-  signature: string;
-}>>();
-
-function buildMessageLegacySignature(message: Message | null, messagesVersion: number): string {
-  if (!message) return 'null';
-  const cached = legacyMessageSignatureCache.get(message);
-  if (cached && cached.messagesVersion === messagesVersion) return cached.signature;
-  let signature: string;
-  try {
-    signature = JSON.stringify(message) ?? 'null';
-  } catch {
-    signature = `${message.id}:${message.kind}:${message.createdAt}`;
-  }
-  legacyMessageSignatureCache.set(message, { messagesVersion, signature });
-  return signature;
-}
-
 export function useSessionReviewCommentsDrafts(sessionId: string): ReviewCommentDraft[] {
   return getStorage()(
     useShallow((state) => state.reviewCommentsDraftsBySessionId[sessionId] ?? emptyReviewCommentDrafts)
@@ -906,6 +1057,18 @@ export function useMessage(sessionId: string, messageId: string): Message | null
   ).message;
 }
 
+export function useMessagesByRefs(messageRefs: readonly MessageStoreRef[]): readonly (Message | null)[] {
+  const selectionKey = React.useMemo(
+    () => buildMessageRefsSelectionKey(messageRefs),
+    [messageRefs],
+  );
+  const selector = React.useMemo(
+    () => createMessagesByRefsSelector(messageRefs.slice()),
+    [selectionKey],
+  );
+  return getStorage()(selector).messages;
+}
+
 export function useResolvedSessionMessageRouteId(sessionId: string, routeMessageId: string): string | null {
   const messagesById = useSessionMessagesById(sessionId);
   const version = useSessionMessagesVersion(sessionId, true);
@@ -934,99 +1097,16 @@ export function useSessionMessageRouteId(sessionId: string, messageId: string): 
   }, [messageId, messagesById, reducerState, version]);
 }
 
-type MessagesByIdsSelectorSnapshot = Readonly<{
-  messages: Message[];
-}>;
-
-const EMPTY_MESSAGES_BY_IDS_SELECTOR_SNAPSHOT: MessagesByIdsSelectorSnapshot = Object.freeze({
-  messages: emptyArray as Message[],
-});
-
-function buildMessageIdsSelectionKey(messageIds: readonly string[]): string {
-  if (!Array.isArray(messageIds) || messageIds.length === 0) return '';
-  return messageIds.map((messageId) => `${messageId.length}:${messageId}`).join('|');
-}
-
-function areMessageRefsEqual(
-  previous: readonly (Message | undefined)[] | null,
-  next: readonly (Message | undefined)[],
-): boolean {
-  if (previous === null) return false;
-  if (previous.length !== next.length) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (previous[index] !== next[index]) return false;
-  }
-  return true;
-}
-
-function createMessagesByIdsSelector(
-  sessionId: string,
-  selectedMessageIds: readonly string[],
-): (state: StorageState) => MessagesByIdsSelectorSnapshot {
-  let previousSignature: string | null = null;
-  let previousMessageRefs: readonly (Message | undefined)[] | null = null;
-  let previousSnapshot: MessagesByIdsSelectorSnapshot | null = null;
-
-  return (state) => {
-    if (selectedMessageIds.length === 0) {
-      return EMPTY_MESSAGES_BY_IDS_SELECTOR_SNAPSHOT;
-    }
-
-    const session = state.sessionMessages[sessionId];
-    if (!session) {
-      previousSignature = null;
-      previousMessageRefs = null;
-      previousSnapshot = null;
-      return EMPTY_MESSAGES_BY_IDS_SELECTOR_SNAPSHOT;
-    }
-
-    const messageRefs: Array<Message | undefined> = [];
-    const messages: Message[] = [];
-    const signatureParts: string[] = [];
-    const revisionsById = session.messageRevisionsById ?? null;
-    const legacyMessagesVersion = session.messagesVersion ?? 0;
-
-    for (const messageId of selectedMessageIds) {
-      const message = session.messagesById[messageId];
-      const revision = revisionsById?.[messageId];
-      messageRefs.push(message);
-      if (message) messages.push(message);
-      signatureParts.push(messageId);
-      if (typeof revision === 'number' && Number.isFinite(revision)) {
-        signatureParts.push(`r:${Math.trunc(revision)}`);
-      } else {
-        signatureParts.push(`l:${buildMessageLegacySignature(message ?? null, legacyMessagesVersion)}`);
-      }
-    }
-
-    const signature = signatureParts.join('\u0000');
-    if (
-      previousSnapshot !== null
-      && previousSignature === signature
-      && areMessageRefsEqual(previousMessageRefs, messageRefs)
-    ) {
-      return previousSnapshot;
-    }
-
-    previousSignature = signature;
-    previousMessageRefs = messageRefs;
-    previousSnapshot = {
-      messages: messages.length > 0 ? messages : (emptyArray as Message[]),
-    };
-    return previousSnapshot;
-  };
-}
-
 export function useMessagesByIds(sessionId: string, messageIds: readonly string[]): Message[] {
-  const messageIdsKey = React.useMemo(() => buildMessageIdsSelectionKey(messageIds), [messageIds]);
-  const selector = React.useMemo(
-    () => createMessagesByIdsSelector(
-      sessionId,
-      Array.isArray(messageIds) && messageIds.length > 0 ? messageIds.slice() : [],
-    ),
-    [messageIdsKey, sessionId],
+  const messageRefs = React.useMemo(
+    () => (Array.isArray(messageIds) ? messageIds : []).map((messageId) => ({ sessionId, messageId })),
+    [messageIds, sessionId],
   );
-  return getStorage()(selector).messages;
+  const selectedMessages = useMessagesByRefs(messageRefs);
+  return React.useMemo(() => {
+    const messages = selectedMessages.filter((message): message is Message => message !== null);
+    return messages.length > 0 ? messages : (emptyArray as Message[]);
+  }, [selectedMessages]);
 }
 
 export function useSessionUsage(sessionId: string) {
@@ -1287,8 +1367,9 @@ export function useSessionListViewDataByServerId(
 
 type SessionListShellViewDataCache = Readonly<{
   source: SessionListViewItem[] | null;
-  signature: string;
   data: SessionListViewItem[] | null;
+  /** Row signatures aligned with `data`, so a cached row is never read again. */
+  signatures: ReadonlyArray<string> | null;
 }>;
 
 type SessionListShellViewDataByServerId = Record<string, SessionListViewItem[] | null>;
@@ -1296,7 +1377,6 @@ type SessionListShellViewDataByServerId = Record<string, SessionListViewItem[] |
 type SessionListShellViewDataByServerIdCache = Readonly<{
   source: SessionListShellViewDataByServerId;
   entries: ReadonlyArray<readonly [string, SessionListViewItem[] | null]>;
-  signature: string;
   dataByServerId: SessionListShellViewDataByServerId;
 }>;
 
@@ -1311,9 +1391,48 @@ let sessionListShellViewDataByServerIdCache: SessionListShellViewDataByServerIdC
 const sessionListShellViewDataPerServerCache = new Map<string, SessionListShellViewDataCache>();
 const selectedSessionListShellViewDataByServerIdCache = new Map<string, SelectedSessionListShellViewDataByServerIdCache>();
 
-function buildSessionListShellViewDataSignature(data: ReadonlyArray<SessionListViewItem> | null): string {
-  if (!data) return 'null';
-  return data.map(buildSessionListShellViewItemSignature).join('\u0002');
+type SessionListShellViewDataReconciliation = Readonly<{
+  equivalent: boolean;
+  signatures: ReadonlyArray<string> | null;
+}>;
+
+/**
+ * Reconcile a pushed session list against the cached one, carrying row signatures forward.
+ *
+ * A push rebuilds the array but carries every row it did not change by identity, so a row whose
+ * object survived inherits its cached signature and only genuinely new row objects are signed.
+ * The cached array's rows are never read again — the previous side of every comparison is a
+ * signature this cache already holds — which is the invariant the "must not be signed again"
+ * probes in `hooks.useSessions.test.tsx` pin. Signing the whole array to compare one string cost
+ * O(all rows) for a push that changed one session.
+ */
+function reconcileSessionListShellViewData(
+  cached: SessionListShellViewDataCache | null,
+  next: SessionListViewItem[] | null,
+): SessionListShellViewDataReconciliation {
+  const previousData = cached?.data ?? null;
+  const previousSignatures = cached?.signatures ?? null;
+  if (!next) {
+    return { equivalent: cached != null && previousData === null, signatures: null };
+  }
+
+  const signatures = new Array<string>(next.length);
+  let equivalent = cached != null
+    && previousData != null
+    && previousSignatures != null
+    && previousData.length === next.length;
+  for (let index = 0; index < next.length; index += 1) {
+    const nextItem = next[index];
+    const previousSignature = previousSignatures?.[index];
+    if (previousSignature != null && previousData?.[index] === nextItem) {
+      signatures[index] = previousSignature;
+      continue;
+    }
+    const signature = buildSessionListShellViewItemSignature(nextItem);
+    signatures[index] = signature;
+    if (equivalent && signature !== previousSignature) equivalent = false;
+  }
+  return { equivalent, signatures };
 }
 
 export function buildSessionListShellViewItemSignature(item: SessionListViewItem): string {
@@ -1364,6 +1483,7 @@ export function buildSessionListShellViewItemSignature(item: SessionListViewItem
     item.session.archivedAt ?? '',
     item.session.keepVisibleWhenInactive === true ? '1' : '0',
     item.session.pendingCount ?? '',
+    item.session.pendingBlockedCount ?? '',
     metadata?.name ?? '',
     metadata?.summaryText ?? '',
     metadata?.path ?? '',
@@ -1403,19 +1523,63 @@ function buildSessionListWorkspaceSignature(workspace: SessionListViewItem['work
   return ['workspaceScope', workspace.serverId ?? '', workspace.machineId ?? '', workspace.rootPath].join('\u0003');
 }
 
+type SessionRecentPathEntriesCache = Readonly<{
+  sessions: unknown;
+  machines: unknown;
+  entries: SessionRecentPathEntry[];
+}>;
+
+let sessionRecentPathEntriesCache: SessionRecentPathEntriesCache | null = null;
+
+/**
+ * The recent-path projection, derived at most once per change to the two records it reads.
+ *
+ * The identity check is the whole gate — not a list of fields the projection is believed to care
+ * about. `applySessions` and `applyMachines` replace the record they write, so a moved input is
+ * always a new object; an unrelated publish keeps both identities and costs one comparison.
+ */
+function getStableSessionRecentPathEntries(state: {
+  sessions: Record<string, Session>;
+  machines: Record<string, Machine>;
+}): SessionRecentPathEntry[] {
+  const cached = sessionRecentPathEntriesCache;
+  if (cached && cached.sessions === state.sessions && cached.machines === state.machines) {
+    return cached.entries;
+  }
+
+  const next = buildSessionRecentPathEntries({
+    sessions: state.sessions,
+    machines: state.machines,
+    getProjectForSession: createProjectForSessionResolver(state.sessions),
+  });
+  // A rebuild that produced the same rows must not re-render every recent-path consumer.
+  const entries = cached && hasSameSessionRecentPathEntries(cached.entries, next) ? cached.entries : next;
+  sessionRecentPathEntriesCache = { sessions: state.sessions, machines: state.machines, entries };
+  return entries;
+}
+
+function hasSameSessionRecentPathEntries(
+  previous: readonly SessionRecentPathEntry[],
+  next: readonly SessionRecentPathEntry[],
+): boolean {
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    if (previous[index] !== next[index]) return false;
+  }
+  return true;
+}
+
 function getStableSessionListShellViewData(data: SessionListViewItem[] | null): SessionListViewItem[] | null {
-  if (sessionListShellViewDataCache?.source === data) {
-    return sessionListShellViewDataCache.data;
+  const cached = sessionListShellViewDataCache;
+  if (cached?.source === data) {
+    return cached.data;
   }
-  const signature = buildSessionListShellViewDataSignature(data);
-  if (sessionListShellViewDataCache?.signature === signature) {
-    sessionListShellViewDataCache = {
-      ...sessionListShellViewDataCache,
-      source: data,
-    };
-    return sessionListShellViewDataCache.data;
+  const reconciliation = reconcileSessionListShellViewData(cached, data);
+  if (cached && reconciliation.equivalent) {
+    sessionListShellViewDataCache = { ...cached, source: data };
+    return cached.data;
   }
-  sessionListShellViewDataCache = { source: data, signature, data };
+  sessionListShellViewDataCache = { source: data, data, signatures: reconciliation.signatures };
   return data;
 }
 
@@ -1423,19 +1587,16 @@ function getStableSessionListShellViewDataForServer(
   serverId: string,
   data: SessionListViewItem[] | null,
 ): SessionListViewItem[] | null {
-  const cached = sessionListShellViewDataPerServerCache.get(serverId);
+  const cached = sessionListShellViewDataPerServerCache.get(serverId) ?? null;
   if (cached?.source === data) {
     return cached.data;
   }
-  const signature = buildSessionListShellViewDataSignature(data);
-  if (cached?.signature === signature) {
-    sessionListShellViewDataPerServerCache.set(serverId, {
-      ...cached,
-      source: data,
-    });
+  const reconciliation = reconcileSessionListShellViewData(cached, data);
+  if (cached && reconciliation.equivalent) {
+    sessionListShellViewDataPerServerCache.set(serverId, { ...cached, source: data });
     return cached.data;
   }
-  sessionListShellViewDataPerServerCache.set(serverId, { source: data, signature, data });
+  sessionListShellViewDataPerServerCache.set(serverId, { source: data, data, signatures: reconciliation.signatures });
   return data;
 }
 
@@ -1461,43 +1622,32 @@ function areSessionListShellViewDataByServerIdEntriesReferenceEqual(
 function getStableSessionListShellViewDataByServerId(
   dataByServerId: SessionListShellViewDataByServerId,
 ): SessionListShellViewDataByServerId {
-  if (sessionListShellViewDataByServerIdCache?.source === dataByServerId) {
-    return sessionListShellViewDataByServerIdCache.dataByServerId;
+  const cached = sessionListShellViewDataByServerIdCache;
+  if (cached?.source === dataByServerId) {
+    return cached.dataByServerId;
   }
   const entries = getSortedSessionListShellViewDataByServerIdEntries(dataByServerId);
-  if (
-    sessionListShellViewDataByServerIdCache
-    && areSessionListShellViewDataByServerIdEntriesReferenceEqual(
-      sessionListShellViewDataByServerIdCache.entries,
-      entries,
-    )
-  ) {
-    sessionListShellViewDataByServerIdCache = {
-      ...sessionListShellViewDataByServerIdCache,
-      source: dataByServerId,
-      entries,
-    };
-    return sessionListShellViewDataByServerIdCache.dataByServerId;
+  if (cached && areSessionListShellViewDataByServerIdEntriesReferenceEqual(cached.entries, entries)) {
+    sessionListShellViewDataByServerIdCache = { ...cached, source: dataByServerId, entries };
+    return cached.dataByServerId;
   }
-  const signature = entries
-    .map(([serverId, data]) => `${serverId}\u0001${buildSessionListShellViewDataSignature(data)}`)
-    .join('\u0002');
-  if (sessionListShellViewDataByServerIdCache?.signature === signature) {
-    sessionListShellViewDataByServerIdCache = {
-      ...sessionListShellViewDataByServerIdCache,
-      source: dataByServerId,
-      entries,
-    };
-    return sessionListShellViewDataByServerIdCache.dataByServerId;
-  }
+  // Each server reconciles against its own cache, so an unchanged server contributes its previous
+  // stable array by identity. When every server does, the map itself is unchanged and the cached
+  // object is kept — no combined signature of every server's rows is needed to decide that.
   const next: Record<string, SessionListViewItem[] | null> = {};
+  let equivalent = cached != null && Object.keys(cached.dataByServerId).length === entries.length;
   for (const [serverId, data] of entries) {
-    next[serverId] = getStableSessionListShellViewDataForServer(serverId, data);
+    const stable = getStableSessionListShellViewDataForServer(serverId, data);
+    next[serverId] = stable;
+    if (equivalent && cached!.dataByServerId[serverId] !== stable) equivalent = false;
+  }
+  if (cached && equivalent) {
+    sessionListShellViewDataByServerIdCache = { ...cached, source: dataByServerId, entries };
+    return cached.dataByServerId;
   }
   sessionListShellViewDataByServerIdCache = {
     source: dataByServerId,
     entries,
-    signature,
     dataByServerId: next,
   };
   return next;
@@ -1608,13 +1758,35 @@ export function useProjectForSession(sessionId: string | null) {
   );
 }
 
+/**
+ * The session's own recorded path, falling back to the path of the project it is filed under.
+ *
+ * The fallback is resolved only when it can be reached, and through the pure resolver rather than
+ * the store's `getProjectForSession`. Both halves of that matter:
+ *
+ *  - the store's `getProjectForSession` reads *by writing* — it calls `projectManager.addSession`,
+ *    which re-sets `sessionToProject` and rescans the project's session list on every call — and
+ *    this selector is what zustand runs as its snapshot-equality check, so it re-executes for every
+ *    mounted consumer on every publish. A transcript mounts one consumer per row wrapper
+ *    (`useTranscriptSessionCommon`) and a streaming session publishes continuously, so one write
+ *    per evaluation multiplies by rows x publishes;
+ *  - in the branch that used to pay for it the fallback is redundant anyway. `addSession` files a
+ *    path-bearing session under `metadata.path`, so the project path it would return is the trimmed
+ *    session path that already outranks it. Only a session with no usable path of its own can take
+ *    the fallback, and that is exactly the case the pure resolver forwards to the manager's
+ *    surviving mapping.
+ */
 export function useSessionWorkspacePath(sessionId: string | null): string | null {
-  return getStorage()(
-    (state) => resolveSessionWorkspacePath({
-      sessionPath: sessionId ? state.sessions[sessionId]?.metadata?.path ?? null : null,
-      projectPath: sessionId ? state.getProjectForSession(sessionId)?.key?.path ?? null : null,
-    })
-  );
+  return getStorage()((state) => {
+    if (!sessionId) return null;
+    const sessionPath = resolveSessionWorkspacePath({
+      sessionPath: state.sessions[sessionId]?.metadata?.path ?? null,
+    });
+    if (sessionPath !== null) return sessionPath;
+    return resolveSessionWorkspacePath({
+      projectPath: resolveProjectForSession(state.sessions, sessionId)?.key?.path ?? null,
+    });
+  });
 }
 
 export function useSessionRpcAvailabilityState(sessionId: string | null): Readonly<{

@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import cliDistBuildManifest from '../../cliDistBuildManifest.cjs';
+
 const { renameMock, renameDelegate } = vi.hoisted(() => ({
     renameMock: vi.fn(),
     renameDelegate: { current: null as null | typeof import('node:fs/promises').rename },
@@ -52,6 +54,7 @@ describe('buildCliBinaryArtifactPayload Windows rename fallback', () => {
         const newer = new Date('2026-04-13T18:05:00.000Z');
         const cliDir = join(repoRoot, 'apps', 'cli');
         const cliDistDir = join(cliDir, 'dist');
+        const abandonedSnapshotDir = join(cliDir, '.dist.hstack-snapshot-abandoned');
 
         if (!renameDelegate.current) {
             throw new Error('expected node:fs/promises.rename delegate to be initialized');
@@ -79,6 +82,7 @@ describe('buildCliBinaryArtifactPayload Windows rename fallback', () => {
             },
         }, null, 2)}\n`, older);
         await writeRepoFile(join(cliDir, 'src', 'index.ts'), 'export default "cli-source";\n', older);
+        await writeRepoFile(join(abandonedSnapshotDir, 'index.mjs'), 'export const abandoned = true;\n', older);
         for (const sidecarPath of [
             ['apps', 'cli', 'scripts', 'childProcessOptions.cjs'],
             ['apps', 'cli', 'scripts', 'claude_launcher_runtime.cjs'],
@@ -89,6 +93,7 @@ describe('buildCliBinaryArtifactPayload Windows rename fallback', () => {
             ['apps', 'cli', 'scripts', 'ripgrep_launcher.cjs'],
             ['apps', 'cli', 'scripts', 'statusline_forwarder.cjs'],
             ['apps', 'cli', 'scripts', 'terminal_launch_spec_runner.cjs'],
+            ['apps', 'cli', 'scripts', 'node_pty_relay.cjs'],
             ['apps', 'cli', 'scripts', 'runtime', 'placeholder.txt'],
             ['apps', 'cli', 'scripts', 'shims', 'placeholder.txt'],
         ]) {
@@ -129,9 +134,16 @@ module.exports = { unpackTools };
         await buildCliBinaryArtifactPayload({
             repoRoot,
             payloadDir,
+            ensureWorkspacePackagesBuiltByName: async (_root, packageNames) => ({
+                ok: true,
+                built: [],
+                skipped: packageNames,
+            }),
             commandProbe: (command) => command === 'bun' || command === 'yarn',
             runCommand: async () => {
-                await writeRepoFile(join(cliDistDir, 'index.mjs'), 'export const cli = "fresh";\n', newer);
+                const cliDistEntrypoint = join(cliDistDir, 'index.mjs');
+                await writeRepoFile(cliDistEntrypoint, 'export const cli = "fresh";\n', newer);
+                cliDistBuildManifest.writeCliDistBuildManifest(cliDistEntrypoint);
             },
             compileBinary: async ({ outfile }) => {
                 await writeRepoFile(outfile, 'compiled-binary');
@@ -141,5 +153,6 @@ module.exports = { unpackTools };
         await expect(readFile(join(payloadDir, 'package-dist', 'index.mjs'), 'utf8')).resolves.toBe('export const cli = "fresh";\n');
         await expect(readFile(join(cliDistDir, 'index.mjs'), 'utf8')).resolves.toBe('export const cli = "fresh";\n');
         expect(existsSync(join(payloadDir, 'happier'))).toBe(true);
+        expect(existsSync(abandonedSnapshotDir)).toBe(false);
     });
 });

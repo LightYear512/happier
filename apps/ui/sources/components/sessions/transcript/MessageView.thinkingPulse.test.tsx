@@ -23,6 +23,12 @@ installMessageViewCommonModuleMocks({
             Animated: {
                 Value: class AnimatedValue {
                     constructor(public _value: number) {}
+                    setValue(value: number) {
+                        this._value = value;
+                    }
+                    __getValue() {
+                        return this._value;
+                    }
                     interpolate() {
                         return this as any;
                     }
@@ -95,13 +101,16 @@ vi.mock('@/components/sessions/transcript/structured/StructuredMessageBlock', ()
     renderStructuredMessage: () => null,
     StructuredMessageBlock: () => React.createElement('StructuredMessageBlock'),
 }));
-vi.mock('@/components/sessions/transcript/messageCopyVisibility', () => ({ shouldShowMessageCopyButton: () => false }));
+vi.mock('@/components/sessions/transcript/messageCopyVisibility', () => ({
+    shouldShowTranscriptRowActions: () => false,
+    shouldShowTranscriptRowPinAction: () => false,
+}));
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => true }));
 vi.mock('@/utils/sessions/discardedCommittedMessages', () => ({ isCommittedMessageDiscarded: () => false }));
 vi.mock('@/utils/url/sessionFileDeepLink', () => ({ buildSessionFileDeepLink: () => '' }));
 vi.mock('@/utils/system/fireAndForget', () => ({ fireAndForget: (p: any) => p }));
 vi.mock('@/components/sessions/linkedFiles/extractWorkspaceFileMentions', () => ({ extractWorkspaceFileMentions: () => [] }));
-vi.mock('@/components/sessions/linkedFiles/LinkedWorkspaceFilesRow', () => ({ LinkedWorkspaceFilesRow: () => React.createElement('LinkedWorkspaceFilesRow') }));
+vi.mock('@/components/sessions/transcript/references/StructuredReferencesRow', () => ({ StructuredReferencesRow: () => React.createElement('StructuredReferencesRow') }));
 
 vi.mock('@/components/sessions/transcript/motion/TranscriptMotionContext', () => ({
     useTranscriptMotion: () => ({
@@ -160,6 +169,7 @@ describe('MessageView (thinking pulse gating)', () => {
         expect(captured.thinkingRowProps.at(-1)?.chrome).toBe('plain');
         expect(captured.markdownProps.at(-1)?.testID).toBe('transcript-thinking-body-markdown');
         expect(captured.markdownProps.at(-1)?.profile).toBe('thinking');
+        expect(captured.markdownProps.at(-1)?.agentTexMath).toBe(true);
         expect(screen.findAll((node) => (node.props as any).testID === 'transcript-thinking-body-plain')).toHaveLength(0);
 
         captured.thinkingPulseProps.length = 0;

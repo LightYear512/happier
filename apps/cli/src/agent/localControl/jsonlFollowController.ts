@@ -3,10 +3,14 @@ import { startFileWatcher } from '@/integrations/watcher/startFileWatcher';
 import { JsonlFollower } from './jsonlFollower';
 import { DEFAULT_JSONL_FOLLOW_POLICY, normalizeJsonlFollowPolicy, type JsonlFollowPolicyInput, type JsonlFollowPolicyV1 } from './jsonlFollowPolicy';
 import type { JsonlFollowerMetrics } from './jsonlFollowMetrics';
+import type { JsonlLineSource } from './jsonlLineFollower';
 
 export type JsonlFollowControllerState = 'idle' | 'active' | 'completed' | 'closed';
 
-export type JsonlFollowControllerWatchFile = (file: string, onFileChange: (file: string) => void) => () => void;
+export type JsonlFollowControllerWatchFile = (
+    file: string,
+    onFileChange: (file: string) => void,
+) => () => void | Promise<void>;
 
 export type JsonlFollowControllerOptions = Readonly<{
     filePath: string;
@@ -16,7 +20,7 @@ export type JsonlFollowControllerOptions = Readonly<{
     pollPolicy?: JsonlFollowPolicyInput;
     metrics?: JsonlFollowerMetrics;
     watchFile?: JsonlFollowControllerWatchFile;
-    onJson: (value: unknown) => void | Promise<void>;
+    onJson: (value: unknown, source?: JsonlLineSource) => void | Promise<void>;
     onError?: (error: unknown) => void;
     onClosed?: () => void;
 }>;
@@ -107,7 +111,7 @@ export class JsonlFollowController {
             clearTimeout(this.completionTimer);
             this.completionTimer = null;
         }
-        this.stopWatcher?.();
+        await this.stopWatcher?.();
         this.stopWatcher = null;
         await this.follower.stop();
         this.notifyClosed();

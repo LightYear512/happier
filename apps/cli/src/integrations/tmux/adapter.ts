@@ -1,4 +1,7 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
+  TerminalAttachmentId,
   TerminalHostAdapter,
   TerminalHostHandle,
   TerminalInjectionDuplicateRisk,
@@ -6,14 +9,21 @@ import type {
   TerminalInputInjectionResult,
   TerminalInputState,
   TerminalPromptInput,
+  TerminalPromptWriteBoundaryV1,
 } from '../terminalHost/_types';
 import { delay } from '@/utils/time';
 
 import { createTmuxTerminalControlPort } from './control';
-import { resolveTmuxPromptSubmitDelayMs, resolveTmuxSendKeysChunkSize } from './env';
+import { resolveTmuxPromptSubmitDelayMs } from './env';
 import { evaluateTmuxPaneLiveness } from './paneLiveness';
 import { TmuxUtilities } from './TmuxUtilities';
-import { typeTextViaSendKeys } from './typeText';
+import { pasteTextViaTmuxBuffer } from './typeText';
+import {
+  resolveTerminalPromptSubmissionFailureReason,
+  type TerminalPromptSubmitVerificationPolicy,
+} from '../terminalHost/promptSubmitVerification';
+import { resolveTerminalPromptWriteTimeoutMs } from '@/agent/runtime/terminal/injection/promptWriteTimeout';
+import { createTmuxTerminalHostHandle } from './hostHandle';
 
 /**
  * Stability sampling delay between the two full-pane captures used to detect that the user is
@@ -23,6 +33,17 @@ const INPUT_STABILITY_DELAY_MS = 50;
 
 function targetFromHandle(handle: TerminalHostHandle): string {
   return handle.paneId ? `${handle.sessionName}:${handle.paneId}` : handle.sessionName;
+}
+
+export function resolveTmuxCommandEnvironmentForHostHandle(
+  handle: TerminalHostHandle,
+): Record<string, string> | undefined {
+  const tmuxTmpDir = typeof handle.socketDir === 'string' ? handle.socketDir.trim() : '';
+  return tmuxTmpDir ? { TMUX_TMPDIR: tmuxTmpDir } : undefined;
+}
+
+function createTmuxPromptBufferName(): string {
+  return `happier_prompt_${randomUUID().replace(/-/g, '')}`;
 }
 
 function cursorPositionsEqual(
@@ -58,13 +79,23 @@ function failedInjectionResult(params: Readonly<{
   };
 }
 
-export function createTmuxTerminalHostAdapter(params?: Readonly<{ tmux?: TmuxUtilities }>): TerminalHostAdapter {
+export function createTmuxTerminalHostAdapter(params?: Readonly<{
+  tmux?: TmuxUtilities;
+  promptSubmitVerification?: TerminalPromptSubmitVerificationPolicy | undefined;
+}>): TerminalHostAdapter {
   const tmux = params?.tmux ?? new TmuxUtilities();
+  const promptSubmitVerification = params?.promptSubmitVerification;
+  const tmuxForHandle = (handle: TerminalHostHandle): TmuxUtilities => {
+    if (params?.tmux) return params.tmux;
+    const environment = resolveTmuxCommandEnvironmentForHostHandle(handle);
+    return environment ? new TmuxUtilities(undefined, environment) : tmux;
+  };
 
   async function evaluateLiveness(handle: TerminalHostHandle) {
+    const handleTmux = tmuxForHandle(handle);
     return evaluateTmuxPaneLiveness({
       target: targetFromHandle(handle),
-      executor: (args) => tmux.executeTmuxCommand([...args]),
+      executor: (args) => handleTmux.executeTmuxCommand([...args]),
     });
   }
 
@@ -75,47 +106,64 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{ tmux?: TmuxUti
     // `isUserTyping` sample re-read what `captureCurrentInput` had just read) and fed the parser only
     // the bottom line.
     const target = targetFromHandle(handle);
-    const firstInput = await tmux.captureCurrentInput(target);
-    const firstCursor = await tmux.captureCursorPosition(target);
-    await delay(INPUT_STABILITY_DELAY_MS);
-    const currentInput = await tmux.captureCurrentInput(target);
-    const cursor = await tmux.captureCursorPosition(target);
-    return {
-      stable: firstInput === currentInput && cursorPositionsEqual(firstCursor, cursor),
-      currentInput,
-      ...(cursor !== null ? { cursor } : {}),
-      observedAt: Date.now(),
-    };
+    const handleTmux = tmuxForHandle(handle);
+    try {
+      const firstInput = await handleTmux.captureCurrentInput(target);
+      const firstCursor = await handleTmux.captureCursorPosition(target);
+      await delay(INPUT_STABILITY_DELAY_MS);
+      const currentInput = await handleTmux.captureCurrentInput(target);
+      const cursor = await handleTmux.captureCursorPosition(target);
+      return {
+        stable: firstInput === currentInput && cursorPositionsEqual(firstCursor, cursor),
+        currentInput,
+        ...(cursor !== null ? { cursor } : {}),
+        observedAt: Date.now(),
+      };
+    } catch {
+      return {
+        stable: false,
+        currentInput: '',
+        observedAt: Date.now(),
+      };
+    }
   }
+
+  const createOrAttachHost: TerminalHostAdapter['createOrAttachHost'] = async (opts) => {
+    const result = await tmux.spawnInTmux([...opts.spawnArgv], {
+      sessionName: opts.sessionName,
+      windowName: opts.sessionName,
+      cwd: opts.workingDirectory,
+      requireNewSession: true,
+    }, { ...opts.spawnEnv });
+    if (!result.success) {
+      throw new Error(result.error ?? 'Failed to create tmux terminal host');
+    }
+    return createTmuxTerminalHostHandle({
+      attachmentId: randomUUID() as TerminalAttachmentId,
+      sessionName: result.sessionName ?? opts.sessionName,
+      windowName: result.windowName,
+      topology: 'exclusive',
+    });
+  };
 
   return {
     kind: 'tmux',
-    async createOrAttachHost(opts) {
-      const result = await tmux.spawnInTmux([...opts.spawnArgv], {
-        sessionName: opts.sessionName,
-        windowName: opts.sessionName,
-        cwd: opts.workingDirectory,
-      }, { ...opts.spawnEnv });
-      if (!result.success) {
-        throw new Error(result.error ?? 'Failed to create tmux terminal host');
+    createOrAttachHost,
+    async adoptExistingHost(handle: TerminalHostHandle): Promise<TerminalHostHandle> {
+      const liveness = await evaluateLiveness(handle);
+      if (!liveness.paneAlive) {
+        throw new Error('Cannot adopt tmux terminal host because the target pane is not alive');
       }
-      return {
-        kind: 'tmux',
-        sessionName: result.sessionName ?? opts.sessionName,
-        paneId: result.windowName,
-        attachMetadata: {
-          attachStrategy: 'terminal_host',
-          topology: 'shared',
-          locality: 'same_machine',
-          maxClients: null,
-          requiresLocalAttachmentInfo: true,
-          liveProbe: 'required',
-        },
-      };
+      return handle;
     },
-    async injectUserPrompt(handle: TerminalHostHandle, input: TerminalPromptInput): Promise<TerminalInputInjectionResult> {
+    async injectUserPrompt(
+      handle: TerminalHostHandle,
+      input: TerminalPromptInput,
+      writeBoundary?: TerminalPromptWriteBoundaryV1,
+    ): Promise<TerminalInputInjectionResult> {
       const deferral = scheduledDeferral(input);
       if (deferral) return deferral;
+      const handleTmux = tmuxForHandle(handle);
 
       if (handle.sessionName.trim().length === 0) {
         return failedInjectionResult({
@@ -152,13 +200,36 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{ tmux?: TmuxUti
           };
         }
       }
-      const result = await typeTextViaSendKeys({
+      let writeAuthorized = false;
+      const result = await pasteTextViaTmuxBuffer({
         target: targetFromHandle(handle),
         text: input.text,
-        chunkSize: resolveTmuxSendKeysChunkSize(),
+        bufferName: createTmuxPromptBufferName(),
         submitDelayMs: resolveTmuxPromptSubmitDelayMs(),
-        timeoutMs: input.scheduling.timeoutMs,
-        executor: (args, options) => tmux.executeTmuxCommand(
+        submitRetryDelayMs: resolveTmuxPromptSubmitDelayMs(),
+        timeoutMs: input.scheduling.timeoutMs ?? resolveTerminalPromptWriteTimeoutMs(input.text),
+        ...(writeBoundary
+          ? {
+              authorizeBeforeWrite: async () => {
+                const authorized = await writeBoundary.authorizeBeforeWrite();
+                writeAuthorized = authorized;
+                return authorized;
+              },
+            }
+          : {}),
+        ...(promptSubmitVerification?.shouldVerifyAfterSubmit(input.text)
+          ? {
+            verifyStagedBeforeSubmit: async ({ text }) => promptSubmitVerification.isPromptStagedBeforeSubmit({
+              promptText: text,
+              screenText: await handleTmux.captureCurrentInput(targetFromHandle(handle)),
+            }),
+            verifyAfterSubmit: async ({ text }) => promptSubmitVerification.isPromptStillPendingAfterSubmit({
+              promptText: text,
+              screenText: await handleTmux.captureCurrentInput(targetFromHandle(handle)),
+            }),
+          }
+          : {}),
+        executor: (args, options) => handleTmux.executeTmuxCommand(
           [...args],
           undefined,
           undefined,
@@ -169,17 +240,25 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{ tmux?: TmuxUti
         ),
       });
       if (!result.success) {
+        if (result.reason === 'write_not_authorized') {
+          return failedInjectionResult({
+            reason: 'no_target',
+            phase: 'before_write',
+            duplicateRisk: 'none',
+            recoverable: false,
+          });
+        }
         return failedInjectionResult({
-          reason: result.reason === 'timeout' ? 'timeout' : 'host_unreachable',
-          phase: result.phase,
-          duplicateRisk: result.duplicateRisk,
+          reason: resolveTerminalPromptSubmissionFailureReason(result.reason),
+          phase: writeAuthorized && result.phase === 'before_write' ? 'during_write' : result.phase,
+          duplicateRisk: writeAuthorized && result.duplicateRisk === 'none' ? 'possible' : result.duplicateRisk,
           recoverable: true,
         });
       }
       return { status: 'injected', at: Date.now(), bytesWritten: Buffer.byteLength(input.text) };
     },
     async interruptTurn(handle: TerminalHostHandle): Promise<void> {
-      const success = await tmux.sendKeys('Escape', targetFromHandle(handle));
+      const success = await tmuxForHandle(handle).sendKeys('Escape', targetFromHandle(handle));
       if (!success) {
         throw new Error('Failed to interrupt tmux terminal host');
       }
@@ -188,9 +267,10 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{ tmux?: TmuxUti
     captureInputState,
     createControlPort(handle: TerminalHostHandle) {
       if (handle.sessionName.trim().length === 0) return null;
+      const handleTmux = tmuxForHandle(handle);
       return createTmuxTerminalControlPort({
         target: targetFromHandle(handle),
-        executor: (args, options) => tmux.executeTmuxCommand(
+        executor: (args, options) => handleTmux.executeTmuxCommand(
           [...args],
           undefined,
           undefined,
@@ -202,7 +282,21 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{ tmux?: TmuxUti
       });
     },
     async dispose(handle: TerminalHostHandle) {
-      await tmux.killWindow(targetFromHandle(handle));
+      const handleTmux = tmuxForHandle(handle);
+      if (handle.attachMetadata.topology === 'exclusive') {
+        const result = await handleTmux.executeTmuxCommand(['kill-session'], handle.sessionName);
+        if (!result || result.returncode !== 0) {
+          throw new Error(`Failed to destroy owned tmux session ${handle.sessionName}`);
+        }
+        return;
+      }
+      if (!handle.paneId?.trim()) {
+        throw new Error('Cannot destroy shared tmux terminal host without its owned window id');
+      }
+      const removed = await handleTmux.killWindow(targetFromHandle(handle));
+      if (!removed) {
+        throw new Error(`Failed to destroy owned tmux window ${targetFromHandle(handle)}`);
+      }
     },
   };
 }

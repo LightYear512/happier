@@ -1,5 +1,11 @@
 import type { AgentBackend, AgentFactoryOptions, McpServerConfig } from '@/agent/core';
 import type { PermissionMode } from '@/api/types';
+import {
+  PI_BROKER_PROVIDERS,
+  PI_BROKER_SELECTIONS_ENV,
+  parsePiBrokerSelections,
+  resolvePiBrokerExtensionPath,
+} from '@/backends/pi/brokerExtension';
 import { PiRpcBackend } from '@/backends/pi/rpc/PiRpcBackend';
 import { readConnectedServiceChildSelectionsFromEnv } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
 import { requireProviderCliLaunchSpec } from '@/runtime/managedTools/requireProviderCliLaunchSpec';
@@ -11,7 +17,9 @@ export interface PiBackendOptions extends AgentFactoryOptions {
   happierSessionId?: string | null;
 }
 
-export function buildPiToolsForPermissionMode(permissionMode?: PermissionMode): string[] {
+// `null` means Happier must not override Pi's native tool catalog. Passing
+// `--tools` would also filter extension and custom tools in current Pi releases.
+export function buildPiToolsForPermissionMode(permissionMode?: PermissionMode): string[] | null {
   const rawMode = typeof permissionMode === 'string' ? permissionMode : 'default';
 
   // Normalize legacy aliases into canonical permission intents.
@@ -27,12 +35,17 @@ export function buildPiToolsForPermissionMode(permissionMode?: PermissionMode): 
   if (mode === 'safe-yolo') {
     return ['read', 'edit', 'write', 'grep', 'find', 'ls'];
   }
+  if (mode === 'default' || mode === 'yolo') {
+    return null;
+  }
   return ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
 }
 
 export function buildPiRpcArgs(opts?: Readonly<{ permissionMode?: PermissionMode; thinkingLevel?: string | null }>): string[] {
   const permissionMode = opts?.permissionMode;
-  const args: string[] = ['--mode', 'rpc', '--tools', buildPiToolsForPermissionMode(permissionMode).join(',')];
+  const tools = buildPiToolsForPermissionMode(permissionMode);
+  const args: string[] = ['--mode', 'rpc'];
+  if (tools) args.push('--tools', tools.join(','));
   const thinking = providers.pi.normalizePiThinkingLevel(opts?.thinkingLevel);
   if (thinking) args.push('--thinking', thinking);
   return args;
@@ -52,7 +65,7 @@ function resolvePiLaunchSelectionForConnectedService(serviceId: string): PiConne
       return { provider: 'openai', startupModel: 'gpt-5.4', modelScope: 'openai/*' };
     case 'claude-subscription':
     case 'anthropic':
-      return { provider: 'anthropic', startupModel: 'claude-opus-4-8', modelScope: 'anthropic/*' };
+      return { provider: 'anthropic', startupModel: providers.claude.CURRENT_FLAGSHIP_CLAUDE_MODEL_ID, modelScope: 'anthropic/*' };
     default:
       return null;
   }
@@ -68,6 +81,17 @@ function resolvePiLaunchSelectionFromConnectedServiceSelection(
   return null;
 }
 
+function resolvePiBrokerExtensionArgs(env: Readonly<Record<string, string>>): string[] {
+  const agentDir = env.PI_CODING_AGENT_DIR?.trim();
+  if (!agentDir) return [];
+
+  const selections = parsePiBrokerSelections(env[PI_BROKER_SELECTIONS_ENV]);
+  const hasBrokeredProvider = PI_BROKER_PROVIDERS.some((provider) => selections[provider]);
+  if (!hasBrokeredProvider) return [];
+
+  return ['--extension', resolvePiBrokerExtensionPath(agentDir)];
+}
+
 export function createPiBackend(options: PiBackendOptions): AgentBackend {
   const env = Object.fromEntries(
     Object.entries(options.env ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
@@ -81,6 +105,7 @@ export function createPiBackend(options: PiBackendOptions): AgentBackend {
     command: launch.command,
     args: [
       ...launch.args,
+      ...resolvePiBrokerExtensionArgs(env),
       ...(launchSelection
         ? [
           '--provider',

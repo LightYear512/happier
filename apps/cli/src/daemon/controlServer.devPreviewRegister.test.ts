@@ -37,7 +37,7 @@ describe('daemon control server: /dev-preview/register', () => {
     const app = createDaemonControlApp({
       getChildren: () => [],
       machineId: 'machine-local',
-      stopSession: async () => false,
+      stopSession: async () => ({ status: 'not_found' as const }),
       spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
       requestShutdown: () => {},
       onHappySessionWebhook: () => {},
@@ -90,7 +90,7 @@ describe('daemon control server: /dev-preview/register', () => {
     const app = createDaemonControlApp({
       getChildren: () => [],
       machineId: 'machine-local',
-      stopSession: async () => false,
+      stopSession: async () => ({ status: 'not_found' as const }),
       spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
       requestShutdown: () => {},
       onHappySessionWebhook: () => {},
@@ -135,7 +135,7 @@ describe('daemon control server: /dev-preview/register', () => {
     const app = createDaemonControlApp({
       getChildren: () => [],
       machineId: 'machine-local',
-      stopSession: async () => false,
+      stopSession: async () => ({ status: 'not_found' as const }),
       spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
       requestShutdown: () => {},
       onHappySessionWebhook: () => {},

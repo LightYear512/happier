@@ -8,8 +8,12 @@ import {
     createSessionPermissionModeSchema,
     createSessionRollbackRangesV1Schema,
     createSessionTerminalMetadataSchema,
+    createProviderSessionInfoV1Schema,
     createSessionSystemSessionV1Schema,
+    createSessionWorkspaceLocationV1Schema,
+    type PendingDeliveryBlockedReason,
     type PrimaryTurnStatusV1,
+    type SessionRuntimeActivityState,
     type SessionMessageRole,
     type SessionRuntimeIssueV1,
     type SessionTurnsProjectionV1,
@@ -36,6 +40,7 @@ const MetadataObjectSchema = z.object({
         updatedAt: z.number()
     }).optional(),
     machineId: z.string().optional(),
+    sessionWorkspaceLocationV1: createSessionWorkspaceLocationV1Schema(z).optional(),
     handoffV1: z.object({
         v: z.literal(1),
         sourceMachineId: z.string(),
@@ -77,6 +82,7 @@ const MetadataObjectSchema = z.object({
         importedAt: z.number(),
         lastImportedFingerprint: z.string().optional(),
     }).optional(),
+    providerSessionInfoV1: createProviderSessionInfoV1Schema(z).optional().catch(undefined),
     acpSessionModesV1: z.object({
         v: z.literal(1),
         provider: z.string(),
@@ -114,6 +120,7 @@ const MetadataObjectSchema = z.object({
             name: z.string(),
             description: z.string().optional(),
             contextWindowTokens: z.number().int().positive().optional(),
+            extendedContextModelId: z.string().optional(),
             modelOptions: z.array(z.object({
                 id: z.string(),
                 name: z.string(),
@@ -139,6 +146,7 @@ const MetadataObjectSchema = z.object({
             name: z.string(),
             description: z.string().optional(),
             contextWindowTokens: z.number().int().positive().optional(),
+            extendedContextModelId: z.string().optional(),
             modelOptions: z.array(z.object({
                 id: z.string(),
                 name: z.string(),
@@ -153,6 +161,12 @@ const MetadataObjectSchema = z.object({
                 })).optional(),
             })).optional(),
         })),
+    }).optional(),
+    sessionAppliedModelV1: z.object({
+        v: z.literal(1),
+        provider: z.string(),
+        updatedAt: z.number(),
+        modelId: z.string(),
     }).optional(),
     /**
      * ACP session configuration options (if supported by the provider's ACP agent).
@@ -339,15 +353,25 @@ const AgentStateObjectSchema = z.object({
         reason: z.string().nullish(),
         mode: z.string().nullish(),
         allowedTools: z.array(z.string()).nullish(),
-        decision: z.enum(['approved', 'approved_for_session', 'approved_execpolicy_amendment', 'denied', 'abort']).nullish(),
+        decision: z.enum(['approved', 'approved_for_session', 'approved_execpolicy_amendment', 'denied', 'abort'])
+            .nullish()
+            .catch(undefined),
         updatedPermissions: z.any().optional(),
-    })).nullish(),
+    }).passthrough()).nullish(),
     /**
      * Optional agent capabilities negotiated via agentState.
      * This must be permissive for backward/forward compatibility across agent versions.
      */
     capabilities: z.object({
+        modelScopedConfigTombstonesV1: z.preprocess(
+            (value) => value === true ? true : undefined,
+            z.literal(true).optional(),
+        ),
         askUserQuestionAnswersInPermission: z.boolean().optional(),
+        structuredQuestionAnswersV1Supported: z.preprocess(
+            (value) => value === true ? true : undefined,
+            z.literal(true).optional(),
+        ),
         inFlightSteer: z.boolean().optional(),
         inFlightSteerSupported: z.boolean().optional(),
         inFlightSteerAvailable: z.boolean().optional(),
@@ -371,6 +395,10 @@ const AgentStateObjectSchema = z.object({
          */
         terminalComposerClearSupported: z.boolean().nullish(),
         terminalComposerDraftPresent: z.boolean().nullish(),
+        sessionGoalSetSupported: z.boolean().nullish(),
+        sessionGoalClearSupported: z.boolean().nullish(),
+        pendingInputInterruptAndRunLocalId: z.string().trim().min(1).nullish(),
+        pendingInputInterruptAndRunStateAt: z.number().int().nonnegative().nullish(),
         localPermissionBridgeInLocalMode: z.boolean().optional(),
         permissionsInUiWhileLocal: z.boolean().optional(),
     }).nullish(),
@@ -410,9 +438,10 @@ export interface Session {
     /**
      * Server-side pending queue (V2) summary fields.
      * Optional for mixed-version safety with older servers.
-     */
+    */
     pendingVersion?: number,
     pendingCount?: number,
+    pendingBlockedCount?: number,
     lastViewedSessionSeq?: number | null,
     pendingPermissionRequestCount?: number,
     pendingUserActionRequestCount?: number,
@@ -420,6 +449,10 @@ export interface Session {
     latestTurnId?: string | null,
     latestTurnStatus?: PrimaryTurnStatusV1 | null,
     latestTurnStatusObservedAt?: number | null,
+    runtimeActivityState?: SessionRuntimeActivityState | null,
+    runtimeActivityActiveCount?: number,
+    runtimeActivityObservedAt?: number | null,
+    runtimeActivityRevision?: number | null,
     lastRuntimeIssue?: SessionRuntimeIssueV1 | null,
     sessionTurns?: SessionTurnsProjectionV1 | null,
     rollbackEligibleTurnStarts?: readonly number[] | null,
@@ -433,6 +466,7 @@ export interface Session {
     thinkingAt: number,
     presence: "online" | number, // "online" when active, timestamp when last seen
     optimisticThinkingAt?: number | null; // Local-only timestamp used for immediate "processing" UI feedback after submit
+    resumingAt?: number | null; // Local-only timestamp: single owner of the "resuming" lifecycle, set at resume initiation and cleared on first post-attach activity (bounded decay)
     thinkingGraceUntil?: number | null; // Local-only timestamp used to debounce thinking indicator and avoid flicker between streaming chunks
     todos?: Array<{
         content: string;
@@ -470,6 +504,14 @@ export interface Session {
     canApprovePermissions?: boolean; // Whether the current user can approve permission prompts for this shared session
 }
 
+export type PendingDeliveryStatus =
+    | 'server_queued'
+    | 'server_delivering'
+    | 'external_handoff'
+    | 'blocked';
+
+export type { PendingDeliveryBlockedReason };
+
 export interface PendingMessage {
     id: string;
     localId: string | null;
@@ -477,6 +519,33 @@ export interface PendingMessage {
     updatedAt: number;
     source?: 'local_outbound' | 'server_pending';
     deliveryStatus?: 'queued' | 'accepted';
+    /** Exact durable-outbox authority for local outbound rows; never inferred from the active server. */
+    pendingOutboxScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope;
+    /** Durable local outbox operation; `cancel` must never be presented or retried as a send. */
+    pendingOutboxOperation?: 'enqueue' | 'cancel';
+    pendingOutboxQuarantineReason?: import('./pendingOutboxPersistence').PendingOutboxQuarantineReason;
+    /**
+     * Local send-acknowledgment state for optimistic (`local_outbound`) rows whose write to the
+     * server has NOT yet been confirmed. `undefined` = confirmed/normal; `unconfirmed` = the write
+     * is being retried after a stall/transient failure (spinner); `failed` = automatic retries gave
+     * up and the user must re-send (retry affordance). Confirmed rows clear this back to
+     * `undefined`; if stale local state survives hydration, a retained durable Pending projection
+     * still outranks it in the canonical visual-state resolver. This is the visible side of the
+     * durable outbox — a submitted message is always in exactly one visible state and is never
+     * silently absent.
+     */
+    sendState?: 'unconfirmed' | 'failed';
+    pendingDeliveryStatus?: PendingDeliveryStatus;
+    /** Descriptive detail for a delivering row; never an outcome or settlement authority. */
+    pendingDeliveryDetail?: import('@happier-dev/protocol').PendingDeliveryDetailV1;
+    pendingDeliveryStatusRaw?: string;
+    pendingDeliveryBlockedReason?: PendingDeliveryBlockedReason;
+    pendingDeliveryBlockedReasonRaw?: string;
+    /** Canonical action owned by the durable Pending row. Old omitted rows normalize to enqueue. */
+    requestedAction?: import('@happier-dev/protocol').PendingRequestedActionV1;
+    /** Explicit persisted action was malformed; the row remains visible but is never executable. */
+    requestedActionMalformed?: true;
+    pendingOutboxConflict?: true;
     text: string;
     displayText?: string;
     pendingDecryptFailure?: { kind: 'decrypt_failed' };
@@ -485,7 +554,7 @@ export interface PendingMessage {
 
 export interface DiscardedPendingMessage extends PendingMessage {
     discardedAt: number;
-    discardedReason: 'switch_to_local' | 'manual';
+    discardedReason: string | null;
 }
 
 export interface DecryptedMessage {
@@ -513,6 +582,7 @@ export const MachineMetadataSchema = z.object({
     displayName: z.string().optional(), // Custom display name for the machine
     windowsRemoteSessionLaunchMode: WindowsRemoteSessionLaunchModeSchema.optional(),
     windowsRemoteSessionConsole: z.enum(['hidden', 'visible']).optional(),
+    daemonTerminalSessionAttachSupported: z.boolean().optional(),
     // Daemon status fields
     daemonLastKnownStatus: z.enum(['running', 'shutting-down']).optional(),
     daemonLastKnownPid: z.number().optional(),

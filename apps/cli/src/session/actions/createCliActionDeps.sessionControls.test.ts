@@ -8,7 +8,15 @@ import {
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const mocks = vi.hoisted(() => ({
+  axiosGet: vi.fn(async (): Promise<unknown> => ({ status: 200, data: { id: 'acct_1', connectedServicesV2: [] } })),
+  bootstrapAccountSettingsContext: vi.fn(async (): Promise<unknown> => ({ settings: {}, settingsVersion: 1, loadedAtMs: 1 })),
   callSessionRpc: vi.fn(async () => ({ ok: true })),
+  createSpawnedSession: vi.fn(async () => ({
+    sessionId: 'spawned_1',
+    created: true,
+    session: { id: 'spawned_1' },
+  })),
+  detectProviderMcpServers: vi.fn(async (): Promise<unknown> => ({ servers: [], warnings: [] })),
   getSessionCatalogControlAdapter: vi.fn(async (_agentId?: unknown): Promise<unknown> => null),
   getSessionGoalControlAdapter: vi.fn(async (_agentId?: unknown): Promise<unknown> => null),
   getSessionUsageLimitRecoveryControlAdapter: vi.fn(async (_agentId?: unknown): Promise<unknown> => null),
@@ -27,9 +35,10 @@ const mocks = vi.hoisted(() => ({
   })),
   getSessionEvents: vi.fn(async () => ({ ok: true, sessionId: 'sess_1', items: [], nextCursor: null, hasMore: false })),
   getSessionTranscript: vi.fn(async () => ({ ok: true, sessionId: 'sess_1', items: [], nextCursor: null, hasMore: false })),
-  listSessions: vi.fn(async () => ({ sessions: [], nextCursor: null })),
+  listSessions: vi.fn(async (): Promise<unknown> => ({ sessions: [], nextCursor: null })),
+  listDaemonStatusesForAllKnownServers: vi.fn(async (): Promise<unknown> => []),
   readSettings: vi.fn(async () => ({ machineId: 'machine-local' })),
-  resolveCliFeatureDecisionForServer: vi.fn(async () => ({ decision: { state: 'enabled' } })),
+  resolveCliFeatureDecisionForServer: vi.fn(async (_params?: unknown): Promise<unknown> => ({ decision: { state: 'enabled' } })),
   resolveSessionTransportContext: vi.fn(async (): Promise<unknown> => ({
     ok: true as const,
     sessionId: 'sess_1',
@@ -43,7 +52,12 @@ const mocks = vi.hoisted(() => ({
   sendSessionMessage: vi.fn(async () => ({ ok: true as const })),
 }));
 
-vi.mock('@/backends/catalog', () => ({
+vi.mock('axios', () => ({
+  default: { get: mocks.axiosGet },
+  get: mocks.axiosGet,
+}));
+vi.mock('@/backends/catalog', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/backends/catalog')>()),
   getSessionCatalogControlAdapter: mocks.getSessionCatalogControlAdapter,
   getSessionGoalControlAdapter: mocks.getSessionGoalControlAdapter,
   getSessionUsageLimitRecoveryControlAdapter: mocks.getSessionUsageLimitRecoveryControlAdapter,
@@ -51,14 +65,24 @@ vi.mock('@/backends/catalog', () => ({
 vi.mock('@/features/featureDecisionService', () => ({
   resolveCliFeatureDecisionForServer: mocks.resolveCliFeatureDecisionForServer,
 }));
+vi.mock('@/settings/accountSettings/bootstrapAccountSettingsContext', () => ({
+  bootstrapAccountSettingsContext: mocks.bootstrapAccountSettingsContext,
+}));
+vi.mock('@/mcp/providerDetection/detectProviderMcpServers', () => ({
+  detectProviderMcpServers: mocks.detectProviderMcpServers,
+}));
 vi.mock('@/persistence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/persistence')>()),
   readSettings: mocks.readSettings,
 }));
 vi.mock('@/session/transport/rpc/sessionRpc', () => ({ callSessionRpc: mocks.callSessionRpc }));
+vi.mock('@/session/services/createSpawnedSession', () => ({ createSpawnedSession: mocks.createSpawnedSession }));
 vi.mock('@/session/services/getSessionEvents', () => ({ getSessionEvents: mocks.getSessionEvents }));
 vi.mock('@/session/services/getSessionTranscript', () => ({ getSessionTranscript: mocks.getSessionTranscript }));
 vi.mock('@/session/services/listSessions', () => ({ listSessions: mocks.listSessions }));
+vi.mock('@/daemon/multiDaemon', () => ({
+  listDaemonStatusesForAllKnownServers: mocks.listDaemonStatusesForAllKnownServers,
+}));
 vi.mock('@/session/services/resolveSessionTransportContext', () => ({
   resolveSessionTransportContext: mocks.resolveSessionTransportContext,
 }));
@@ -70,7 +94,7 @@ vi.mock('@/daemon/controlClient', () => ({
   notifyDaemonConnectedServiceRuntimeAuthFailure: mocks.notifyDaemonConnectedServiceRuntimeAuthFailure,
 }));
 
-import { createCliActionDeps } from './createCliActionDeps';
+import { createCliActionDeps, createCliActionInventoryDeps } from './createCliActionDeps';
 
 function createCredentials(): Credentials {
   return {
@@ -88,8 +112,20 @@ function parseUsageLimitResult(value: unknown) {
 
 describe('createCliActionDeps session controls', () => {
   beforeEach(() => {
+    mocks.axiosGet.mockReset();
+    mocks.axiosGet.mockResolvedValue({ status: 200, data: { id: 'acct_1', connectedServicesV2: [] } });
+    mocks.bootstrapAccountSettingsContext.mockReset();
+    mocks.bootstrapAccountSettingsContext.mockResolvedValue({ settings: {}, settingsVersion: 1, loadedAtMs: 1 });
     mocks.callSessionRpc.mockReset();
     mocks.callSessionRpc.mockResolvedValue({ ok: true });
+    mocks.createSpawnedSession.mockReset();
+    mocks.createSpawnedSession.mockResolvedValue({
+      sessionId: 'spawned_1',
+      created: true,
+      session: { id: 'spawned_1' },
+    });
+    mocks.detectProviderMcpServers.mockReset();
+    mocks.detectProviderMcpServers.mockResolvedValue({ servers: [], warnings: [] });
     mocks.getSessionCatalogControlAdapter.mockReset();
     mocks.getSessionCatalogControlAdapter.mockResolvedValue(null);
     mocks.getSessionGoalControlAdapter.mockReset();
@@ -114,6 +150,8 @@ describe('createCliActionDeps session controls', () => {
     mocks.getSessionEvents.mockClear();
     mocks.getSessionTranscript.mockClear();
     mocks.listSessions.mockClear();
+    mocks.listDaemonStatusesForAllKnownServers.mockReset();
+    mocks.listDaemonStatusesForAllKnownServers.mockResolvedValue([]);
     mocks.readSettings.mockReset();
     mocks.readSettings.mockResolvedValue({ machineId: 'machine-local' });
     mocks.resolveCliFeatureDecisionForServer.mockReset();
@@ -130,6 +168,673 @@ describe('createCliActionDeps session controls', () => {
       mode: 'plain' as const,
     });
     mocks.sendSessionMessage.mockClear();
+  });
+
+  it('lists models from provider probes instead of stale current-session metadata', async () => {
+    const deps = createCliActionInventoryDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: {
+        path: '/repo',
+        metadata: {
+          happierSessionModelsStateV1: {
+            provider: 'claude',
+            availableModels: [{ id: 'stale-current-session-only', name: 'Stale metadata model' }],
+          },
+        },
+      },
+    });
+
+    const result = await deps.agentsModelsList({
+      agentId: 'claude',
+      backendTargetKey: 'agent:claude',
+      limit: 200,
+    }) as { source?: string; items?: readonly { id?: string }[] };
+
+    expect(result.source).toBe('static');
+    expect(result.items?.some((item) => item.id === 'stale-current-session-only')).toBe(false);
+    expect(result.items?.some((item) => item.id === 'claude-opus-4-8')).toBe(true);
+  });
+
+  it('lists session mode identifiers without transforming provider-owned bytes', async () => {
+    const deps = createCliActionInventoryDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: { encryptionKey: new Uint8Array(32).fill(1), encryptionVariant: 'legacy' },
+      mode: 'plain',
+      rawSession: {
+        metadata: {
+          sessionModesV1: {
+            v: 1,
+            provider: 'cursor',
+            updatedAt: 1,
+            currentModeId: ' plan ',
+            availableModes: [{ id: ' plan ', name: 'Plan' }],
+          },
+        },
+      },
+    });
+
+    const result = await deps.sessionModesList?.({ sessionId: 'sess_1' });
+    expect(result).toEqual({
+      sessionId: 'sess_1',
+      items: [{ id: ' plan ', label: 'Plan' }],
+    });
+  });
+
+  it('lists agent session modes and config options from the shared option registry', async () => {
+    const deps = createCliActionInventoryDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { path: '/repo', metadata: {} },
+    });
+
+    const modes = await deps.agentsSessionModesList?.({
+      agentId: 'claude',
+      backendTargetKey: 'agent:claude',
+      limit: 200,
+    }) as { source?: string; items?: readonly { id?: string }[] };
+    const configOptions = await deps.agentsConfigOptionsList?.({
+      agentId: 'claude',
+      backendTargetKey: 'agent:claude',
+      limit: 200,
+    }) as { source?: string; items?: readonly { id?: string }[] };
+
+    expect(modes.source).toBeTruthy();
+    expect(Array.isArray(modes.items)).toBe(true);
+    expect(configOptions.source).toBeTruthy();
+    expect(Array.isArray(configOptions.items)).toBe(true);
+    expect(JSON.stringify(configOptions)).not.toMatch(/token|secret|password/i);
+  });
+
+  it('lists spawn target paths, machines, and servers from canonical session and daemon owners', async () => {
+    mocks.listSessions.mockResolvedValueOnce({
+      sessions: [
+        { id: 'sess-a', path: '/repo/a', host: 'host-a', activeAt: 30 },
+        { id: 'sess-a-older', path: '/repo/a', host: 'host-a', activeAt: 20 },
+        { id: 'sess-b', path: '/repo/b', host: 'host-b', activeAt: 10 },
+        { id: 'sess-missing-path', host: 'host-c', activeAt: 5 },
+      ],
+      nextCursor: null,
+    });
+    mocks.listDaemonStatusesForAllKnownServers.mockResolvedValue([
+      {
+        serverId: 'cloud',
+        name: 'Cloud',
+        serverUrl: 'https://api.example.test',
+        comparableKey: 'api.example.test',
+        daemonStatePath: '/state/cloud.json',
+        auth: {
+          authenticated: true,
+          needsAuth: false,
+          machineRegistered: true,
+          machineId: 'machine-cloud',
+          accountId: 'acct-1',
+        },
+        drift: { activeComparableKey: 'api.example.test', matchesActiveRelay: true },
+        service: { installed: true, running: true },
+        daemon: { pid: 123, httpPort: 456, running: true, staleStateFile: false },
+      },
+      {
+        serverId: 'local',
+        name: 'Local',
+        serverUrl: 'http://127.0.0.1:3000',
+        comparableKey: '127.0.0.1:3000',
+        daemonStatePath: '/state/local.json',
+        auth: {
+          authenticated: false,
+          needsAuth: true,
+          machineRegistered: false,
+          machineId: null,
+          accountId: null,
+        },
+        drift: { activeComparableKey: 'api.example.test', matchesActiveRelay: false },
+        service: { installed: false, running: false },
+        daemon: { pid: null, httpPort: null, running: false, staleStateFile: false },
+      },
+    ]);
+
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+    const paths = await deps.pathsListRecent({ limit: 2 }) as { items: readonly unknown[] };
+    const machines = await deps.machinesList({ limit: 10 }) as { items: readonly unknown[] };
+    const servers = await deps.serversList({ limit: 10 }) as { items: readonly unknown[] };
+
+    expect(paths.items).toEqual([
+      {
+        value: '/repo/a',
+        label: '/repo/a',
+        path: '/repo/a',
+        host: 'host-a',
+        sessionId: 'sess-a',
+        activeAt: 30,
+      },
+      {
+        value: '/repo/b',
+        label: '/repo/b',
+        path: '/repo/b',
+        host: 'host-b',
+        sessionId: 'sess-b',
+        activeAt: 10,
+      },
+    ]);
+    expect(machines.items).toEqual([
+      {
+        value: 'machine-cloud',
+        label: 'machine-cloud',
+        machineId: 'machine-cloud',
+        serverId: 'cloud',
+        serverName: 'Cloud',
+        authenticated: true,
+        machineRegistered: true,
+        daemonRunning: true,
+      },
+    ]);
+    expect(servers.items).toEqual([
+      {
+        value: 'cloud',
+        label: 'Cloud',
+        serverId: 'cloud',
+        serverUrl: 'https://api.example.test',
+        authenticated: true,
+        needsAuth: false,
+        machineId: 'machine-cloud',
+        daemonRunning: true,
+      },
+      {
+        value: 'local',
+        label: 'Local',
+        serverId: 'local',
+        serverUrl: 'http://127.0.0.1:3000',
+        authenticated: false,
+        needsAuth: true,
+        machineId: null,
+        daemonRunning: false,
+      },
+    ]);
+    expect(JSON.stringify({ paths, machines, servers })).not.toContain('acct-1');
+  });
+
+  it('lists spawn profiles from account settings without profile env values or secret binding ids', async () => {
+    mocks.bootstrapAccountSettingsContext.mockResolvedValue({
+      settings: {
+        profiles: [
+          {
+            id: 'custom-openai',
+            name: 'Custom OpenAI',
+            description: 'Custom profile',
+            environmentVariables: [{ name: 'OPENAI_API_KEY', value: 'SECRET_VALUE', isSecret: true }],
+            envVarRequirements: [
+              { name: 'OPENAI_API_KEY', kind: 'secret', required: true },
+              { name: 'GOOGLE_CLOUD_PROJECT', kind: 'config', required: true },
+            ],
+            compatibilityByTargetKey: { 'agent:codex': true },
+            defaultEnabled: true,
+            isBuiltIn: false,
+          },
+        ],
+        secretBindingsByProfileId: {
+          'custom-openai': { OPENAI_API_KEY: 'secret_binding_id' },
+        },
+      },
+      settingsVersion: 2,
+      loadedAtMs: 1,
+    });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+    const result = await deps.sessionsSpawnProfilesList?.({
+      agentId: 'codex',
+      backendTargetKey: 'agent:codex',
+      limit: 200,
+    }) as { items?: readonly Record<string, unknown>[] } | undefined;
+
+    expect(result?.items?.find((item) => item.id === 'custom-openai')).toMatchObject({
+      value: 'custom-openai',
+      label: 'Custom OpenAI',
+      id: 'custom-openai',
+      name: 'Custom OpenAI',
+      isBuiltIn: false,
+      supportedAgentIds: expect.arrayContaining(['codex']),
+      requiredSecretEnvVarNames: ['OPENAI_API_KEY'],
+      requiredConfigEnvVarNames: ['GOOGLE_CLOUD_PROJECT'],
+    });
+    expect(JSON.stringify(result)).not.toContain('SECRET_VALUE');
+    expect(JSON.stringify(result)).not.toContain('secret_binding_id');
+  });
+
+  it('reads current account settings for spawn profile inventory without recreating deps', async () => {
+    mocks.bootstrapAccountSettingsContext
+      .mockResolvedValueOnce({
+        settings: {
+          profiles: [
+            {
+              id: 'old-profile',
+              name: 'Old profile',
+              compatibilityByTargetKey: { 'agent:codex': true },
+              defaultEnabled: true,
+              isBuiltIn: false,
+            },
+          ],
+        },
+        settingsVersion: 1,
+        loadedAtMs: 1,
+      })
+      .mockResolvedValueOnce({
+        settings: {
+          profiles: [
+            {
+              id: 'new-profile',
+              name: 'New profile',
+              compatibilityByTargetKey: { 'agent:codex': true },
+              defaultEnabled: true,
+              isBuiltIn: false,
+            },
+          ],
+        },
+        settingsVersion: 2,
+        loadedAtMs: 2,
+      });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+    await deps.sessionsSpawnProfilesList?.({
+      agentId: 'codex',
+      backendTargetKey: 'agent:codex',
+      limit: 200,
+    });
+    const result = await deps.sessionsSpawnProfilesList?.({
+      agentId: 'codex',
+      backendTargetKey: 'agent:codex',
+      limit: 200,
+    }) as { items?: readonly Record<string, unknown>[] } | undefined;
+
+    expect(mocks.bootstrapAccountSettingsContext).toHaveBeenCalledTimes(2);
+    expect(result?.items?.map((item) => item.id)).toContain('new-profile');
+    expect(result?.items?.map((item) => item.id)).not.toContain('old-profile');
+  });
+
+  it('lists spawn connected-service options from account profile projection without credential material', async () => {
+    mocks.bootstrapAccountSettingsContext.mockResolvedValue({
+      settings: {
+        connectedServicesProfileLabelByKey: { 'openai-codex/work': 'Work OpenAI' },
+        connectedServicesDefaultProfileByServiceId: { 'openai-codex': 'work' },
+      },
+      settingsVersion: 2,
+      loadedAtMs: 1,
+    });
+    mocks.axiosGet.mockResolvedValue({
+      status: 200,
+      data: {
+        id: 'acct_1',
+        connectedServicesV2: [
+          {
+            serviceId: 'openai-codex',
+            profiles: [
+              {
+                profileId: 'work',
+                status: 'connected',
+                kind: 'oauth',
+                providerEmail: 'dev@example.com',
+                providerAccountId: 'provider-account-id',
+              },
+              {
+                profileId: 'token-profile',
+                status: 'connected',
+                kind: 'token',
+                providerEmail: 'token@example.com',
+              },
+            ],
+            groups: [
+              {
+                groupId: 'group_1',
+                displayName: 'Work group',
+                activeProfileId: 'work',
+                memberProfileIds: ['work'],
+                generation: 3,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+    const result = await deps.sessionsSpawnConnectedServicesList?.({
+      agentId: 'codex',
+      backendTargetKey: 'agent:codex',
+      limit: 200,
+    }) as { items?: readonly Record<string, unknown>[] } | undefined;
+
+    expect(result?.items).toEqual([
+      expect.objectContaining({
+        value: 'openai-codex',
+        label: 'openai-codex',
+        serviceId: 'openai-codex',
+        profiles: [
+          {
+            profileId: 'work',
+            status: 'connected',
+            kind: 'oauth',
+            providerEmail: 'dev@example.com',
+            label: 'Work OpenAI',
+          },
+          {
+            profileId: 'token-profile',
+            status: 'unsupported_kind',
+            kind: 'token',
+            providerEmail: 'token@example.com',
+            label: null,
+          },
+        ],
+        accountGroups: [
+          {
+            groupId: 'group_1',
+            label: 'Work group',
+            activeProfileId: 'work',
+            memberProfileIds: ['work'],
+            generation: 3,
+            enabledMemberCount: 1,
+            autoSwitch: false,
+            status: 'ready',
+          },
+        ],
+        defaultProfileId: 'work',
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain('provider-account-id');
+    expect(JSON.stringify(result)).not.toMatch(/token_value|secret|ciphertext/i);
+  });
+
+  it('fails connected-service discovery closed when connected-services feature gates are disabled', async () => {
+    mocks.resolveCliFeatureDecisionForServer.mockImplementation(async (params?: unknown) => ({
+      decision: {
+        state: (params as { featureId?: unknown } | undefined)?.featureId === 'connectedServices'
+          ? 'disabled'
+          : 'enabled',
+      },
+    }));
+    mocks.axiosGet.mockResolvedValue({
+      status: 200,
+      data: {
+        id: 'acct_1',
+        connectedServicesV2: [
+          {
+            serviceId: 'openai-codex',
+            profiles: [{ profileId: 'work', status: 'connected', kind: 'oauth' }],
+            groups: [{ groupId: 'group_1', displayName: 'Work group', activeProfileId: 'work', memberProfileIds: ['work'] }],
+          },
+        ],
+      },
+    });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+    await expect(deps.sessionsSpawnConnectedServicesList?.({
+      agentId: 'codex',
+      backendTargetKey: 'agent:codex',
+      limit: 200,
+    })).resolves.toEqual({ items: [] });
+    expect(mocks.axiosGet).not.toHaveBeenCalled();
+  });
+
+  it('omits connected-service account groups when account-group feature gate is disabled', async () => {
+    mocks.resolveCliFeatureDecisionForServer.mockImplementation(async (params?: unknown) => ({
+      decision: {
+        state: (params as { featureId?: unknown } | undefined)?.featureId === 'connectedServices.accountGroups'
+          ? 'disabled'
+          : 'enabled',
+      },
+    }));
+    mocks.axiosGet.mockResolvedValue({
+      status: 200,
+      data: {
+        id: 'acct_1',
+        connectedServicesV2: [
+          {
+            serviceId: 'openai-codex',
+            profiles: [{ profileId: 'work', status: 'connected', kind: 'oauth' }],
+            groups: [{ groupId: 'group_1', displayName: 'Work group', activeProfileId: 'work', memberProfileIds: ['work'] }],
+          },
+        ],
+      },
+    });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+    const result = await deps.sessionsSpawnConnectedServicesList?.({
+      agentId: 'codex',
+      backendTargetKey: 'agent:codex',
+      limit: 200,
+    }) as { items?: readonly Record<string, unknown>[] } | undefined;
+
+    expect(result?.items?.[0]).toMatchObject({
+      serviceId: 'openai-codex',
+      accountGroups: [],
+    });
+  });
+
+  it('previews spawn MCP servers through the daemon preview owner without secret refs', async () => {
+    mocks.bootstrapAccountSettingsContext.mockResolvedValue({
+      settings: {
+        mcpServersSettingsV1: {
+          v: 1,
+          strictMode: false,
+          servers: [
+            {
+              id: 'srv_linear',
+              name: 'linear',
+              title: 'Linear',
+              transport: 'stdio',
+              stdio: { command: 'linear-mcp', args: [] },
+              env: { LINEAR_API_KEY: { t: 'savedSecret', secretId: 'saved_secret_linear' } },
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+          bindings: [
+            {
+              id: 'bind_linear',
+              serverId: 'srv_linear',
+              enabled: true,
+              target: { t: 'allMachines' },
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+        },
+      },
+      settingsVersion: 2,
+      loadedAtMs: 1,
+    });
+    mocks.detectProviderMcpServers.mockResolvedValue({
+      servers: [
+        {
+          provider: 'claude',
+          name: 'playwright',
+          transport: 'stdio',
+          stdio: { command: 'npx', args: ['@playwright/mcp'] },
+          envKeys: ['PLAYWRIGHT_TOKEN'],
+          enabled: true,
+          source: { kind: 'project', path: '/repo/.claude/settings.local.json' },
+        },
+      ],
+      warnings: [],
+    });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: {
+        path: '/repo',
+        machineId: 'machine-local',
+        metadata: { path: '/repo', machineId: 'machine-local' },
+      },
+    });
+
+    const result = await deps.sessionsSpawnMcpServersPreview?.({
+      agentId: 'claude',
+      backendTargetKey: 'agent:claude',
+      machineId: 'machine-local',
+      path: '/repo',
+      limit: 200,
+    }) as { ok?: boolean; managed?: readonly Record<string, unknown>[]; detected?: readonly Record<string, unknown>[] } | undefined;
+
+    expect(result?.ok).toBe(true);
+    expect(result?.managed?.[0]).toMatchObject({
+      key: 'managed:srv_linear',
+      serverId: 'srv_linear',
+      name: 'linear',
+      title: 'Linear',
+      authMode: 'savedSecret',
+      selected: true,
+      sourceKind: 'managed',
+    });
+    expect(result?.detected?.[0]).toMatchObject({
+      key: 'detected:claude:playwright',
+      name: 'playwright',
+      authMode: 'unknown',
+      envKeyCount: 1,
+      sourceKind: 'detected',
+      scopeKind: 'providerProject',
+    });
+    expect(mocks.detectProviderMcpServers).toHaveBeenCalledWith({
+      directory: '/repo',
+      providers: undefined,
+      env: process.env,
+    });
+    expect(JSON.stringify(result)).not.toContain('saved_secret_linear');
+    expect(JSON.stringify(result)).not.toContain('LINEAR_API_KEY');
+    expect(JSON.stringify(result)).not.toContain('PLAYWRIGHT_TOKEN');
+  });
+
+  it('rejects invalid message permission overrides before sending to the service', async () => {
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: {
+        metadata: {
+          permissionMode: 'safe-yolo',
+          permissionModeUpdatedAt: 10,
+        },
+      },
+    });
+
+	    const result = await deps.sessionSendMessage({
+	      sessionId: 'sess_2',
+	      message: 'hello',
+	      requestedAction: { v: 1, kind: 'send_now' },
+	      permissionModeOverride: 'not-a-mode',
+	    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'invalid_parameters',
+      error: 'invalid_parameters',
+    });
+    expect(mocks.sendSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it('preserves exact nonblank opaque model override bytes through the CLI service adapter', async () => {
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: { encryptionKey: new Uint8Array(32).fill(1), encryptionVariant: 'legacy' },
+      mode: 'plain',
+      rawSession: { metadata: {} },
+    });
+
+	    await deps.sessionSendMessage({
+	      sessionId: 'sess_1',
+	      message: 'hello',
+	      requestedAction: { v: 1, kind: 'send_now' },
+	      modelOverride: ' model-a\t',
+	    });
+
+    expect(mocks.sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
+      modelOverride: ' model-a\t',
+    }));
   });
 
   it('wires transcript and events actions to the canonical services', async () => {
@@ -540,6 +1245,90 @@ describe('createCliActionDeps session controls', () => {
     expect(mocks.sendSessionMessage).not.toHaveBeenCalled();
   });
 
+  it('rejects native inline review permission above the caller permission before RPC dispatch', async () => {
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: {
+        metadata: {
+          permissionMode: 'default',
+          permissionModeUpdatedAt: 100,
+        },
+      },
+    });
+
+    const input = ReviewStartInputSchema.parse({
+      engineIds: ['codex'],
+      instructions: 'Check correctness.',
+      runLocation: 'current_session',
+      changeType: 'uncommitted',
+      base: { kind: 'none' },
+      permissionMode: 'workspace_write',
+    });
+    await expect(deps.reviewStartInline?.({
+      sessionId: 'sess_1',
+      engineId: 'codex',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Check correctness.',
+      input,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      error: 'permission_escalation_denied',
+      details: {
+        requestedMode: 'safe-yolo',
+        requestedOrdinal: 2,
+        callerMode: 'default',
+        callerOrdinal: 1,
+      },
+    });
+
+    expect(mocks.callSessionRpc).not.toHaveBeenCalled();
+    expect(mocks.sendSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it('uses the forwarded session-agent caller permission mode for spawn non-escalation', async () => {
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: createCredentials(),
+      sessionId: 'sess_1',
+      ctx: {
+        encryptionKey: new Uint8Array(32).fill(1),
+        encryptionVariant: 'legacy',
+      },
+      mode: 'plain',
+      rawSession: {
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        machineId: 'machine-1',
+        metadata: {
+          permissionMode: 'default',
+          permissionModeUpdatedAt: 100,
+        },
+      },
+    });
+
+    await expect(deps.sessionSpawnNew({
+      callerSurface: 'session_agent',
+      callerPermissionMode: 'bypassPermissions',
+      permissionMode: 'bypassPermissions',
+    })).resolves.toMatchObject({
+      type: 'success',
+      sessionId: 'spawned_1',
+    });
+
+    expect(mocks.createSpawnedSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/repo/current',
+      permissionMode: 'bypassPermissions',
+    }));
+  });
+
   it('calls native usage-limit recovery RPCs', async () => {
     const deps = createCliActionDeps({
       token: 'token',
@@ -694,6 +1483,7 @@ describe('createCliActionDeps session controls', () => {
             status: 'waiting',
             issueFingerprint: 'usage-limit:sess_inactive:reset',
             armedAtMs: 1,
+            runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
             resetAtMs: 2,
             nextCheckAtMs: 2,
             attemptCount: 0,
@@ -739,7 +1529,9 @@ describe('createCliActionDeps session controls', () => {
     });
     await expect(deps.sessionUsageLimitWaitResumeCancel?.({
       sessionId: 'sess_inactive',
-      issueFingerprint: null,
+      issueFingerprint: 'usage-limit:sess_inactive:reset',
+      armedAtMs: 1,
+      runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
     })).resolves.toMatchObject({
       ok: true,
       status: 'cancelled',
@@ -801,6 +1593,7 @@ describe('createCliActionDeps session controls', () => {
       ok: true,
       status: 'resumed',
       sessionId: 'sess_inactive',
+      metadata: expect.objectContaining({ machineId: 'machine-local' }),
     });
 
     expect(resumeInactiveSessionWhenReady).toHaveBeenCalledWith(expect.objectContaining({
@@ -1060,6 +1853,7 @@ describe('createCliActionDeps session controls', () => {
             status: 'waiting',
             issueFingerprint: 'usage-limit:sess_inactive:reset',
             armedAtMs: 1,
+            runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
             resetAtMs: 2,
             nextCheckAtMs: 2,
             attemptCount: 0,
@@ -1093,7 +1887,9 @@ describe('createCliActionDeps session controls', () => {
 
     await expect(deps.sessionUsageLimitWaitResumeCancel?.({
       sessionId: 'sess_inactive',
-      issueFingerprint: null,
+      issueFingerprint: 'usage-limit:sess_inactive:reset',
+      armedAtMs: 1,
+      runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
     })).resolves.toMatchObject({
       ok: true,
       status: 'cancelled',
@@ -1102,6 +1898,9 @@ describe('createCliActionDeps session controls', () => {
 
     expect(cancelInactiveSessionUsageLimitRecoveryCheck).toHaveBeenCalledWith({
       sessionId: 'sess_inactive',
+      issueFingerprint: 'usage-limit:sess_inactive:reset',
+      armedAtMs: 1,
+      runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
     });
   });
 
@@ -1124,6 +1923,7 @@ describe('createCliActionDeps session controls', () => {
             status: 'waiting',
             issueFingerprint: 'usage-limit:sess_inactive:reset',
             armedAtMs: 1,
+            runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
             resetAtMs: 2,
             nextCheckAtMs: 2,
             attemptCount: 0,
@@ -1157,7 +1957,9 @@ describe('createCliActionDeps session controls', () => {
 
     await expect(deps.sessionUsageLimitWaitResumeCancel?.({
       sessionId: 'sess_inactive',
-      issueFingerprint: null,
+      issueFingerprint: 'usage-limit:sess_inactive:reset',
+      armedAtMs: 1,
+      runtimeAuthRecoveryAttemptId: 'runtime-auth-attempt:exact-1',
     })).resolves.toMatchObject({
       ok: true,
       status: 'cancelled',
@@ -1166,6 +1968,7 @@ describe('createCliActionDeps session controls', () => {
 
     expect(cancelConnectedServiceRuntimeAuthRecovery).toHaveBeenCalledWith({
       sessionId: 'sess_inactive',
+      attemptId: 'runtime-auth-attempt:exact-1',
     });
   });
 
@@ -1355,7 +2158,7 @@ describe('createCliActionDeps session controls', () => {
       sessionId: 'sess_1',
       requestId: 'ask_done_1',
       decision: 'approve',
-      answers: [{ question: 'Continue?', answer: 'Yes' }],
+      answers: [{ question: 'Continue?', values: ['Yes'] }],
     })).resolves.toEqual({
       ok: false,
       errorCode: 'permission_request_not_found',
@@ -1446,7 +2249,7 @@ describe('createCliActionDeps session controls', () => {
       sessionId: 'sess_1',
       requestId: 'perm_pending_1',
       decision: 'approve',
-      answers: [{ question: 'Continue?', answer: 'Yes' }],
+      answers: [{ question: 'Continue?', values: ['Yes'] }],
     })).resolves.toEqual({
       ok: false,
       errorCode: 'permission_request_not_found',

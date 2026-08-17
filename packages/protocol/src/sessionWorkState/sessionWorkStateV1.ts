@@ -11,7 +11,19 @@ export const SessionWorkStateStatusV1Schema = z.enum([
 ]);
 export type SessionWorkStateStatusV1 = z.infer<typeof SessionWorkStateStatusV1Schema>;
 
-export const SessionWorkStateStatusReasonV1Schema = z.enum(['budgetLimited']);
+// Provider-neutral status reasons (additive, shared across providers):
+//  - `blocked`: provider reported a generic blocked state without a narrower reason (Codex).
+//  - `usageLimited`: provider usage limits currently prevent further work (Codex).
+//  - `budgetLimited`: goal paused/blocked because a token budget was reached (Codex).
+//  - `interrupted`: goal was left `active` when its CLI session tore down gracefully without the
+//    goal being met (G-6). Status stays `active` (the goal may resume); the reason lets the UI mark
+//    it "(interrupted)" and resume-injection distinguish it from a freshly-set goal.
+export const SessionWorkStateStatusReasonV1Schema = z.enum([
+  'blocked',
+  'usageLimited',
+  'budgetLimited',
+  'interrupted',
+]);
 export type SessionWorkStateStatusReasonV1 = z.infer<typeof SessionWorkStateStatusReasonV1Schema>;
 
 export const SessionWorkStateItemKindV1Schema = z.enum(['goal', 'task', 'todo']);
@@ -19,6 +31,19 @@ export type SessionWorkStateItemKindV1 = z.infer<typeof SessionWorkStateItemKind
 
 export const SessionWorkStateItemOriginV1Schema = z.enum(['vendor', 'happier', 'derived']);
 export type SessionWorkStateItemOriginV1 = z.infer<typeof SessionWorkStateItemOriginV1Schema>;
+
+// Provider-derived goal capabilities. The owning provider computes these from its own
+// signals (Codex from app-server goal mode; Claude from observed `goal_status` + `/goal`
+// support) so generic UI gating stays capability-driven instead of branching on provider id.
+// All members optional + passthrough so the projection is additive and forward-compatible.
+export const SessionWorkStateGoalCapabilitiesV1Schema = z
+  .object({
+    canEdit: z.boolean().optional(),
+    canStop: z.boolean().optional(),
+    canClear: z.boolean().optional(),
+  })
+  .passthrough();
+export type SessionWorkStateGoalCapabilitiesV1 = z.infer<typeof SessionWorkStateGoalCapabilitiesV1Schema>;
 
 export const SessionWorkStateItemV1Schema = z
   .object({
@@ -36,6 +61,7 @@ export const SessionWorkStateItemV1Schema = z
     priority: z.string().optional(),
     progress: z.number().finite().min(0).max(1).optional(),
     statusReason: SessionWorkStateStatusReasonV1Schema.optional(),
+    goalCapabilities: SessionWorkStateGoalCapabilitiesV1Schema.optional(),
     tokenBudget: z.number().finite().positive().nullable().optional(),
     tokensUsed: z.number().int().nonnegative().optional(),
     timeUsedSeconds: z.number().finite().nonnegative().optional(),

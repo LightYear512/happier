@@ -76,6 +76,41 @@ describe('createClaudeInFlightSteerCapabilityPublisher (lane P, O-design Seam A)
     publisher.dispose();
   });
 
+  it('publishes Agent SDK steerability without advertising terminal-composer controls', () => {
+    const captured = capture();
+    const publisher = createClaudeInFlightSteerCapabilityPublisher({
+      session: captured.session,
+      isCanonicalTurnActive: () => true,
+      nowMs: () => 1234,
+      terminalComposerControls: false,
+    });
+
+    publisher.publish({ available: true, reason: null });
+
+    expect(captured.state.capabilities?.inFlightSteerAvailable).toBe(true);
+    expect(captured.state.capabilities?.terminalComposerClearSupported).toBeUndefined();
+    expect(captured.state.capabilities?.terminalComposerDraftPresent).toBeUndefined();
+    publisher.dispose();
+  });
+
+  it('emits a final cleared snapshot on dispose after a terminal composer draft', () => {
+    const captured = capture();
+    const publisher = createClaudeInFlightSteerCapabilityPublisher({
+      session: captured.session,
+      isCanonicalTurnActive: () => true,
+      nowMs: () => 1234,
+      minPublishIntervalMs: 0,
+    });
+
+    publisher.publish({ available: false, reason: 'user_terminal_draft' });
+    publisher.dispose();
+
+    expect(captured.writes).toBe(2);
+    expect(captured.state.capabilities?.inFlightSteerAvailable).toBe(true);
+    expect(captured.state.capabilities?.inFlightSteerUnavailableReason ?? null).toBeNull();
+    expect(captured.state.capabilities?.terminalComposerDraftPresent).toBe(false);
+  });
+
   it('publishes draft presence from the raw terminal-draft snapshot even when unavailable maps to turn_settling', () => {
     const captured = capture();
     const publisher = createClaudeInFlightSteerCapabilityPublisher({
@@ -165,5 +200,24 @@ describe('createClaudeInFlightSteerCapabilityPublisher (lane P, O-design Seam A)
 
     vi.advanceTimersByTime(5000);
     expect(captured.writes).toBe(1);
+  });
+
+  it('publishes and clears the exact transient native-custody local id', () => {
+    let now = 1_234;
+    const captured = capture();
+    const publisher = createClaudeInFlightSteerCapabilityPublisher({
+      session: captured.session,
+      nowMs: () => now,
+      minPublishIntervalMs: 0,
+    });
+
+    publisher.publishPendingInputInterruptAndRunLocalId('queued-local');
+    expect(captured.state.capabilities?.pendingInputInterruptAndRunLocalId).toBe('queued-local');
+    expect(captured.state.capabilities?.pendingInputInterruptAndRunStateAt).toBe(1_234);
+
+    now = 1_235;
+    publisher.publishPendingInputInterruptAndRunLocalId(null);
+    expect(captured.state.capabilities?.pendingInputInterruptAndRunLocalId).toBeNull();
+    expect(captured.state.capabilities?.pendingInputInterruptAndRunStateAt).toBe(1_235);
   });
 });

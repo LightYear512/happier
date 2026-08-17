@@ -62,7 +62,26 @@ export async function updateSessionMetadataWithAck(opts: {
     syncSessionSnapshotFromServer: () => Promise<void>;
     handler: (metadata: Metadata) => Metadata;
 }): Promise<void> {
-    await backoff(async () => {
+    await updateSessionMetadataWithAckResult({
+        ...opts,
+        handler: (metadata) => ({ metadata: opts.handler(metadata), result: undefined }),
+    });
+}
+
+export async function updateSessionMetadataWithAckResult<TResult>(opts: {
+    socket: AckableSocket;
+    sessionId: string;
+    sessionEncryptionMode: 'e2ee' | 'plain';
+    encryptionKey: Uint8Array;
+    encryptionVariant: 'legacy' | 'dataKey';
+    getMetadata: () => Metadata | null;
+    setMetadata: (metadata: Metadata | null) => void;
+    getMetadataVersion: () => number;
+    setMetadataVersion: (version: number) => void;
+    syncSessionSnapshotFromServer: () => Promise<void>;
+    handler: (metadata: Metadata) => Readonly<{ metadata: Metadata; result: TResult }>;
+}): Promise<TResult> {
+    return await backoff(async () => {
         if (opts.getMetadataVersion() < 0) {
             await opts.syncSessionSnapshotFromServer();
             if (opts.getMetadataVersion() < 0) {
@@ -75,7 +94,8 @@ export async function updateSessionMetadataWithAck(opts: {
         }
 
         const current = opts.getMetadata() ?? ({} as Metadata);
-        const updated = opts.handler(current);
+        const update = opts.handler(current);
+        const updated = update.metadata;
         logger.debug('[API] updateMetadata attempting', {
             expectedVersion: opts.getMetadataVersion(),
             hasModeOverride: Boolean((updated as Record<string, unknown> | null)?.acpSessionModeOverrideV1),
@@ -111,7 +131,7 @@ export async function updateSessionMetadataWithAck(opts: {
             });
             opts.setMetadata(next);
             opts.setMetadataVersion(answer.version);
-            return;
+            return update.result;
         }
 
         if (answer.result === 'version-mismatch') {

@@ -37,6 +37,9 @@ const ScheduleSchema = z.discriminatedUnion("kind", [
         scheduleExpr: z.string().trim().min(1).max(256),
         timezone: z.string().trim().min(1).optional().nullable(),
     }).strict(),
+    z.object({
+        kind: z.literal("manual"),
+    }).strict(),
 ]);
 
 const TemplateEnvelopeSchema = z.object({
@@ -97,7 +100,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function assertTemplateEnvelopeForAccountMode(templateCiphertext: string, accountMode: "e2ee" | "plain"): void {
+export function assertAutomationTemplateEnvelopeForAccountMode(
+    templateCiphertext: string,
+    accountMode: "e2ee" | "plain",
+): void {
     let parsed: unknown;
     try {
         parsed = JSON.parse(templateCiphertext);
@@ -146,7 +152,10 @@ function assertTemplateEnvelopeForAccountMode(templateCiphertext: string, accoun
     }
 }
 
-function assertScheduleIsComputable(schedule: { kind: "interval" | "cron"; everyMs?: number; scheduleExpr?: string; timezone?: string | null }): void {
+function assertScheduleIsComputable(schedule: AutomationUpsertInput["schedule"]): void {
+    if (schedule.kind === "manual") {
+        return;
+    }
     const now = new Date();
     const due = computeNextDueAtForAutomation({
         now,
@@ -170,7 +179,7 @@ export function parseAutomationUpsertInput(
     }
 
     const accountMode = opts?.accountMode === "plain" ? "plain" : "e2ee";
-    assertTemplateEnvelopeForAccountMode(parsed.data.templateCiphertext, accountMode);
+    assertAutomationTemplateEnvelopeForAccountMode(parsed.data.templateCiphertext, accountMode);
     assertScheduleIsComputable(parsed.data.schedule);
 
     return {
@@ -190,7 +199,7 @@ export function parseAutomationPatchInput(
 
     if (typeof parsed.data.templateCiphertext === "string") {
         const accountMode = opts?.accountMode === "plain" ? "plain" : "e2ee";
-        assertTemplateEnvelopeForAccountMode(parsed.data.templateCiphertext, accountMode);
+        assertAutomationTemplateEnvelopeForAccountMode(parsed.data.templateCiphertext, accountMode);
     }
     if (parsed.data.schedule) {
         assertScheduleIsComputable(parsed.data.schedule);

@@ -707,6 +707,13 @@ export const ja: TranslationStructure = {
 
     },
 
+    unsupportedContent: {
+      unparsedUserMessage: '解析できないユーザーメッセージ',
+      unparsedAgentMessage: '解析できないアシスタントメッセージ',
+      unsupportedAgentOutput: 'サポートされていない出力',
+      unsupportedTranscriptRecord: 'サポートされていない記録',
+    },
+
   },
 
 
@@ -917,35 +924,6 @@ export const ja: TranslationStructure = {
     },
   },
 
-  externalIssues: {
-    title: '外部課題',
-    detailTitle: '外部課題',
-    fallbackIssueTitle: '外部課題',
-    empty: '外部課題はありません',
-    unknown: '不明',
-    unknownRepository: '不明なリポジトリ',
-    workflowUnknown: 'workflow 不明',
-    workflow: 'ワークフロー',
-    sessionRun: 'セッション実行',
-    providerActions: 'プロバイダー操作',
-    noLatestRun: '最新の実行なし',
-    noActiveRun: 'アクティブな実行なし',
-    noActivePrimaryRun: 'アクティブな主要実行なし',
-    noProviderActions: 'プロバイダー操作なし',
-    noProviderResult: 'プロバイダー結果なし',
-    generation: ({ generation }: { generation: number }) => `世代 ${generation}`,
-    generationUnknown: '世代不明',
-    latestRunState: ({ state }: { state: string }) => `最新の実行: ${state}`,
-    claimedByMachine: ({ machineId }: { machineId: string }) => `${machineId} が要求済み`,
-    unclaimed: '未要求',
-    missingIssueRefId: '課題参照がありません。',
-    a11y: {
-      openList: '外部課題',
-      refreshList: '外部課題を更新',
-      refreshDetail: '外部課題を更新',
-    },
-  },
-
   sessionLog: {
     title: "セッションログ",
     devModeRequiredTitle: "開発者モードが必要です",
@@ -1015,6 +993,8 @@ export const ja: TranslationStructure = {
         intervalSubtitle: "N 分ごとに実行します。",
         cronTitle: "Cron 式",
         cronSubtitle: "高度なスケジュール式。",
+        manualTitle: "手動",
+        manualSubtitle: "アプリ、API、または CLI からトリガーされた場合にのみ実行します。",
         cronHelpText: "標準の 5 フィールド cron: 分 時 日 月 曜日。",
       },
       sentence: {
@@ -1316,6 +1296,8 @@ export const ja: TranslationStructure = {
       anthropic: "Anthropic（デフォルト）",
       deepseek: "DeepSeek（推論）",
       zai: "Z.AI (GLM-4.6)",
+      minimax: "MiniMax (M3)",
+      minimaxCn: "MiniMax (M3, CN)",
       codex: "Codex (Default)",
       openai: "OpenAI (GPT-5)",
       azureOpenai: "Azure OpenAI",
@@ -1488,6 +1470,7 @@ export const ja: TranslationStructure = {
       kiloSubtitleExperimental: "Kilo CLI（実験）",
       kiroSubtitleExperimental: "Kiro CLI（実験）",
       customAcpSubtitleExperimental: "カスタム ACP CLI（実験）",
+      grokSubtitleExperimental: "Grok Build CLI（実験）",
       piSubtitleExperimental: "Pi CLI（実験）",
       copilotSubtitleExperimental: "GitHub Copilot CLI（実験的）",
       cursorSubtitleExperimental: "Cursor Agent CLI（実験）",
@@ -1519,7 +1502,6 @@ export const ja: TranslationStructure = {
     environmentVariables: {
       title: "環境変数",
       addVariable: "変数を追加",
-      systemManagedSubtitle: "このプロファイル用に自動管理されています。",
       namePlaceholder: "変数名（例: MY_CUSTOM_VAR）",
       valuePlaceholder: "値（例: my-value または ${MY_VAR}）",
       validation: {
@@ -1527,8 +1509,6 @@ export const ja: TranslationStructure = {
         invalidNameFormat:
           "変数名は大文字、数字、アンダースコアのみで、数字から始めることはできません。",
         duplicateName: "その変数は既に存在します。",
-        autoProvisionedReserved:
-          "この変数はこのプロファイル用に自動管理されています。",
       },
       card: {
         valueLabel: "値:",
@@ -1604,28 +1584,6 @@ export const ja: TranslationStructure = {
         },
       },
     },
-    provision: {
-      title: "マシンでプロビジョニング",
-      provisionOnMachine: "マシンでプロビジョニング",
-      modalTitle: ({ backend }: { backend: string }) => `${backend} をプロビジョニング`,
-      inProgressHint:
-        "CLI の案内に従ってログインを完了してください。",
-      alreadyProvisioned:
-        "このプロファイルはこのマシンで既にプロビジョニング済みです。",
-      successHint: "プロファイルのプロビジョニングが完了しました。",
-      errorBody: "プロファイルのプロビジョニングに失敗しました。",
-    },
-    switch: {
-      title: "プロファイルを切り替え",
-      count: ({ count }: { count: number }) => `${count} 件の利用可能なプロファイル`,
-      confirmTitle: "プロファイルを切り替えますか？",
-      confirmBody:
-        "現在のセッションは選択したプロファイルで再起動します。",
-      errorTitle: "プロファイルの切り替えに失敗しました",
-      errorBody: "セッションのプロファイルを切り替えられませんでした。",
-      turnInProgress:
-        "現在のターンが完了してから、もう一度お試しください。",
-    },
     delete: {
       title: "プロファイルを削除",
       message: ({ name }: { name: string }) =>
@@ -1642,10 +1600,14 @@ export const ja: TranslationStructure = {
     error: "エラー",
     online: "オンライン",
     working: "作業中...",
+    workingRetained: "作業中、更新待ち…",
+    backgroundActive: ({ count }: { count: number }) => `バックグラウンドで${count}件実行中`,
+    activityUnknown: "アクティビティの状態を確認できません",
     readyForReview: "レビュー準備完了",
     offline: "オフライン",
     lastSeen: ({ time }: { time: string }) => `最終アクセス: ${time}`,
     actionRequired: "操作が必要",
+    waitingForYourResponse: "回答を待っています",
     permissionRequired: "権限が必要です",
     activeNow: "アクティブ",
     unknown: "不明",
@@ -2218,37 +2180,6 @@ export const ja: TranslationStructure = {
     general: '一般',
     filesAndSourceControl: 'ファイルとソース管理',
     system: 'システム',
-    devMotionPrimitivesTitle: 'Motion Primitives',
-    devMotionPrimitivesFooter: 'Phase 1A.11 - slide transition variants for visual QA',
-    devMotionSlideVariantsTitle: 'Slide Transition Variants',
-    devMotionSlideVariantsSubtitle: 'Discrete switch + carousel drag/tap, with blur/preset/reduced-motion toggles',
-    devMotionReducedMotionLabel: 'reduced motion',
-    devMotionDiscreteTitle: 'Discrete switch (SelectionList-style)',
-    devMotionStepTitle: ({ step }: { step: number }) => `Step ${step}`,
-    devMotionDiscreteBody: 'Discrete adapter for SelectionList. Forward/backward direction is caller-owned; blur defaults off.',
-    devMotionBack: 'Back',
-    devMotionForward: 'Forward',
-    devMotionCarouselTitle: 'Carousel drag + tap (StoryDeck-style)',
-    devMotionCardTitle: ({ card }: { card: number }) => `Card ${card}`,
-    devMotionCarouselBody: 'Drag horizontally past 40% of the width to commit. The Continue/Back buttons fire the same spring.',
-    devMotionContinue: 'Continue',
-    devMotionModalTitle: 'Motion primitives - variants',
-    devStoryDeckPreviewTitle: 'Story Deck Preview',
-    devStoryDeckPreviewFooter: 'Preview surfaces without changing onboarding or release-note seen state.',
-    devStoryDeckOnboardingTitle: 'Onboarding showcase',
-    devStoryDeckOnboardingSubtitle: ({ count }: { count: number }) => `${count} cards - first-open story`,
-    devStoryDeckNoReleaseTitle: 'No release notes available',
-    devStoryDeckNoReleaseSubtitle: 'Add authored release notes and run parseReleaseNotes to generate the manifest.',
-    devStoryDeckReleaseSubtitle: ({ count, releaseId }: { count: number; releaseId: string }) => `${count} cards - ${releaseId}`,
-    devWebHmrTitle: 'Hot Reload',
-    devWebHmrToggleTitle: 'Fast Refresh / HMR',
-    devWebHmrRuntimeDetected: 'Expo web / Metro runtime detected',
-    devWebHmrRuntime: 'Expo web / Metro runtime',
-    devWebHmrEnabled: 'enabled for this tab',
-    devWebHmrDisabled: 'disabled for this tab',
-    devWebHmrReload: 'Changes reload this tab.',
-    devWebHmrSubtitle: ({ runtime, status, reload }: { runtime: string; status: string; reload: string }) =>
-        `${runtime}. Fast Refresh / HMR is ${status}. ${reload}`.trim(),
 
     // Renamed / promoted items
     sessions: 'セッション',
@@ -2870,6 +2801,12 @@ localTailscale: {
         partialApplication: "認証の一部を切り替えました",
         partialApplicationForService: ({ service }: { service: string }) => `${service} の認証は完全には切り替わっていません`,
       },
+      partialApply: {
+        title: '認証は部分的に切り替わりました',
+        body: '新しいアカウントは保存されましたが、実行中のこのセッションへの適用は完全には成功しませんでした。再試行するか、このセッションを以前のアカウントに戻してください。',
+        retry: 'このセッションに再適用',
+        revert: '以前のアカウントに戻す',
+      },
     },
     diagnostics: {
       title: {
@@ -2880,17 +2817,18 @@ localTailscale: {
         no_eligible_group_member: "利用できるフォールバックアカウントがありません",
         recovery_retry_scheduled: "プロバイダーの復旧が予定されています",
         recovery_dead_lettered: "プロバイダーの復旧に対応が必要です",
-        runtime_auth_recovery_superseded: "Provider recovery was superseded",
-        runtime_auth_generation_stale: "Provider recovery is stale",
-        hot_apply_unavailable: "Hot account switch is unavailable",
-        app_server_unavailable: "Provider app server is unavailable",
+        runtime_auth_recovery_superseded: "プロバイダーの復旧は置き換えられました",
+        runtime_auth_generation_stale: "プロバイダーの復旧は古くなっています",
+        hot_apply_unavailable: "ホットアカウント切り替えは利用できません",
+        app_server_unavailable: "プロバイダーのアプリサーバーを利用できません",
         provider_account_adoption_mismatch: "プロバイダーがアカウントを切り替えませんでした",
-        provider_account_identity_unverified: "Provider account identity is unverified",
+        provider_account_identity_unverified: "プロバイダーアカウントの本人性は未確認です",
         post_switch_verification_failed: "プロバイダーアカウントを確認できませんでした",
-        quota_snapshot_stale: "Quota data is stale",
-        quota_fetch_disabled: "Quota checks are disabled",
-        quota_fetch_backoff: "Quota checks are backed off",
-        auth_surface_weakly_verified: "Authentication rewrite verified",
+        quota_snapshot_stale: "クォータデータは古くなっています",
+        quota_fetch_disabled: "クォータ確認は無効です",
+        quota_fetch_backoff: "クォータ確認はバックオフ中です",
+        auth_surface_weakly_verified: "認証の書き換えを確認しました",
+        connected_service_restart_requested: "セッションの再起動が要求されました",
         connected_service_credential_reconnect_required: "接続済みアカウントの再接続が必要です",
         claude_subscription_missing_claude_code_scope: "Claude Code のアクセスには再接続が必要です",
         claude_subscription_native_auth_materialization_failed: "Claude Code の認証情報を準備できませんでした",
@@ -2910,17 +2848,18 @@ localTailscale: {
         no_eligible_group_member: "フォールバック対象のアカウントがありません",
         recovery_retry_scheduled: "プロバイダー復旧の再試行が予定されています",
         recovery_dead_lettered: "プロバイダー復旧が再試行上限に達しました",
-        runtime_auth_recovery_superseded: "Provider recovery was superseded",
-        runtime_auth_generation_stale: "Provider recovery generation is stale",
-        hot_apply_unavailable: "Hot account switch unavailable",
-        app_server_unavailable: "Provider app server unavailable",
+        runtime_auth_recovery_superseded: "プロバイダーの復旧は置き換えられました",
+        runtime_auth_generation_stale: "プロバイダー復旧の世代は古くなっています",
+        hot_apply_unavailable: "ホットアカウント切り替えは利用できません",
+        app_server_unavailable: "プロバイダーのアプリサーバーを利用できません",
         provider_account_adoption_mismatch: "プロバイダーは別のアカウントのままです",
-        provider_account_identity_unverified: "Provider account identity unverified",
+        provider_account_identity_unverified: "プロバイダーアカウントの本人性は未確認です",
         post_switch_verification_failed: "プロバイダーアカウントを確認できませんでした",
-        quota_snapshot_stale: "Quota data is stale",
-        quota_fetch_disabled: "Quota checks disabled",
-        quota_fetch_backoff: "Quota checks temporarily backed off",
-        auth_surface_weakly_verified: "Authentication rewrite weakly verified",
+        quota_snapshot_stale: "クォータデータは古くなっています",
+        quota_fetch_disabled: "クォータ確認は無効です",
+        quota_fetch_backoff: "クォータ確認は一時的にバックオフ中です",
+        auth_surface_weakly_verified: "認証の書き換えは弱く確認されました",
+        connected_service_restart_requested: "セッションの再起動が要求されました",
         connected_service_credential_reconnect_required: "接続済みアカウントの再接続が必要です",
         claude_subscription_missing_claude_code_scope: "Claude Code 用に Claude サブスクリプションを再接続してください",
         claude_subscription_native_auth_materialization_failed: "Claude Code のネイティブ認証を準備できませんでした",
@@ -2937,17 +2876,18 @@ localTailscale: {
         no_eligible_group_member: "このプールには現在フォールバック対象のアカウントがありません。接続済みアカウントを確認し、必要に応じてプロファイルを再接続してください。",
         recovery_retry_scheduled: "Happier はプロバイダー復旧の再試行を予定しました。今すぐ再試行するか、接続済みアカウントを確認できます。",
         recovery_dead_lettered: "Happier はプロバイダー復旧の自動再試行を使い切りました。接続済みアカウントを確認するか、選択したプロファイルを再接続してください。",
-        runtime_auth_recovery_superseded: "This provider recovery attempt was replaced by newer connected-service state. Happier will not keep retrying the stale account.",
-        runtime_auth_generation_stale: "This provider recovery attempt belongs to an older connected-service generation. Wait for the latest switch or review connected accounts.",
-        hot_apply_unavailable: "This provider cannot safely switch authentication in the running session. Happier will wait for a safe restart or the next eligible recovery path.",
-        app_server_unavailable: "The provider app server was not available to verify or apply the authentication switch. Retry when the session is ready.",
+        runtime_auth_recovery_superseded: "このプロバイダー復旧の試行は、より新しい接続サービス状態に置き換えられました。Happier は古いアカウントを再試行し続けません。",
+        runtime_auth_generation_stale: "このプロバイダー復旧の試行は、古い接続サービス世代に属しています。最新の切り替えを待つか、接続済みアカウントを確認してください。",
+        hot_apply_unavailable: "このプロバイダーは実行中のセッションで安全に認証を切り替えられません。Happier は安全な再起動または次の利用可能な復旧経路を待ちます。",
+        app_server_unavailable: "プロバイダーのアプリサーバーは、認証切り替えの確認または適用に利用できませんでした。セッションの準備ができたら再試行してください。",
         provider_account_adoption_mismatch: "切り替え後もプロバイダーは別のアカウントのままでした。接続済みアカウントを確認するか、切り替えを再試行してください。",
-        provider_account_identity_unverified: "Happier could not prove the live provider account identity. It will avoid same-account fanout until stronger proof is available.",
+        provider_account_identity_unverified: "Happier は現在のプロバイダーアカウントの本人性を証明できませんでした。より強い証明が得られるまで、同一アカウントへの分岐を避けます。",
         post_switch_verification_failed: "Happier は、プロバイダーが選択したアカウントを採用したことを確認できませんでした。接続済みアカウントを確認するか、切り替えを再試行してください。",
-        quota_snapshot_stale: "The latest quota snapshot is too old to drive a proactive switch. Happier will keep using reactive recovery until fresh quota is available.",
-        quota_fetch_disabled: "Quota checks are currently disabled for this provider. Happier will keep using reactive recovery.",
-        quota_fetch_backoff: "Quota checks are temporarily backed off after a provider or network response. Happier will retry quota refresh later.",
-        auth_surface_weakly_verified: "Happier verified the selected authentication files were rewritten, but this provider does not expose exact live account identity.",
+        quota_snapshot_stale: "最新のクォータスナップショットが古すぎるため、予防的な切り替えには使えません。新しいクォータが利用可能になるまで、Happier はリアクティブ復旧を使い続けます。",
+        quota_fetch_disabled: "このプロバイダーでは現在クォータ確認が無効です。Happier はリアクティブ復旧を使い続けます。",
+        quota_fetch_backoff: "プロバイダーまたはネットワークの応答後、クォータ確認は一時的にバックオフ中です。Happier は後でクォータ更新を再試行します。",
+        auth_surface_weakly_verified: "Happier は選択された認証ファイルが書き換えられたことを確認しましたが、このプロバイダーは現在の正確なアカウント本人性を公開していません。",
+        connected_service_restart_requested: "選択した接続済みアカウントを反映するため、Happier が安全なセッション再起動を要求しました。",
         connected_service_credential_reconnect_required: "このセッションを再開するには、選択した接続済みアカウントを再接続する必要があります。プロファイルを再接続してから再試行してください。",
         claude_subscription_missing_claude_code_scope: "この Claude プロファイルは Claude Code のスコープが付与される前に接続されました。再接続してから、セッションまたはプール切り替えを再試行してください。",
         claude_subscription_native_auth_materialization_failed: "Happier はこのプロファイル用の Claude Code ネイティブ認証情報ファイルを作成できませんでした。プロファイルを再接続するか、別のプールメンバーを選択してください。",
@@ -2962,6 +2902,7 @@ localTailscale: {
       identityMismatchTitle: "接続済みアカウントを置き換えますか？",
       identityMismatchBody: "新しい認証情報は別のプロバイダーアカウントに属しています。同じプロファイルIDを維持し、リンクされたアカウントを置き換えるには確認してください。",
       identityMismatchConfirm: "アカウントを置き換える",
+      targetMismatch: "この再接続は別の接続済みプロファイルの認証情報を返しました。対象のプロファイルから再接続をやり直してください。",
     },
     defaultAuth: {
       title: "デフォルトのバックエンド設定",
@@ -2980,6 +2921,11 @@ localTailscale: {
           "ここでは接続済みプールが無効なため、ネイティブ認証を使います。",
         connected_service_unsupported:
           "このバックエンドはその接続サービスに対応していないため、ネイティブ認証を使います。",
+      },
+      poolSuggestion: {
+        body: ({ pool }: { pool: string }) => `${pool} プールを使うと、セッションがレート制限を回避してローテーションします。`,
+        accept: "プールを使う",
+        dismiss: "閉じる",
       },
     },
     list: {
@@ -3023,10 +2969,11 @@ localTailscale: {
       noData: "クォータデータはまだありません",
       planLabel: ({ plan }: { plan: string }) => `プラン: ${plan}`,
       recoveryCreditTitle: ({ count }: { count: number }) => count === 1 ? "1 reset available" : `${count} resets available`,
-      recoveryCreditSubtitle: "使用量リセットを適用して今すぐクォータを回復します。",
+      recoveryCreditSubtitle: "今すぐ使用量リセットを適用してクォータを回復します。",
       recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
       recoveryCreditApplying: "リセットを適用中…",
       recoveryCreditMachineUnavailable: "このリセットを適用できるアクティブなマシンがありません。",
+      recoveryCreditNothingToReset: "現在、リセットが必要な使用量上限の枠はありません。",
       recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? "1 reset" : `${count} resets`,
       remaining: ({ percent }: { percent: string }) => `残り${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
@@ -3035,6 +2982,7 @@ localTailscale: {
         `${used}/${limit} 使用済み`,
       duration: {
         now: "今",
+        outdated: "古い",
         daysHours: ({ days, hours }: { days: number; hours: number }) =>
           `${days}日 ${hours}時間`,
         hoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }) =>
@@ -3307,6 +3255,9 @@ localTailscale: {
         removeMember: "メンバーを削除",
         removeMemberConfirmTitle: "メンバーを削除",
         removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `このプールから「${profileId}」を削除しますか？`,
+        removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `このプールから${count === 1 ? "このメンバー" : `${count} 人のメンバー`}を削除しますか？\n\n${members}`,
+        manageMembersTitle: 'メンバーを管理',
+        manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${total} 件中 ${count} 件のアカウント`,
         searchMembersPlaceholder: "プロファイルを検索",
         membersTitle: "メンバー",
         membersSubtitle: "このプールに含めるプロファイルを選択します。",
@@ -3370,8 +3321,17 @@ localTailscale: {
         title: "プールはまだありません",
         subtitle: "プールを作成すると、アカウント間で自動的にフォールバックできます。",
       },
+      loadError: {
+        title: "プールを読み込めませんでした",
+        subtitle: "アカウントのプールを読み込めませんでした。接続を確認して、もう一度お試しください。",
+        staleTitle: "最後に取得したプールを表示しています",
+        staleSubtitle: "最新のプール一覧を更新できませんでした。もう一度お試しください。",
+        retry: "再試行",
+      },
       detail: {
         summaryTitle: "概要",
+        serverActiveStatusTitle: "サーバーに保存済み",
+        serverActiveStatusSubtitle: "これはサーバー上の永続的なアクティブアカウントです。オフラインのマシンは再接続時に適用します。この画面は、すべてのマシンへの反映完了を示すものではありません。",
         summary: ({ count, strategy }: { count: number; strategy: string }) => `${count} アカウント · ${strategy}`,
         membersTitle: "メンバー",
         moveUp: "上へ移動",
@@ -3382,6 +3342,15 @@ localTailscale: {
         behaviorTitle: "動作",
         advancedTitle: "詳細設定",
         advancedSubtitle: "このプールがいつどのようにアカウントを切り替えるかを調整します。",
+                manualApplyDivergenceTitle: "サーバーでは切り替わりましたが、実行中のセッションには未適用です",
+                manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `アクティブなアカウントはサーバーで変更されましたが、実行中のセッションへの適用に失敗しました（${detail}）。再試行するか、元に戻してすべてを前のアカウントに保ってください。`,
+                manualApplyRetry: "実行中のセッションへの適用を再試行",
+                manualApplyRevert: "前のアカウントに戻す",
+                machineTarget: {
+                  title: "実行中のセッションに適用できません",
+                  noBoundSession: "現在このプールを使用している実行中のセッションがないため、切り替えをライブで適用できません。このプールでセッションを開始してから、もう一度お試しください。",
+                  offline: "このプールのセッションを実行しているマシンがオフラインのため、切り替えを反映できません。マシンをオンラインに戻してから、もう一度お試しください。",
+                },
       },
       behavior: {
         autoRestorePrimaryTitle: "リセット時にプライマリを復元",
@@ -3882,6 +3851,16 @@ localTailscale: {
         subtitle: "ブロックされたプロバイダーが再開可能になったときに通知します",
       },
     },
+    pushPriming: {
+        title: '通知をオンにしますか？',
+        body: 'エージェントの作業完了、権限の確認が必要なとき、応答待ちのときに Happier がお知らせします。設定でいつでも変更できます。',
+        accept: 'オンにする',
+        decline: '後で',
+        blockedTitle: '通知がブロックされています',
+        blockedBody: 'このアプリの通知はシステム設定でオフになっています。設定を開いて許可してください。',
+        openSettings: '設定を開く',
+        openSettingsFailed: 'システム設定を開けませんでした。',
+    },
     pushTroubleshooting: {
       status: {
         title: "状態",
@@ -3894,6 +3873,9 @@ localTailscale: {
         title: "権限",
         loading: "読み込み中…",
         loadingSubtitle: "通知権限を確認しています",
+        runtimeUnavailable: '利用不可',
+        runtimeUnavailableSubtitle: 'この端末で通知サービスに接続できませんでした。',
+        runtimeTimeoutSubtitle: '通知サービスが応答しませんでした。開発サーバーへの接続を確認して再試行してください。',
         unsupported: "未対応",
         unsupportedSubtitle: "Web ではプッシュ権限を利用できません。",
         allowed: "許可",
@@ -3908,6 +3890,10 @@ localTailscale: {
         subtitle: ({ fingerprint }: { fingerprint: string }) =>
           `現在のトークン: ${fingerprint}`,
         unavailableSubtitle: "Expo のプッシュトークンを取得できません。",
+        checkingSubtitle: 'この端末のトークンを読み取っています…',
+        runtimeUnavailableSubtitle: 'この端末で通知サービスに接続できませんでした。',
+        runtimeTimeoutSubtitle: '通知サービスが時間内に応答しませんでした。',
+        deviceUnavailableSubtitle: 'このビルドではプッシュトークンを取得できません。このビルドでプッシュ通知が有効か確認してください。',
         registered: "登録済み",
       },
       actions: {
@@ -4153,6 +4139,8 @@ localTailscale: {
         logInSubtitle: "このマシンでターミナルを開き、プロバイダーのサインインを実行します。",
         reauthenticateTitle: "再認証",
         reauthenticateSubtitle: "このマシンでターミナルを開き、プロバイダーのサインインを更新します。",
+        deviceCodeTitle: "デバイスコードを使用",
+        deviceCodeSubtitle: "ヘッドレスまたはリモートマシンでデバイスコードを使って認証します。",
         checkNowTitle: "今すぐ確認",
         checkNowSubtitle: "検出されたローカル認証状態を更新します。",
         statusTitle: "状態",
@@ -4251,6 +4239,24 @@ localTailscale: {
                             resume_full_session: {
                                 title: "セッション全体を再開",
                                 subtitle: "Claude が選択肢を提示したときにセッション全体のコンテキストを読み込みます。"
+                            }
+                        }
+                    },
+                    claudeUnifiedTerminalWorkspaceTrust: {
+                        title: "ワークスペースの信頼",
+                        subtitle: "Claude がワークスペースを信頼するか尋ねたときの Happier の応答方法を選択します。",
+                        options: {
+                            ask_every_time: {
+                                title: "毎回確認する",
+                                subtitle: "ワークスペースの信頼に関する質問をそのままセッションに表示します。"
+                            },
+                            always_trust_happier_workspaces: {
+                                title: "Happier のワークスペースを常に信頼する",
+                                subtitle: "Happier が開いたワークスペースでは、再取得された現在の Claude プロンプトを信頼します。"
+                            },
+                            always_reject_happier_workspaces: {
+                                title: "Happier のワークスペースを常に拒否する",
+                                subtitle: "Happier が開いたワークスペースでは、再取得された現在の Claude プロンプトを拒否します。"
                             }
                         }
                     },
@@ -4446,6 +4452,9 @@ localTailscale: {
             },
             kiro: {
                 title: "Kiro"
+            },
+            grok: {
+                title: "Grok Build"
             },
             pi: {
                 title: "Pi"
@@ -4749,8 +4758,6 @@ localTailscale: {
     expMemorySearchSubtitle: "ローカルメモリ検索の画面と設定を有効化",
     expSessionsDirect: "ダイレクトセッション",
     expSessionsDirectSubtitle: "サイドバーでプロバイダー直結のダイレクトセッションを一覧表示して開く",
-    expSessionsDevPreview: "ローカルとシミュレーターのプレビュー",
-    expSessionsDevPreviewSubtitle: "セッションエージェントがローカル Web アプリとシミュレーターのプレビューを登録し、アプリ内でプレビューできるようにする",
     expSessionsFolders: "セッションフォルダー",
     expSessionsFoldersSubtitle: "Happier サイドバーセッションをワークスペースのフォルダーで整理",
     expPetsCompanion: "ペット",
@@ -4825,6 +4832,7 @@ localTailscale: {
       fileNotFound: "ファイルが見つかりません",
       invalidFormat: "フォーマットが無効です",
       operationFailed: "操作に失敗しました",
+      signupDisabled: "このサーバーでは新規アカウントの作成が無効になっています。既存のアカウントでサインインするか、サーバー管理者に登録の有効化を依頼してください。",
       failedToForkSession: "セッションの分岐に失敗しました",
       daemonUnavailableTitle: "デーモンを利用できません",
       daemonUnavailableBody:
@@ -5060,6 +5068,9 @@ localTailscale: {
     daemonRpcUnavailableTitle: "デーモンを利用できません",
     daemonRpcUnavailableBody:
       "このマシン上のデーモンに接続できません。オフライン、起動中、またはサーバーから切断されている可能性があります。",
+    launchStillPendingTitle: "起動処理はまだ進行中です",
+    launchStillPendingBody:
+      "Happier はまだ新しいセッションを確認できていません。起動リクエストは保存されています。重複するセッションを作成せずに同じ起動を続けるには、再試行してください。",
     connectedServiceSwitchUnavailable: {
       title: "切り替えできません",
       body: ({ reason, agentId }: { reason: string; agentId: string }) =>
@@ -5262,6 +5273,34 @@ localTailscale: {
 
   session: {
     inputPlaceholder: "メッセージを入力...",
+    transcriptNavigation: {
+      title: "ナビゲート",
+      modeAll: "すべて",
+      modePinned: "ピン留め",
+      entryCount: ({ count }: { count: number }) => `${count} 件`,
+      pinnedCount: ({ count }: { count: number }) => `${count} 件のピン留め`,
+      emptyPinnedTitle: "ピン留めされたメッセージはありません",
+      emptyPinnedBody: "重要なターンをここに残すにはメッセージをピン留めします。",
+      emptyAllTitle: "ナビゲーション項目はありません",
+      emptyAllBody: "ユーザーのターンとピン留めメッセージがここに表示されます。",
+      entryA11y: ({ label }: { label: string }) => `${label} に移動`,
+      entryPinnedA11y: ({ label }: { label: string }) => `ピン留めメッセージに移動: ${label}`,
+      fallbackPinnedAssistant: "ピン留めされたアシスタントメッセージ",
+      fallbackPinnedTool: "ピン留めされたツールメッセージ",
+      fallbackPinnedMessage: "ピン留めされたメッセージ",
+      pinMessageA11y: "メッセージをピン留め",
+      unpinMessageA11y: "メッセージのピン留めを解除",
+      pinToolCallA11y: "ツール呼び出しをピン留め",
+      unpinToolCallA11y: "ツール呼び出しのピン留めを解除",
+      jumpFailed: "このメッセージに移動できませんでした。",
+      emptyPinnedHint: "メッセージにカーソルを合わせてピンアイコンを選ぶと固定できます。",
+      emptyPinnedPrivacy: "ピン留めはこのデバイスにのみ保存されます。",
+      awaitingReply: "応答を待っています",
+      replyNotLoaded: "応答はまだ読み込まれていません",
+      loadingBody: "このセッションのタイムラインを作成中",
+      railScrollUpA11y: "ナビゲーションを上にスクロール",
+      railScrollDownA11y: "ナビゲーションを下にスクロール",
+    },
     usageLimitRecovery: {
       title: "使用制限に達しました",
       readyTitle: "使用制限がリセットされました",
@@ -5290,21 +5329,26 @@ localTailscale: {
       statusReady: "再開できます",
       statusWaiting: "制限のリセット待ち",
       statusWaitingUntil: ({ time }: { time: string }) => `${time} まで待機中`,
+      statusWaitingResetUntil: ({ time }: { time: string }) => `${time} にクォータがリセットされるのを待機中`,
+      statusAccountRotationPending: "アカウント切り替え待機中",
       statusChecking: "制限を確認中",
       statusPaused: "待機を一時停止中",
       statusExhausted: "グループが枯渇",
     },
     workState: {
-      accessibilityLabel: "セッション作業状態",
       commandDescription: "セッションの目標を設定または確認",
       unsupportedTitle: "目標を使用できません",
       unsupportedMessage:
         "このバックエンドは編集可能なセッション目標をまだサポートしていません。",
+      notReadyTitle: "目標コントロールはまだ準備できていません",
+      notReadyMessage:
+        "このセッションはまだ起動中です。少し待ってから目標をもう一度設定してください。",
       noCurrentGoalTitle: "更新する目標がありません",
       noCurrentGoalMessage:
         "一時停止または再開する前に目標を設定してください。",
       dirtyCloseTitle: "目標の編集を破棄しますか？",
       dirtyCloseBody: "保存されていない目標の変更は失われます。",
+      emptyPlaceholder: "まだ何もありません",
       badge: {
         goal: ({ title }: { title: string }) => `目標: ${title}`,
         goalPaused: "目標は一時停止中",
@@ -5319,10 +5363,23 @@ localTailscale: {
         blockedPaused: "ブロック中または一時停止中",
         done: "完了またはキャンセル",
       },
+    activity: {
+        sectionTitle: "実行中",
+        openFullRoster: "すべてのエージェントを開く",
+    },
+    workflow: {
+        join: ({ left, right }: { left: string; right: string }) => `${left} · ${right}`,
+    },
       goal: {
         title: "目標",
         placeholder: "このセッションでは何に集中しますか？",
         set: "目標を設定",
+        setTitle: "目標を設定",
+        setSubtitle: "セッションに焦点を定めて、エージェントが軌道を外れないようにします。",
+        addBudget: "+ 予算の上限を追加（任意）",
+        removeBudget: "予算を削除",
+        noUsageYet: "まだ使用なし",
+        tokensSuffix: ({ count }: { count: string }) => `${count} トークン`,
         pause: "一時停止",
         resume: "再開",
         clear: "クリア",
@@ -5332,15 +5389,15 @@ localTailscale: {
         statusPaused: "一時停止中",
         statusComplete: "完了",
         statusBudgetLimited: "予算制限中",
-        timeUsed: "使用時間",
-        tokensUsed: "使用トークン",
+        statusInterrupted: "中断",
         tokenBudget: "トークン予算",
-        noTokenBudget: "トークン予算なし",
         budgetProgress: ({ used, budget }: { used: string; budget: string }) => `${used} / ${budget}`,
-        budgetToggle: "予算",
+        budgetCaption: ({ budget }: { budget: string }) => `予算 ${budget} 中`,
         budgetPlaceholder: "トークン上限",
-        clearBudget: "上限なし",
         invalidBudget: "正のトークン予算を入力してください。",
+        pending: "目標を設定中…",
+        stillWaiting: "確認を待っています…",
+        accessibilityCurrent: ({ objective }: { objective: string }) => `現在の目標: ${objective}`,
         errorUnsupportedResponse: "セッション RPC からサポートされていない応答が返されました",
         errorUnknown: "不明なエラー",
         errorCannotResume: "ネイティブ目標の更新のためにセッションを再開できません",
@@ -5361,6 +5418,10 @@ localTailscale: {
       openParentA11y: "親セッションを開く",
       forkFromMessageA11y: "このメッセージから分岐",
 	    },
+	    transcriptGap: {
+	      earlierMessages: "前のメッセージ",
+	      laterMessages: "後のメッセージ",
+	    },
 	    rollback: {
 	      latestTurnA11y: '最新のターンをロールバック',
 	      beforeUserMessageA11y: 'このメッセージの前までロールバック',
@@ -5370,6 +5431,27 @@ localTailscale: {
 	    pendingQueuedResumeFailedTitle: "メッセージはキューに保存されました",
 	    pendingQueuedResumeFailedBody:
 	      "メッセージは保留キューに保存されましたが、Happier はこのセッションを再開できませんでした。再試行して開始してください。",
+	    composerBanners: {
+            showBannerAction: 'バナーを表示',
+            hideBannerAction: 'バナーを非表示',
+	    },
+	    staleRunner: {
+	      title: "セッションは古い CLI で実行中です",
+	      body: "更新された daemon CLI で続行するには、このセッションランナーを再起動します。Happier のセッションは変わりません。",
+	      busyBody: "セッションランナーは処理中です。現在のアクティビティが終わってから再試行してください。",
+	      failureBody: "Happier はこのセッションランナーを再起動できませんでした。セッションの更新後に再試行してください。",
+	      identityChangedBody: "再起動の要求中にセッションランナーが変更されました。セッションを更新して再試行してください。",
+	      ineligibleBody: "このセッションランナーは計画的な再起動の対象外になりました。",
+	      unsupportedBody: "この daemon はまだセッションランナー再起動操作を公開していません。",
+	      versionUnknownBody: "Happier はこのランナーが使っている CLI バージョンをまだ確認できません。",
+	      restartAction: "ランナーを再起動",
+	      restartPendingAction: "再起動中...",
+	      statusBadge: "古い CLI",
+	      showBannerAction: "古い CLI の通知を表示",
+	      hideBannerAction: "古い CLI の通知を非表示",
+	      errorTitle: "ランナーの再起動は利用できません",
+	      errorBody: "daemon はこのセッションランナーを再起動できませんでした。セッションは引き続き利用できます。",
+	    },
 	    invalidLinkTitle: "無効なセッションリンク",
 	    invalidLinkDescription: "セッションリンクが見つからないか無効です。URL を確認してもう一度お試しください。",
 	    resumeSupportNoteChecking:
@@ -5397,6 +5479,7 @@ localTailscale: {
         openRuns: "セッションの実行を開く",
         openAutomations: "セッションの自動化を開く",
         openSubagents: ({ count }: { count: number }) => (count > 0 ? `エージェントを開く (${count})` : 'エージェントを開く'),
+        openTranscriptNavigation: "トランスクリプトナビゲーションを開く",
         participants: {
           to: '宛先',
           lead: 'メイン',
@@ -5405,6 +5488,87 @@ localTailscale: {
           executionRun: ({ runId }: { runId: string }) => `実行 ${runId}`,
           cardTo: ({ label }: { label: string }) => `宛先: ${label}`,
           unsupportedAttachmentsOrReviewComments: '宛先指定での送信は現在、添付ファイルやレビューコメントに対応していません。',
+        },
+        // Agent-activity row vocabulary. Status is rendered as a translated word, never as a raw
+        // enum, so colour is never the only carrier of an abnormal state.
+        agentActivity: {
+            composer: {
+                workflowsWithAgents: ({ workflows, agents }: { workflows: number; agents: number }) =>
+                    `ワークフロー ${workflows} 件、エージェント ${agents} 件`,
+                workflowsRunning: ({ count }: { count: number }) => `ワークフロー ${count} 件が実行中`,
+                subagentsWorking: ({ count }: { count: number }) => `サブエージェント ${count} 件が作業中`,
+                backgroundTasksRunning: ({ count }: { count: number }) => `バックグラウンドコマンド ${count} 件が実行中`,
+            },
+          untitled: "名称未設定のエージェント",
+          screenTitle: "エージェント",
+          transcriptScreenTitle: "エージェントの記録",
+          menuTitle: "エージェントの操作",
+          row: {
+            a11yLabel: ({ title, status }: { title: string; status: string }) => `${title}、${status}`,
+              expand: ({ title }: { title: string }) => `${title} の最近のアクティビティを表示`,
+              collapse: ({ title }: { title: string }) => `${title} の最近のアクティビティを非表示`,
+          },
+          staleness: {
+            quiet: "最近の更新なし",
+            stale: ({ minutes }: { minutes: number }) => `${minutes}分以上更新なし`,
+          },
+          sessionNotice: {
+            stopped: "このセッションは停止しました。表示中の項目はすでに実行されていない可能性があります。",
+            stoppedAuth: "サインインの期限切れによりこのセッションは停止しました。表示中の項目はすでに実行されていない可能性があります。",
+            unobserved: "このセッションは監視されていません。表示中の項目はすでに実行されていない可能性があります。",
+          },
+          backgroundTask: {
+              title: "バックグラウンドコマンド",
+              statusWithDuration: ({ status, duration }: { status: string; duration: string }) => `${status} · ${duration}`,
+              openCommand: "トランスクリプトでコマンドを開く",
+          },
+          preview: {
+              openDetails: '詳細を開く',
+              empty: 'まだ記録がありません',
+          },
+          status: {
+            queued: "キュー待ち",
+            starting: "起動中",
+            running: "実行中",
+            waiting: "承認待ち",
+            blocked: "ブロック中",
+            succeeded: "完了",
+            failed: "失敗",
+            timedOut: "タイムアウト",
+            cancelled: "キャンセル済み",
+            unknown: "不明",
+          },
+          time: {
+            staleA11y: ({ duration }: { duration: string }) => `経過 ${duration}、最近の更新なし`,
+            hoursMinutes: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours}時間${minutes}分`,
+            elapsedA11y: ({ duration }: { duration: string }) => `${duration} 実行中`,
+            totalA11y: ({ duration }: { duration: string }) => `所要時間 ${duration}`,
+          },
+          action: {
+            openFull: "全体ビューを開く",
+            openAdvanced: "詳細情報",
+            send: "メッセージを送信",
+            stop: "停止",
+            delete: "削除",
+            deleteConfirmTitle: "このエージェントを削除しますか？",
+            deleteConfirmMessage: ({ title }: { title: string }) => `${title} をこのセッションから削除します。`,
+            deleteConfirmAction: "削除",
+            deleteTeam: "チームを削除",
+            deleteTeamConfirmTitle: "このチームを削除しますか？",
+            deleteTeamConfirmMessage: "このチームのメンバーはすべて停止します。この操作は取り消せません。",
+            deleteTeamConfirmAction: "チームを削除",
+          },
+          section: {
+            working: "実行中",
+            finished: "完了",
+          },
+          list: {
+            showAllFinished: ({ count }: { count: number }) => `すべて表示（${count}）`,
+          },
+          empty: {
+            firstUseTitle: "エージェントはここに表示されます",
+            firstUseSubtitle: "起動すると、何をしているか、どれくらいかかっているか、いつ対応が必要かを追えます。",
+          },
         },
         subagents: {
           messages: {
@@ -5426,6 +5590,7 @@ localTailscale: {
             recent: "最近",
             emptyActive: "稼働中のエージェントはありません。",
             emptyRecent: "最近のエージェントはまだありません。",
+            tabWithRunningCount: ({ count }: { count: number }) => `エージェント、${count} 件稼働中`,
             openFull: "全画面表示を開く",
             openAdvancedRun: "ランの詳細",
             send: "メッセージを送信",
@@ -5450,6 +5615,10 @@ localTailscale: {
             launchTeammateA11y: "チームメイトを起動",
             launchTeammateAction: "チームメイトを起動",
             typeFact: ({ value }: { value: string }) => `種類: ${value}`,
+            nativeTypeFact: ({ value }: { value: string }) => `ネイティブタイプ: ${value}`,
+            modelFact: ({ value }: { value: string }) => `モデル: ${value}`,
+            agentIdFact: ({ value }: { value: string }) => `エージェントID: ${value}`,
+            durationFact: ({ value }: { value: string }) => `所要時間: ${value}`,
             providerFact: ({ value }: { value: string }) => `プロバイダー: ${value}`,
             backendFact: ({ value }: { value: string }) => `バックエンド: ${value}`,
             intentFact: ({ value }: { value: string }) => `インテント: ${value}`,
@@ -5480,6 +5649,7 @@ localTailscale: {
       detailsPanel: {
         emptyHint: "右側パネルからファイルまたは差分を開いてください。",
         unsupportedTab: "未対応の詳細タブです。",
+        transcriptFromOtherSession: "このトランスクリプトは別のセッションのものです。",
         closeA11y: "詳細を閉じる",
           openRightSidebarA11y: "右サイドバーを開く",
           closeRightSidebarA11y: "右サイドバーを閉じる",
@@ -5490,67 +5660,6 @@ localTailscale: {
           closeTabA11y: "タブを閉じる",
           enterFocusModeA11y: "ペイン集中モードに入る",
           exitFocusModeA11y: "ペイン集中モードを終了",
-      },
-      simulatorPreview: {
-        defaultAndroidSubtitle: "Android エミュレーター",
-        defaultIosSubtitle: "iOS シミュレーター",
-        screenAlt: ({ deviceName }: { deviceName: string }) => `${deviceName} シミュレーター画面`,
-        ownerLabel: ({ owner }: { owner: string }) => `所有者: ${owner}`,
-        requestControl: "操作",
-        releaseControl: "Release",
-        readonlyStatus: "Read-only · controlled by another session",
-        controlCapability: {
-          writable: "Writable",
-          readonly: "Read-only",
-        },
-        controls: {
-          back: "Back",
-          home: "Home",
-          enter: "Enter",
-          textPlaceholder: "Text input",
-          sendText: "Send",
-          zoomOut: "Zoom out",
-          zoomIn: "Zoom in",
-          fit: "Fit",
-          reloadApp: "Reload",
-          reconnectDevServices: "Reconnect",
-        },
-        devServices: {
-          title: "Native dev services",
-          metro: "Metro",
-          api: "API",
-          hmr: "HMR",
-          status: {
-            unknown: "Unknown",
-            starting: "Starting",
-            connected: "Connected",
-            healthy: "Healthy",
-            ready: "Ready",
-            degraded: "Degraded",
-            error: "Error",
-          },
-        },
-        owner: {
-          ai: "AI",
-          user: "ユーザー",
-          system: "システム",
-        },
-        mode: {
-          idle: "アイドル",
-          aiControl: "AI 制御",
-          userControl: "手動制御",
-          systemLocked: "システムロック中",
-          ended: "終了",
-        },
-        platform: {
-          android: "Android",
-          ios: "iOS",
-        },
-        connectionPath: {
-          relay: "Relay",
-          direct: "直接",
-          adbReverse: "ADB reverse",
-        },
       },
   
       actionsDraft: {
@@ -5618,8 +5727,43 @@ localTailscale: {
         indicator: ({ count }: { count: number }) => `保留中 (${count})`,
         badgeLabel: ({ count }: { count: number }) =>
           count > 0 ? `保留中 (+${count})` : "保留中",
+        deliveryStatus: {
+          blocked: "ブロック中",
+          deliveryUncertain: '配信状態が不明です',
+          delivering: "配信中",
+          queuedInClaude: "Claude でキュー待ち",
+          queued: 'キュー済み',
+          sending: '送信中…',
+          sendFailed: '未送信',
+          waitingForTurn: '待機中',
+        },
+        deliveryBlockedReasons: {
+          terminalComposerDraft: "ターミナルの下書きが配信をブロックしています",
+          runtimeConfigBlocked: "ランタイム設定が配信をブロックしています",
+          unsupportedAction: "このメッセージはサポートされていない配信アクションを使用しています",
+          providerUnavailableBeforeAcceptance: "プロバイダーは一時的に利用できません",
+          ambiguousTerminalDelivery: "配信状態があいまいです",
+          terminalHostUnreachable: "ターミナルホストに到達できません",
+          runtimeDisposedBeforeDelivery: "配信前にランタイムが終了しました",
+          invalidPromptText: "メッセージ本文を配信できません",
+          manualUserHandled: "処理済みにしました",
+          attemptExpiredBeforeWrite: "書き込み前に配信試行が期限切れになりました",
+          providerRejectedBeforeAcceptance: "プロバイダーがメッセージを拒否しました",
+          steeringUnavailable: "アクティブなターンを方向付けできません",
+          payloadTooLarge: "メッセージが大きすぎます",
+          unknown: "配信状態の確認が必要です",
+        },
 	        empty: "保留中のメッセージはありません。",
 	        decryptFailed: "この保留メッセージを復号できませんでした。",
+	        sendFailedNotice: 'メッセージを送信できませんでした。接続を確認して再試行してください。',
+	        waitingForTurnNotice: ({ minutes }: { minutes: number }) =>
+	            minutes > 0
+	                ? `現在のタスクの完了を待っています · 実行時間 ${minutes} 分`
+	                : '現在のタスクの完了を待っています',
+	        waitingForPredecessorNotice: '前の保留中メッセージを待っています',
+	        waitingForRuntimeActivityNotice: 'ランタイムの処理完了を待っています',
+	        runtimeActivityUnknownNotice: 'ランタイムのアクティビティ状態を待っています',
+	        waitingForRuntimeNotice: 'ランタイムの再接続を待っています',
 	        nonSteerableNotice: "このモード変更後、現在のターンには挿入できません。次に実行されます。すぐに処理するには「今すぐ送信」を使って中断してください。",
 	        steerBlockedTerminalDraftNotice: '待機中: ターミナルの入力欄に未送信の下書きがあり配信できません。ターミナルで消去するか、ターンを中断してください。',
 	        clearTerminalComposer: {
@@ -5636,7 +5780,15 @@ localTailscale: {
             viewLess: "折りたたむ",
           steerNow: "今すぐ挿入",
           sendNow: "今すぐ送信",
+          sendToAgentNow: "今すぐエージェントに送信",
           sendNowInterrupt: "今すぐ送信（中断）",
+          interruptAndRunNow: "中断して今すぐ実行",
+          continueWaiting: "このまま待つ",
+          dismiss: "破棄",
+          sendAsNew: "新規として送信",
+          retryDelivery: "再試行",
+          retrySend: '送信を再試行',
+          markHandled: "処理済みにする",
           requeue: "キューに戻す",
         },
         editPrompt: {
@@ -5646,10 +5798,29 @@ localTailscale: {
           title: "保留中メッセージを削除しますか？",
           body: "保留中メッセージを削除します。",
         },
+        discardConfirm: {
+          title: "保留中メッセージを破棄しますか？",
+          body: "破棄済みのコピーを残し、Happier がこの保留中メッセージを配信しないようにします。",
+        },
+        markHandledConfirm: {
+          title: "保留中メッセージを処理済みにしますか？",
+          body: "プロバイダーがすでに処理した場合、または Happier に配信させる必要がなくなった場合にのみ使用してください。",
+        },
+        dismissDeliveryConfirm: {
+          title: "不確かな配信を破棄しますか？",
+          body: "元のメッセージを再送せずにアーカイブします。後でプロバイダーが配信を確認した場合、Happier は元のメッセージをトランスクリプトに追加できます。",
+        },
+        sendAsNewConfirm: {
+          title: "このメッセージを新規として送信しますか？",
+          body: "不確かな配信をアーカイブし、新しいコピーをキューに追加します。プロバイダーが元のメッセージをすでに受信している可能性があるため、2 回処理されることがあります。",
+        },
         sendConfirm: {
           title: "今すぐ送信しますか？",
           interruptTitle: "今すぐ送信（中断）しますか？",
+          backgroundTitle: "今すぐエージェントに送信しますか？",
           body: "現在のターンを停止し、このメッセージをすぐに送信します。",
+          backgroundBody: "エージェントはこのメッセージを今すぐ受信します。バックグラウンド作業は続行されます。",
+          resumeBody: "セッションを再開し、このメッセージをすぐに送信します。",
         },
         discarded: {
           title: "破棄されたメッセージ",
@@ -5664,11 +5835,16 @@ localTailscale: {
         errors: {
           updateFailed: "保留中メッセージの更新に失敗しました",
           deleteFailed: "保留中メッセージの削除に失敗しました",
+          discardFailed: "保留中メッセージの破棄に失敗しました",
           sendFailed: "保留中メッセージの送信に失敗しました",
           restoreFailed: "破棄されたメッセージの復元に失敗しました",
           deleteDiscardedFailed: "破棄されたメッセージの削除に失敗しました",
           sendDiscardedFailed: "破棄されたメッセージの送信に失敗しました",
           reorderFailed: "保留中メッセージの並び替えに失敗しました",
+          retryDeliveryFailed: "保留中の配信の再試行に失敗しました",
+          actionConflict: "操作の適用中に保留中のメッセージの状態が変わりました。現在の状態を確認して、もう一度お試しください。",
+          retrySendFailed: 'メッセージの再送信に失敗しました',
+          markHandledFailed: "保留中の配信を処理済みにできませんでした",
           clearTerminalComposerFailed: "ターミナルの入力欄を消去できませんでした",
           clearTerminalComposerUnsupported: "このセッションでは Happier からターミナル入力欄を消去できません。",
           clearTerminalComposerUnsafe: "現在、ターミナルの入力欄を安全に消去できません。",
@@ -5693,6 +5869,7 @@ localTailscale: {
       manageSharingDenied:
         "このセッションの共有設定を管理する権限がありません。",
       stopSharing: "共有を停止",
+      stopSharingDescription: "このユーザーの直接アクセスを取り消します。",
       recipientMissingKeys: "このユーザーはまだ暗号化キーを登録していません。",
       permissionApprovals: "権限を承認できる",
       allowPermissionApprovals: "権限承認を許可",
@@ -5713,7 +5890,7 @@ localTailscale: {
       publicLink: "公開リンク",
       publicLinkActive: "公開リンクが有効です",
       publicLinkDescription:
-        "誰でもこのセッションを閲覧できるリンクを作成します。",
+        "このリンクを知っている人は匿名でセッションを閲覧できます。全員のアクセスを取り消すには、リンクを削除または再生成してください。",
       createPublicLink: "公開リンクを作成",
       regeneratePublicLink: "公開リンクを再生成",
       deletePublicLink: "公開リンクを削除",
@@ -6004,10 +6181,18 @@ localTailscale: {
       title: "保持ポリシー",
       summary: "概要",
       keepForever: "自動削除なし",
+      automaticDeletionEnabled: "自動削除が有効です",
+      detailsUnavailable: "自動削除は有効ですが、このクライアントでは有効なポリシーをすべて表示できません",
+      singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
+      relayCleanupSummary: ({ policies }: { policies: string }) => `このリレーは${policies}をクリーンアップします。`,
+      relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain}（${count}日後）`,
+      relayCleanupInactiveSessionsAfterDays: ({ count }: { count: number }) => `非アクティブなセッション（${count}日後）`,
       deleteInactiveSessionsDays: ({ count }: { count: number }) => `${count}日後に非アクティブなセッションを削除します。`,
       deleteOlderThanDays: ({ count }: { count: number }) => `${count}日後にデータを削除します。`,
       sessionNotice: ({ count }: { count: number }) => `このサーバーは、${count}日間非アクティブなセッションを削除します。`,
       sessions: "セッション",
+      sessionMessages: "セッションの記録",
+      sidechainMessages: "サブエージェントの記録",
       accountChanges: "アカウント変更",
       voiceSessionLeases: "音声セッションのリース",
       feedItems: "フィード項目",
@@ -6194,6 +6379,7 @@ localTailscale: {
     killSessionConfirm: "このセッションを終了してもよろしいですか？",
     stopSession: "セッションを停止",
     stopSessionConfirm: "このセッションを停止してもよろしいですか？",
+    stopSessionControlUnavailable: "セッションの制御に接続できませんでした。セッションのマシンとデーモンがオンラインであることを確認してから、もう一度お試しください。",
     archiveSession: "セッションをアーカイブ",
     archiveSessionConfirm: "このセッションをアーカイブしてもよろしいですか？",
     workspaceTitle: "ワークスペース",
@@ -6240,6 +6426,8 @@ localTailscale: {
     kiroSessionId: "Kiro セッション ID",
     kiroSessionIdCopied: "Kiro セッション ID をクリップボードにコピーしました",
     customAcpSessionId: "カスタム ACP セッション ID",
+    grokSessionId: "Grok セッション ID",
+    grokSessionIdCopied: "Grok セッション ID をクリップボードにコピーしました",
     customAcpSessionIdCopied: "カスタム ACP セッション ID をクリップボードにコピーしました",
     piSessionId: "Pi セッション ID",
     piSessionIdCopied: "Pi セッション ID をクリップボードにコピーしました",
@@ -6382,6 +6570,13 @@ localTailscale: {
   },
 
   agentInput: {
+    suggestionGroups: {
+      files: 'ファイル',
+      plugins: 'プラグイン',
+      sessions: 'セッション',
+      skills: 'スキル',
+      commands: 'コマンド',
+    },
     nonSteerableSend: {
       title: 'エージェントは処理中です',
       modeChangeMessage: '権限モードの変更は実行中のターンには適用できません。',
@@ -6407,6 +6602,7 @@ localTailscale: {
         `${used}/${limit} 使用済み`,
       duration: {
         now: "今",
+        outdated: "古い",
         daysHours: ({ days, hours }: { days: number; hours: number }) =>
           `${days}日 ${hours}時間`,
         hoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }) =>
@@ -6468,6 +6664,7 @@ localTailscale: {
       pi: "Pi",
       copilot: "Copilot",
       cursor: "Cursor",
+      grok: "Grok",
     },
     auggieIndexingChip: {
       on: "インデックス有効",
@@ -6477,6 +6674,10 @@ localTailscale: {
       title: "モデル",
       useCliSettings: "CLI設定を使用",
       configureInCli: "CLIの設定でモデルを構成",
+      running: ({ model }: { model: string }) => `実行中: ${model}`,
+      lastUsed: ({ model }: { model: string }) => `前回使用: ${model}`,
+      lastReported: ({ model }: { model: string }) => `最終報告: ${model}`,
+      selectedForResume: "このセッションを再開すると、選択したモデルが使用されます。",
       extendedContextToggleLabel: '1Mコンテキスト',
       extendedContextToggleDescription: 'このモデルで拡張された100万トークンのコンテキストウィンドウを使用します。',
       extendedContextLabel: ({ model }: { model: string }) => `${model} (1M)`,
@@ -6611,6 +6812,9 @@ localTailscale: {
     expand: "展開/折りたたみ",
     input: "入力",
     output: "出力",
+    payloadTruncated: "パフォーマンスのため大きなペイロードを切り詰めました。",
+    showFullPayload: "完全なペイロードを表示",
+    showLessPayload: "少なく表示",
   },
 
   tools: {
@@ -6619,13 +6823,27 @@ localTailscale: {
       elapsedSeconds: ({ seconds }: { seconds: string }) => `${seconds}s`,
       unknownToolTitle: "ツール",
     },
+    taskOutputView: {
+      waitingForTask: "バックグラウンドタスクの完了を待っています。",
+    },
+    taskStopView: {
+      stoppedCommandLabel: "停止したコマンド",
+    },
     bashView: {
+      backgroundNotice: "バックグラウンドに送りました。このステップは完了を待ちません。",
       commandDiffTitle: "生のコマンド",
       commandDiffHint:
         "読みやすくするため、コマンドのプレビューでは短い環境クリーンアップの接頭辞を隠しています。完全な生のコマンドは下に表示されます。",
     },
     webFetch: {
       httpStatus: ({ status }: { status: number }) => `HTTP ${status}`,
+    },
+    codeSearch: {
+      aggregateMatchUnavailable: '1件の一致。詳細は提供されませんでした。',
+      aggregateMatchesUnavailable: ({ count }: { count: number }) => `${count}件の一致。詳細は提供されませんでした。`,
+      aggregateFilesUnavailable: ({ count }: { count: number }) => `${count}件のファイル。詳細は提供されませんでした。`,
+      detailsUnavailable: "検索は完了しましたが、詳細は提供されませんでした。",
+      truncated: "結果は省略されている可能性があります。",
     },
     fullView: {
       description: "説明",
@@ -6653,6 +6871,35 @@ localTailscale: {
       delegateTitle: "委任",
       reviewDigestTitle: "レビュー要約",
     },
+  workflowActivityView: {
+      untitled: "ワークフロー",
+      loading: "読み込み中…",
+      unavailable: "詳細を取得できません",
+      noDetail: "これ以上の詳細はありません",
+      statusActive: "実行中",
+      statusComplete: "完了",
+      statusFailed: "失敗",
+      statusStopped: "停止",
+      statusInterrupted: "中断",
+      statusBlocked: "ブロック",
+      statusCancelled: "キャンセル",
+      statusUnknown: "不明",
+      phaseUntitled: "フェーズ",
+      phaseActivity: "アクティビティ",
+      phaseComplete: ({ complete, total }: { complete: number; total: number }) => `${complete}/${total} 完了`,
+      phaseActive: ({ count }: { count: number }) => `${count} アクティブ`,
+      phaseFailed: ({ count }: { count: number }) => `${count} 失敗`,
+      phaseBlocked: ({ count }: { count: number }) => `${count} ブロック`,
+      phasePending: ({ count }: { count: number }) => `${count} 保留`,
+      phaseSummary: ({ index, total, complete, agents }: { index: number; total: number; complete: number; agents: number }) => `フェーズ ${index} / ${total} · ${complete}/${agents} エージェント`,
+      agentFraction: ({ complete, total }: { complete: number; total: number }) => `${complete}/${total} エージェント`,
+      agentsCount: ({ count }: { count: number }) => `${count} エージェント`,
+      tokens: ({ tokens }: { tokens: string }) => `${tokens} トークン`,
+      toolCalls: ({ count }: { count: number }) => `${count} ツール`,
+      showMore: ({ count }: { count: number }) => `表示 ${count}`,
+      detailShowMore: 'もっと見る',
+      detailShowLess: '折りたたむ',
+  },
     changeTitleView: {
       titleLabel: "タイトル",
     },
@@ -6707,13 +6954,25 @@ localTailscale: {
       },
     },
     askUserQuestion: {
-      submit: "回答を送信",
+        submit: "回答を送信",
+        submissionFailures: {
+            update: "Happier CLI を更新して、もう一度お試しください。",
+            reconnect: "このセッションに再接続して、もう一度お試しください。",
+            retry: "回答を受け付けられませんでした。内容を確認して、もう一度お試しください。",
+        },
+      claudeDialogNotice: {
+        header: "Claude のダイアログ",
+        question: "Claude がダイアログを表示しています。ターミナルを開いて内容を確認し、続行方法を選択してください。",
+        openTerminal: "ターミナルを開く",
+        description: "Claude のターミナルでダイアログを確認して回答します。",
+      },
       multipleQuestions: ({ count }: { count: number }) => `${count}件の質問`,
       other: "その他",
       otherDescription: "自分の回答を入力",
       otherPlaceholder: "回答を入力...",
     },
     exitPlanMode: {
+    selectionLimit: ({ count }: { count: number }) => `最大${count}件まで選択できます。別の回答を選ぶには、1件選択を解除してください。`,
       approve: "プランを承認",
       reject: "拒否",
       requestChanges: "変更を依頼",
@@ -6759,6 +7018,9 @@ localTailscale: {
       turnDiff: "ターン差分",
       question: "質問",
       changeTitle: "タイトルを変更",
+      switchMode: "モードを切り替え",
+      taskOutput: "タスクの出力",
+      taskStop: "タスクを停止",
     },
     geminiExecute: {
       cwd: ({ cwd }: { cwd: string }) => `📁 ${cwd}`,
@@ -7152,6 +7414,7 @@ localTailscale: {
           generatedImageA11y: ({ name }: { name: string }) => `生成画像 ${name} を開く`,
           attachmentImageA11y: ({ name }: { name: string }) => `添付画像 ${name} を開く`,
           toolArtifactImageA11y: ({ name }: { name: string }) => `ツール成果物画像 ${name} を開く`,
+          imageUnavailable: '画像は利用できません',
         },
         cannotDisplayBinary: "バイナリファイルの内容を表示できません",
         diff: "差分",
@@ -7466,7 +7729,7 @@ localTailscale: {
       invalidActionSubtitle: "このアクションはこのビルドでは利用できなくなりました。",
       configureActionAccessibilityLabel: "アクションを設定",
       approvalHelpTitle: "承認モード",
-      approvalHelpBody: "「先に確認」では、このサーフェスからアクションを実行する前に確認を表示します。「許可」では、このサーフェスから承認プロンプトなしで実行できます。",
+      approvalHelpBody: "「先に確認」は、このサーフェスからアクションを実行する前に承認リクエストを作成します。AI セッションでは、そのリクエストは既存の承認サーフェスにキューされ、モーダル内では待機しません。「許可」では、このサーフェスから承認リクエストなしで実行できます。",
       toolExposure: {
           title: "ツール公開",
           footer: "対象のアクションを直接ツールとして表示するか、アクション検索からのみ利用できるようにするかを制御します。",
@@ -7489,6 +7752,38 @@ localTailscale: {
               direct: {
                   title: "直接ツール",
                   subtitle: "このアクションを直接呼び出せるツールとして登録します。",
+              },
+          },
+      },
+      spawnPolicy: {
+          title: "AI セッション作成ポリシー",
+          footer: "これらの設定は、Happier セッション内のアシスタントが別のセッションを作成するときだけ適用されます。親から継承した設定は引き続き許可され、拒否された項目は明確なエラーで明示的な上書きを拒否します。",
+          toggles: {
+              allowCustomDirectory: { title: "カスタムディレクトリ", subtitle: "別の作業ディレクトリをアシスタントが選べるようにします。" },
+              allowCrossMachine: { title: "別マシンの対象", subtitle: "利用可能な別のマシンでセッションを作成できるようにします。" },
+              allowBackendTargetOverride: { title: "バックエンド対象", subtitle: "別のエージェントまたはバックエンド対象を選べるようにします。" },
+              allowModelOverride: { title: "モデル", subtitle: "親モデルを継承する代わりにモデルを選べるようにします。" },
+              allowPermissionModeOverride: { title: "権限モード", subtitle: "同等または低い権限の上書きを許可します。昇格は引き続き拒否されます。" },
+              allowAgentModeOverride: { title: "エージェントモード", subtitle: "エージェントまたはセッションモードを選べるようにします。" },
+              allowConfigOptionOverrides: { title: "設定オプション", subtitle: "思考 effort や workflow などのプロバイダー設定を許可します。" },
+              allowProfileOverride: { title: "プロファイル", subtitle: "秘密情報を公開せずに profile id を選べるようにします。" },
+              allowEnvironmentVariables: { title: "環境変数", subtitle: "新しいセッションで明示的な環境変数を許可します。" },
+              allowConnectedServicesOverride: { title: "接続済みサービス", subtitle: "接続済みサービスのバインディングを参照で選べるようにします。" },
+              allowMcpSelectionOverride: { title: "MCP 選択", subtitle: "継承した MCP サーバー選択を上書きできるようにします。" },
+              allowTranscriptStorageOverride: { title: "トランスクリプト保存", subtitle: "互換性のある保存モードを選べるようにします。" },
+          },
+          permissionCeiling: {
+              title: "権限上限",
+              subtitle: "呼び出し元の権限より低い追加上限を任意で設定します。",
+              options: {
+                  inherit: { title: "追加上限なし", subtitle: "呼び出し元の権限だけを上限にします。" },
+                  default: { title: "デフォルト", subtitle: "通常の承認動作またはそれ以下に制限します。" },
+                  acceptEdits: { title: "編集を許可", subtitle: "自動編集を許可しますが、完全な bypass は許可しません。" },
+                  bypassPermissions: { title: "権限をバイパス", subtitle: "呼び出し元にもある場合だけ完全な bypass まで許可します。" },
+                  plan: { title: "計画", subtitle: "作成されるセッションを計画または読み取り専用に制限します。" },
+                  "read-only": { title: "読み取り専用", subtitle: "作成されるセッションを読み取り専用に制限します。" },
+                  "safe-yolo": { title: "セーフ yolo", subtitle: "ワークスペースへの安全な自動書き込みを許可します。" },
+                  yolo: { title: "Yolo モード", subtitle: "呼び出し元にもある場合だけ yolo まで許可します。" },
               },
           },
       },
@@ -7566,12 +7861,12 @@ localTailscale: {
                 subtitle: "音声アクションブロックと操作要素の中に表示されます。",
             },
             session_agent: {
-                title: "セッションエージェント",
-                subtitle: "セッション内のエージェントが呼び出し可能なツールとして利用できます。",
+                title: "AI セッション",
+                subtitle: "Happier セッション内で実行中のアシスタントが利用できるツールを制御します。",
             },
             mcp: {
                 title: 'MCP',
-                subtitle: "MCP アクションカタログから利用できます。",
+                subtitle: "Happier MCP アクションカタログを使用する外部 MCP クライアントを制御します。",
             },
             cli: {
                 title: "セッション制御 CLI",
@@ -7591,6 +7886,9 @@ settingsSession: {
 	        tagsTitle: 'セッションタグ',
 	        tagsEnabledSubtitle: 'セッション一覧にタグ操作を表示',
 	        tagsDisabledSubtitle: 'タグ操作を非表示',
+         agentActivityCountTitle: '行にエージェント数を表示',
+         agentActivityCountEnabledSubtitle: '各セッションで作業中のエージェント数を表示します',
+         agentActivityCountDisabledSubtitle: '行にエージェント数を表示しません',
 	        workingStatusAnimatedTextTitle: '作業中テキストのアニメーション',
 	        workingStatusAnimatedTextEnabledSubtitle: 'セッションの実行中に作業中の動詞を切り替えます',
 	        workingStatusAnimatedTextDisabledSubtitle: 'セッションの実行中は固定の「作業中...」ラベルを表示します',
@@ -7632,6 +7930,14 @@ settingsSession: {
 	        identityDisplayAgentLogoSubtitle: '各セッションのエージェントロゴを表示します。',
 	        identityDisplayNoneTitle: 'なし',
 	        identityDisplayNoneSubtitle: 'セッション行の識別マーカーを非表示にします。',
+	        headerIdentityDisplayTitle: 'セッションヘッダーの識別表示',
+	        headerIdentityDisplaySubtitle: 'セッション内でタイトルの前に表示する内容を選択します。',
+	        headerIdentityDisplayAvatarTitle: 'アバター',
+	        headerIdentityDisplayAvatarSubtitle: 'セッションの生成されたアバターを表示します。',
+	        headerIdentityDisplayAgentLogoTitle: 'エージェントのロゴ',
+	        headerIdentityDisplayAgentLogoSubtitle: 'セッションを実行しているエージェントのロゴを表示します。',
+	        headerIdentityDisplayNoneTitle: 'なし',
+	        headerIdentityDisplayNoneSubtitle: 'ヘッダーをセッションのタイトルから始めます。',
 	        activeColorTitle: 'アクティブなタイトル色',
 	        activeColorSubtitle: 'アクティブなタイトル色を使うセッションを選びます。',
 	        activeColorActivityAndAttentionTitle: '動作中と注意が必要',
@@ -7711,6 +8017,14 @@ settingsSession: {
             title: 'ランタイムとターミナル',
             entrySubtitle: 'tmux、Windows Terminal ウィンドウ、Terminal Connect 互換性。',
         },
+    banners: {
+        title: 'バナー',
+        footer: '入力欄の上のバナーはステータスバッジに折りたためます。その状態を記憶するかどうかを選べます。',
+        rememberVisibilityTitle: 'バナーの表示状態を記憶する',
+        rememberVisibilitySubtitle: '閉じたバナーは、この端末のすべてのセッションで非表示のままになります。',
+        resetHiddenTitle: '非表示のバナーをすべて表示',
+        resetHiddenSubtitle: 'この端末で非表示にしたバナーを解除します。',
+    },
     inputBehavior: {
         title: '入力の動作',
         footer: 'Enterで送信とメッセージ履歴の動作を設定します。',
@@ -7748,6 +8062,17 @@ settingsSession: {
           drainAllTitle: "保留メッセージをすべて処理",
           drainAllSubtitle:
             "次の準備完了タイミングで、キュー内の全メッセージをまとめて処理します（従来の動作）。",
+        },
+        pendingDeliveryTimingTitle: "保留キューの送信タイミング",
+        pendingDeliveryTimingFooter:
+          "保留メッセージをメイン応答の準備完了後に送信するか、追跡中のランタイム活動がすべてアイドルになるまで待つかを選びます。",
+        pendingDeliveryTiming: {
+          afterForegroundReadyTitle: "メイン応答の後",
+          afterForegroundReadySubtitle:
+            "エージェントが次のターンを受け付けられるようになったら、保留メッセージを送信します。",
+          afterRuntimeIdleTitle: "ランタイムがアイドルになったら",
+          afterRuntimeIdleSubtitle:
+            "追跡中のランタイム活動が続いている間は、保留メッセージを待機させます。",
         },
         busySteerPolicyTitle: "エージェントが忙しいとき（ステア可能）",
         busySteerPolicyFooter:
@@ -8001,16 +8326,6 @@ settingsSession: {
             thinkingPulseStalePromptTitle: "思考の失効ウィンドウ（ms）",
             thinkingPulseStalePromptBody:
               "更新がない場合、この時間を超えるとアクティブ思考を隠します。",
-            listImplementationTitle: "トランスクリプトのリスト実装",
-            listImplementationSubtitle: "リストエンジンを切り替え（デバッグ）。",
-            listImplementation: {
-              flashTitle: "FlashList v2（推奨）",
-              flashSubtitle: "長いトランスクリプトで最適な性能。",
-              flashInvertedTitle: "FlashList v2（反転）",
-              flashInvertedSubtitle: "チャット向きを反転するパイロット — 最新メッセージを下端に固定",
-              legacyTitle: "従来の FlatList",
-              legacySubtitle: "互換性デバッグ用の代替。",
-            },
           toolCallsStrategyTitle: "ツール呼び出しのグルーピング戦略",
           toolCallsStrategy: {
             consecutiveTitle: "連続ツール（既定）",
@@ -9861,9 +10176,12 @@ settingsSession: {
   },
 
   message: {
+    sessionReferenceUnavailable: "利用できないセッション",
+    sessionReferenceOpen: ({ name }: { name: string }) => `セッション ${name} を開く`,
     switchedToMode: ({ mode }: { mode: string }) =>
       `${mode}モードに切り替えました`,
     discarded: "破棄済み",
+    recoveredHistory: "復元された履歴",
     unknownEvent: "不明なイベント",
     contextCompactionStarted: "コンテキストを圧縮中...",
     contextCompactionCompleted: "コンテキストを圧縮しました",
@@ -9952,7 +10270,7 @@ settingsSession: {
         yesForCommandPrefix:
           "はい、このコマンドプレフィックスについては確認しない",
         yesForSubcommand: "はい、このサブコマンドについては確認しない",
-        yesForCommandName: "はい、このコマンドについては確認しない",
+        yesForCommandName: "はい、このセッションでは一致するすべてのコマンドを許可",
         stop: "停止",
         noTellClaude: "いいえ、フィードバックを提供",
       },

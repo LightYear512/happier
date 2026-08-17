@@ -2,11 +2,15 @@ import type { DaemonSpawnHooks, DaemonSpawnProfileEnvResult } from '@/daemon/spa
 import { validateProviderCliSpawn } from '@/runtime/managedTools/validateProviderCliSpawn';
 import { resolveClaudeConfigDirEnvOverlay } from '@/backends/claude/utils/resolveClaudeConfigDirEnvOverlay';
 import { resolveClaudeConfigDirForSession } from '@/backends/claude/utils/resolveClaudeConfigDirForSession';
+import { resolveClaudeExternalSandboxEnv } from '@/backends/claude/spawn/resolveClaudeExternalSandboxEnv';
 
 export const claudeDaemonSpawnHooks: DaemonSpawnHooks = {
   validateSpawn: async () => validateProviderCliSpawn({ agentId: 'claude' }),
   buildExtraEnvForChild: () => {
-    return resolveClaudeConfigDirEnvOverlay(process.env);
+    return {
+      ...resolveClaudeConfigDirEnvOverlay(process.env),
+      ...resolveClaudeExternalSandboxEnv(process.env),
+    };
   },
   resolveProfileEnvForChild: (params): DaemonSpawnProfileEnvResult => {
     const resolved = resolveClaudeConfigDirForSession(params);

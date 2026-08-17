@@ -12,18 +12,24 @@ import {
   type ConnectedServiceQuotaSnapshotDeliveryFlushResult,
   type ConnectedServiceQuotaSnapshotDeliveryOutbox,
 } from '@/daemon/connectedServices/quotas/connectedServiceQuotaSnapshotDeliveryOutbox';
-import { buildNativeQuotaProfileId } from '@/daemon/connectedServices/quotas/nativeQuotaProfileId';
-import { notifyDaemonConnectedServiceQuotaSnapshot } from '@/daemon/controlClient';
+import { buildNativeProviderAccountUsageSourceProfileId } from '@/daemon/connectedServices/accountUsage/nativeSourceIdentity';
+import { deliverConnectedServiceQuotaSnapshotToDaemon } from '@/daemon/connectedServices/quotas/deliverConnectedServiceQuotaSnapshotToDaemon';
 import { resolveConfiguredCodexHome } from '../utils/resolveConfiguredCodexHome';
 import { mapCodexRateLimitSnapshotToQuotaSnapshot } from './mapCodexRateLimitSnapshot';
 import {
   readCodexAuthStoreProviderAccountId,
   type CodexAuthStoreProviderAccountIdProof,
 } from './readCodexAuthStoreProviderAccountId';
+import type { CodexConnectedServiceAppliedIdentity } from './runtimeAppliedIdentity';
 
 type NotifyQuotaSnapshot = (body: Readonly<{
   sessionId: string;
   serviceId: 'openai-codex';
+  groupId?: string | null;
+  groupGeneration?: number | null;
+  sourceProviderAccountId?: string | null;
+  credentialFingerprint?: string | null;
+  policyDisposition?: 'evidence_only';
   snapshot: ConnectedServiceQuotaSnapshotV1;
 }>) => Promise<unknown>;
 
@@ -32,16 +38,29 @@ export type CodexQuotaSnapshotReportResult = ConnectedServiceQuotaSnapshotDelive
 export const CODEX_QUOTA_SNAPSHOT_DELIVERY_RETRY_DELAY_MS = 1_000;
 
 export function createCodexQuotaSnapshotDeliveryOutboxForNotify(input: Readonly<{
-  notify: NotifyQuotaSnapshot;
+  /**
+   * Optional explicit notify seam (used by `reportCodexRateLimitSnapshotToDaemon` callers + tests).
+   * When omitted, delivery routes through the ONE shared full-payload daemon deliver helper
+   * (CS-FIX-3) so `sourceProviderAccountId` can never be dropped by a hand-rolled per-site closure.
+   */
+  notify?: NotifyQuotaSnapshot;
   onDiagnostic?: (diagnostic: ConnectedServiceQuotaSnapshotDeliveryDiagnostic) => void;
   retryDelayMs?: number | null;
 }>): ConnectedServiceQuotaSnapshotDeliveryOutbox {
+  const notify = input.notify;
   return createConnectedServiceQuotaSnapshotDeliveryOutbox({
-    deliver: async ({ sessionId, snapshot }) => await input.notify({
-      sessionId,
-      serviceId: 'openai-codex',
-      snapshot,
-    }),
+    deliver: notify
+      ? async ({ sessionId, groupId, groupGeneration, sourceProviderAccountId, credentialFingerprint, policyDisposition, snapshot }) => await notify({
+          sessionId,
+          serviceId: 'openai-codex',
+          ...(groupId !== undefined ? { groupId } : {}),
+          ...(groupGeneration !== undefined ? { groupGeneration } : {}),
+          ...(sourceProviderAccountId !== undefined ? { sourceProviderAccountId } : {}),
+          ...(credentialFingerprint !== undefined ? { credentialFingerprint } : {}),
+          ...(policyDisposition ? { policyDisposition } : {}),
+          snapshot,
+        })
+      : deliverConnectedServiceQuotaSnapshotToDaemon,
     retryDelayMs: input.retryDelayMs === undefined
       ? CODEX_QUOTA_SNAPSHOT_DELIVERY_RETRY_DELAY_MS
       : input.retryDelayMs,
@@ -49,13 +68,7 @@ export function createCodexQuotaSnapshotDeliveryOutboxForNotify(input: Readonly<
   });
 }
 
-const defaultCodexQuotaSnapshotDeliveryOutbox = createCodexQuotaSnapshotDeliveryOutboxForNotify({
-  notify: async ({ sessionId, serviceId, snapshot }) => await notifyDaemonConnectedServiceQuotaSnapshot({
-    sessionId,
-    serviceId,
-    snapshot,
-  }),
-});
+const defaultCodexQuotaSnapshotDeliveryOutbox = createCodexQuotaSnapshotDeliveryOutboxForNotify({});
 
 export async function flushPendingCodexQuotaSnapshotsToDaemon(input: Readonly<{
   deliveryOutbox?: ConnectedServiceQuotaSnapshotDeliveryOutbox;
@@ -82,8 +95,8 @@ async function resolveCodexNativeQuotaIdentity(env: Pick<NodeJS.ProcessEnv, stri
   }
   if (proof.status === 'resolved') {
     return {
-      profileId: buildNativeQuotaProfileId({
-        kind: 'acct',
+      profileId: buildNativeProviderAccountUsageSourceProfileId({
+        kind: 'providerSubject',
         providerId: 'codex',
         material: proof.accountId,
       }),
@@ -92,8 +105,8 @@ async function resolveCodexNativeQuotaIdentity(env: Pick<NodeJS.ProcessEnv, stri
     };
   }
   return {
-    profileId: buildNativeQuotaProfileId({
-      kind: 'native',
+    profileId: buildNativeProviderAccountUsageSourceProfileId({
+      kind: 'localCredential',
       providerId: 'codex',
       material: codexHome,
     }),
@@ -102,51 +115,19 @@ async function resolveCodexNativeQuotaIdentity(env: Pick<NodeJS.ProcessEnv, stri
   };
 }
 
-// Snapshot attribution must follow the CURRENT member identity. After a hot-apply
-// group switch the child env still names the pre-switch activeProfileId while the
-// materialized auth store and the live app-server already belong to the new member;
-// attributing post-switch healthy meters to the exhausted member would falsely
-// clear its limiter (F7) and corrupt group selection. Same metadata-first→env
-// order as `resolveOpenAiCodexDaemonRefreshSelection` and the classification context.
-function resolveSelectedCodexProfileId(input: Readonly<{
+// Mutable bindings and child env selections prove that this is a connected-service
+// runtime, but they do not prove which credential produced a provider response.
+// Only the provider operation's frozen applied identity may attribute that response.
+function hasConnectedCodexSelection(input: Readonly<{
   env: Pick<NodeJS.ProcessEnv, string>;
   session?: ConnectedServiceRuntimeAuthMetadataSession | null;
-}>): Readonly<{ profileId: string; groupId: string | null; groupGeneration: number | null }> | null {
+}>): boolean {
   const childSelection = findConnectedServiceChildSelection(input.env, 'openai-codex');
   if (input.session) {
     const binding = findConnectedServiceBindingSelectionFromSessionMetadata(input.session, 'openai-codex');
-    if (binding?.source === 'connected') {
-      if (binding.selection === 'group') {
-        if (binding.profileId) {
-          return {
-            profileId: binding.profileId,
-            groupId: binding.groupId,
-            groupGeneration: childSelection?.kind === 'group' && childSelection.groupId === binding.groupId
-              ? childSelection.generation
-              : null,
-          };
-        }
-      } else {
-        return {
-          profileId: binding.profileId,
-          groupId: null,
-          groupGeneration: null,
-        };
-      }
-    }
+    if (binding?.source === 'connected') return true;
   }
-  if (!childSelection) return null;
-  return childSelection.kind === 'group'
-    ? {
-        profileId: childSelection.activeProfileId,
-        groupId: childSelection.groupId,
-        groupGeneration: childSelection.generation,
-      }
-    : {
-        profileId: childSelection.profileId,
-        groupId: null,
-        groupGeneration: null,
-      };
+  return childSelection !== null;
 }
 
 export async function reportCodexRateLimitSnapshotToDaemon(input: Readonly<{
@@ -154,29 +135,40 @@ export async function reportCodexRateLimitSnapshotToDaemon(input: Readonly<{
   session?: ConnectedServiceRuntimeAuthMetadataSession | null;
   sessionId: string;
   rawSnapshot: unknown;
+  /** Provider-observed identity tuple. Never mix its fields with persisted selection state. */
+  appliedIdentity?: CodexConnectedServiceAppliedIdentity | null;
   // Live provider-account proof supplied by Codex app-server `account/read`.
   // Do not substitute auth-store identity for connected-service sessions.
   activeAccountId?: string | null;
   accountLabel?: string | null;
+  sourceProviderAccountId?: string | null;
   rawResetCredits?: unknown;
+  policyDisposition?: 'evidence_only';
   nowMs?: number;
   notify?: NotifyQuotaSnapshot;
   onDeliveryFailure?: (diagnostic: CodexQuotaSnapshotDeliveryFailureDiagnostic) => void;
   onDeliveryDiagnostic?: (diagnostic: CodexQuotaSnapshotDeliveryFailureDiagnostic) => void;
   deliveryOutbox?: ConnectedServiceQuotaSnapshotDeliveryOutbox;
 }>): Promise<CodexQuotaSnapshotReportResult> {
-  const selectedContext = resolveSelectedCodexProfileId(input);
-  const nativeIdentity = await resolveCodexNativeQuotaIdentity(input.env);
-  const identity = selectedContext
+  const appliedIdentity = input.appliedIdentity?.serviceId === 'openai-codex'
+    ? input.appliedIdentity
+    : null;
+  if (!appliedIdentity && hasConnectedCodexSelection(input)) {
+    return { attempted: 0, delivered: 0, pending: 0, dropped: 0 };
+  }
+  const nativeIdentity = appliedIdentity
+    ? null
+    : await resolveCodexNativeQuotaIdentity(input.env);
+  const identity = appliedIdentity
     ? {
-        profileId: selectedContext.profileId,
-        groupId: selectedContext.groupId,
-        groupGeneration: selectedContext.groupGeneration,
-        activeAccountId: input.activeAccountId ?? null,
-        accountLabel: input.accountLabel ?? null,
+        profileId: appliedIdentity.profileId,
+        groupId: appliedIdentity.groupId,
+        groupGeneration: appliedIdentity.groupGeneration,
+        activeAccountId: appliedIdentity.activeAccountId,
+        accountLabel: appliedIdentity.accountLabel,
       }
     : {
-        ...nativeIdentity,
+        ...nativeIdentity!,
         groupId: null,
         groupGeneration: null,
       };
@@ -203,6 +195,15 @@ export async function reportCodexRateLimitSnapshotToDaemon(input: Readonly<{
     serviceId: 'openai-codex',
     groupId: identity.groupId,
     groupGeneration: identity.groupGeneration,
+    ...(appliedIdentity?.credentialFingerprint
+      ? { credentialFingerprint: appliedIdentity.credentialFingerprint }
+      : {}),
+    ...(appliedIdentity?.activeAccountId
+      ? { sourceProviderAccountId: appliedIdentity.activeAccountId }
+      : input.sourceProviderAccountId !== undefined
+        ? { sourceProviderAccountId: input.sourceProviderAccountId }
+        : {}),
+    ...(input.policyDisposition ? { policyDisposition: input.policyDisposition } : {}),
     snapshot,
   });
 }

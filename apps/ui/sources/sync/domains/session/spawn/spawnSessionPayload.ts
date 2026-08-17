@@ -4,16 +4,19 @@ import { buildCodexAgentRuntimeDescriptor, type CodexBackendMode } from '@happie
 import {
     isVersionSupported,
     MINIMUM_CLI_BACKEND_TARGET_SPAWN_VERSION,
+    MINIMUM_CLI_SPAWN_PENDING_FIRST_INPUT_VERSION,
 } from '@/utils/system/versionUtils';
 import type {
     AcpConfigOptionOverridesV1,
     AgentRuntimeDescriptorV1,
     BackendTargetRefV1,
     SessionMcpSelectionV1,
+    PendingFirstInputV1,
     WindowsRemoteSessionLaunchMode,
 } from '@happier-dev/protocol';
 
 import { buildCodexBackendTransportFields, type CodexBackendTransportFields } from '../codexBackendTransport';
+import { readNonBlankSessionControlIdentifier } from '@/sync/domains/sessionControl/opaqueIdentifiers';
 
 // Options for spawning a session
 export interface SpawnSessionOptions {
@@ -37,6 +40,14 @@ export interface SpawnSessionOptions {
     environmentVariables?: Record<string, string>;
     resume?: string;
     spawnNonce?: string;
+    /** Opaque UI-local identity for one explicit user launch attempt. */
+    userAttemptId?: string;
+    /** Fixed first-turn identity retained with spawn custody until follow-up settles. */
+    firstTurnLocalId?: string;
+    /** Fixed attachment follow-up identity retained with spawn custody until follow-up settles. */
+    attachmentMessageLocalId?: string;
+    /** One-shot first turn transferred to a compatible daemon as part of fresh-session custody. */
+    pendingFirstInput?: PendingFirstInputV1;
     permissionMode?: PermissionMode;
     permissionModeUpdatedAt?: number;
     agentModeId?: string;
@@ -88,6 +99,7 @@ export type SpawnHappySessionRpcParams = CodexBackendTransportFields & {
     environmentVariables?: Record<string, string>
     resume?: string
     spawnNonce?: string
+    pendingFirstInput?: PendingFirstInputV1
     agentRuntimeDescriptorV1?: AgentRuntimeDescriptorV1
     permissionMode?: PermissionMode
     permissionModeUpdatedAt?: number
@@ -136,6 +148,12 @@ export function shouldUseLegacySpawnHappySessionRpcParams(daemonCliVersion?: str
     const normalizedVersion = typeof daemonCliVersion === 'string' ? daemonCliVersion.trim() : '';
     return normalizedVersion.length > 0
         && !isVersionSupported(normalizedVersion, MINIMUM_CLI_BACKEND_TARGET_SPAWN_VERSION);
+}
+
+export function supportsSpawnPendingFirstInput(daemonCliVersion?: string | null): boolean {
+    const normalizedVersion = typeof daemonCliVersion === 'string' ? daemonCliVersion.trim() : '';
+    return normalizedVersion.length > 0
+        && isVersionSupported(normalizedVersion, MINIMUM_CLI_SPAWN_PENDING_FIRST_INPUT_VERSION);
 }
 
 function resolveLegacyWindowsRemoteSessionConsole(params: Readonly<{
@@ -195,6 +213,7 @@ export function buildSpawnHappySessionRpcParams(options: SpawnSessionOptions): S
         profileId,
         resume,
         spawnNonce,
+        pendingFirstInput,
         permissionMode,
         permissionModeUpdatedAt,
         agentModeId,
@@ -215,7 +234,7 @@ export function buildSpawnHappySessionRpcParams(options: SpawnSessionOptions): S
         accountSettingsVersionHint,
     } = options;
 
-    const normalizedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+    const normalizedModelId = readNonBlankSessionControlIdentifier(modelId) ?? '';
     const includeModelOverride =
         normalizedModelId.length > 0 &&
         normalizedModelId !== 'default' &&
@@ -234,13 +253,14 @@ export function buildSpawnHappySessionRpcParams(options: SpawnSessionOptions): S
         environmentVariables,
         resume,
         ...(typeof spawnNonce === 'string' && spawnNonce.trim().length > 0
-            ? { spawnNonce: spawnNonce.trim() }
+            ? { spawnNonce }
             : {}),
+        ...(pendingFirstInput ? { pendingFirstInput } : {}),
         permissionMode,
         permissionModeUpdatedAt,
-        ...(typeof agentModeId === 'string' && agentModeId.trim().length > 0
+        ...(readNonBlankSessionControlIdentifier(agentModeId)
             ? {
-                agentModeId: agentModeId.trim(),
+                agentModeId: agentModeId!,
                 ...(typeof agentModeUpdatedAt === 'number' && Number.isFinite(agentModeUpdatedAt)
                     ? { agentModeUpdatedAt }
                     : {}),
@@ -299,7 +319,12 @@ export function buildCompatibleSpawnHappySessionRpcParams(params: Readonly<{
     daemonCliVersion?: string | null;
 }>): CompatibleSpawnHappySessionRpcParams {
     if (!shouldUseLegacySpawnHappySessionRpcParams(params.daemonCliVersion)) {
-        return buildSpawnHappySessionRpcParams(params.options);
+        const current = buildSpawnHappySessionRpcParams(params.options);
+        if (supportsSpawnPendingFirstInput(params.daemonCliVersion)) {
+            return current;
+        }
+        const { pendingFirstInput: _pendingFirstInput, ...compatible } = current;
+        return compatible;
     }
     return buildLegacySpawnHappySessionRpcParams(params.options);
 }

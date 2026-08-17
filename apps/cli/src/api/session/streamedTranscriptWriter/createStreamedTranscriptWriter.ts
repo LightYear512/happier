@@ -1,29 +1,48 @@
 import { randomUUID } from 'node:crypto';
 
 import { logger } from '@/ui/logger';
+import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import { normalizeEphemeralSendOutcome, type EphemeralSendOutcome } from '../ephemeralSendOutcome';
+import { serializeOutboundError } from '../outboundErrorSerialization';
 
 import type { ACPProvider } from '../sessionMessageTypes';
 import {
   resolveCheckpointIntervalMs,
   resolveCheckpointMinChars,
   resolveInitialCheckpointDelayMs,
+  resolveLiveCheckpointIntervalMs,
   resolveLiveSnapshotIntervalMs,
   resolveLiveSnapshotMinChars,
 } from './env';
 import { buildStreamedTranscriptSegmentKey, type StreamedTranscriptSegmentKey, type StreamedTranscriptSegmentKind } from './segmentKey';
 import { commitStreamedTranscriptSegmentSnapshot } from './commitStreamedTranscriptSegmentSnapshot';
 import {
+  buildStreamedTranscriptSegmentDeltaBody,
   buildStreamedTranscriptSegmentSnapshotBody,
   buildStreamedTranscriptSegmentSnapshotMeta,
 } from './buildStreamedTranscriptSegmentSnapshot';
 import { normalizeSidechainId } from './normalizeSidechainId';
 import { waitForSegmentDrain, type StreamedTranscriptSegmentRuntime, type StreamedTranscriptSegmentState } from './segmentRuntime';
+import {
+  acceptLivePublication,
+  createLiveDeliveryState,
+  disposeLiveDeliveryState,
+  hasDirtyLiveDeliveryText,
+  markLiveDeliveryRewrite,
+  queueLiveDeliveryIntent,
+  recordLiveDeliveryFailure,
+  shouldPublishLiveDelta,
+  takeLiveDeliveryRecoverySummary,
+  takePendingLiveDeliveryIntent,
+  type LiveDeliveryIntent,
+} from './liveDeliveryState';
 import type {
   StreamedTranscriptFlushSummary,
   StreamedTranscriptSegmentFlushSummary,
   StreamedTranscriptWriter,
   StreamedTranscriptWriterSession,
 } from './types';
+import type { SessionTranscriptObservationProvenanceV1 } from '@happier-dev/protocol';
 
 type SegmentKind = StreamedTranscriptSegmentKind;
 type SegmentState = StreamedTranscriptSegmentState;
@@ -44,9 +63,11 @@ function buildFlushSummary(params: {
   const segments: StreamedTranscriptSegmentFlushSummary[] = params.flushedSegments.map((segment) => ({
     kind: segment.kind,
     sidechainId: segment.sidechainId,
+    localId: segment.segmentLocalId,
     sawText: segment.accumulatedText.length > 0,
     didDurablyFlush: didSegmentDurablyFlush(segment, params.expectedState),
     lastCommittedState: segment.lastCommittedState,
+    commitResult: segment.lastCommitResult,
   }));
 
   const buildAggregate = (kind: SegmentKind, sidechainId?: string | null) => {
@@ -77,18 +98,21 @@ export function createStreamedTranscriptWriter(params: {
   checkpointMinChars?: number | null;
   liveSnapshotIntervalMs?: number | null;
   liveSnapshotMinChars?: number | null;
+  liveCheckpointIntervalMs?: number | null;
   durableCommitsRequireExplicitEnable?: boolean;
 }): StreamedTranscriptWriter {
   const provider = params.provider;
   const session = params.session;
   const makeLocalId = typeof params.makeLocalId === 'function' ? params.makeLocalId : () => randomUUID();
   let durableCommitsEnabled = params.durableCommitsRequireExplicitEnable !== true;
+  let commitProvenance: SessionTranscriptObservationProvenanceV1 | undefined;
 
   const initialCheckpointDelayMs = resolveInitialCheckpointDelayMs(params.initialCheckpointDelayMs);
   const checkpointIntervalMs = resolveCheckpointIntervalMs(params.checkpointIntervalMs);
   const checkpointMinChars = resolveCheckpointMinChars(params.checkpointMinChars);
   const liveSnapshotIntervalMs = resolveLiveSnapshotIntervalMs(params.liveSnapshotIntervalMs);
   const liveSnapshotMinChars = resolveLiveSnapshotMinChars(params.liveSnapshotMinChars);
+  const liveCheckpointIntervalMs = resolveLiveCheckpointIntervalMs(params.liveCheckpointIntervalMs);
 
   const segments = new Map<SegmentKey, SegmentRuntime>();
 
@@ -116,32 +140,47 @@ export function createStreamedTranscriptWriter(params: {
     });
   };
 
-  const getOrCreateSegment = (kind: SegmentKind, sidechainId: string | null): SegmentRuntime => {
+  const getOrCreateSegment = (
+    kind: SegmentKind,
+    sidechainId: string | null,
+    exactLocalId?: string,
+  ): SegmentRuntime => {
     const key = buildStreamedTranscriptSegmentKey(kind, sidechainId);
     const existing = segments.get(key);
-    if (existing) return existing;
+    if (existing) {
+      if (exactLocalId !== undefined) {
+        if (existing.commitMode !== 'exact' || existing.segmentLocalId !== exactLocalId) {
+          throw new Error(`Exact transcript segment identity mismatch for ${key}`);
+        }
+      } else if (existing.commitMode === 'exact') {
+        throw new Error(`Exact transcript segment ${key} requires the exact append API`);
+      }
+      return existing;
+    }
 
     const nowMs = Date.now();
     const created: SegmentRuntime = {
       key,
       kind,
       sidechainId,
-      segmentLocalId: makeLocalId(),
+      segmentLocalId: exactLocalId ?? makeLocalId(),
+      commitMode: exactLocalId === undefined ? 'compatibility' : 'exact',
       startedAtMs: nowMs,
       accumulatedText: '',
       textVersion: 0,
       didWriteDurable: false,
-      didWriteLive: false,
+      appendOnlySinceLastDurableSnapshot: true,
       lastDurableText: '',
       lastCheckpointAtMs: 0,
       lastCheckpointTextLen: 0,
       lastCommittedTextVersion: 0,
       lastCommittedState: null,
       lastCommitFailedAtMs: 0,
-      lastLiveSnapshotAtMs: 0,
-      lastLiveSnapshotTextLen: 0,
-      lastLiveSnapshotText: '',
+      lastCommitError: null,
+      lastCommitResult: null,
+      liveDelivery: createLiveDeliveryState(),
       additionalMeta: {},
+      ...(commitProvenance ? { provenance: commitProvenance } : {}),
       durableCheckpointTimer: null,
       liveSnapshotTimer: null,
       isCommittingDurable: false,
@@ -157,9 +196,17 @@ export function createStreamedTranscriptWriter(params: {
     return segments.get(key) ?? null;
   };
 
-  const hasDirtyDurableText = (segment: SegmentRuntime) => segment.accumulatedText !== segment.lastDurableText;
+  const hasDirtyDurableText = (segment: SegmentRuntime) => {
+    if (segment.appendOnlySinceLastDurableSnapshot) {
+      return segment.accumulatedText.length !== segment.lastCheckpointTextLen;
+    }
+    return segment.accumulatedText !== segment.lastDurableText;
+  };
 
   const getDirtyAppendChars = (segment: SegmentRuntime) => {
+    if (segment.appendOnlySinceLastDurableSnapshot) {
+      return segment.accumulatedText.length - segment.lastCheckpointTextLen;
+    }
     if (!segment.accumulatedText.startsWith(segment.lastDurableText)) return checkpointMinChars;
     return segment.accumulatedText.length - segment.lastDurableText.length;
   };
@@ -198,63 +245,187 @@ export function createStreamedTranscriptWriter(params: {
     segment.durableCheckpointTimer = timer;
   };
 
-  const emitLiveSnapshot = (segment: SegmentRuntime, opts: { state: SegmentState; interruptedReason?: string }) => {
-    if (typeof session.sendAgentMessageEphemeral !== 'function') return;
+  const getLiveConnectionEpoch = (): number => {
+    const epoch = session.getEphemeralStreamConnectionEpoch?.();
+    return typeof epoch === 'number' && Number.isFinite(epoch) && epoch >= 0
+      ? Math.trunc(epoch)
+      : 0;
+  };
 
-    clearLiveSnapshotTimer(segment);
+  const logLiveFailure = (segment: SegmentRuntime, outcome: Extract<EphemeralSendOutcome, { accepted: false }>) => {
+    const recorded = recordLiveDeliveryFailure({
+      delivery: segment.liveDelivery,
+      reason: outcome.reason,
+      nowMs: Date.now(),
+    });
+    if (!recorded?.logFull) return;
+    logger.debug('[StreamedTranscriptWriter] Live publication was not locally accepted (non-fatal)', {
+      reason: outcome.reason,
+      failureCount: recorded.count,
+      localId: segment.segmentLocalId,
+      kind: segment.kind,
+      sidechainId: segment.sidechainId,
+    });
+  };
 
+  const logUnresolvedLiveFailureSummary = (segment: SegmentRuntime): void => {
+    const unresolved = takeLiveDeliveryRecoverySummary(segment.liveDelivery);
+    if (!unresolved) return;
+    logger.debug(
+      '[StreamedTranscriptWriter] Live publication remained locally non-accepted at segment settlement',
+      {
+        failureCount: unresolved.count,
+        suppressedFailureCount: unresolved.suppressedCount,
+        firstReason: unresolved.firstReason,
+        localId: segment.segmentLocalId,
+        kind: segment.kind,
+        sidechainId: segment.sidechainId,
+      },
+    );
+  };
+
+  const publishOneLiveIntent = async (segment: SegmentRuntime, intent: LiveDeliveryIntent): Promise<void> => {
     const nowMs = Date.now();
-    const body = buildStreamedTranscriptSegmentSnapshotBody(segment);
+    const attemptedEpoch = getLiveConnectionEpoch();
+    const accepted = segment.liveDelivery.locallyAccepted;
+    const emitAsDelta = shouldPublishLiveDelta({
+      delivery: segment.liveDelivery,
+      state: intent.state,
+      nowMs,
+      epoch: attemptedEpoch,
+      liveCheckpointIntervalMs,
+      supportsDelta: typeof session.sendAgentMessageEphemeralDelta === 'function',
+    });
+    const text = segment.accumulatedText;
+    const tick = (accepted?.tick ?? 0) + 1;
     const meta = buildStreamedTranscriptSegmentSnapshotMeta({
       segment,
-      state: opts.state,
-      interruptedReason: opts.interruptedReason,
+      state: intent.state,
+      interruptedReason: intent.interruptedReason,
       nowMs,
     });
 
+    let outcome: EphemeralSendOutcome;
     try {
-      void Promise.resolve(
-        session.sendAgentMessageEphemeral(provider, body, {
-          localId: segment.segmentLocalId,
-          meta,
-          createdAt: segment.startedAtMs,
-          updatedAt: nowMs,
-        }),
-      ).catch((error) => {
-        logger.debug('[StreamedTranscriptWriter] Live snapshot emit failed (non-fatal)', {
-          error,
-          localId: segment.segmentLocalId,
-          kind: segment.kind,
-          sidechainId: segment.sidechainId,
-        });
-      });
+      const rawOutcome = emitAsDelta
+        ? await session.sendAgentMessageEphemeralDelta?.(
+          provider,
+          buildStreamedTranscriptSegmentDeltaBody(segment, text.slice(accepted?.text.length ?? 0)),
+          {
+            localId: segment.segmentLocalId,
+            tick,
+            baseLength: accepted?.text.length ?? 0,
+            meta,
+            createdAt: segment.startedAtMs,
+            updatedAt: nowMs,
+          },
+        )
+        : await session.sendAgentMessageEphemeral?.(
+          provider,
+          buildStreamedTranscriptSegmentSnapshotBody(segment),
+          {
+            localId: segment.segmentLocalId,
+            meta,
+            tick,
+            createdAt: segment.startedAtMs,
+            updatedAt: nowMs,
+          },
+        );
+      outcome = normalizeEphemeralSendOutcome(rawOutcome, attemptedEpoch);
     } catch (error) {
-      logger.debug('[StreamedTranscriptWriter] Live snapshot emit failed synchronously (non-fatal)', {
-        error,
+      outcome = {
+        accepted: false,
+        epoch: getLiveConnectionEpoch(),
+        reason: { code: 'local_failure', error: serializeOutboundError(error) },
+      };
+    }
+
+    if (!outcome.accepted) {
+      logLiveFailure(segment, outcome);
+      return;
+    }
+
+    const acceptedPublication = acceptLivePublication({
+      delivery: segment.liveDelivery,
+      text,
+      tick,
+      outcome,
+      attemptedEpoch,
+      acceptedAtMs: nowMs,
+      wasCheckpoint: !emitAsDelta,
+    });
+    if (!acceptedPublication) {
+      logLiveFailure(segment, {
+        accepted: false,
+        epoch: outcome.epoch,
+        reason: { code: 'connection_epoch_changed' },
+      });
+      return;
+    }
+
+    const recovered = takeLiveDeliveryRecoverySummary(segment.liveDelivery);
+    if (recovered) {
+      logger.debug('[StreamedTranscriptWriter] Live publication recovered after local failures', {
+        failureCount: recovered.count,
+        suppressedFailureCount: recovered.suppressedCount,
+        firstReason: recovered.firstReason,
         localId: segment.segmentLocalId,
         kind: segment.kind,
         sidechainId: segment.sidechainId,
       });
     }
+  };
 
-    segment.didWriteLive = true;
-    segment.lastLiveSnapshotAtMs = nowMs;
-    segment.lastLiveSnapshotTextLen = segment.accumulatedText.length;
-    segment.lastLiveSnapshotText = segment.accumulatedText;
+  const ensureLiveDeliveryDrain = (segment: SegmentRuntime): void => {
+    if (segment.liveDelivery.disposed || segment.liveDelivery.inFlight || !segment.liveDelivery.pending) return;
+    const drain = (async () => {
+      let intent = takePendingLiveDeliveryIntent(segment.liveDelivery);
+      while (intent) {
+        await publishOneLiveIntent(segment, intent);
+        intent = takePendingLiveDeliveryIntent(segment.liveDelivery);
+      }
+    })().catch((error) => {
+      logLiveFailure(segment, {
+        accepted: false,
+        epoch: getLiveConnectionEpoch(),
+        reason: { code: 'local_failure', error: serializeOutboundError(error) },
+      });
+    });
+    segment.liveDelivery.inFlight = drain;
+    void drain.then(() => {
+      if (segment.liveDelivery.inFlight === drain) segment.liveDelivery.inFlight = null;
+      ensureLiveDeliveryDrain(segment);
+    });
+  };
+
+  const requestLivePublication = (segment: SegmentRuntime, intent: LiveDeliveryIntent): void => {
+    if (typeof session.sendAgentMessageEphemeral !== 'function') return;
+    clearLiveSnapshotTimer(segment);
+    queueLiveDeliveryIntent(segment.liveDelivery, intent);
+    ensureLiveDeliveryDrain(segment);
+  };
+
+  const waitForLiveDeliveryDrain = async (segment: SegmentRuntime): Promise<void> => {
+    while (!segment.liveDelivery.disposed) {
+      ensureLiveDeliveryDrain(segment);
+      const current = segment.liveDelivery.inFlight;
+      if (!current) return;
+      await current;
+    }
   };
 
   const scheduleLiveSnapshot = (segment: SegmentRuntime) => {
     if (typeof session.sendAgentMessageEphemeral !== 'function') return;
     if (segment.liveSnapshotTimer) return;
-    if (segment.accumulatedText === segment.lastLiveSnapshotText) return;
+    if (!hasDirtyLiveDeliveryText(segment.liveDelivery, segment.accumulatedText)) return;
 
-    const elapsedMs = Date.now() - segment.lastLiveSnapshotAtMs;
+    const elapsedMs = Date.now() - (segment.liveDelivery.locallyAccepted?.acceptedAtMs ?? 0);
     const delayMs = liveSnapshotIntervalMs <= 0 ? 0 : Math.max(0, liveSnapshotIntervalMs - elapsedMs);
     const timer = setTimeout(() => {
       segment.liveSnapshotTimer = null;
       if (!segments.has(segment.key)) return;
-      if (segment.accumulatedText === segment.lastLiveSnapshotText) return;
-      emitLiveSnapshot(segment, { state: 'streaming' });
+      if (!hasDirtyLiveDeliveryText(segment.liveDelivery, segment.accumulatedText)) return;
+      requestLivePublication(segment, { state: 'streaming' });
     }, delayMs);
     timer.unref?.();
     segment.liveSnapshotTimer = timer;
@@ -263,18 +434,19 @@ export function createStreamedTranscriptWriter(params: {
   const maybeEmitLiveStreamingSnapshot = (segment: SegmentRuntime) => {
     if (typeof session.sendAgentMessageEphemeral !== 'function') return;
 
-    if (!segment.didWriteLive) {
-      emitLiveSnapshot(segment, { state: 'streaming' });
+    const accepted = segment.liveDelivery.locallyAccepted;
+    if (!accepted) {
+      requestLivePublication(segment, { state: 'streaming' });
       return;
     }
 
-    if (segment.accumulatedText === segment.lastLiveSnapshotText) return;
+    if (!hasDirtyLiveDeliveryText(segment.liveDelivery, segment.accumulatedText)) return;
 
-    const isPureAppend = segment.accumulatedText.startsWith(segment.lastLiveSnapshotText);
+    const isPureAppend = segment.liveDelivery.appendOnlySinceLocallyAccepted;
     const addedChars = isPureAppend
-      ? segment.accumulatedText.length - segment.lastLiveSnapshotText.length
+      ? segment.accumulatedText.length - accepted.text.length
       : liveSnapshotMinChars;
-    const elapsedMs = Date.now() - segment.lastLiveSnapshotAtMs;
+    const elapsedMs = Date.now() - accepted.acceptedAtMs;
     const shouldEmitImmediately = !isPureAppend
       ? true
       : liveSnapshotIntervalMs <= 0
@@ -282,7 +454,7 @@ export function createStreamedTranscriptWriter(params: {
         : elapsedMs >= liveSnapshotIntervalMs && addedChars >= liveSnapshotMinChars;
 
     if (shouldEmitImmediately) {
-      emitLiveSnapshot(segment, { state: 'streaming' });
+      requestLivePublication(segment, { state: 'streaming' });
       return;
     }
 
@@ -330,10 +502,15 @@ export function createStreamedTranscriptWriter(params: {
     scheduleDurableCheckpoint(segment);
   };
 
-  const appendDelta = (kind: SegmentKind, deltaText: string, sidechainId: string | null) => {
+  const appendDelta = (
+    kind: SegmentKind,
+    deltaText: string,
+    sidechainId: string | null,
+    exactLocalId?: string,
+  ) => {
     if (!deltaText) return;
 
-    const segment = getOrCreateSegment(kind, sidechainId);
+    const segment = getOrCreateSegment(kind, sidechainId, exactLocalId);
     segment.accumulatedText += deltaText;
     segment.textVersion += 1;
     maybeEmitLiveStreamingSnapshot(segment);
@@ -345,6 +522,8 @@ export function createStreamedTranscriptWriter(params: {
     if (!segment) return false;
     if (segment.accumulatedText === text) return true;
     segment.accumulatedText = text;
+    segment.appendOnlySinceLastDurableSnapshot = false;
+    markLiveDeliveryRewrite(segment.liveDelivery);
     segment.textVersion += 1;
     maybeEmitLiveStreamingSnapshot(segment);
     maybeCommitDurableStreamingSnapshot(segment);
@@ -372,13 +551,38 @@ export function createStreamedTranscriptWriter(params: {
     for (const segment of flushedSegments) {
       clearDurableCheckpointTimer(segment);
       clearLiveSnapshotTimer(segment);
-      emitLiveSnapshot(segment, { state, interruptedReason: opts.interruptedReason });
-      commitDurableSnapshot(segment, { state, interruptedReason: opts.interruptedReason, force: true });
-      drainPromises.push(waitForSegmentDrain(segment));
+      requestLivePublication(segment, { state, interruptedReason: opts.interruptedReason });
       segments.delete(segment.key);
+      drainPromises.push((async () => {
+        // The durable snapshot replaces the live projection for this localId.
+        // Settle every queued live publication first so a delayed ephemeral
+        // delivery cannot temporarily overwrite the terminal durable state.
+        await waitForLiveDeliveryDrain(segment);
+        commitDurableSnapshot(segment, { state, interruptedReason: opts.interruptedReason, force: true });
+        await waitForSegmentDrain(segment);
+      })());
     }
 
     await Promise.all(drainPromises);
+    for (const segment of flushedSegments) {
+      if (
+        segment.commitMode === 'compatibility'
+        && (segment.lastCommitError !== null || !didSegmentDurablyFlush(segment, state))
+      ) {
+        segments.set(segment.key, segment);
+      }
+    }
+    const failedExactSegment = flushedSegments.find((segment) =>
+      segment.commitMode === 'exact'
+      && (segment.lastCommitError !== null || !didSegmentDurablyFlush(segment, state)),
+    );
+    if (failedExactSegment) {
+      const reason = failedExactSegment.lastCommitError instanceof Error
+        ? failedExactSegment.lastCommitError.message
+        : 'durable acknowledgement was not received';
+      throw new Error(`Exact transcript segment commit failed for ${failedExactSegment.segmentLocalId}: ${reason}`);
+    }
+    for (const segment of flushedSegments) logUnresolvedLiveFailureSummary(segment);
     return buildFlushSummary({ flushedSegments, expectedState: state });
   };
 
@@ -394,6 +598,8 @@ export function createStreamedTranscriptWriter(params: {
     for (const segment of segments.values()) {
       clearDurableCheckpointTimer(segment);
       clearLiveSnapshotTimer(segment);
+      logUnresolvedLiveFailureSummary(segment);
+      disposeLiveDeliveryState(segment.liveDelivery);
       segment.pendingDurableCommit = null;
       segment.idleWaiters.splice(0, segment.idleWaiters.length).forEach((resolve) => resolve());
     }
@@ -402,10 +608,20 @@ export function createStreamedTranscriptWriter(params: {
 
   return {
     appendAssistantDelta: (deltaText, opts) => appendDelta('assistant', deltaText, normalizeSidechainId(opts?.sidechainId)),
+    appendAssistantDeltaExact: (deltaText, opts) => {
+      const localId = readNonBlankOpaqueIdentifier(opts?.localId);
+      if (!localId) {
+        throw new Error('Exact assistant transcript append requires a caller-supplied non-blank localId');
+      }
+      appendDelta('assistant', deltaText, normalizeSidechainId(opts?.sidechainId), localId);
+    },
     appendThinkingDelta: (deltaText, opts) => appendDelta('thinking', deltaText, normalizeSidechainId(opts?.sidechainId)),
     overrideAssistantText: (text, opts) => overrideSegmentText('assistant', text, normalizeSidechainId(opts?.sidechainId)),
     overrideThinkingText: (text, opts) => overrideSegmentText('thinking', text, normalizeSidechainId(opts?.sidechainId)),
     mergeAssistantMeta: (meta, opts) => mergeSegmentMeta('assistant', meta, normalizeSidechainId(opts?.sidechainId)),
+    setCommitProvenance: (provenance) => {
+      commitProvenance = provenance ?? undefined;
+    },
     enableDurableCommits,
     discard,
     flushAll,

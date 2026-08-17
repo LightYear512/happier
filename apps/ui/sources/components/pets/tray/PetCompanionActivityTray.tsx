@@ -1,4 +1,3 @@
-import { Ionicons, Octicons } from '@expo/vector-icons';
 import * as React from 'react';
 import {
     I18nManager,
@@ -20,6 +19,7 @@ import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 
 import { styles } from './petCompanionActivityTrayStyles';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 const noDragProps = {
     'data-pet-no-drag': 'true',
@@ -89,6 +89,23 @@ export type PetCompanionActivityTrayProps = Readonly<{
     style?: StyleProp<ViewStyle>;
 }>;
 
+/**
+ * The three resolvers below map a SESSION's attention state, not an agent-activity status, and are
+ * deliberately not folded into `agentActivityToneStyle` / `AgentActivityStatusSlot`.
+ *
+ * The tray is keyed by `sessionId` and its statuses come from
+ * `buildPetCompanionActivityModel` — pending permission/user-action requests, a projected turn
+ * failure, `deriveSessionRuntimePresentationState().working`, unread messages. `review` has no
+ * counterpart in the ten-value agent vocabulary at all, and a session is never `queued`,
+ * `timedOut` or `cancelled`. Sharing the agent tables here would be the coincidental-similarity
+ * kind of centralising: two different questions ("is an agent running" vs "does this session want
+ * me") answered by one switch, which then cannot move for either of them.
+ *
+ * Its real neighbour is the session-list attention owner
+ * (`components/sessions/shell/row/sessionRowAttentionColors.ts`), whose `SessionRowAttentionState`
+ * covers the same ground with an extra `unread`/`quiet` distinction. Converging those two is a
+ * session-attention change, not an agent-activity one.
+ */
 function resolveStatusLabel(status: PetCompanionTrayItem['status']): string {
     switch (status) {
         case 'waiting':
@@ -102,16 +119,16 @@ function resolveStatusLabel(status: PetCompanionTrayItem['status']): string {
     }
 }
 
-function resolveStatusIcon(status: PetCompanionTrayItem['status']): React.ComponentProps<typeof Ionicons>['name'] {
+function resolveStatusIcon(status: PetCompanionTrayItem['status']): IconName {
     switch (status) {
         case 'waiting':
-            return 'time-outline';
+            return 'clock';
         case 'failed':
-            return 'warning-outline';
+            return 'warning';
         case 'review':
-            return 'checkmark-circle';
+            return 'check-circle';
         case 'running':
-            return 'ellipse-outline';
+            return 'circle';
     }
 }
 
@@ -245,7 +262,7 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
                 accessibilityLabel={statusLabel}
                 style={styles.statusBadge}
             >
-                <Ionicons name={statusIcon} size={12} color={statusColor} />
+                <Icon name={statusIcon} size={14} color={statusColor} />
             </View>
             <Pressable
                 {...noDragProps}
@@ -274,7 +291,7 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
                     { backgroundColor: pressed ? bubbleTheme.controlBackgroundPressed : bubbleTheme.controlBackground },
                 ]}
             >
-                <Ionicons name="close" size={13} color={bubbleTheme.textSecondary} />
+                <Icon name="x" size={14} color={bubbleTheme.textSecondary} />
             </Pressable>
             <View style={styles.copy}>
                 <Text
@@ -413,9 +430,9 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
                                 },
                             ]}
                         >
-                            <Octicons
+                            <Icon
                                 name="arrow-up"
-                                size={15}
+                                size={14}
                                 color={primaryButtonTheme.tint}
                             />
                         </Pressable>

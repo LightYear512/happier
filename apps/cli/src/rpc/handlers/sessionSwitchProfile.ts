@@ -73,7 +73,6 @@ function buildSwitchSpawnOptions(params: Readonly<{
     profileId: params.targetProfileId,
     existingSessionId: params.sessionId,
     sessionId: undefined,
-    initialPrompt: undefined,
     resume: undefined,
     existingSessionAttachPayload: undefined,
   };

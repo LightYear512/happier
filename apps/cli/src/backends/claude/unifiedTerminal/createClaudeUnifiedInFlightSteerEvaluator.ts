@@ -6,6 +6,7 @@ import type {
   ClaudeUnifiedInFlightSteerEvaluator,
   ClaudeUnifiedPromptAcceptance,
   ClaudeUnifiedPromptBatch,
+  ClaudeUnifiedTerminalScreenObservation,
 } from './_types';
 import type { ClaudeUnifiedTelemetrySink } from './telemetry';
 import { emitClaudeUnifiedSteerDecision } from './telemetry';
@@ -15,11 +16,12 @@ import {
   parseClaudeScreenState,
   resolveClaudeScreenInFlightSteerVeto,
 } from './tuiControls/screenState';
-import { isClaudeComposerCaptureStyleUnavailablePlaceholderCandidate } from './tuiControls/composerCaptureClassification';
+import { classifyClaudeOwnComposerDraft } from './ownComposerDraftClassification';
 import type { EnhancedMode } from '../loop';
 import { mapToClaudeMode } from '../utils/permissionMode';
 
 const DEFAULT_QUEUED_BANNER_CHECK_DELAY_MS = 400;
+const DEFAULT_QUEUED_BANNER_RETRY_DELAYS_MS = [400, 1_200, 3_000] as const;
 const DEFAULT_DRAFT_CLEAR_SETTLE_MS = 250;
 // One bounded escalation per starvation episode after this many consecutive `user_draft` vetoes
 // (the arbiter's fallback wake retries every ~15s; 4 vetoes ≈ a minute of starvation).
@@ -29,6 +31,10 @@ const DEFAULT_USER_DRAFT_ESCALATION_THRESHOLD = 4;
 const MAX_OWN_LEFTOVER_DRAFT_CLEAR_ATTEMPTS = 2;
 
 export type ClaudeUnifiedSteerUnavailableTeeReason = 'unsafe_window' | 'user_terminal_draft';
+export type ClaudeUnifiedSteerAvailabilitySnapshot = Readonly<{
+  available: boolean;
+  reason: ClaudeUnifiedSteerUnavailableTeeReason | null;
+}>;
 
 export type ClaudeUnifiedUserDraftStarvationInfo = Readonly<{
   consecutiveVetoes: number;
@@ -36,8 +42,15 @@ export type ClaudeUnifiedUserDraftStarvationInfo = Readonly<{
   draftLength: number;
 }>;
 
+type ClaudeUnifiedDraftLikeVetoReason = 'user_draft' | 'slash_picker';
+type ClaudeUnifiedDraftLikeVetoHandlingResult =
+  | ClaudeUnifiedInFlightSteerDecision
+  | Readonly<{ action: 'recheck' | 'fallback' }>;
+
 export type ClaudeUnifiedInFlightSteerWiring<Mode extends EnhancedMode = EnhancedMode> = Readonly<{
   evaluateInFlightSteer: ClaudeUnifiedInFlightSteerEvaluator<Mode>;
+  /** Event-driven, payload-free screen proof used immediately before Pending claim. */
+  refreshAvailability: () => Promise<ClaudeUnifiedSteerAvailabilitySnapshot>;
   /** Arbiter callback: a steered prompt's provider-acceptance expectation armed on turn-end evidence. */
   onSteerAcceptanceArmed: (batch: ClaudeUnifiedPromptBatch<Mode>) => void;
   /**
@@ -78,12 +91,13 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
    * while the arbiter still waits for hook/JSONL confirmation before consuming the queue head.
    */
   onPromptCustodyByTerminal?: ((batch: ClaudeUnifiedPromptBatch<Mode>) => void | Promise<void>) | undefined;
+  onScreenObserved?: ((observation: ClaudeUnifiedTerminalScreenObservation) => void) | undefined;
   /**
    * Lane P (O-design Seam A): de-duplicated tee of the SESSION-level steer availability so the
    * launcher can publish it to agentState. Payload-specific refusals (permission-mode change) are
    * deliberately NOT teed — the UI computes those locally and synchronously.
    */
-  onAvailabilitySnapshot?: ((snapshot: Readonly<{ available: boolean; reason: ClaudeUnifiedSteerUnavailableTeeReason | null }>) => void) | undefined;
+  onAvailabilitySnapshot?: ((snapshot: ClaudeUnifiedSteerAvailabilitySnapshot) => void) | undefined;
   /**
    * Lane X (incident cmq8y3nlx): exact-match classifier over texts WE wrote into the TUI. A
    * `user_draft` veto whose composer content matches is OUR OWN leftover (e.g. partial injection
@@ -116,6 +130,13 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
   const queuedBannerCheckDelayMs = Math.max(0, Math.trunc(
     opts.queuedBannerCheckDelayMs ?? DEFAULT_QUEUED_BANNER_CHECK_DELAY_MS,
   ));
+  const queuedBannerProbeDelaysMs = queuedBannerCheckDelayMs === DEFAULT_QUEUED_BANNER_CHECK_DELAY_MS
+    ? [...DEFAULT_QUEUED_BANNER_RETRY_DELAYS_MS]
+    : [
+      queuedBannerCheckDelayMs,
+      queuedBannerCheckDelayMs + Math.max(1, queuedBannerCheckDelayMs * 2),
+      queuedBannerCheckDelayMs + Math.max(2, Math.trunc(queuedBannerCheckDelayMs * 6.5)),
+    ];
   const draftClearSettleMs = Math.max(0, Math.trunc(opts.draftClearSettleMs ?? DEFAULT_DRAFT_CLEAR_SETTLE_MS));
   const userDraftEscalationThreshold = Math.max(1, Math.trunc(
     opts.userDraftEscalationThreshold ?? DEFAULT_USER_DRAFT_ESCALATION_THRESHOLD,
@@ -145,6 +166,81 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
     if (key === lastSnapshotKey) return;
     lastSnapshotKey = key;
     opts.onAvailabilitySnapshot({ available, reason });
+  }
+
+  function observeScreen(screenState: ClaudeScreenState, batch?: ClaudeUnifiedPromptBatch<Mode>): void {
+    opts.onScreenObserved?.({
+      screenState,
+      userMessageLocalIds: batch?.userMessageLocalIds ?? [],
+    });
+  }
+
+  async function refreshAvailability(): Promise<ClaudeUnifiedSteerAvailabilitySnapshot> {
+    const unavailable = (reason: ClaudeUnifiedSteerUnavailableTeeReason = 'unsafe_window') => {
+      const snapshot = { available: false, reason } as const;
+      teeAvailabilitySnapshot(snapshot.available, snapshot.reason);
+      return snapshot;
+    };
+    if (disposed) return unavailable();
+    const captureInputState = opts.hostAdapter.captureInputState;
+    if (!captureInputState) return unavailable();
+    try {
+      const inputState = await captureInputState(opts.handle);
+      const screen = parseClaudeScreenState(inputState.currentInput, { cursor: inputState.cursor });
+      observeScreen(screen);
+      const vetoReason = resolveClaudeScreenInFlightSteerVeto(screen);
+      if (vetoReason !== null) {
+        return unavailable(
+          vetoReason === 'user_draft' && userDraftEscalated
+            ? 'user_terminal_draft'
+            : 'unsafe_window',
+        );
+      }
+      const snapshot = { available: true, reason: null } as const;
+      teeAvailabilitySnapshot(snapshot.available, snapshot.reason);
+      return snapshot;
+    } catch {
+      return unavailable();
+    }
+  }
+
+  function scheduleQueuedBannerProbe(
+    batch: ClaudeUnifiedPromptBatch<Mode>,
+    attemptIndex: number,
+  ): void {
+    const delayMs = queuedBannerProbeDelaysMs[attemptIndex];
+    if (delayMs === undefined || disposed) return;
+    const captureInputState = opts.hostAdapter.captureInputState;
+    if (!captureInputState) return;
+    const timer = setTimeout(() => {
+      queuedBannerTimers.delete(timer);
+      void (async () => {
+        if (disposed) return;
+        let shouldRetry = true;
+        try {
+          const inputState = await captureInputState(opts.handle);
+          const screen = parseClaudeScreenState(inputState.currentInput, { cursor: inputState.cursor });
+          observeScreen(screen, batch);
+          emitClaudeUnifiedSteerDecision(opts.telemetry, {
+            decision: 'queued_banner_check',
+            originKind: batch.origin.kind,
+            queuedBannerVisible: screen.queuedMessageBannerVisible,
+            composerDraftPresent: screen.userDraftPresent,
+          });
+          if (screen.queuedMessageBannerVisible && !screen.userDraftPresent) {
+            shouldRetry = false;
+            await opts.onPromptCustodyByTerminal?.(batch);
+          }
+        } catch {
+          // Screen evidence unavailable; retry within the bounded probe sequence.
+        }
+        if (!disposed && shouldRetry) {
+          scheduleQueuedBannerProbe(batch, attemptIndex + 1);
+        }
+      })();
+    }, delayMs);
+    timer.unref?.();
+    queuedBannerTimers.add(timer);
   }
 
   function veto(
@@ -182,17 +278,27 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
    *   `user_terminal_draft` reason is teed to the capability publisher (UI pending honesty) and
    *   the one-shot starvation callback fires (single user-visible notification, never a loop).
    */
-  async function handleUserDraftVeto(
+  async function handleDraftLikeVeto(
     batch: ClaudeUnifiedPromptBatch<Mode>,
     screen: ClaudeScreenState,
     rawText: string,
-  ): Promise<ClaudeUnifiedInFlightSteerDecision | null> {
+    vetoReason: ClaudeUnifiedDraftLikeVetoReason,
+  ): Promise<ClaudeUnifiedDraftLikeVetoHandlingResult> {
     const captureInputState = opts.hostAdapter.captureInputState;
+    const ownComposerTexts = opts.ownComposerTexts ?? { matches: () => false };
     let current = screen;
     let currentRawText = rawText;
-    let ownLeftover = (current.composerContent ?? '').length > 0
-      && opts.ownComposerTexts?.matches(current.composerContent ?? '') === true;
-    if (!ownLeftover && isClaudeComposerCaptureStyleUnavailablePlaceholderCandidate(currentRawText, current)) {
+    let draftClassification = classifyClaudeOwnComposerDraft({
+      screen: current,
+      rawText: currentRawText,
+      ownComposerTexts,
+      stopOnGenerating: false,
+    });
+    let ownLeftover = draftClassification === 'own';
+    if (vetoReason === 'slash_picker' && !ownLeftover) {
+      return { action: 'fallback' };
+    }
+    if (draftClassification === 'capture_style_unavailable') {
       const draftLength = (current.composerContent ?? '').length;
       emitClaudeUnifiedSteerDecision(opts.telemetry, {
         decision: 'vetoed',
@@ -221,19 +327,29 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
         }
         currentRawText = recaptured.currentInput;
         current = parseClaudeScreenState(recaptured.currentInput, { cursor: recaptured.cursor });
+        observeScreen(current, batch);
         emitClaudeUnifiedSteerDecision(opts.telemetry, {
           decision: 'own_draft_clear_attempted',
           reason: 'user_draft',
           originKind: batch.origin.kind,
           draftLength: (current.composerContent ?? '').length,
         });
-        if (resolveClaudeScreenInFlightSteerVeto(current) !== 'user_draft') {
+        if (resolveClaudeScreenInFlightSteerVeto(current) !== vetoReason) {
           // Draft gone (or screen changed): re-evaluate the fresh screen through the normal flow.
           resetUserDraftStarvation();
-          return null;
+          return { action: 'recheck' };
         }
-        ownLeftover = opts.ownComposerTexts?.matches(current.composerContent ?? '') === true;
-        if (!ownLeftover && isClaudeComposerCaptureStyleUnavailablePlaceholderCandidate(currentRawText, current)) {
+        draftClassification = classifyClaudeOwnComposerDraft({
+          screen: current,
+          rawText: currentRawText,
+          ownComposerTexts,
+          stopOnGenerating: false,
+        });
+        ownLeftover = draftClassification === 'own';
+        if (vetoReason === 'slash_picker' && !ownLeftover) {
+          return { action: 'fallback' };
+        }
+        if (draftClassification === 'capture_style_unavailable') {
           const draftLength = (current.composerContent ?? '').length;
           emitClaudeUnifiedSteerDecision(opts.telemetry, {
             decision: 'vetoed',
@@ -247,6 +363,10 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
         }
         if (!ownLeftover) break;
       }
+    }
+
+    if (vetoReason !== 'user_draft') {
+      return { action: 'fallback' };
     }
 
     const draftLength = (current.composerContent ?? '').length;
@@ -280,6 +400,7 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
   }
 
   return {
+    refreshAvailability,
     async evaluateInFlightSteer(batch) {
       const captureInputState = opts.hostAdapter.captureInputState;
       const requestedPermissionMode = batch.mode?.permissionMode;
@@ -316,6 +437,7 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
             try {
               const inputState = await captureInputState(opts.handle);
               const screen = parseClaudeScreenState(inputState.currentInput, { cursor: inputState.cursor });
+              observeScreen(screen, batch);
               if (isClaudeScreenReadyForInput(screen)) {
                 return veto(batch, 'permission_mode_change', true);
               }
@@ -339,10 +461,17 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
         }
         const screenText = inputState.currentInput;
         const screen = parseClaudeScreenState(screenText, { cursor: inputState.cursor });
+        observeScreen(screen, batch);
         const vetoReason = resolveClaudeScreenInFlightSteerVeto(screen);
-        if (vetoReason === 'user_draft') {
-          const decision = await handleUserDraftVeto(batch, screen, screenText);
-          if (decision !== null) return decision;
+        if (vetoReason === 'user_draft' || vetoReason === 'slash_picker') {
+          const decision = await handleDraftLikeVeto(batch, screen, screenText, vetoReason);
+          if ('action' in decision) {
+            if (decision.action === 'fallback') {
+              return veto(batch, vetoReason);
+            }
+          } else {
+            return decision;
+          }
           continue;
         }
         if (vetoReason !== null) {
@@ -383,29 +512,7 @@ export function createClaudeUnifiedInFlightSteerEvaluator<Mode extends EnhancedM
       // Shortly after a steer write, the TUI should show the "Press up to edit queued messages"
       // banner. That is terminal-custody evidence: it is strong enough to stop duplicate retries
       // and let the arbiter inject later prompts, but not enough to mark provider acceptance.
-      const timer = setTimeout(() => {
-        queuedBannerTimers.delete(timer);
-        void (async () => {
-          if (disposed) return;
-          try {
-            const inputState = await captureInputState(opts.handle);
-            const screen = parseClaudeScreenState(inputState.currentInput, { cursor: inputState.cursor });
-            emitClaudeUnifiedSteerDecision(opts.telemetry, {
-              decision: 'queued_banner_check',
-              originKind: batch.origin.kind,
-              queuedBannerVisible: screen.queuedMessageBannerVisible,
-              composerDraftPresent: screen.userDraftPresent,
-            });
-            if (screen.queuedMessageBannerVisible && !screen.userDraftPresent) {
-              await opts.onPromptCustodyByTerminal?.(batch);
-            }
-          } catch {
-            // Screen evidence unavailable; keep the existing provider-confirmation path.
-          }
-        })();
-      }, queuedBannerCheckDelayMs);
-      timer.unref?.();
-      queuedBannerTimers.add(timer);
+      scheduleQueuedBannerProbe(batch, 0);
     },
 
     dispose() {

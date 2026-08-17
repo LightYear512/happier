@@ -7,6 +7,7 @@ import { createReducer } from '@/sync/reducer/reducer';
 import type { SessionMessages } from './domains/messages';
 import type { SessionPending } from './domains/pending';
 import {
+    createSessionListRuntimePriorityRowScopeSelector,
     createSessionListRowStoreStateSelector,
     selectSessionListRowStateSnapshot,
 } from './sessionListRowStateSnapshot';
@@ -14,6 +15,10 @@ import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetr
 
 const serverProfileMockState = vi.hoisted(() => ({
     profiles: [] as ServerProfile[],
+}));
+
+const runtimeClockMockState = vi.hoisted(() => ({
+    nowServerMs: null as number | null,
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
@@ -25,6 +30,10 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
         },
     });
 });
+
+vi.mock('@/sync/runtime/time', () => ({
+    nowServerMs: () => runtimeClockMockState.nowServerMs ?? Date.now(),
+}));
 
 function createSession(id: string): Session {
     return {
@@ -41,6 +50,10 @@ function createSession(id: string): Session {
         thinking: false,
         thinkingAt: 0,
         presence: 'online',
+        runtimeActivityState: 'idle',
+        runtimeActivityActiveCount: 0,
+        runtimeActivityObservedAt: null,
+        runtimeActivityRevision: 0,
     };
 }
 
@@ -58,6 +71,10 @@ function createRenderable(id: string): SessionListRenderableSession {
         thinking: false,
         thinkingAt: 0,
         presence: 'online',
+        runtimeActivityState: 'idle',
+        runtimeActivityActiveCount: 0,
+        runtimeActivityObservedAt: null,
+        runtimeActivityRevision: 0,
     };
 }
 
@@ -83,6 +100,7 @@ const pending = {
 describe('selectSessionListRowStateSnapshot', () => {
     afterEach(() => {
         serverProfileMockState.profiles = [];
+        runtimeClockMockState.nowServerMs = null;
         vi.useRealTimers();
         syncPerformanceTelemetry.configure({ enabled: false });
         syncPerformanceTelemetry.reset();
@@ -403,6 +421,197 @@ describe('selectSessionListRowStateSnapshot', () => {
 
         expect(second).not.toBe(first);
         expect(second.sessionListRenderables?.s1).toBe(unreadRenderable);
+    });
+
+    it('tracks runtime-priority scopes without changing for non-priority row overlay updates', () => {
+        const s1 = createRenderable('s1');
+        const s2 = createRenderable('s2');
+        const selector = createSessionListRuntimePriorityRowScopeSelector([
+            { sessionId: 's1', serverId: 'server-a' },
+            { sessionId: 's2', serverId: 'server-a' },
+        ], 'server-a');
+
+        const first = selector({
+            sessionListRenderables: {
+                s1,
+                s2,
+            },
+        });
+        const unreadOnly = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    hasUnreadMessages: true,
+                    latestReadyEventSeq: 2,
+                },
+                s2,
+            },
+        });
+        const runtimeIssueOnly = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    lastRuntimeIssue: {
+                        v: 1,
+                        scope: 'primary_session',
+                        status: 'failed',
+                        code: 'failed',
+                        source: 'unknown',
+                        occurredAt: 123,
+                    },
+                },
+                s2,
+            },
+        });
+        const actionRequired = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    hasUnreadMessages: true,
+                    latestReadyEventSeq: 2,
+                    hasPendingUserActionRequests: true,
+                    pendingRequestObservedAt: 100,
+                },
+                s2,
+            },
+        });
+        const stillActionRequired = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    hasUnreadMessages: true,
+                    latestReadyEventSeq: 3,
+                    hasPendingUserActionRequests: true,
+                    pendingRequestObservedAt: 200,
+                },
+                s2,
+            },
+        });
+
+        expect(first).toEqual([]);
+        expect(unreadOnly).toBe(first);
+        expect(actionRequired).toEqual([{ sessionId: 's1', serverId: 'server-a' }]);
+        expect(runtimeIssueOnly).toBe(first);
+        expect(stillActionRequired).toBe(actionRequired);
+    });
+
+    it('tracks background activity transitions as runtime-priority scopes without an observedAt lease', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-30T12:00:00.000Z'));
+        const nowMs = Date.now();
+        const s1 = createRenderable('s1');
+        const selector = createSessionListRuntimePriorityRowScopeSelector([
+            { sessionId: 's1', serverId: 'server-a' },
+        ], 'server-a');
+
+        const idle = selector({
+            sessionListRenderables: { s1 },
+        });
+        const runtimeWorking = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    active: true,
+                    activeAt: nowMs - 10_000,
+                    presence: 'online',
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: nowMs - 5_000,
+                    runtimeActivityState: 'active',
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: nowMs - 1_000,
+                    runtimeActivityRevision: 1,
+                },
+            },
+        });
+        const longRunningRuntimeActivity = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    active: true,
+                    activeAt: nowMs - 10_000,
+                    presence: 'online',
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: nowMs - 5_000,
+                    runtimeActivityState: 'active',
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: nowMs - 10_000,
+                    runtimeActivityRevision: 1,
+                },
+            },
+        });
+        const runtimeIdleAgain = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    active: false,
+                    activeAt: nowMs - 10_000,
+                    presence: 0,
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: nowMs - 5_000,
+                    runtimeActivityState: 'idle',
+                    runtimeActivityActiveCount: 0,
+                    runtimeActivityObservedAt: nowMs - 10_000,
+                    runtimeActivityRevision: 2,
+                },
+            },
+        });
+
+        expect(idle).toEqual([]);
+        expect(runtimeWorking).toEqual([{ sessionId: 's1', serverId: 'server-a' }]);
+        expect(longRunningRuntimeActivity).toBe(runtimeWorking);
+        expect(runtimeIdleAgain).toBe(idle);
+    });
+
+    it.each([
+        ['offline', { active: false, presence: 0, archivedAt: null }],
+        ['archived', { active: true, presence: 'online' as const, archivedAt: 123 }],
+    ])('does not add Activity-only runtime priority for %s rows', (_label, lifecycle) => {
+        const s1 = createRenderable('s1');
+        const selector = createSessionListRuntimePriorityRowScopeSelector([
+            { sessionId: 's1', serverId: 'server-a' },
+        ], 'server-a');
+
+        expect(selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    ...lifecycle,
+                    runtimeActivityState: 'active',
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: 100,
+                    runtimeActivityRevision: 1,
+                },
+            },
+        })).toEqual([]);
+    });
+
+    it('keeps background activity priority independent of the selector clock', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(2_000_000);
+        runtimeClockMockState.nowServerMs = 1_000_000;
+        const s1 = createRenderable('s1');
+        const selector = createSessionListRuntimePriorityRowScopeSelector([
+            { sessionId: 's1', serverId: 'server-a' },
+        ], 'server-a');
+
+        const runtimeWorking = selector({
+            sessionListRenderables: {
+                s1: {
+                    ...s1,
+                    active: true,
+                    activeAt: 990_000,
+                    presence: 'online',
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: 995_000,
+                    runtimeActivityState: 'active',
+                    runtimeActivityActiveCount: 1,
+                    runtimeActivityObservedAt: 999_000,
+                    runtimeActivityRevision: 1,
+                },
+            },
+        });
+
+        expect(runtimeWorking).toEqual([{ sessionId: 's1', serverId: 'server-a' }]);
     });
 
     it('records why the row-store selector output changed when telemetry is enabled', () => {

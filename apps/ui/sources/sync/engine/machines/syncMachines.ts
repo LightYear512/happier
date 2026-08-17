@@ -5,6 +5,7 @@ import { serverFetch } from '@/sync/http/client';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import type { MachineDisplayCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
+import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 
 type MachineEncryption = {
     decryptMetadata: (version: number, value: string) => Promise<any>;
@@ -12,12 +13,26 @@ type MachineEncryption = {
 };
 
 type SyncEncryption = {
-    decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
+    decryptEncryptionKeys: (values: readonly string[]) => Promise<Array<Uint8Array | null>>;
     initializeMachines: (machineKeysMap: Map<string, Uint8Array | null>) => Promise<void>;
     getMachineEncryption: (machineId: string) => MachineEncryption | null;
 };
 
 const warnedMachineDataEncryptionKeyFailuresByEncryption = new WeakMap<SyncEncryption, Set<string>>();
+
+/**
+ * An unwrapped machine data key together with the exact wrapped envelope it came from.
+ *
+ * Carrying the envelope with the key is what makes the cache safe to read: a refresh may
+ * reuse a plaintext key only when the server still reports the same envelope, so a
+ * rotated key is never missed and no machine is left holding a key it no longer uses.
+ * Keeping the two in one entry makes "a key whose source envelope is unknown"
+ * unrepresentable.
+ */
+export type MachineDataKeyCacheEntry = Readonly<{
+    envelope: string;
+    dataKey: Uint8Array;
+}>;
 
 type MachineReplacementFields = Pick<
     Machine,
@@ -75,6 +90,29 @@ function readReplacementFieldsFromMachineRow(machine: {
         replacementSource: machine.replacementSource ?? null,
         replacementActorUserId: machine.replacementActorUserId ?? null,
     };
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.trunc(value));
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    return Math.max(1, Math.trunc(value));
+}
+
+function compareMachineHydrationPriority(left: { active: boolean; activeAt: number }, right: { active: boolean; activeAt: number }): number {
+    if (left.active !== right.active) return left.active ? -1 : 1;
+    return right.activeAt - left.activeAt;
+}
+
+function batchMachines(machines: Machine[], batchSize: number): Machine[][] {
+    const batches: Machine[][] = [];
+    for (let index = 0; index < machines.length; index += batchSize) {
+        batches.push(machines.slice(index, index + batchSize));
+    }
+    return batches;
 }
 
 export async function buildUpdatedMachineFromSocketUpdate(params: {
@@ -171,13 +209,16 @@ export function buildMachineFromMachineActivityEphemeralUpdate(params: {
 export async function fetchAndApplyMachines(params: {
     credentials: AuthCredentials;
     encryption: SyncEncryption;
-    machineDataKeys: Map<string, Uint8Array>;
+    machineDataKeys: Map<string, MachineDataKeyCacheEntry>;
     request?: (path: string, init: RequestInit) => Promise<Response>;
     applyMachines: (machines: Machine[], replace?: boolean) => void;
     getExistingMachine?: (machineId: string) => Machine | null | undefined;
     applyMachineDisplayEntries?: (machines: MachineDisplayRenderable[], options?: { replace?: boolean }) => void;
     cachedMachineDisplayEntries?: Record<string, MachineDisplayCacheEntryV1>;
     machineDisplayHydrationConcurrencyLimit?: number;
+    machineDisplayEagerHydrationCount?: number;
+    machineDisplayBackgroundHydrationMaxRows?: number;
+    machineDisplayBackgroundHydrationApplyBatchSize?: number;
     shouldContinue?: () => boolean;
     /**
      * When true, drop any locally-cached machines that are missing from the
@@ -199,7 +240,23 @@ export async function fetchAndApplyMachines(params: {
     const request =
         params.request
         ?? ((path: string, init: RequestInit) => serverFetch(path, init, { includeAuth: false }));
-    const concurrencyLimit = Math.max(1, Math.trunc(params.machineDisplayHydrationConcurrencyLimit ?? 4));
+    const syncTuning = loadSyncTuning();
+    const concurrencyLimit = normalizePositiveInteger(
+        params.machineDisplayHydrationConcurrencyLimit,
+        syncTuning.machineDisplayHydrationConcurrencyLimit,
+    );
+    const eagerHydrationCount = normalizeNonNegativeInteger(
+        params.machineDisplayEagerHydrationCount,
+        syncTuning.machineDisplayEagerHydrationCount,
+    );
+    const backgroundHydrationMaxRows = normalizeNonNegativeInteger(
+        params.machineDisplayBackgroundHydrationMaxRows,
+        syncTuning.machineDisplayBackgroundHydrationMaxRows,
+    );
+    const hydrationApplyBatchSize = normalizePositiveInteger(
+        params.machineDisplayBackgroundHydrationApplyBatchSize,
+        syncTuning.machineDisplayBackgroundHydrationApplyBatchSize,
+    );
     const shouldContinue = params.shouldContinue ?? (() => true);
     const throwOnError = params.throwOnError === true;
 
@@ -258,31 +315,78 @@ export async function fetchAndApplyMachines(params: {
         return;
     }
 
-    // First, collect and decrypt encryption keys for all machines
+    // First, collect and decrypt encryption keys for all machines.
+    //
+    // Unwrap only what this response actually changed. `machineDataKeys` remembers the
+    // exact wrapped envelope each plaintext key came from, so an unchanged envelope is
+    // reused instead of re-opened: unwrapping is a pure function of (envelope, account
+    // content key), and the account content key is fixed for the lifetime of an
+    // `Encryption` instance — the cache is cleared with it on a server-scope reset.
+    // This matters because a machines refresh is not rare: it fires on new-session
+    // screen focus, settings focus, machine screen focus, handoff, resume and
+    // foreground, and every one of those used to re-run a curve25519 open per machine.
+    //
+    // What remains is opened in one batch, not one call per machine.
+    // `decryptEncryptionKeys` is the canonical owner of the native-crypto-worker routing
+    // decision, and it sizes that decision on the whole batch: a lone wrapped data-key
+    // envelope is ~505 bridge bytes, under the default `minPayloadBytes` (512), so a
+    // per-machine call is forced onto the JS reference path (a curve25519 open, plus a
+    // second one whenever the account key is stored as a seed) no matter how healthy the
+    // native worker is. Batching also lets the JS reference path release the thread
+    // between chunks.
     const machineKeysMap = new Map<string, Uint8Array | null>();
-    const keyResults = await runTasksWithLimit(
-        machines.map((machine) => async () => {
-            if (!machine.dataEncryptionKey) {
-                return { machineId: machine.id, decryptedKey: null as Uint8Array | null, hasEnvelope: false };
-            }
-            try {
-                const decryptedKey = await encryption.decryptEncryptionKey(machine.dataEncryptionKey);
-                return { machineId: machine.id, decryptedKey, hasEnvelope: true };
-            } catch {
-                return { machineId: machine.id, decryptedKey: null as Uint8Array | null, hasEnvelope: true };
-            }
-        }),
-        concurrencyLimit,
-    );
-    for (const result of keyResults) {
-        if (!result.decryptedKey && result.hasEnvelope) {
-            warnMachineDataEncryptionKeyDecryptFailureOnce(encryption, result.machineId);
-            machineKeysMap.set(result.machineId, null);
+    const readMachineEnvelope = (machine: { dataEncryptionKey?: string | null }): string | null =>
+        typeof machine.dataEncryptionKey === 'string' && machine.dataEncryptionKey.length > 0
+            ? machine.dataEncryptionKey
+            : null;
+    const reusedKeyByMachineId = new Map<string, Uint8Array>();
+    const envelopeMachineIds: string[] = [];
+    const envelopes: string[] = [];
+    for (const machine of machines) {
+        const envelope = readMachineEnvelope(machine);
+        if (!envelope) continue;
+        const cached = machineDataKeys.get(machine.id);
+        if (cached && cached.envelope === envelope) {
+            reusedKeyByMachineId.set(machine.id, cached.dataKey);
             continue;
         }
-        machineKeysMap.set(result.machineId, result.decryptedKey);
-        if (result.decryptedKey) {
-            machineDataKeys.set(result.machineId, result.decryptedKey);
+        envelopeMachineIds.push(machine.id);
+        envelopes.push(envelope);
+    }
+    let decryptedKeys: Array<Uint8Array | null> = [];
+    if (envelopes.length > 0) {
+        try {
+            decryptedKeys = await encryption.decryptEncryptionKeys(envelopes);
+        } catch {
+            decryptedKeys = envelopes.map(() => null);
+        }
+    }
+    const decryptedKeyByMachineId = new Map<string, Uint8Array | null>();
+    for (let index = 0; index < envelopeMachineIds.length; index += 1) {
+        decryptedKeyByMachineId.set(envelopeMachineIds[index]!, decryptedKeys[index] ?? null);
+    }
+    for (const machine of machines) {
+        const reusedKey = reusedKeyByMachineId.get(machine.id);
+        if (reusedKey) {
+            machineKeysMap.set(machine.id, reusedKey);
+            continue;
+        }
+        const envelope = readMachineEnvelope(machine);
+        const hasEnvelope = decryptedKeyByMachineId.has(machine.id);
+        const decryptedKey = hasEnvelope ? decryptedKeyByMachineId.get(machine.id) ?? null : null;
+        if (!decryptedKey) {
+            // A rotated envelope that fails to open must not leave the previous key
+            // cached: the next refresh would reuse a key this machine no longer uses.
+            machineDataKeys.delete(machine.id);
+        }
+        if (!decryptedKey && hasEnvelope) {
+            warnMachineDataEncryptionKeyDecryptFailureOnce(encryption, machine.id);
+            machineKeysMap.set(machine.id, null);
+            continue;
+        }
+        machineKeysMap.set(machine.id, decryptedKey);
+        if (decryptedKey && envelope) {
+            machineDataKeys.set(machine.id, { envelope, dataKey: decryptedKey });
         }
     }
 
@@ -431,8 +535,12 @@ export async function fetchAndApplyMachines(params: {
             params.replace ?? false,
         );
 
-        const machinesNeedingHydration = machineEncryptionReady
-            ? machines.filter((machine) => needsMachineWarmHydration(machine))
+        const maxWarmHydrationRows = eagerHydrationCount + backgroundHydrationMaxRows;
+        const machinesNeedingHydration = machineEncryptionReady && maxWarmHydrationRows > 0
+            ? machines
+                .filter((machine) => needsMachineWarmHydration(machine))
+                .sort(compareMachineHydrationPriority)
+                .slice(0, maxWarmHydrationRows)
             : [];
         if (machinesNeedingHydration.length > 0) {
             void runTasksWithLimit(
@@ -440,13 +548,17 @@ export async function fetchAndApplyMachines(params: {
                     if (!shouldContinue()) return null;
                     const decryptedMachine = await decryptMachine(machine);
                     if (!shouldContinue()) return null;
-                    if (decryptedMachine) {
-                        applyMachines([decryptedMachine], false);
-                    }
                     return decryptedMachine;
                 }),
                 concurrencyLimit,
-            ).catch((error) => {
+            ).then((decryptedResults) => {
+                if (!shouldContinue()) return;
+                const hydratedMachines = decryptedResults.filter((machine): machine is Machine => Boolean(machine));
+                for (const batch of batchMachines(hydratedMachines, hydrationApplyBatchSize)) {
+                    if (!shouldContinue()) return;
+                    applyMachines(batch, false);
+                }
+            }).catch((error) => {
                 console.error('[machinesSnapshot] Background hydration failed', error);
             });
         }

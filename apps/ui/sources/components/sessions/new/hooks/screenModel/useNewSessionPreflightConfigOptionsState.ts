@@ -1,9 +1,14 @@
 import * as React from 'react';
-import { buildBackendTargetKey, isBuiltInAgentTarget, type BackendTargetRefV1 } from '@happier-dev/protocol';
+import {
+    buildBackendTargetKey,
+    isBuiltInAgentTarget,
+    type BackendTargetRefV1,
+    type ConnectedServiceBindingsV1,
+} from '@happier-dev/protocol';
 
 import { resolveProviderAgentIdForBackendTarget } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { machineCapabilitiesInvoke } from '@/sync/ops/capabilities';
-import { normalizeAcpConfigOptionsArray, type AcpConfigOption } from '@/sync/acp/configOptionsControl';
+import { normalizeSessionConfigOptionsArray, type SessionConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
 import { buildDynamicConfigOptionsProbeCacheKey } from '@/sync/acp/dynamicConfigOptionsProbeCacheKey';
 import {
     DYNAMIC_CONFIG_OPTIONS_PROBE_ERROR_BACKOFF_MS,
@@ -19,6 +24,7 @@ import {
 } from '@/components/sessions/new/modules/newSessionCapabilityProbeContext';
 import { NEW_SESSION_CAPABILITY_PROBE_TIMEOUT_MS } from '@/components/sessions/new/modules/newSessionCapabilityProbeTimeoutMs';
 import { scheduleProbedResourceRetryAfterExpiry } from './probedResourceRetrySchedule';
+import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 
 export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
     backendTarget: BackendTargetRefV1;
@@ -26,20 +32,21 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
     capabilityServerId: string;
     cwd?: string | null;
     probeContext?: NewSessionCapabilityProbeContext | null;
+    connectedServices?: ConnectedServiceBindingsV1 | null;
 }>): Readonly<{
-    configOptions: readonly AcpConfigOption[] | null;
+    configOptions: readonly SessionConfigOption[] | null;
     probe: Readonly<{
         phase: 'idle' | 'loading' | 'refreshing';
         refreshedAt: number | null;
         onRefresh: () => void;
     }>;
 }> {
-    const [configOptions, setConfigOptions] = React.useState<readonly AcpConfigOption[] | null>(null);
+    const [configOptions, setConfigOptions] = React.useState<readonly SessionConfigOption[] | null>(null);
     const [probePhase, setProbePhase] = React.useState<'idle' | 'loading' | 'refreshing'>('idle');
     const [refreshedAt, setRefreshedAt] = React.useState<number | null>(null);
     const [refreshNonce, setRefreshNonce] = React.useState(0);
     const lastHandledRefreshNonceRef = React.useRef(0);
-    const configOptionsRef = React.useRef<readonly AcpConfigOption[] | null>(null);
+    const configOptionsRef = React.useRef<readonly SessionConfigOption[] | null>(null);
     const refreshedAtRef = React.useRef<number | null>(null);
     const lastScopeKeyRef = React.useRef<string | null>(null);
 
@@ -73,14 +80,25 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
         () => params.probeContext?.capabilityParams ?? null,
         [probeContextKey],
     );
+    const connectedServicesKey = React.useMemo(
+        () => stableJsonStringify(params.connectedServices ?? null),
+        [params.connectedServices],
+    );
+    const cacheKeySuffixParts = React.useMemo(
+        () => [
+            ...(probeContextCacheKeySuffixParts ?? []),
+            ...(params.connectedServices ? [`connectedServices:${connectedServicesKey}`] : []),
+        ],
+        [probeContextCacheKeySuffixParts, connectedServicesKey, params.connectedServices],
+    );
 
     const cacheKey = React.useMemo(() => buildDynamicConfigOptionsProbeCacheKey({
         machineId: params.selectedMachineId,
         targetKey: probeKey,
         serverId: params.capabilityServerId,
         cwd: params.cwd ?? null,
-        extraKeySuffixParts: probeContextCacheKeySuffixParts,
-    }), [params.capabilityServerId, params.cwd, params.selectedMachineId, probeContextCacheKeySuffixParts, probeKey]);
+        extraKeySuffixParts: cacheKeySuffixParts,
+    }), [params.capabilityServerId, params.cwd, params.selectedMachineId, cacheKeySuffixParts, probeKey]);
 
     const probeScopeKey = React.useMemo(() => {
         const machineId = String(params.selectedMachineId ?? '').trim();
@@ -91,9 +109,9 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
             serverId,
             machineId,
             probeKey,
-            ...(probeContextCacheKeySuffixParts ?? []),
+            ...cacheKeySuffixParts,
         ]);
-    }, [params.capabilityServerId, params.selectedMachineId, probeContextCacheKeySuffixParts, probeKey]);
+    }, [params.capabilityServerId, params.selectedMachineId, cacheKeySuffixParts, probeKey]);
 
     React.useEffect(() => {
         if (!cacheKey) {
@@ -146,7 +164,7 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
             setProbePhase(configOptionsRef.current ? 'refreshing' : 'loading');
             const cwd = typeof params.cwd === 'string' ? params.cwd.trim() : '';
             const attempt = await runDynamicConfigOptionsProbeDedupe<Readonly<{
-                value: readonly AcpConfigOption[];
+                value: readonly SessionConfigOption[];
                 cacheable: boolean;
             }> | null>(cacheKey, async () => {
                 const response = await machineCapabilitiesInvoke(
@@ -158,6 +176,7 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
                             timeoutMs: NEW_SESSION_CAPABILITY_PROBE_TIMEOUT_MS,
                             backendTarget,
                             ...(probeContextCapabilityParams ? probeContextCapabilityParams : {}),
+                            ...(params.connectedServices ? { connectedServices: params.connectedServices } : {}),
                             ...(cwd ? { cwd } : {}),
                         },
                     },
@@ -169,7 +188,7 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
                 if (!response.supported) return null;
                 if (!response.response.ok) return null;
                 const result = response.response.result as any;
-                const normalized = normalizeAcpConfigOptionsArray(result?.configOptions);
+                const normalized = normalizeSessionConfigOptionsArray(result?.configOptions);
                 if (!normalized) return null;
                 const source = typeof result?.source === 'string' ? result.source : null;
                 const cacheable = source !== 'static';
@@ -226,7 +245,7 @@ export function useNewSessionPreflightConfigOptionsState(params: Readonly<{
             cancelled = true;
             if (retryTimeout) clearTimeout(retryTimeout);
         };
-    }, [agentType, backendTarget, cacheKey, params.capabilityServerId, params.cwd, params.selectedMachineId, probeContextCapabilityParams, probeContextKey, probeScopeKey, refreshNonce]);
+    }, [agentType, backendTarget, cacheKey, params.capabilityServerId, params.cwd, params.selectedMachineId, probeContextCapabilityParams, probeContextKey, probeScopeKey, refreshNonce, params.connectedServices]);
 
     return {
         configOptions,

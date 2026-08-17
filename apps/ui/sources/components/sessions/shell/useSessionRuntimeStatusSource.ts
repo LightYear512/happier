@@ -13,17 +13,29 @@ type SessionRuntimeStatusFields = Pick<
     | 'thinkingAt'
     | 'latestTurnStatus'
     | 'latestTurnStatusObservedAt'
+    | 'runtimeActivityState'
+    | 'runtimeActivityActiveCount'
+    | 'runtimeActivityObservedAt'
+    | 'runtimeActivityRevision'
     | 'meaningfulActivityAt'
     | 'lastRuntimeIssue'
     | 'pendingPermissionRequestCount'
     | 'pendingUserActionRequestCount'
     | 'pendingRequestObservedAt'
     | 'optimisticThinkingAt'
+    | 'resumingAt'
     | 'thinkingGraceUntil'
 >;
 
-function selectSessionRuntimeStatusFields(session: Session): SessionRuntimeStatusFields {
-    return {
+type UseSessionRuntimeStatusSourceOptions = Readonly<{
+    subscribeToRuntimeActivity?: boolean;
+}>;
+
+function selectSessionRuntimeStatusFields(
+    session: Session,
+    subscribeToRuntimeActivity: boolean,
+): Partial<SessionRuntimeStatusFields> {
+    const foregroundFields = {
         active: session.active,
         activeAt: session.activeAt,
         presence: session.presence,
@@ -37,24 +49,48 @@ function selectSessionRuntimeStatusFields(session: Session): SessionRuntimeStatu
         pendingUserActionRequestCount: session.pendingUserActionRequestCount,
         pendingRequestObservedAt: session.pendingRequestObservedAt,
         optimisticThinkingAt: session.optimisticThinkingAt,
+        resumingAt: session.resumingAt,
         thinkingGraceUntil: session.thinkingGraceUntil,
     };
+    return subscribeToRuntimeActivity
+        ? {
+            ...foregroundFields,
+            runtimeActivityState: session.runtimeActivityState,
+            runtimeActivityActiveCount: session.runtimeActivityActiveCount,
+            runtimeActivityObservedAt: session.runtimeActivityObservedAt,
+            runtimeActivityRevision: session.runtimeActivityRevision,
+        }
+        : foregroundFields;
 }
 
-export function useSessionRuntimeStatusSource(session: Session): Session {
+export function useSessionRuntimeStatusSource(
+    session: Session,
+    options: UseSessionRuntimeStatusSourceOptions = {},
+): Session {
     const sessionId = session.id;
+    const subscribeToRuntimeActivity = options.subscribeToRuntimeActivity !== false;
     const runtimeFields = storage(
         useShallow((state) => {
             const liveSession = state.sessions[sessionId] ?? null;
-            return liveSession ? selectSessionRuntimeStatusFields(liveSession) : null;
+            return liveSession
+                ? selectSessionRuntimeStatusFields(liveSession, subscribeToRuntimeActivity)
+                : null;
         }),
     );
 
     return React.useMemo(() => {
-        if (!runtimeFields) return session;
+        if (!runtimeFields && subscribeToRuntimeActivity) return session;
         return {
             ...session,
             ...runtimeFields,
+            ...(subscribeToRuntimeActivity
+                ? {}
+                : {
+                    runtimeActivityState: undefined,
+                    runtimeActivityActiveCount: undefined,
+                    runtimeActivityObservedAt: undefined,
+                    runtimeActivityRevision: undefined,
+                }),
         };
-    }, [runtimeFields, session]);
+    }, [runtimeFields, session, subscribeToRuntimeActivity]);
 }

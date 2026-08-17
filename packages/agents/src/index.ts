@@ -65,12 +65,38 @@ export {
   supportsAgentConnectedServiceSessionAuthSwitchTransition,
 } from './connectedServices/runtimeFallbackCapability.js';
 export {
+  buildConnectedServiceAccountGroupOptionsByServiceId,
+  buildConnectedServiceProfileOptionsByServiceId,
+  buildConnectedServicesBindingsPayload,
+  connectedServiceProfileKey,
+  connectedServiceProfileLegacyKey,
+  filterConnectedServiceV2ProfilesForAgent,
+  isConnectedServiceProfileOptionSelectable,
+  isConnectedServiceProfileKindSupportedForAgent,
+  isConnectedServiceProfileStatusSelectable,
+  resolveAgentSupportedConnectedServiceIds,
+  resolveConnectedServiceAccountGroupViableProfileId,
+  resolveConnectedServiceDefaultProfileId,
+  resolveConnectedServiceProfileLabel,
+  type ConnectedServiceProfileProjectionInput,
+  type ConnectedServiceSessionProjection,
+  type ConnectedServicesAccountGroupOption,
+  type ConnectedServicesAccountGroupOptionsByServiceId,
+  type ConnectedServicesAccountGroupReadiness,
+  type ConnectedServicesBindingOptionInput,
+  type ConnectedServicesProfileOption,
+  type ConnectedServicesProfileOptionsByServiceId,
+  type ConnectedServicesSessionAgentConnectedServices,
+  type ConnectedServicesSessionAgentCore,
+} from './connectedServices/sessionOptions.js';
+export {
   type TerminalHostKind,
   type TerminalInjectionDuplicateRisk,
   type TerminalInjectionFailurePhase,
   type TerminalInputInjectionResult,
   type TerminalInputInjectionV1,
   type TerminalPromptInput,
+  type TerminalPromptWriteBoundaryV1,
 } from './runtime/terminal/inputInjection.js';
 export {
   TERMINAL_SHIFT_TAB_SEQUENCE,
@@ -92,6 +118,9 @@ export {
   type AgentModelConfig,
   type AgentModelDescriptor,
   type AgentModelNonAcpApplyScope,
+  buildClaudeUltracodeModelOption,
+  type AgentModelOption,
+  type AgentModelOptionValueId,
 } from './models.js';
 export {
   AGENT_LOCAL_CLI_CONFIG,
@@ -143,6 +172,8 @@ export {
   KIMI_PROVIDER_FIELDS,
   type ClaudeUnifiedTerminalHost,
   type ClaudeUnifiedTerminalResumeChoice,
+  type ClaudeUnifiedTerminalWorkspaceTrust,
+  type ClaudeUnifiedTerminalWorkspaceTrustPolicy,
   normalizeCodexBackendMode,
   normalizeKimiAcpPythonSelector,
   type CodexBackendMode,
@@ -186,13 +217,22 @@ export {
     type ProviderNativePermissionMode,
     resolveLatestPermissionIntent,
 } from './permissions/index.js';
+export {
+    assertNonEscalatingPermissionMode,
+    resolveNearestPermissionModeAtOrBelow,
+    resolvePermissionPrivilegeFromSessionMetadata,
+    resolvePermissionPrivilegeOrdinal,
+    type PermissionEscalationDecision,
+    type PermissionPrivilegeOrdinal,
+    type ResolvedPermissionPrivilege,
+} from './permissions/privilege.js';
 
 export {
     CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
     CLAUDE_LOCAL_PERMISSION_BRIDGE_STOPPED_REASON,
-    CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICE_REQUEST_SOURCE,
+    CLAUDE_UNIFIED_TERMINAL_DIALOG_CHOICE_REQUEST_SOURCE,
     isClaudeLocalPermissionBridgeAgentStateRequest,
-    isClaudeUnifiedTerminalResumeChoiceAgentStateRequest,
+    isClaudeUnifiedTerminalDialogChoiceAgentStateRequest,
 } from './providers/claude/permissionRequestSource.js';
 export {
     DEFAULT_AGENT_STATE_EQUIVALENT_REQUEST_COMPLETION_WINDOW_MS,
@@ -205,7 +245,39 @@ export {
   CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
   CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPES,
   CLAUDE_CODE_REQUIRED_OAUTH_SCOPES,
+  CLAUDE_CODE_SETUP_TOKEN_SCOPES,
 } from './providers/claude/oauthScopes.js';
+export {
+  CLAUDE_OAUTH_AUTHORIZE_URL,
+  CLAUDE_OAUTH_CALLBACK_URL,
+  CLAUDE_OAUTH_CLIENT_ID,
+  normalizeClaudeOauthProfileEntitlement,
+  CLAUDE_OAUTH_PROFILE_BETA_HEADER,
+  CLAUDE_OAUTH_PROFILE_URL,
+  CLAUDE_OAUTH_TOKEN_URL,
+  type ClaudeOauthEntitlementMetadata,
+} from './providers/claude/oauthProfile.js';
+export {
+  OPENAI_CODEX_DEVICE_REDIRECT_URI,
+  OPENAI_CODEX_DEVICE_TOKEN_URL,
+  OPENAI_CODEX_DEVICE_USER_CODE_URL,
+  OPENAI_CODEX_DEVICE_VERIFICATION_URL,
+  OPENAI_CODEX_OAUTH_AUTHORIZE_URL,
+  OPENAI_CODEX_OAUTH_BASE_URL,
+  OPENAI_CODEX_OAUTH_CALLBACK_URL,
+  OPENAI_CODEX_OAUTH_CLIENT_ID,
+  OPENAI_CODEX_OAUTH_SCOPE,
+  OPENAI_CODEX_OAUTH_SCOPES,
+  OPENAI_CODEX_OAUTH_TOKEN_URL,
+} from './providers/codex/oauth.js';
+export {
+  GEMINI_CLI_OAUTH_AUTHORIZE_URL,
+  GEMINI_CLI_OAUTH_CALLBACK_URL,
+  GEMINI_CLI_OAUTH_CLIENT_ID,
+  GEMINI_CLI_OAUTH_CLIENT_SECRET,
+  GEMINI_CLI_OAUTH_SCOPES,
+  GEMINI_CLI_OAUTH_TOKEN_URL,
+} from './providers/gemini/oauth.js';
 
 export { computeMonotonicUpdatedAt, type MonotonicUpdatedAtPolicy } from './sessionControls/monotonic.js';
 export {
@@ -256,11 +328,20 @@ export {
   resolveOpenCodeSessionBackendMode,
 } from './sessionControls/providerSessionBackends.js';
 export {
+  parseSessionAppliedModelMetadataStateV1,
+  parseSessionConfigOptionOverridesMetadataStateV1,
+  parseSessionModelsMetadataStateV1,
+  readSessionAppliedModelMetadataStateV1,
+  readNewestSessionConfigOptionOverridesMetadataStateV1,
+  readNewestSessionModelsMetadataStateV1,
   resolveMetadataStringOverrideStateV1,
   resolveMetadataStringOverrideStateV1FromAliases,
   resolveMetadataStringOverrideV1,
   resolvePermissionIntentFromSessionMetadata,
   type MetadataStringOverrideStateV1,
+  type SessionAppliedModelMetadataStateV1,
+  type SessionConfigOptionOverridesMetadataStateV1,
+  type SessionModelsMetadataStateV1,
 } from './sessionControls/metadata.js';
 export {
   LEGACY_ACP_CONFIG_OPTIONS_STATE_KEY,
@@ -270,7 +351,9 @@ export {
   LEGACY_ACP_SESSION_MODE_OVERRIDE_KEY,
   getMetadataKeysForAlias,
   readMetadataAliasValue,
+  readNewestMetadataAliasValue,
   SESSION_CONFIG_OPTIONS_STATE_KEY,
+  SESSION_APPLIED_MODEL_STATE_KEY,
   SESSION_CONFIG_OPTION_OVERRIDES_KEY,
   SESSION_MODELS_STATE_KEY,
   SESSION_MODES_STATE_KEY,
@@ -280,6 +363,7 @@ export {
   computeNextMetadataStringOverrideV1,
   computeNextPermissionIntentMetadata,
   computeNextMetadataConfigOptionOverrideV1,
+  computeNextModelOverrideMetadataV1,
 } from './sessionControls/publish.js';
 export {
   resolveVendorResumeIdFromSessionMetadata,
@@ -314,6 +398,8 @@ export {
   getProviderCliRuntimeSpec,
   type ProviderCliInstallCommand,
   type ProviderCliInstallPlatform,
+  type ProviderCliManagedArchiveEntry,
+  type ProviderCliManagedAssetNameByPlatform,
   type ProviderCliAlternativeBinaryIdentityProbe,
   type ProviderCliKnownCommandCandidate,
   type ProviderCliManagedInstallSpec,

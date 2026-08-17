@@ -16,6 +16,7 @@ import {
     deriveSessionRuntimePresentationState,
     isFreshTimestamp,
     readSessionRuntimePresentationFreshnessTimestamps,
+    SESSION_RESUMING_PRESENTATION_TIMEOUT_MS,
     SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
 } from '@/sync/domains/session/attention/deriveSessionRuntimePresentationState';
 import {
@@ -24,15 +25,18 @@ import {
     readDisplayPathForSession,
 } from '@/sync/ops/sessionMachineTarget';
 import { t } from '@/text';
+import { getCachedIntlDateTimeFormat } from '@/utils/datetime/cachedIntlFormatters';
 import { formatPathRelativeToHome } from './formatPathRelativeToHome';
 import { useUnistyles } from 'react-native-unistyles';
+import { resolveTerminalControlServiceabilityPolicy } from '@happier-dev/protocol';
 export { formatPathRelativeToHome } from './formatPathRelativeToHome';
 export {
+    SESSION_RESUMING_PRESENTATION_TIMEOUT_MS,
     SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
 } from '@/sync/domains/session/attention/deriveSessionRuntimePresentationState';
 export { isFreshTimestamp };
 
-export type SessionState = 'disconnected' | 'resuming' | 'thinking' | 'waiting' | 'permission_required' | 'action_required';
+export type SessionState = 'disconnected' | 'recoverable_unservable' | 'resuming' | 'thinking' | 'background_active' | 'waiting' | 'permission_required' | 'action_required';
 
 export interface SessionStatus {
     state: SessionState;
@@ -49,6 +53,11 @@ export const OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS = 15_000;
 export type PendingPermissionRequest = SessionPendingRequest;
 
 type SessionStatusSource = Session | SessionListRenderableSession;
+/**
+ * `getSessionName` reads only the id and metadata, so it accepts that projection directly.
+ * Callers that only need the name can then subscribe to metadata instead of the whole record.
+ */
+export type SessionNameSource = Pick<SessionStatusSource, 'id' | 'metadata'>;
 type SessionWorkingTextMode = 'animated' | 'static';
 type SessionStatusColors = Readonly<{
     connected: string;
@@ -141,11 +150,17 @@ function resolveRuntimeStatusFreshnessRefreshDelayMs(
     for (const timestamp of readSessionRuntimePresentationFreshnessTimestamps({
         active: session.active,
         activeAt: session.activeAt,
+        archivedAt: session.archivedAt,
         presence: session.presence,
         thinking: session.thinking,
         thinkingAt: session.thinkingAt,
         latestTurnStatus: session.latestTurnStatus,
         latestTurnStatusObservedAt: session.latestTurnStatusObservedAt,
+        latestReadyEventAt: session.latestReadyEventAt,
+        runtimeActivityState: session.runtimeActivityState,
+        runtimeActivityActiveCount: session.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: session.runtimeActivityObservedAt,
+        runtimeActivityRevision: session.runtimeActivityRevision,
         hasPendingPermissionRequests: input.hasPendingPermissionRequests,
         hasPendingUserActionRequests: input.hasPendingUserActionRequests,
         pendingRequestObservedAt: input.pendingRequestObservedAt,
@@ -172,6 +187,11 @@ function useRuntimeStatusFreshnessRefresh(input: RuntimeStatusFreshnessRefreshIn
         input.session.thinkingAt,
         input.session.latestTurnStatus,
         input.session.latestTurnStatusObservedAt,
+        input.session.latestReadyEventAt,
+        input.session.runtimeActivityState,
+        input.session.runtimeActivityActiveCount,
+        input.session.runtimeActivityObservedAt,
+        input.session.runtimeActivityRevision,
         input.hasPendingPermissionRequests,
         input.hasPendingUserActionRequests,
         input.pendingRequestObservedAt,
@@ -196,16 +216,27 @@ function resolveGetSessionStatusOptions(options?: GetSessionStatusOptionsInput):
 export function getSessionStatus(session: SessionStatusSource, nowMs: number = Date.now(), options?: GetSessionStatusOptionsInput): SessionStatus {
     const { vibingIndex, workingTextMode = 'animated', statusColors = DEFAULT_SESSION_STATUS_COLORS } = resolveGetSessionStatusOptions(options);
     const isOnline = session.presence === "online";
+    const isArchived = typeof session.archivedAt === 'number' && Number.isFinite(session.archivedAt);
     const hasPermissions = hasPendingPermissionRequests(session);
     const hasUserActions = hasPendingUserActionRequests(session);
+    const terminalControlServiceability = 'terminalControlServiceabilityV1' in (session.metadata ?? {})
+        ? (session.metadata as SessionListRenderableSession['metadata'])?.terminalControlServiceabilityV1
+        : (session as Session).metadata?.terminal?.controlServiceabilityV1;
+    const terminalControlPolicy = resolveTerminalControlServiceabilityPolicy(terminalControlServiceability);
     const runtimeStatus = deriveSessionRuntimePresentationState({
         active: session.active,
         activeAt: session.activeAt,
+        archivedAt: session.archivedAt,
         presence: session.presence,
         thinking: session.thinking,
         thinkingAt: session.thinkingAt,
         latestTurnStatus: session.latestTurnStatus,
         latestTurnStatusObservedAt: session.latestTurnStatusObservedAt,
+        latestReadyEventAt: session.latestReadyEventAt,
+        runtimeActivityState: session.runtimeActivityState,
+        runtimeActivityActiveCount: session.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: session.runtimeActivityObservedAt,
+        runtimeActivityRevision: session.runtimeActivityRevision,
         meaningfulActivityAt: session.meaningfulActivityAt,
         hasPendingPermissionRequests: hasPermissions,
         hasPendingUserActionRequests: hasUserActions,
@@ -217,6 +248,60 @@ export function getSessionStatus(session: SessionStatusSource, nowMs: number = D
         && typeof optimisticThinkingAt === 'number'
         && nowMs - optimisticThinkingAt < OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS;
     const isThinking = runtimeStatus.working;
+    // Single source of truth for the "resuming" indicator: an explicit, client-owned lifecycle
+    // marker set at resume initiation and cleared on first post-attach activity (bounded decay).
+    // Header, composer, and list all read this same derived state, so they never disagree.
+    const isResuming = isFreshTimestamp(session.resumingAt ?? null, nowMs, SESSION_RESUMING_PRESENTATION_TIMEOUT_MS);
+
+    if (isArchived) {
+        return {
+            state: 'waiting',
+            isConnected: isOnline,
+            statusText: t('status.online'),
+            shouldShowStatus: false,
+            statusColor: statusColors.default,
+            statusDotColor: statusColors.default,
+            isPulsing: false,
+        };
+    }
+
+    if (
+        terminalControlPolicy.hostPresence === 'preserved'
+        && terminalControlServiceability?.state === 'recoverable_unservable'
+    ) {
+        return {
+            state: 'recoverable_unservable',
+            isConnected: false,
+            statusText: t('status.disconnected'),
+            shouldShowStatus: true,
+            statusColor: statusColors.error,
+            statusDotColor: statusColors.error,
+            isPulsing: false,
+        };
+    }
+
+    if (isResuming) {
+        return {
+            state: 'resuming',
+            isConnected: true,
+            statusText: t('session.resuming'),
+            shouldShowStatus: true,
+            statusColor: statusColors.connecting,
+            statusDotColor: statusColors.connecting,
+            isPulsing: true,
+        };
+    }
+
+    if (!isOnline) {
+        return {
+            state: 'disconnected',
+            isConnected: false,
+            statusText: t('status.lastSeen', { time: formatLastSeen(session.activeAt, false) }),
+            shouldShowStatus: true,
+            statusColor: statusColors.disconnected,
+            statusDotColor: statusColors.disconnected,
+        };
+    }
 
     const workingStatusText = (() => {
         if (workingTextMode === 'static') return t('status.working');
@@ -235,17 +320,6 @@ export function getSessionStatus(session: SessionStatusSource, nowMs: number = D
             statusColor: statusColors.connecting,
             statusDotColor: statusColors.connecting,
             isPulsing: true
-        };
-    }
-
-    if (!isOnline) {
-        return {
-            state: 'disconnected',
-            isConnected: false,
-            statusText: t('status.lastSeen', { time: formatLastSeen(session.activeAt, false) }),
-            shouldShowStatus: true,
-            statusColor: statusColors.disconnected,
-            statusDotColor: statusColors.disconnected,
         };
     }
 
@@ -284,6 +358,21 @@ export function getSessionStatus(session: SessionStatusSource, nowMs: number = D
             statusColor: statusColors.connecting,
             statusDotColor: statusColors.connecting,
             isPulsing: true
+        };
+    }
+
+    if (runtimeStatus.backgroundActive) {
+        return {
+            state: 'background_active',
+            isConnected: true,
+            // The count the provider ledger already published, said out loud. It is deliberately
+            // kind-neutral: the projection sums every runtime-activity contributor, so the number
+            // is attested but the noun would not be.
+            statusText: t('status.backgroundActive', { count: runtimeStatus.backgroundActiveCount }),
+            shouldShowStatus: true,
+            statusColor: statusColors.default,
+            statusDotColor: statusColors.default,
+            isPulsing: false,
         };
     }
 
@@ -326,11 +415,17 @@ export function useSessionStatus(session: SessionStatusSource, options: UseSessi
     const runtimeStatus = deriveSessionRuntimePresentationState({
         active: resolvedSession.active,
         activeAt: resolvedSession.activeAt,
+        archivedAt: resolvedSession.archivedAt,
         presence: resolvedSession.presence,
         thinking: resolvedSession.thinking,
         thinkingAt: resolvedSession.thinkingAt,
         latestTurnStatus: resolvedSession.latestTurnStatus,
         latestTurnStatusObservedAt: resolvedSession.latestTurnStatusObservedAt,
+        latestReadyEventAt: resolvedSession.latestReadyEventAt,
+        runtimeActivityState: resolvedSession.runtimeActivityState,
+        runtimeActivityActiveCount: resolvedSession.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: resolvedSession.runtimeActivityObservedAt,
+        runtimeActivityRevision: resolvedSession.runtimeActivityRevision,
         meaningfulActivityAt: resolvedSession.meaningfulActivityAt,
         hasPendingPermissionRequests: hasPermissions,
         hasPendingUserActionRequests: hasUserActions,
@@ -339,7 +434,7 @@ export function useSessionStatus(session: SessionStatusSource, options: UseSessi
 
     const vibingIndex = React.useMemo(() => {
         return Math.floor(Math.random() * vibingMessages.length);
-    }, [isOnline, hasPermissions, hasUserActions, runtimeStatus.working]);
+    }, [isOnline, hasPermissions, hasUserActions, runtimeStatus.activityState]);
 
     return getSessionStatus(resolvedSession, now, {
         vibingIndex,
@@ -352,7 +447,7 @@ export function useSessionStatus(session: SessionStatusSource, options: UseSessi
  * Extracts a display name from a session's metadata path.
  * Returns the last segment of the path, or 'unknown' if no path is available.
  */
-export function getSessionName(session: SessionStatusSource): string {
+export function getSessionName(session: SessionNameSource): string {
     const summaryText = (session.metadata as any)?.summary?.text ?? (session.metadata as any)?.summaryText;
     if (typeof summaryText === 'string' && summaryText.trim()) {
         return summaryText;
@@ -457,6 +552,13 @@ export function formatLastSeen(activeAt: number, isActive: boolean = false): str
         return t('status.activeNow');
     }
 
+    // Sessions can reach this without a usable timestamp (0 is the repo-wide
+    // "no timestamp" convention); formatting an invalid Date throws in the
+    // Intl path, so degrade to the unknown label instead of crashing the row.
+    if (typeof activeAt !== 'number' || !Number.isFinite(activeAt) || activeAt <= 0) {
+        return t('status.unknown');
+    }
+
     const now = Date.now();
     const diffMs = now - activeAt;
     const diffSeconds = Math.floor(diffMs / 1000);
@@ -480,7 +582,7 @@ export function formatLastSeen(activeAt: number, isActive: boolean = false): str
             day: 'numeric',
             year: date.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined
         };
-        return date.toLocaleDateString(undefined, options);
+        return getCachedIntlDateTimeFormat(undefined, options).format(date);
     }
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import * as schemas from './connectedServiceSchemas.js';
+import * as protocol from '../index.js';
 
 const {
     ConnectedServiceAuthGroupErrorResponseV1Schema,
@@ -8,6 +9,7 @@ const {
     ConnectedServiceCredentialRecordV1Schema,
     ConnectedServiceCredentialHealthV1Schema,
     ConnectedServiceQuotaSnapshotV1Schema,
+    ConnectedServiceUsageSourceV1Schema,
     SealedConnectedServiceCredentialV1Schema,
 } = schemas;
 
@@ -18,6 +20,71 @@ function expectSchema(name: string): any {
 }
 
 describe('connectedServiceSchemas', () => {
+    it('exports the canonical credential mutation contract from the package barrel', () => {
+        for (const name of [
+            'ConnectedServiceCredentialRevisionV1Schema',
+            'ConnectedServiceCredentialMutationGuardV1Schema',
+            'ConnectedServiceCredentialMutationSuccessV1Schema',
+            'ConnectedServiceCredentialCompatibleMutationSuccessV1Schema',
+            'ConnectedServiceCredentialMutationSupersededV1Schema',
+            'ConnectedServiceCredentialMutationResponseV1Schema',
+            'ConnectedServiceCredentialCompatibleMutationResponseV1Schema',
+        ]) {
+            expect(typeof (protocol as Record<string, unknown>)[name]).toBe('object');
+        }
+    });
+
+    it('defines one strict credential revision and mutation fence contract', () => {
+        const revisionSchema = expectSchema('ConnectedServiceCredentialRevisionV1Schema');
+        const mutationGuardSchema = expectSchema('ConnectedServiceCredentialMutationGuardV1Schema');
+        const mutationSuccessSchema = expectSchema('ConnectedServiceCredentialMutationSuccessV1Schema');
+        const compatibleMutationSuccessSchema = expectSchema('ConnectedServiceCredentialCompatibleMutationSuccessV1Schema');
+        const mutationSupersededSchema = expectSchema('ConnectedServiceCredentialMutationSupersededV1Schema');
+        const mutationResponseSchema = expectSchema('ConnectedServiceCredentialMutationResponseV1Schema');
+
+        expect(revisionSchema.parse('csr_0123456789ABCDEFGHJKMNPQRS')).toBe('csr_0123456789ABCDEFGHJKMNPQRS');
+        expect(revisionSchema.safeParse(' ').success).toBe(false);
+        expect(mutationGuardSchema.parse({
+            expectedCredentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+            refreshLeaseOwnerId: 'machine:daemon:attempt',
+        })).toEqual({
+            expectedCredentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+            refreshLeaseOwnerId: 'machine:daemon:attempt',
+        });
+        expect(mutationGuardSchema.parse({ expectedCredentialRevision: null })).toEqual({
+            expectedCredentialRevision: null,
+        });
+        expect(mutationGuardSchema.safeParse({ refreshLeaseOwnerId: 'owner-without-revision' }).success).toBe(false);
+        expect(mutationGuardSchema.safeParse({
+            expectedCredentialRevision: null,
+            refreshLeaseOwnerId: 'owner-without-existing-credential',
+        }).success).toBe(false);
+        expect(mutationResponseSchema.parse({
+            success: true,
+            credentialRevision: 'csr_1123456789ABCDEFGHJKMNPQRS',
+        })).toEqual({
+            success: true,
+            credentialRevision: 'csr_1123456789ABCDEFGHJKMNPQRS',
+        });
+        expect(mutationSuccessSchema.safeParse({ success: true }).success).toBe(false);
+        expect(compatibleMutationSuccessSchema.parse({ success: true })).toEqual({ success: true });
+        expect(mutationSuccessSchema.safeParse({ success: true, credentialRevision: 'bad' }).success).toBe(false);
+        expect(mutationSupersededSchema.safeParse({
+            error: 'connect_credential_mutation_superseded',
+            reason: 'unknown',
+            credentialRevision: null,
+        }).success).toBe(false);
+        expect(mutationResponseSchema.parse({
+            error: 'connect_credential_mutation_superseded',
+            reason: 'refresh_lease_lost',
+            credentialRevision: 'csr_2123456789ABCDEFGHJKMNPQRS',
+        })).toEqual({
+            error: 'connect_credential_mutation_superseded',
+            reason: 'refresh_lease_lost',
+            credentialRevision: 'csr_2123456789ABCDEFGHJKMNPQRS',
+        });
+    });
+
     it('parses connected service ids', () => {
         expect(ConnectedServiceIdSchema.parse('openai-codex')).toBe('openai-codex');
         expect(ConnectedServiceIdSchema.parse('openai')).toBe('openai');
@@ -107,6 +174,16 @@ describe('connectedServiceSchemas', () => {
         }).success).toBe(false);
     });
 
+    it('classifies retryable credential health as usable but not reconnect-required', () => {
+        expect(schemas.isConnectedServiceCredentialHealthStatusUsable('connected')).toBe(true);
+        expect(schemas.isConnectedServiceCredentialHealthStatusUsable('refreshing')).toBe(true);
+        expect(schemas.isConnectedServiceCredentialHealthStatusUsable('refresh_failed_retryable')).toBe(true);
+        expect(schemas.isConnectedServiceCredentialHealthStatusUsable('needs_reauth')).toBe(false);
+
+        expect(schemas.isConnectedServiceCredentialHealthStatusReconnectRequired('needs_reauth')).toBe(true);
+        expect(schemas.isConnectedServiceCredentialHealthStatusReconnectRequired('refresh_failed_retryable')).toBe(false);
+    });
+
     it('parses connected service quota snapshots', () => {
         const now = Date.now();
         const parsed = ConnectedServiceQuotaSnapshotV1Schema.parse({
@@ -133,6 +210,45 @@ describe('connectedServiceSchemas', () => {
         });
         expect(parsed.meters).toHaveLength(1);
         expect(parsed.meters[0]?.meterId).toBe('requests');
+    });
+
+    it('requires explicit connected-service source context for provider-account quota projections', () => {
+        expect(ConnectedServiceUsageSourceV1Schema.parse({
+            serviceId: 'openai-codex',
+            profileId: 'work',
+            bindingKind: 'profile',
+        })).toEqual({
+            serviceId: 'openai-codex',
+            profileId: 'work',
+            bindingKind: 'profile',
+        });
+
+        expect(ConnectedServiceUsageSourceV1Schema.parse({
+            serviceId: 'openai-codex',
+            profileId: 'work',
+            bindingKind: 'group_member',
+            groupId: 'team',
+            groupGeneration: 7,
+        })).toEqual({
+            serviceId: 'openai-codex',
+            profileId: 'work',
+            bindingKind: 'group_member',
+            groupId: 'team',
+            groupGeneration: 7,
+        });
+
+        expect(ConnectedServiceUsageSourceV1Schema.safeParse({
+            serviceId: 'openai-codex',
+            profileId: 'work',
+            bindingKind: 'group_member',
+        }).success).toBe(false);
+        expect(ConnectedServiceUsageSourceV1Schema.safeParse({
+            serviceId: 'openai-codex',
+            profileId: 'work',
+            bindingKind: 'profile',
+            groupId: 'team',
+            groupGeneration: 7,
+        }).success).toBe(false);
     });
 
     it('parses additive quota meter source and remaining semantics', () => {
@@ -489,7 +605,7 @@ describe('connectedServiceSchemas', () => {
         const ConnectedServiceAuthGroupPolicyV1Schema = expectSchema('ConnectedServiceAuthGroupPolicyV1Schema');
         expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({ v: 1 })).toEqual({
             v: 1,
-            strategy: 'priority',
+            strategy: 'least_limited',
             autoSwitch: false,
             switchOn: {
                 usageLimit: true,
@@ -507,10 +623,7 @@ describe('connectedServiceSchemas', () => {
             preTurnProbeMode: 'when_stale',
             preTurnProbeOrder: 'current_first_then_candidates',
             recoveryMode: 'switch_or_wait',
-            recoveryPromptMode: 'standard',
             resumePromptMode: 'standard',
-            effectiveMeterStrategy: 'most_constrained',
-            memberRuntimeStatePersistence: 'server_state_json',
         });
         expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({
             v: 1,
@@ -520,6 +633,31 @@ describe('connectedServiceSchemas', () => {
             resumePromptMode: 'off',
         }).resumePromptMode).toBe('off');
         expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({ v: 1, strategy: 'round_robin' }).success).toBe(false);
+        // Existing pools that persisted an explicit `priority` strategy must NOT be silently migrated.
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({ v: 1, strategy: 'priority' }).strategy).toBe('priority');
+        // Removed no-op fields are dropped, not carried, on the parsed policy.
+        const parsedPolicy = ConnectedServiceAuthGroupPolicyV1Schema.parse({ v: 1 });
+        expect(parsedPolicy).not.toHaveProperty('recoveryPromptMode');
+        expect(parsedPolicy).not.toHaveProperty('effectiveMeterStrategy');
+        expect(parsedPolicy).not.toHaveProperty('memberRuntimeStatePersistence');
+        // Auth groups did not exist in the supported 0.2.1 predecessor. Removed unreleased knobs
+        // are caller errors, not a compatibility shape.
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({
+            v: 1,
+            strategy: 'manual',
+            softSwitchRemainingPercent: 42,
+            recoveryPromptMode: 'standard',
+            effectiveMeterStrategy: 'weekly',
+            memberRuntimeStatePersistence: 'server_state_json',
+        }).success).toBe(false);
+        // Genuine typos are still rejected (strict is preserved for non-legacy unknown keys).
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({ v: 1, bogusKey: true }).success).toBe(false);
+        expect(expectSchema('ConnectedServiceAuthGroupPolicyPatchV1Schema').safeParse({
+            strategy: 'least_limited',
+            recoveryPromptMode: 'standard',
+            effectiveMeterStrategy: 'weekly',
+            memberRuntimeStatePersistence: 'server_state_json',
+        }).success).toBe(false);
     });
 
     it('parses persisted member runtime state by limit category', () => {
@@ -580,6 +718,7 @@ describe('connectedServiceSchemas', () => {
             policy,
             activeProfileId: 'work',
             generation: 2,
+            runtimeStateRevision: 3,
             state: {
                 status: 'ready',
                 lastSwitchAt: 123,
@@ -605,6 +744,10 @@ describe('connectedServiceSchemas', () => {
         });
 
         expect(group.members[0]?.profileId).toBe('work');
+        expect(group.runtimeStateRevision).toBe(3);
+        const groupWithoutRuntimeStateRevision = { ...group } as Record<string, unknown>;
+        delete groupWithoutRuntimeStateRevision.runtimeStateRevision;
+        expect(ConnectedServiceAuthGroupV1Schema.safeParse(groupWithoutRuntimeStateRevision).success).toBe(false);
         expect((group as Record<string, unknown>).credential).toBeUndefined();
         expect(ConnectedServiceAuthGroupCreateRequestV1Schema.parse({
             groupId: 'codex-main',
@@ -857,12 +1000,14 @@ describe('connectedServiceSchemas', () => {
 
         expect(ConnectedServiceAuthGroupRuntimeStatePatchRequestV1Schema.parse({
             expectedGeneration: 4,
+            expectedRuntimeStateRevision: 9,
             state: {
                 v: 1,
                 groupSwitchInProgress: false,
             },
         })).toEqual({
             expectedGeneration: 4,
+            expectedRuntimeStateRevision: 9,
             state: {
                 v: 1,
                 groupSwitchInProgress: false,

@@ -739,6 +739,13 @@ export const ru: TranslationStructure = {
 
     },
 
+    unsupportedContent: {
+      unparsedUserMessage: 'Нераспознанное сообщение пользователя',
+      unparsedAgentMessage: 'Нераспознанное сообщение ассистента',
+      unsupportedAgentOutput: 'Неподдерживаемый вывод',
+      unsupportedTranscriptRecord: 'Неподдерживаемая запись',
+    },
+
   },
 
 
@@ -961,35 +968,6 @@ export const ru: TranslationStructure = {
     },
   },
 
-  externalIssues: {
-    title: 'Внешние задачи',
-    detailTitle: 'Внешняя задача',
-    fallbackIssueTitle: 'Внешняя задача',
-    empty: 'Нет внешних задач',
-    unknown: 'неизвестно',
-    unknownRepository: 'неизвестный репозиторий',
-    workflowUnknown: 'неизвестный workflow',
-    workflow: 'Рабочий процесс',
-    sessionRun: 'Запуск сессии',
-    providerActions: 'Действия провайдера',
-    noLatestRun: 'нет последнего запуска',
-    noActiveRun: 'нет активного запуска',
-    noActivePrimaryRun: 'нет активного основного запуска',
-    noProviderActions: 'нет действий провайдера',
-    noProviderResult: 'нет результата провайдера',
-    generation: ({ generation }: { generation: number }) => `поколение ${generation}`,
-    generationUnknown: 'поколение неизвестно',
-    latestRunState: ({ state }: { state: string }) => `последний запуск: ${state}`,
-    claimedByMachine: ({ machineId }: { machineId: string }) => `занято машиной ${machineId}`,
-    unclaimed: 'не занято',
-    missingIssueRefId: 'Отсутствует ссылка на задачу.',
-    a11y: {
-      openList: 'Внешние задачи',
-      refreshList: 'Обновить внешние задачи',
-      refreshDetail: 'Обновить внешнюю задачу',
-    },
-  },
-
   sessionLog: {
     title: "Лог сессии",
     devModeRequiredTitle: "Требуется режим разработчика",
@@ -1059,6 +1037,8 @@ export const ru: TranslationStructure = {
         intervalSubtitle: "Запускать каждые N минут.",
         cronTitle: "Cron-выражение",
         cronSubtitle: "Продвинутое выражение расписания.",
+        manualTitle: "Вручную",
+        manualSubtitle: "Запускать только по команде из приложения, API или CLI.",
         cronHelpText:
           "Стандартный cron из 5 полей: минута час день-месяца месяц день-недели.",
       },
@@ -1869,37 +1849,6 @@ export const ru: TranslationStructure = {
     general: 'Общие',
     filesAndSourceControl: 'Файлы и контроль версий',
     system: 'Система',
-    devMotionPrimitivesTitle: 'Motion Primitives',
-    devMotionPrimitivesFooter: 'Phase 1A.11 - slide transition variants for visual QA',
-    devMotionSlideVariantsTitle: 'Slide Transition Variants',
-    devMotionSlideVariantsSubtitle: 'Discrete switch + carousel drag/tap, with blur/preset/reduced-motion toggles',
-    devMotionReducedMotionLabel: 'reduced motion',
-    devMotionDiscreteTitle: 'Discrete switch (SelectionList-style)',
-    devMotionStepTitle: ({ step }: { step: number }) => `Step ${step}`,
-    devMotionDiscreteBody: 'Discrete adapter for SelectionList. Forward/backward direction is caller-owned; blur defaults off.',
-    devMotionBack: 'Back',
-    devMotionForward: 'Forward',
-    devMotionCarouselTitle: 'Carousel drag + tap (StoryDeck-style)',
-    devMotionCardTitle: ({ card }: { card: number }) => `Card ${card}`,
-    devMotionCarouselBody: 'Drag horizontally past 40% of the width to commit. The Continue/Back buttons fire the same spring.',
-    devMotionContinue: 'Continue',
-    devMotionModalTitle: 'Motion primitives - variants',
-    devStoryDeckPreviewTitle: 'Story Deck Preview',
-    devStoryDeckPreviewFooter: 'Preview surfaces without changing onboarding or release-note seen state.',
-    devStoryDeckOnboardingTitle: 'Onboarding showcase',
-    devStoryDeckOnboardingSubtitle: ({ count }: { count: number }) => `${count} cards - first-open story`,
-    devStoryDeckNoReleaseTitle: 'No release notes available',
-    devStoryDeckNoReleaseSubtitle: 'Add authored release notes and run parseReleaseNotes to generate the manifest.',
-    devStoryDeckReleaseSubtitle: ({ count, releaseId }: { count: number; releaseId: string }) => `${count} cards - ${releaseId}`,
-    devWebHmrTitle: 'Hot Reload',
-    devWebHmrToggleTitle: 'Fast Refresh / HMR',
-    devWebHmrRuntimeDetected: 'Expo web / Metro runtime detected',
-    devWebHmrRuntime: 'Expo web / Metro runtime',
-    devWebHmrEnabled: 'enabled for this tab',
-    devWebHmrDisabled: 'disabled for this tab',
-    devWebHmrReload: 'Changes reload this tab.',
-    devWebHmrSubtitle: ({ runtime, status, reload }: { runtime: string; status: string; reload: string }) =>
-        `${runtime}. Fast Refresh / HMR is ${status}. ${reload}`.trim(),
 
     // Renamed / promoted items
     sessions: 'Сессии',
@@ -2513,6 +2462,12 @@ export const ru: TranslationStructure = {
         partialApplication: "Аутентификация частично переключена",
         partialApplicationForService: ({ service }: { service: string }) => `Аутентификация ${service} переключена не полностью`,
       },
+      partialApply: {
+        title: 'Аутентификация переключена частично',
+        body: 'Новый аккаунт сохранён, но применить его к этой активной сессии удалось не полностью. Повторите попытку или откатите, чтобы оставить эту сессию на прежнем аккаунте.',
+        retry: 'Повторить применение к этой сессии',
+        revert: 'Вернуться к прежнему аккаунту',
+      },
     },
     defaultAuth: {
       title: "Конфигурация бэкенда по умолчанию",
@@ -2531,6 +2486,11 @@ export const ru: TranslationStructure = {
           "Подключенные пулы здесь отключены; используется нативная аутентификация.",
         connected_service_unsupported:
           "Этот бэкенд не поддерживает этот подключенный сервис; используется нативная аутентификация.",
+      },
+      poolSuggestion: {
+        body: ({ pool }: { pool: string }) => `Используйте пул ${pool}, чтобы сессии переключались в обход лимитов.`,
+        accept: "Использовать пул",
+        dismiss: "Скрыть",
       },
     },
     list: {
@@ -2579,7 +2539,8 @@ export const ru: TranslationStructure = {
       recoveryCreditSubtitle: "Примените сброс использования, чтобы восстановить квоту сейчас.",
       recoveryCreditExpires: ({ time }: { time: string }) => `Expires: ${time}`,
       recoveryCreditApplying: "Применение сброса…",
-      recoveryCreditMachineUnavailable: "Нет активной машины для применения этого сброса.",
+      recoveryCreditMachineUnavailable: "Нет активной машины, на которой можно применить этот сброс.",
+      recoveryCreditNothingToReset: "Сейчас нет исчерпанного окна использования, которое нужно сбросить.",
       recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? "1 reset" : `${count} resets`,
       remaining: ({ percent }: { percent: string }) => `${percent} осталось`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
@@ -2588,6 +2549,7 @@ export const ru: TranslationStructure = {
         `${used}/${limit} использовано`,
       duration: {
         now: "сейчас",
+        outdated: "устарело",
         daysHours: ({ days, hours }: { days: number; hours: number }) =>
           `${days}д ${hours}ч`,
         hoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }) =>
@@ -2699,17 +2661,18 @@ export const ru: TranslationStructure = {
         no_eligible_group_member: "Нет доступного резервного аккаунта",
         recovery_retry_scheduled: "Восстановление провайдера запланировано",
         recovery_dead_lettered: "Восстановление провайдера требует внимания",
-        runtime_auth_recovery_superseded: "Provider recovery was superseded",
-        runtime_auth_generation_stale: "Provider recovery is stale",
-        hot_apply_unavailable: "Hot account switch is unavailable",
-        app_server_unavailable: "Provider app server is unavailable",
+        runtime_auth_recovery_superseded: "Восстановление провайдера заменено",
+        runtime_auth_generation_stale: "Восстановление провайдера устарело",
+        hot_apply_unavailable: "Горячее переключение аккаунта недоступно",
+        app_server_unavailable: "Сервер приложения провайдера недоступен",
         provider_account_adoption_mismatch: "Провайдер не переключил аккаунт",
-        provider_account_identity_unverified: "Provider account identity is unverified",
+        provider_account_identity_unverified: "Идентичность аккаунта провайдера не подтверждена",
         post_switch_verification_failed: "Аккаунт провайдера не удалось проверить",
-        quota_snapshot_stale: "Quota data is stale",
-        quota_fetch_disabled: "Quota checks are disabled",
-        quota_fetch_backoff: "Quota checks are backed off",
-        auth_surface_weakly_verified: "Authentication rewrite verified",
+        quota_snapshot_stale: "Данные квоты устарели",
+        quota_fetch_disabled: "Проверки квоты отключены",
+        quota_fetch_backoff: "Проверки квоты отложены",
+        auth_surface_weakly_verified: "Перезапись аутентификации проверена",
+        connected_service_restart_requested: "Запрошен перезапуск сеанса",
         connected_service_credential_reconnect_required: "Подключенную учетную запись нужно переподключить",
         claude_subscription_missing_claude_code_scope: "Для доступа к Claude Code нужно переподключение",
         claude_subscription_native_auth_materialization_failed: "Не удалось подготовить учетные данные Claude Code",
@@ -2729,17 +2692,18 @@ export const ru: TranslationStructure = {
         no_eligible_group_member: "Нет подходящего резервного аккаунта",
         recovery_retry_scheduled: "Запланирован повтор восстановления провайдера",
         recovery_dead_lettered: "Восстановление провайдера исчерпало лимит повторов",
-        runtime_auth_recovery_superseded: "Provider recovery was superseded",
-        runtime_auth_generation_stale: "Provider recovery generation is stale",
-        hot_apply_unavailable: "Hot account switch unavailable",
-        app_server_unavailable: "Provider app server unavailable",
+        runtime_auth_recovery_superseded: "Восстановление провайдера заменено",
+        runtime_auth_generation_stale: "Поколение восстановления провайдера устарело",
+        hot_apply_unavailable: "Горячее переключение аккаунта недоступно",
+        app_server_unavailable: "Сервер приложения провайдера недоступен",
         provider_account_adoption_mismatch: "Провайдер остался в другом аккаунте",
-        provider_account_identity_unverified: "Provider account identity unverified",
+        provider_account_identity_unverified: "Идентичность аккаунта провайдера не подтверждена",
         post_switch_verification_failed: "Аккаунт провайдера не удалось проверить",
-        quota_snapshot_stale: "Quota data is stale",
-        quota_fetch_disabled: "Quota checks disabled",
-        quota_fetch_backoff: "Quota checks temporarily backed off",
-        auth_surface_weakly_verified: "Authentication rewrite weakly verified",
+        quota_snapshot_stale: "Данные квоты устарели",
+        quota_fetch_disabled: "Проверки квоты отключены",
+        quota_fetch_backoff: "Проверки квоты временно отложены",
+        auth_surface_weakly_verified: "Перезапись аутентификации слабо проверена",
+        connected_service_restart_requested: "Запрошен перезапуск сеанса",
         connected_service_credential_reconnect_required: "Подключенную учетную запись нужно переподключить",
         claude_subscription_missing_claude_code_scope: "Переподключите подписку Claude для Claude Code",
         claude_subscription_native_auth_materialization_failed: "Не удалось подготовить нативную авторизацию Claude Code",
@@ -2756,17 +2720,18 @@ export const ru: TranslationStructure = {
         no_eligible_group_member: "Сейчас в этом пуле нет аккаунта, подходящего для резерва. Проверьте подключённые аккаунты и при необходимости переподключите профиль.",
         recovery_retry_scheduled: "Happier запланировал повтор восстановления провайдера. Можно повторить сейчас или проверить подключённые аккаунты.",
         recovery_dead_lettered: "Happier исчерпал автоматические повторы восстановления провайдера. Проверьте подключённые аккаунты или переподключите выбранный профиль.",
-        runtime_auth_recovery_superseded: "This provider recovery attempt was replaced by newer connected-service state. Happier will not keep retrying the stale account.",
-        runtime_auth_generation_stale: "This provider recovery attempt belongs to an older connected-service generation. Wait for the latest switch or review connected accounts.",
-        hot_apply_unavailable: "This provider cannot safely switch authentication in the running session. Happier will wait for a safe restart or the next eligible recovery path.",
-        app_server_unavailable: "The provider app server was not available to verify or apply the authentication switch. Retry when the session is ready.",
+        runtime_auth_recovery_superseded: "Эта попытка восстановления провайдера заменена более новым состоянием подключённого сервиса. Happier не будет повторять устаревший аккаунт.",
+        runtime_auth_generation_stale: "Эта попытка восстановления провайдера относится к старому поколению подключённого сервиса. Дождитесь последнего переключения или проверьте подключённые аккаунты.",
+        hot_apply_unavailable: "Этот провайдер не может безопасно переключить аутентификацию в запущенной сессии. Happier дождётся безопасного перезапуска или следующего подходящего пути восстановления.",
+        app_server_unavailable: "Сервер приложения провайдера был недоступен для проверки или применения переключения аутентификации. Повторите попытку, когда сессия будет готова.",
         provider_account_adoption_mismatch: "После переключения провайдер остался в другом аккаунте. Проверьте подключённые аккаунты или повторите переключение.",
-        provider_account_identity_unverified: "Happier could not prove the live provider account identity. It will avoid same-account fanout until stronger proof is available.",
+        provider_account_identity_unverified: "Happier не смог подтвердить идентичность активного аккаунта провайдера. Он будет избегать разветвления на тот же аккаунт, пока не появится более надёжное подтверждение.",
         post_switch_verification_failed: "Happier не смог проверить, что провайдер принял выбранный аккаунт. Проверьте подключённые аккаунты или повторите переключение.",
-        quota_snapshot_stale: "The latest quota snapshot is too old to drive a proactive switch. Happier will keep using reactive recovery until fresh quota is available.",
-        quota_fetch_disabled: "Quota checks are currently disabled for this provider. Happier will keep using reactive recovery.",
-        quota_fetch_backoff: "Quota checks are temporarily backed off after a provider or network response. Happier will retry quota refresh later.",
-        auth_surface_weakly_verified: "Happier verified the selected authentication files were rewritten, but this provider does not expose exact live account identity.",
+        quota_snapshot_stale: "Последний снимок квоты слишком стар для проактивного переключения. Happier продолжит реактивное восстановление, пока не появятся свежие данные квоты.",
+        quota_fetch_disabled: "Проверки квоты сейчас отключены для этого провайдера. Happier продолжит использовать реактивное восстановление.",
+        quota_fetch_backoff: "Проверки квоты временно отложены после ответа провайдера или сети. Happier повторит обновление квоты позже.",
+        auth_surface_weakly_verified: "Happier проверил, что выбранные файлы аутентификации были перезаписаны, но этот провайдер не раскрывает точную идентичность активного аккаунта.",
+        connected_service_restart_requested: "Happier запросил безопасный перезапуск сеанса, чтобы применить выбранный подключённый аккаунт.",
         connected_service_credential_reconnect_required: "Выбранную подключенную учетную запись нужно переподключить, прежде чем эту сессию можно будет возобновить. Переподключите профиль и повторите попытку.",
         claude_subscription_missing_claude_code_scope: "Этот профиль Claude был подключен до выдачи областей Claude Code. Переподключите его, затем повторите сессию или переключение пула.",
         claude_subscription_native_auth_materialization_failed: "Happier не смог создать файл нативных учетных данных Claude Code для этого профиля. Переподключите профиль или выберите другого участника пула.",
@@ -2782,6 +2747,7 @@ export const ru: TranslationStructure = {
       identityMismatchBody:
         "Новые учётные данные принадлежат другому аккаунту провайдера. Подтвердите, чтобы сохранить тот же ID профиля и заменить связанный аккаунт.",
       identityMismatchConfirm: "Заменить аккаунт",
+      targetMismatch: "Это повторное подключение вернуло учётные данные для другого подключённого профиля. Запустите повторное подключение заново из целевого профиля.",
     },
     detail: {
       unknownService: "Неизвестный подключённый сервис.",
@@ -2954,6 +2920,9 @@ export const ru: TranslationStructure = {
         removeMember: "Удалить участника",
         removeMemberConfirmTitle: "Удалить участника",
         removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `Удалить "${profileId}" из этого пула?`,
+        removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `Удалить ${count === 1 ? "этого участника" : `этих участников (${count})`} из этого пула?\n\n${members}`,
+        manageMembersTitle: 'Управление участниками',
+        manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${count} из ${total} аккаунтов`,
         searchMembersPlaceholder: "Поиск профилей",
         membersTitle: "Участники",
         membersSubtitle: "Отметьте профили, которые нужно включить в этот пул.",
@@ -3017,8 +2986,17 @@ export const ru: TranslationStructure = {
         title: "Пулов пока нет",
         subtitle: "Создайте пул, чтобы автоматически переключаться между аккаунтами.",
       },
+      loadError: {
+        title: "Не удалось загрузить пулы",
+        subtitle: "Не удалось загрузить пулы аккаунтов. Проверьте подключение и повторите попытку.",
+        staleTitle: "Показаны последние известные пулы",
+        staleSubtitle: "Не удалось обновить последний список пулов. Повторите попытку, чтобы обновить его.",
+        retry: "Повторить попытку",
+      },
       detail: {
         summaryTitle: "Обзор",
+        serverActiveStatusTitle: "Сохранено на сервере",
+        serverActiveStatusSubtitle: "Это сохранённая активная учётная запись. Офлайн-машины применят её после подключения; этот экран не утверждает, что все машины уже синхронизированы.",
         summary: ({ count, strategy }: { count: number; strategy: string }) => `${count} аккаунтов · ${strategy}`,
         membersTitle: "Участники",
         moveUp: "Вверх",
@@ -3029,6 +3007,15 @@ export const ru: TranslationStructure = {
         behaviorTitle: "Поведение",
         advancedTitle: "Дополнительно",
         advancedSubtitle: "Настройте, когда и как этот пул переключает аккаунты.",
+                manualApplyDivergenceTitle: "Переключено на сервере, но не в активных сессиях",
+                manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `Активный аккаунт изменён на сервере, но применить его к активным сессиям не удалось (${detail}). Повторите попытку или вернитесь, чтобы всё осталось на предыдущем аккаунте.`,
+                manualApplyRetry: "Повторить применение к активным сессиям",
+                manualApplyRevert: "Вернуться к предыдущему аккаунту",
+                machineTarget: {
+                  title: "Невозможно применить к активной сессии",
+                  noBoundSession: "Сейчас ни одна активная сессия не использует этот пул, поэтому переключение нельзя применить вживую. Запустите сессию в этом пуле и повторите попытку.",
+                  offline: "Машина, на которой выполняется сессия этого пула, офлайн, поэтому переключение не может её достичь. Верните машину в онлайн и повторите попытку.",
+                },
       },
       behavior: {
         autoRestorePrimaryTitle: "Восстанавливать основной при сбросе",
@@ -3494,6 +3481,16 @@ export const ru: TranslationStructure = {
         subtitle: "Уведомлять, когда заблокированный провайдер снова может продолжить",
       },
     },
+    pushPriming: {
+        title: 'Включить уведомления?',
+        body: 'Happier может сообщать, когда агент завершил работу, нужно решение о разрешении или он ждёт вас. Это можно изменить в любой момент в настройках.',
+        accept: 'Включить',
+        decline: 'Не сейчас',
+        blockedTitle: 'Уведомления заблокированы',
+        blockedBody: 'Уведомления для этого приложения отключены в системных настройках. Откройте настройки, чтобы разрешить их.',
+        openSettings: 'Открыть настройки',
+        openSettingsFailed: 'Не удалось открыть системные настройки.',
+    },
     pushTroubleshooting: {
       status: {
         title: "Статус",
@@ -3506,6 +3503,9 @@ export const ru: TranslationStructure = {
         title: "Разрешение",
         loading: "Загрузка…",
         loadingSubtitle: "Проверяем разрешения для уведомлений",
+        runtimeUnavailable: 'Недоступно',
+        runtimeUnavailableSubtitle: 'Не удалось обратиться к службе уведомлений на этом устройстве.',
+        runtimeTimeoutSubtitle: 'Служба уведомлений не ответила. Проверьте подключение к серверу разработки и повторите попытку.',
         unsupported: "Не поддерживается",
         unsupportedSubtitle: "Разрешения push недоступны в веб-версии.",
         allowed: "Разрешено",
@@ -3520,6 +3520,10 @@ export const ru: TranslationStructure = {
         subtitle: ({ fingerprint }: { fingerprint: string }) =>
           `Текущий токен: ${fingerprint}`,
         unavailableSubtitle: "Не удалось получить push-токен Expo.",
+        checkingSubtitle: 'Чтение токена этого устройства…',
+        runtimeUnavailableSubtitle: 'Не удалось обратиться к службе уведомлений на этом устройстве.',
+        runtimeTimeoutSubtitle: 'Служба уведомлений не ответила вовремя.',
+        deviceUnavailableSubtitle: 'Эта сборка не может выдать push-токен. Убедитесь, что push-уведомления включены для этой сборки.',
         registered: "Зарегистрирован",
       },
       actions: {
@@ -3808,6 +3812,8 @@ export const ru: TranslationStructure = {
       logInSubtitle: "Откройте терминал и запустите вход в провайдера на этой машине.",
       reauthenticateTitle: "Повторно войти",
       reauthenticateSubtitle: "Откройте терминал и обновите вход в провайдера на этой машине.",
+      deviceCodeTitle: "Использовать код устройства",
+      deviceCodeSubtitle: "Выполните вход на удалённой машине или машине без интерфейса с помощью кода устройства.",
       checkNowTitle: "Проверить сейчас",
       checkNowSubtitle: "Обновить обнаруженное локальное состояние аутентификации.",
       statusTitle: "Статус",
@@ -3906,6 +3912,24 @@ export const ru: TranslationStructure = {
                             resume_full_session: {
                                 title: "Возобновить полную сессию",
                                 subtitle: "Загружает весь контекст сессии, когда Claude предлагает выбор."
+                            }
+                        }
+                    },
+                    claudeUnifiedTerminalWorkspaceTrust: {
+                        title: "Доверие к рабочей области",
+                        subtitle: "Выберите, как Happier отвечает, когда Claude спрашивает, доверять ли рабочей области.",
+                        options: {
+                            ask_every_time: {
+                                title: "Спрашивать каждый раз",
+                                subtitle: "Показывать в сессии точный вопрос о доверии к рабочей области."
+                            },
+                            always_trust_happier_workspaces: {
+                                title: "Всегда доверять рабочим областям Happier",
+                                subtitle: "Доверять текущему повторно захваченному запросу Claude для рабочих областей, открытых Happier."
+                            },
+                            always_reject_happier_workspaces: {
+                                title: "Всегда отклонять рабочие области Happier",
+                                subtitle: "Отклонять текущий повторно захваченный запрос Claude для рабочих областей, открытых Happier."
                             }
                         }
                     },
@@ -4101,6 +4125,9 @@ export const ru: TranslationStructure = {
             },
             kiro: {
                 title: "Kiro"
+            },
+            grok: {
+                title: "Grok Build"
             },
             pi: {
                 title: "Pi"
@@ -4409,8 +4436,6 @@ export const ru: TranslationStructure = {
     expMemorySearchSubtitle: "Включить экраны и настройки локального поиска по памяти",
     expSessionsDirect: "Прямые сессии",
     expSessionsDirectSubtitle: "Показывать и открывать в боковой панели прямые сессии провайдера",
-    expSessionsDevPreview: "Локальные предпросмотры и симуляторы",
-    expSessionsDevPreviewSubtitle: "Разрешить агентам сессий регистрировать локальные веб-приложения и предпросмотры симуляторов в приложении",
     expSessionsFolders: "Папки сессий",
     expSessionsFoldersSubtitle: "Организуйте сеансы Happier на боковой панели по папкам рабочих пространств",
     expPetsCompanion: "Питомцы",
@@ -4487,6 +4512,7 @@ export const ru: TranslationStructure = {
       fileNotFound: "Файл не найден",
       invalidFormat: "Неверный формат",
       operationFailed: "Операция не выполнена",
+      signupDisabled: "На этом сервере отключено создание новых аккаунтов. Войдите в существующий аккаунт или попросите администратора сервера включить регистрацию.",
       failedToForkSession: "Не удалось создать ветку сессии",
       daemonUnavailableTitle: "Демон недоступен",
       daemonUnavailableBody:
@@ -4710,6 +4736,9 @@ export const ru: TranslationStructure = {
     daemonRpcUnavailableTitle: "Демон недоступен",
     daemonRpcUnavailableBody:
       "Happier не может подключиться к демону на этой машине. Он может быть офлайн, ещё запускаться или быть отключён от сервера.",
+    launchStillPendingTitle: "Запуск всё ещё выполняется",
+    launchStillPendingBody:
+      "Happier ещё не подтвердил новую сессию. Запрос на запуск сохранён. Повторите попытку, чтобы продолжить тот же запуск без создания дубликата сессии.",
     connectedServiceSwitchUnavailable: {
       title: "Переключение недоступно",
       body: ({ reason, agentId }: { reason: string; agentId: string }) =>
@@ -5007,10 +5036,18 @@ export const ru: TranslationStructure = {
         title: "Политика хранения",
         summary: "Сводка",
         keepForever: "Без автоматического удаления",
+        automaticDeletionEnabled: "Автоматическое удаление включено",
+        detailsUnavailable: "Автоматическое удаление включено, но этот клиент не может показать все активные политики",
+        singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
+        relayCleanupSummary: ({ policies }: { policies: string }) => `Этот Relay очищает ${policies}.`,
+        relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain} через ${count} ${plural({ count, one: 'день', few: 'дня', many: 'дней' })}`,
+        relayCleanupInactiveSessionsAfterDays: ({ count }: { count: number }) => `неактивные сессии через ${count} ${plural({ count, one: 'день', few: 'дня', many: 'дней' })}`,
         deleteInactiveSessionsDays: ({ count }: { count: number }) => `Удаляет неактивные сессии через ${count} ${plural({ count, one: 'день', few: 'дня', many: 'дней' })}.`,
         deleteOlderThanDays: ({ count }: { count: number }) => `Удаляет данные через ${count} ${plural({ count, one: 'день', few: 'дня', many: 'дней' })}.`,
         sessionNotice: ({ count }: { count: number }) => `Этот Relay удаляет неактивные сессии после ${count} ${plural({ count, one: 'дня', few: 'дней', many: 'дней' })} бездействия.`,
         sessions: "Сессии",
+        sessionMessages: "Транскрипты сессий",
+        sidechainMessages: "Транскрипты субагентов",
         accountChanges: "Изменения аккаунта",
         voiceSessionLeases: "Аренды голосовых сессий",
         feedItems: "Элементы ленты",
@@ -5197,6 +5234,7 @@ export const ru: TranslationStructure = {
     killSessionConfirm: "Вы уверены, что хотите завершить эту сессию?",
     stopSession: "Остановить сессию",
     stopSessionConfirm: "Вы уверены, что хотите остановить эту сессию?",
+    stopSessionControlUnavailable: "Happier не удалось подключиться к управлению сессией. Убедитесь, что компьютер сессии и демон подключены к сети, затем повторите попытку.",
     archiveSession: "Архивировать сессию",
     archiveSessionConfirm: "Вы уверены, что хотите архивировать эту сессию?",
     workspaceTitle: "Рабочее пространство",
@@ -5237,6 +5275,8 @@ export const ru: TranslationStructure = {
     kiroSessionId: "ID сессии Kiro",
     kiroSessionIdCopied: "ID сессии Kiro скопирован в буфер обмена",
     customAcpSessionId: "ID пользовательской ACP-сессии",
+    grokSessionId: "ID сессии Grok",
+    grokSessionIdCopied: "ID сессии Grok скопирован в буфер обмена",
     customAcpSessionIdCopied: "ID пользовательской ACP-сессии скопирован в буфер обмена",
     piSessionId: "ID сессии Pi",
     piSessionIdCopied: "ID сессии Pi скопирован в буфер обмена",
@@ -5394,10 +5434,14 @@ export const ru: TranslationStructure = {
     error: "ошибка",
     online: "в сети",
     working: "работаю...",
+    workingRetained: "работает, ожидание обновлений…",
+    backgroundActive: ({ count }: { count: number }) => `${count} выполняется в фоне`,
+    activityUnknown: "статус активности недоступен",
     readyForReview: "готово к проверке",
     offline: "не в сети",
     lastSeen: ({ time }: { time: string }) => `в сети ${time}`,
     actionRequired: "требуется действие",
+    waitingForYourResponse: "Ожидание вашего ответа",
     permissionRequired: "требуется разрешение",
     activeNow: "Активен сейчас",
     unknown: "неизвестно",
@@ -5442,6 +5486,34 @@ export const ru: TranslationStructure = {
 
   session: {
     inputPlaceholder: "Введите сообщение...",
+    transcriptNavigation: {
+      title: "Навигация",
+      modeAll: "Все",
+      modePinned: "Закрепленные",
+      entryCount: ({ count }: { count: number }) => `${count} записей`,
+      pinnedCount: ({ count }: { count: number }) => `${count} закреплено`,
+      emptyPinnedTitle: "Нет закрепленных сообщений",
+      emptyPinnedBody: "Закрепляйте сообщения, чтобы важные шаги были здесь.",
+      emptyAllTitle: "Нет записей навигации",
+      emptyAllBody: "Здесь появятся шаги пользователя и закрепленные сообщения.",
+      entryA11y: ({ label }: { label: string }) => `Перейти к ${label}`,
+      entryPinnedA11y: ({ label }: { label: string }) => `Перейти к закрепленному сообщению: ${label}`,
+      fallbackPinnedAssistant: "Закрепленное сообщение ассистента",
+      fallbackPinnedTool: "Закрепленное сообщение инструмента",
+      fallbackPinnedMessage: "Закрепленное сообщение",
+      pinMessageA11y: "Закрепить сообщение",
+      unpinMessageA11y: "Открепить сообщение",
+      pinToolCallA11y: "Закрепить вызов инструмента",
+      unpinToolCallA11y: "Открепить вызов инструмента",
+      jumpFailed: "Не удалось перейти к этому сообщению.",
+      emptyPinnedHint: "Наведите курсор на сообщение и выберите значок закрепления, чтобы закрепить его.",
+      emptyPinnedPrivacy: "Закрепленные сообщения сохраняются только на этом устройстве.",
+      awaitingReply: "Ожидание ответа",
+      replyNotLoaded: "Ответ ещё не загружен",
+      loadingBody: "Формируем хронологию этой сессии",
+      railScrollUpA11y: "Прокрутить навигацию вверх",
+      railScrollDownA11y: "Прокрутить навигацию вниз",
+    },
     usageLimitRecovery: {
       title: "Достигнут лимит использования",
       readyTitle: "Лимит использования сброшен",
@@ -5470,21 +5542,26 @@ export const ru: TranslationStructure = {
       statusReady: "Готово к возобновлению",
       statusWaiting: "Ожидание сброса лимита",
       statusWaitingUntil: ({ time }: { time: string }) => `Ожидание до ${time}`,
+      statusWaitingResetUntil: ({ time }: { time: string }) => `Ожидание сброса квоты (сброс в ${time})`,
+      statusAccountRotationPending: "Ожидается ротация аккаунта",
       statusChecking: "Проверка лимита",
       statusPaused: "Ожидание приостановлено",
       statusExhausted: "Группа исчерпана",
     },
     workState: {
-      accessibilityLabel: "Рабочее состояние сеанса",
       commandDescription: "Задать или посмотреть цель сеанса",
       unsupportedTitle: "Цель недоступна",
       unsupportedMessage:
         "Этот backend пока не поддерживает редактируемые цели сеанса.",
+      notReadyTitle: "Элементы управления целью ещё не готовы",
+      notReadyMessage:
+        "Этот сеанс ещё запускается. Попробуйте задать цель через мгновение.",
       noCurrentGoalTitle: "Нет цели для обновления",
       noCurrentGoalMessage:
         "Задайте цель, прежде чем приостанавливать или возобновлять ее.",
       dirtyCloseTitle: "Отменить изменения цели?",
       dirtyCloseBody: "Несохраненные изменения цели будут потеряны.",
+      emptyPlaceholder: "Здесь пока ничего нет",
       badge: {
         goal: ({ title }: { title: string }) => `Цель: ${title}`,
         goalPaused: "Цель приостановлена",
@@ -5499,10 +5576,23 @@ export const ru: TranslationStructure = {
         blockedPaused: "Заблокированы или приостановлены",
         done: "Выполнены или отменены",
       },
+    activity: {
+        sectionTitle: "Сейчас выполняется",
+        openFullRoster: "Открыть всех агентов",
+    },
+    workflow: {
+        join: ({ left, right }: { left: string; right: string }) => `${left} · ${right}`,
+    },
       goal: {
         title: "Цель",
         placeholder: "На чем должен сосредоточиться этот сеанс?",
         set: "Задать цель",
+        setTitle: "Задайте цель",
+        setSubtitle: "Задайте фокус сессии, чтобы агент не отклонялся от цели.",
+        addBudget: "+ Добавить лимит бюджета (необязательно)",
+        removeBudget: "Убрать бюджет",
+        noUsageYet: "Пока нет расхода",
+        tokensSuffix: ({ count }: { count: string }) => `${count} токенов`,
         pause: "Пауза",
         resume: "Возобновить",
         clear: "Очистить",
@@ -5512,15 +5602,15 @@ export const ru: TranslationStructure = {
         statusPaused: "Приостановлена",
         statusComplete: "Выполнена",
         statusBudgetLimited: "Ограничена бюджетом",
-        timeUsed: "Использованное время",
-        tokensUsed: "Использованные токены",
+        statusInterrupted: "Прервано",
         tokenBudget: "Бюджет токенов",
-        noTokenBudget: "Нет бюджета токенов",
         budgetProgress: ({ used, budget }: { used: string; budget: string }) => `${used} / ${budget}`,
-        budgetToggle: "Бюджет",
+        budgetCaption: ({ budget }: { budget: string }) => `из бюджета ${budget}`,
         budgetPlaceholder: "Лимит токенов",
-        clearBudget: "Без лимита",
         invalidBudget: "Введите положительный бюджет токенов.",
+        pending: "Установка цели…",
+        stillWaiting: "Ожидание подтверждения…",
+        accessibilityCurrent: ({ objective }: { objective: string }) => `Текущая цель: ${objective}`,
         errorUnsupportedResponse: "Неподдерживаемый ответ от RPC сеанса",
         errorUnknown: "Неизвестная ошибка",
         errorCannotResume: "Не удалось возобновить сеанс для обновления нативной цели",
@@ -5541,6 +5631,10 @@ export const ru: TranslationStructure = {
       openParentA11y: "Открыть родительскую сессию",
       forkFromMessageA11y: "Создать ветку от этого сообщения",
 	    },
+	    transcriptGap: {
+	      earlierMessages: "Более ранние сообщения",
+	      laterMessages: "Более поздние сообщения",
+	    },
 	    rollback: {
 	      latestTurnA11y: 'Откатить последний ход',
 	      beforeUserMessageA11y: 'Откатить к состоянию до этого сообщения',
@@ -5550,6 +5644,27 @@ export const ru: TranslationStructure = {
 	    pendingQueuedResumeFailedTitle: "Сообщение поставлено в очередь",
 	    pendingQueuedResumeFailedBody:
 	      "Ваше сообщение сохранено в очереди ожидания, но Happier не смог возобновить эту сессию. Нажмите «Повторить», чтобы запустить её.",
+	    composerBanners: {
+            showBannerAction: 'Показать баннер',
+            hideBannerAction: 'Скрыть баннер',
+	    },
+	    staleRunner: {
+	      title: "Сессия всё ещё работает на старой CLI",
+	      body: "Перезапустите runner этой сессии, чтобы продолжить на обновлённой CLI демона. Сессия Happier останется той же.",
+	      busyBody: "Runner сессии занят. Повторите попытку после завершения текущей активности.",
+	      failureBody: "Happier не смог перезапустить этот runner сессии. Повторите попытку после обновления сессии.",
+	      identityChangedBody: "Runner сессии изменился во время запроса перезапуска. Обновите сессию и повторите попытку.",
+	      ineligibleBody: "Этот runner сессии больше не подходит для запланированного перезапуска.",
+	      unsupportedBody: "Этот демон ещё не предоставляет операцию перезапуска runner сессии.",
+	      versionUnknownBody: "Happier пока не может подтвердить, какую версию CLI использует этот runner.",
+	      restartAction: "Перезапустить runner",
+	      restartPendingAction: "Перезапуск...",
+	      statusBadge: "Старая CLI",
+	      showBannerAction: "Показать уведомление о старой CLI",
+	      hideBannerAction: "Скрыть уведомление о старой CLI",
+	      errorTitle: "Перезапуск runner недоступен",
+	      errorBody: "Демон не смог перезапустить этот runner сессии. Сессия по-прежнему доступна.",
+	    },
 	    invalidLinkTitle: "Недействительная ссылка на сессию",
 	    invalidLinkDescription: "Ссылка на сессию отсутствует или недействительна. Проверьте URL и попробуйте снова.",
 	    resumeSupportNoteChecking:
@@ -5576,6 +5691,7 @@ export const ru: TranslationStructure = {
         openRuns: "Открыть запуски сессии",
         openAutomations: "Открыть автоматизации сессии",
         openSubagents: ({ count }: { count: number }) => (count > 0 ? `Открыть агентов (${count})` : 'Открыть агентов'),
+        openTranscriptNavigation: "Открыть навигацию по транскрипту",
         participants: {
           to: 'Кому',
           lead: 'Главный',
@@ -5584,6 +5700,87 @@ export const ru: TranslationStructure = {
           executionRun: ({ runId }: { runId: string }) => `Запуск ${runId}`,
           cardTo: ({ label }: { label: string }) => `Кому: ${label}`,
           unsupportedAttachmentsOrReviewComments: 'Отправка получателю пока не поддерживает вложения или комментарии ревью.',
+        },
+        // Agent-activity row vocabulary. Status is rendered as a translated word, never as a raw
+        // enum, so colour is never the only carrier of an abnormal state.
+        agentActivity: {
+            composer: {
+                workflowsWithAgents: ({ workflows, agents }: { workflows: number; agents: number }) =>
+                    `Рабочих процессов: ${workflows}, агентов: ${agents}`,
+                workflowsRunning: ({ count }: { count: number }) => `Рабочих процессов в работе: ${count}`,
+                subagentsWorking: ({ count }: { count: number }) => `Субагентов в работе: ${count}`,
+                backgroundTasksRunning: ({ count }: { count: number }) => `Фоновых команд в работе: ${count}`,
+            },
+          untitled: "Агент без имени",
+          screenTitle: "Агенты",
+          transcriptScreenTitle: "Стенограмма агента",
+          menuTitle: "Действия агента",
+          row: {
+            a11yLabel: ({ title, status }: { title: string; status: string }) => `${title}, ${status}`,
+              expand: ({ title }: { title: string }) => `Показать недавнюю активность: ${title}`,
+              collapse: ({ title }: { title: string }) => `Скрыть недавнюю активность: ${title}`,
+          },
+          staleness: {
+            quiet: "Нет недавних обновлений",
+            stale: ({ minutes }: { minutes: number }) => `Нет обновлений более ${minutes} мин`,
+          },
+          sessionNotice: {
+            stopped: "Эта сессия остановлена — показанное может уже не выполняться.",
+            stoppedAuth: "Эта сессия остановлена из-за истёкшего входа — показанное может уже не выполняться.",
+            unobserved: "За этой сессией больше не ведётся наблюдение — показанное может уже не выполняться.",
+          },
+          backgroundTask: {
+              title: "Фоновая команда",
+              statusWithDuration: ({ status, duration }: { status: string; duration: string }) => `${status} · ${duration}`,
+              openCommand: "Открыть команду в транскрипте",
+          },
+          preview: {
+              openDetails: 'Открыть подробности',
+              empty: 'Пока ничего не записано',
+          },
+          status: {
+            queued: "В очереди",
+            starting: "Запускается",
+            running: "Выполняется",
+            waiting: "Ожидает подтверждения",
+            blocked: "Заблокирован",
+            succeeded: "Завершён",
+            failed: "Ошибка",
+            timedOut: "Тайм-аут",
+            cancelled: "Отменён",
+            unknown: "Неизвестно",
+          },
+          time: {
+            staleA11y: ({ duration }: { duration: string }) => `Прошло ${duration}, нет недавних обновлений`,
+            hoursMinutes: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours} ч ${minutes} мин`,
+            elapsedA11y: ({ duration }: { duration: string }) => `Выполняется ${duration}`,
+            totalA11y: ({ duration }: { duration: string }) => `Заняло ${duration}`,
+          },
+          action: {
+            openFull: "Открыть полный вид",
+            openAdvanced: "Расширенные сведения",
+            send: "Отправить сообщение",
+            stop: "Остановить",
+            delete: "Удалить",
+            deleteConfirmTitle: "Удалить этого агента?",
+            deleteConfirmMessage: ({ title }: { title: string }) => `${title} будет удалён из этой сессии.`,
+            deleteConfirmAction: "Удалить",
+            deleteTeam: "Удалить команду",
+            deleteTeamConfirmTitle: "Удалить эту команду?",
+            deleteTeamConfirmMessage: "Все участники этой команды будут остановлены. Отменить это действие нельзя.",
+            deleteTeamConfirmAction: "Удалить команду",
+          },
+          section: {
+            working: "В работе",
+            finished: "Завершённые",
+          },
+          list: {
+            showAllFinished: ({ count }: { count: number }) => `Показать все (${count})`,
+          },
+          empty: {
+            firstUseTitle: "Здесь появятся ваши агенты",
+            firstUseSubtitle: "Запустите одного — и увидите, что он делает, сколько это заняло и когда ему нужна ваша помощь.",
+          },
         },
         subagents: {
           messages: {
@@ -5605,6 +5802,7 @@ export const ru: TranslationStructure = {
             recent: "Недавние",
             emptyActive: "Нет активных агентов.",
             emptyRecent: "Пока нет недавних агентов.",
+            tabWithRunningCount: ({ count }: { count: number }) => `Агенты, выполняется: ${count}`,
             openFull: "Открыть полное представление",
             openAdvancedRun: "Детали запуска",
             send: "Отправить сообщение",
@@ -5629,6 +5827,10 @@ export const ru: TranslationStructure = {
             launchTeammateA11y: "Запустить участника",
             launchTeammateAction: "Запустить участника",
             typeFact: ({ value }: { value: string }) => `Тип: ${value}`,
+            nativeTypeFact: ({ value }: { value: string }) => `Нативный тип: ${value}`,
+            modelFact: ({ value }: { value: string }) => `Модель: ${value}`,
+            agentIdFact: ({ value }: { value: string }) => `ID агента: ${value}`,
+            durationFact: ({ value }: { value: string }) => `Длительность: ${value}`,
             providerFact: ({ value }: { value: string }) => `Провайдер: ${value}`,
             backendFact: ({ value }: { value: string }) => `Бэкенд: ${value}`,
             intentFact: ({ value }: { value: string }) => `Намерение: ${value}`,
@@ -5659,6 +5861,7 @@ export const ru: TranslationStructure = {
       detailsPanel: {
         emptyHint: "Откройте файл или diff на правой панели.",
         unsupportedTab: "Эта вкладка деталей не поддерживается.",
+        transcriptFromOtherSession: "Эта расшифровка относится к другой сессии.",
         closeA11y: "Закрыть детали",
           openRightSidebarA11y: "Открыть правую боковую панель",
           closeRightSidebarA11y: "Закрыть правую боковую панель",
@@ -5669,67 +5872,6 @@ export const ru: TranslationStructure = {
           closeTabA11y: "Закрыть вкладку",
           enterFocusModeA11y: "Включить режим фокуса панели",
           exitFocusModeA11y: "Выключить режим фокуса панели",
-      },
-      simulatorPreview: {
-        defaultAndroidSubtitle: "Эмулятор Android",
-        defaultIosSubtitle: "Симулятор iOS",
-        screenAlt: ({ deviceName }: { deviceName: string }) => `Экран симулятора ${deviceName}`,
-        ownerLabel: ({ owner }: { owner: string }) => `Владелец: ${owner}`,
-        requestControl: "Управлять",
-        releaseControl: "Release",
-        readonlyStatus: "Read-only · controlled by another session",
-        controlCapability: {
-          writable: "Writable",
-          readonly: "Read-only",
-        },
-        controls: {
-          back: "Back",
-          home: "Home",
-          enter: "Enter",
-          textPlaceholder: "Text input",
-          sendText: "Send",
-          zoomOut: "Zoom out",
-          zoomIn: "Zoom in",
-          fit: "Fit",
-          reloadApp: "Reload",
-          reconnectDevServices: "Reconnect",
-        },
-        devServices: {
-          title: "Native dev services",
-          metro: "Metro",
-          api: "API",
-          hmr: "HMR",
-          status: {
-            unknown: "Unknown",
-            starting: "Starting",
-            connected: "Connected",
-            healthy: "Healthy",
-            ready: "Ready",
-            degraded: "Degraded",
-            error: "Error",
-          },
-        },
-        owner: {
-          ai: "ИИ",
-          user: "пользователь",
-          system: "система",
-        },
-        mode: {
-          idle: "Ожидание",
-          aiControl: "Управляет ИИ",
-          userControl: "Ручное управление",
-          systemLocked: "Система заблокирована",
-          ended: "Завершено",
-        },
-        platform: {
-          android: "Android",
-          ios: "iOS",
-        },
-        connectionPath: {
-          relay: "Relay",
-          direct: "Напрямую",
-          adbReverse: "ADB reverse",
-        },
       },
   
       actionsDraft: {
@@ -5797,8 +5939,43 @@ export const ru: TranslationStructure = {
           indicator: ({ count }: { count: number }) => `Ожидает (${count})`,
           badgeLabel: ({ count }: { count: number }) =>
             count > 0 ? `Ожидает (+${count})` : "Ожидает",
+          deliveryStatus: {
+            blocked: "Заблокировано",
+            deliveryUncertain: 'Состояние доставки неизвестно',
+            delivering: "Доставляется",
+            queuedInClaude: "В очереди в Claude",
+            queued: 'В очереди',
+            sending: 'Отправка…',
+            sendFailed: 'Не отправлено',
+            waitingForTurn: 'Ожидание',
+          },
+          deliveryBlockedReasons: {
+            terminalComposerDraft: "Черновик в терминале блокирует доставку",
+            runtimeConfigBlocked: "Настройки среды выполнения блокируют доставку",
+            unsupportedAction: "Это сообщение использует неподдерживаемое действие доставки",
+            providerUnavailableBeforeAcceptance: "Провайдер временно недоступен",
+            ambiguousTerminalDelivery: "Состояние доставки неоднозначно",
+            terminalHostUnreachable: "Хост терминала недоступен",
+            runtimeDisposedBeforeDelivery: "Среда выполнения закрылась до доставки",
+            invalidPromptText: "Текст сообщения нельзя доставить",
+            manualUserHandled: "Отмечено как обработанное",
+            attemptExpiredBeforeWrite: "Попытка доставки истекла до записи",
+            providerRejectedBeforeAcceptance: "Провайдер отклонил сообщение",
+            steeringUnavailable: "Невозможно направить активный ход",
+            payloadTooLarge: "Сообщение слишком большое",
+            unknown: "Состояние доставки требует проверки",
+          },
 	          empty: "Нет отложенных сообщений.",
 	          decryptFailed: "Не удалось расшифровать это отложенное сообщение.",
+	          sendFailedNotice: 'Сообщение не отправлено. Проверьте подключение и повторите попытку.',
+	          waitingForTurnNotice: ({ minutes }: { minutes: number }) =>
+	              minutes > 0
+	                  ? `Ожидание завершения текущей задачи · выполняется ${minutes} мин`
+	                  : 'Ожидание завершения текущей задачи',
+	          waitingForPredecessorNotice: 'Ожидание предыдущего отложенного сообщения',
+	          waitingForRuntimeActivityNotice: 'Ожидание завершения активности среды выполнения',
+	          runtimeActivityUnknownNotice: 'Ожидание состояния активности среды выполнения',
+	          waitingForRuntimeNotice: 'Ожидание повторного подключения среды выполнения',
 	          nonSteerableNotice: "Текущий ход не может принять уточнение после этого изменения режима. Сообщение выполнится следующим, либо используйте Отправить сейчас, чтобы прервать.",
 	          steerBlockedTerminalDraftNotice: 'Ожидание: черновик в поле ввода терминала блокирует доставку. Очистите его в терминале или прервите ход.',
 	          clearTerminalComposer: {
@@ -5815,7 +5992,15 @@ export const ru: TranslationStructure = {
             viewLess: "Показать меньше",
           steerNow: "Направить сейчас",
           sendNow: "Отправить сейчас",
+          sendToAgentNow: "Отправить агенту сейчас",
           sendNowInterrupt: "Отправить сейчас (прервать)",
+          interruptAndRunNow: "Прервать и запустить сейчас",
+          continueWaiting: "Продолжить ожидание",
+          dismiss: "Отклонить",
+          sendAsNew: "Отправить как новое",
+          retryDelivery: "Повторить",
+          retrySend: 'Повторить отправку',
+          markHandled: "Отметить как обработанное",
           requeue: "Вернуть в очередь",
         },
         editPrompt: {
@@ -5825,10 +6010,29 @@ export const ru: TranslationStructure = {
           title: "Удалить отложенное сообщение?",
           body: "Это удалит отложенное сообщение.",
         },
+        discardConfirm: {
+          title: "Отбросить отложенное сообщение?",
+          body: "Это сохранит отброшенную копию и не позволит Happier доставить это отложенное сообщение.",
+        },
+        markHandledConfirm: {
+          title: "Отметить отложенное сообщение как обработанное?",
+          body: "Используйте это только если провайдер уже обработал сообщение или вы больше не хотите, чтобы Happier доставлял его.",
+        },
+        dismissDeliveryConfirm: {
+          title: "Отклонить доставку с неопределённым результатом?",
+          body: "Исходное сообщение будет заархивировано без повторной отправки. Если провайдер позже подтвердит доставку, Happier всё ещё сможет добавить исходное сообщение в расшифровку.",
+        },
+        sendAsNewConfirm: {
+          title: "Отправить это сообщение как новое?",
+          body: "Доставка с неопределённым результатом будет заархивирована, а новая копия поставлена в очередь. Провайдер мог уже получить исходное сообщение, поэтому оно может быть обработано дважды.",
+        },
         sendConfirm: {
           title: "Отправить сейчас?",
           interruptTitle: "Отправить сейчас (прервать)?",
+          backgroundTitle: "Отправить агенту сейчас?",
           body: "Это остановит текущий ход и отправит сообщение немедленно.",
+          backgroundBody: "Агент получит это сообщение сейчас. Фоновая работа продолжится.",
+          resumeBody: "Это возобновит сеанс и немедленно отправит сообщение.",
         },
         discarded: {
           title: "Отброшенные сообщения",
@@ -5843,11 +6047,16 @@ export const ru: TranslationStructure = {
         errors: {
           updateFailed: "Не удалось обновить отложенное сообщение",
           deleteFailed: "Не удалось удалить отложенное сообщение",
+          discardFailed: "Не удалось отбросить отложенное сообщение",
           sendFailed: "Не удалось отправить отложенное сообщение",
           restoreFailed: "Не удалось восстановить отброшенное сообщение",
           deleteDiscardedFailed: "Не удалось удалить отброшенное сообщение",
           sendDiscardedFailed: "Не удалось отправить отброшенное сообщение",
           reorderFailed: "Не удалось изменить порядок отложенных сообщений",
+          retryDeliveryFailed: "Не удалось повторить отложенную доставку",
+          actionConflict: "Состояние ожидающего сообщения изменилось во время выполнения действия. Проверьте его текущее состояние и повторите попытку.",
+          retrySendFailed: 'Не удалось повторно отправить сообщение',
+          markHandledFailed: "Не удалось отметить отложенную доставку как обработанную",
           clearTerminalComposerFailed: "Не удалось очистить поле ввода терминала",
           clearTerminalComposerUnsupported: "Эта сессия не поддерживает очистку поля терминала из Happier.",
           clearTerminalComposerUnsafe: "Сейчас нельзя безопасно очистить поле ввода терминала.",
@@ -5873,6 +6082,7 @@ export const ru: TranslationStructure = {
       manageSharingDenied:
         "У вас нет прав на управление настройками общего доступа для этой сессии.",
       stopSharing: "Прекратить доступ",
+      stopSharingDescription: "Отзывает прямой доступ этого пользователя.",
       recipientMissingKeys:
         "Этот пользователь ещё не зарегистрировал ключи шифрования.",
       permissionApprovals: "Может подтверждать разрешения",
@@ -5895,7 +6105,7 @@ export const ru: TranslationStructure = {
       publicLink: "Публичная ссылка",
       publicLinkActive: "Публичная ссылка активна",
       publicLinkDescription:
-        "Создайте ссылку, по которой любой сможет просмотреть эту сессию.",
+        "Любой, у кого есть эта ссылка, может анонимно просмотреть сессию. Удалите или обновите ссылку, чтобы отозвать доступ у всех.",
       createPublicLink: "Создать публичную ссылку",
       regeneratePublicLink: "Пересоздать публичную ссылку",
       deletePublicLink: "Удалить публичную ссылку",
@@ -6094,6 +6304,13 @@ export const ru: TranslationStructure = {
       },
 
     agentInput: {
+        suggestionGroups: {
+            files: 'Файлы',
+            plugins: 'Плагины',
+            sessions: 'Сессии',
+            skills: 'Навыки',
+            commands: 'Команды',
+        },
         nonSteerableSend: {
             title: 'Агент занят',
             modeChangeMessage: 'Изменение режима разрешений нельзя применить к выполняющемуся ходу.',
@@ -6119,6 +6336,7 @@ export const ru: TranslationStructure = {
           `${used}/${limit} использовано`,
         duration: {
           now: "сейчас",
+          outdated: "устарело",
           daysHours: ({ days, hours }: { days: number; hours: number }) =>
             `${days}д ${hours}ч`,
           hoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }) =>
@@ -6181,6 +6399,7 @@ export const ru: TranslationStructure = {
       pi: "Pi",
       copilot: "Copilot",
       cursor: "Cursor",
+      grok: "Grok",
     },
     auggieIndexingChip: {
       on: "Индексация включена",
@@ -6190,6 +6409,10 @@ export const ru: TranslationStructure = {
         title: "МОДЕЛЬ",
         useCliSettings: "Использовать настройки CLI",
         configureInCli: "Настройте модели в настройках CLI",
+        running: ({ model }: { model: string }) => `Сейчас используется: ${model}`,
+        lastUsed: ({ model }: { model: string }) => `Последняя использованная: ${model}`,
+        lastReported: ({ model }: { model: string }) => `Последняя сообщённая: ${model}`,
+        selectedForResume: "Выбранная модель будет использоваться после возобновления этой сессии.",
         extendedContextToggleLabel: 'Контекст 1M',
         extendedContextToggleDescription: 'Использовать расширенное контекстное окно в 1 млн токенов для этой модели.',
         extendedContextLabel: ({ model }: { model: string }) => `${model} (1M)`,
@@ -6325,6 +6548,9 @@ export const ru: TranslationStructure = {
     expand: "Развернуть/свернуть",
     input: "Входные данные",
     output: "Результат",
+    payloadTruncated: "Большая нагрузка обрезана для производительности.",
+    showFullPayload: "Показать полную нагрузку",
+    showLessPayload: "Показать меньше",
   },
 
   tools: {
@@ -6333,13 +6559,27 @@ export const ru: TranslationStructure = {
       elapsedSeconds: ({ seconds }: { seconds: string }) => `${seconds}с`,
       unknownToolTitle: "Инструмент",
     },
+    taskOutputView: {
+      waitingForTask: "Ожидание завершения фоновой задачи.",
+    },
+    taskStopView: {
+      stoppedCommandLabel: "Остановленная команда",
+    },
     bashView: {
+      backgroundNotice: "Отправлено в фоновый режим — этот шаг не ждёт завершения.",
       commandDiffTitle: "Сырая команда",
       commandDiffHint:
         "Предпросмотр команды скрывает короткий префикс очистки окружения, чтобы его было легче читать. Полная сырая команда показана ниже.",
     },
     webFetch: {
       httpStatus: ({ status }: { status: number }) => `HTTP ${status}`,
+    },
+    codeSearch: {
+      aggregateMatchUnavailable: '1 совпадение; подробности не предоставлены.',
+      aggregateMatchesUnavailable: ({ count }: { count: number }) => `${count} совпадений; подробности не предоставлены.`,
+      aggregateFilesUnavailable: ({ count }: { count: number }) => `${count} файлов; подробности не предоставлены.`,
+      detailsUnavailable: "Поиск завершён; подробности не предоставлены.",
+      truncated: "Результаты могут быть сокращены.",
     },
     fullView: {
       description: "Описание",
@@ -6367,6 +6607,35 @@ export const ru: TranslationStructure = {
       delegateTitle: "Делегирование",
       reviewDigestTitle: "Сводка ревью",
     },
+  workflowActivityView: {
+      untitled: "Рабочий процесс",
+      loading: "Загрузка…",
+      unavailable: "Сведения недоступны",
+      noDetail: "Больше нет сведений",
+      statusActive: "Выполняется",
+      statusComplete: "Завершено",
+      statusFailed: "Ошибка",
+      statusStopped: "Остановлено",
+      statusInterrupted: "Прервано",
+      statusBlocked: "Заблокировано",
+      statusCancelled: "Отменено",
+      statusUnknown: "Неизвестно",
+      phaseUntitled: "Этап",
+      phaseActivity: "Активность",
+      phaseComplete: ({ complete, total }: { complete: number; total: number }) => `${complete}/${total} завершено`,
+      phaseActive: ({ count }: { count: number }) => `${count} активно`,
+      phaseFailed: ({ count }: { count: number }) => `${count} с ошибкой`,
+      phaseBlocked: ({ count }: { count: number }) => `${count} заблокировано`,
+      phasePending: ({ count }: { count: number }) => `${count} в ожидании`,
+      phaseSummary: ({ index, total, complete, agents }: { index: number; total: number; complete: number; agents: number }) => `Этап ${index} из ${total} · ${complete}/${agents} агентов`,
+      agentFraction: ({ complete, total }: { complete: number; total: number }) => `${complete}/${total} агентов`,
+      agentsCount: ({ count }: { count: number }) => `${count} агентов`,
+      tokens: ({ tokens }: { tokens: string }) => `${tokens} токенов`,
+      toolCalls: ({ count }: { count: number }) => `${count} инструментов`,
+      showMore: ({ count }: { count: number }) => `Показать ${count}`,
+      detailShowMore: 'Показать больше',
+      detailShowLess: 'Показать меньше',
+  },
     changeTitleView: {
       titleLabel: "Заголовок",
     },
@@ -6450,6 +6719,9 @@ export const ru: TranslationStructure = {
       turnDiff: "Изменения за ход",
       question: "Вопрос",
       changeTitle: "Изменить заголовок",
+      switchMode: "Сменить режим",
+      taskOutput: "Вывод задачи",
+      taskStop: "Остановить задачу",
     },
     geminiExecute: {
       cwd: ({ cwd }: { cwd: string }) => `📁 ${cwd}`,
@@ -6488,7 +6760,18 @@ export const ru: TranslationStructure = {
       turnDiffRecap: "Сводка изменений за этот ход",
     },
     askUserQuestion: {
-      submit: "Отправить ответ",
+        submit: "Отправить ответ",
+        submissionFailures: {
+            update: "Обновите Happier CLI и повторите попытку.",
+            reconnect: "Переподключите этот сеанс и повторите попытку.",
+            retry: "Не удалось принять ответ. Проверьте его и повторите попытку.",
+        },
+      claudeDialogNotice: {
+        header: "Диалог Claude",
+        question: "Claude показывает диалог. Откройте терминал, чтобы проверить его и выбрать, как продолжить.",
+        openTerminal: "Открыть терминал",
+        description: "Проверьте диалог и ответьте на него в терминале Claude.",
+      },
       multipleQuestions: ({ count }: { count: number }) =>
         `${count} ${plural({ count, one: "вопрос", few: "вопроса", many: "вопросов" })}`,
       other: "Другое",
@@ -6496,6 +6779,7 @@ export const ru: TranslationStructure = {
       otherPlaceholder: "Введите ваш ответ...",
     },
     exitPlanMode: {
+    selectionLimit: ({ count }: { count: number }) => `Можно выбрать до ${count} ответов. Снимите один выбор, чтобы выбрать другой.`,
       approve: "Одобрить план",
       reject: "Отклонить",
       requestChanges: "Попросить изменения",
@@ -6869,6 +7153,7 @@ export const ru: TranslationStructure = {
           generatedImageA11y: ({ name }: { name: string }) => `Открыть сгенерированное изображение ${name}`,
           attachmentImageA11y: ({ name }: { name: string }) => `Открыть прикрепленное изображение ${name}`,
           toolArtifactImageA11y: ({ name }: { name: string }) => `Открыть изображение артефакта инструмента ${name}`,
+          imageUnavailable: 'Изображение недоступно',
         },
         cannotDisplayBinary: "Невозможно отобразить содержимое бинарного файла",
         diff: "Различия",
@@ -7183,7 +7468,7 @@ export const ru: TranslationStructure = {
         invalidActionSubtitle: "Это действие больше недоступно в этой сборке.",
         configureActionAccessibilityLabel: "Настроить действие",
         approvalHelpTitle: "Режимы одобрения",
-        approvalHelpBody: "«Сначала спрашивать» показывает подтверждение перед запуском этого действия из этой поверхности. «Разрешено» позволяет запускать его из этой поверхности без запроса одобрения.",
+        approvalHelpBody: "«Сначала спрашивать» создаёт запрос на одобрение перед запуском этого действия из этой поверхности. Для AI-сессий этот запрос попадает в существующую поверхность одобрений и не ждёт в модальном окне. «Разрешено» позволяет запускать действие из этой поверхности без запроса на одобрение.",
         toolExposure: {
             title: "Экспонирование инструмента",
             footer: "Определяет, показываются ли подходящие действия как прямые инструменты или доступны только через поиск действий.",
@@ -7206,6 +7491,38 @@ export const ru: TranslationStructure = {
                 direct: {
                     title: "Прямой инструмент",
                     subtitle: "Зарегистрировать это действие как инструмент для прямого вызова.",
+                },
+            },
+        },
+        spawnPolicy: {
+            title: "Политика создания AI-сессий",
+            footer: "Эти настройки применяются только когда ассистент внутри сессии Happier создает другую сессию. Унаследованные настройки родительской сессии остаются разрешены; запрещенные элементы отклоняют явные переопределения с понятной ошибкой.",
+            toggles: {
+                allowCustomDirectory: { title: "Другой каталог", subtitle: "Разрешить ассистенту выбрать другой рабочий каталог." },
+                allowCrossMachine: { title: "Цели на других машинах", subtitle: "Разрешить создание на другой доступной машине." },
+                allowBackendTargetOverride: { title: "Цель backend", subtitle: "Разрешить выбрать другого агента или другую цель backend." },
+                allowModelOverride: { title: "Модель", subtitle: "Разрешить выбрать модель вместо наследования родительской модели." },
+                allowPermissionModeOverride: { title: "Режим разрешений", subtitle: "Разрешить равные или более низкие переопределения. Повышение прав все равно отклоняется." },
+                allowAgentModeOverride: { title: "Режим агента", subtitle: "Разрешить выбрать режим агента или сессии." },
+                allowConfigOptionOverrides: { title: "Параметры конфигурации", subtitle: "Разрешить параметры провайдера, например усилие рассуждения и workflow." },
+                allowProfileOverride: { title: "Профиль", subtitle: "Разрешить выбор профиля по id без раскрытия секретов." },
+                allowEnvironmentVariables: { title: "Переменные окружения", subtitle: "Разрешить явные переменные окружения в новых сессиях." },
+                allowConnectedServicesOverride: { title: "Подключенные сервисы", subtitle: "Разрешить выбор привязок подключенных сервисов по ссылке." },
+                allowMcpSelectionOverride: { title: "Выбор MCP", subtitle: "Разрешить переопределить унаследованный выбор серверов MCP." },
+                allowTranscriptStorageOverride: { title: "Хранение транскрипта", subtitle: "Разрешить выбрать совместимый режим хранения." },
+            },
+            permissionCeiling: {
+                title: "Потолок разрешений",
+                subtitle: "Необязательный дополнительный потолок ниже разрешений вызывающей сессии.",
+                options: {
+                    inherit: { title: "Без дополнительного потолка", subtitle: "Использовать разрешения вызывающей сессии как единственный потолок." },
+                    default: { title: "По умолчанию", subtitle: "Требует обычного поведения подтверждений или ниже." },
+                    acceptEdits: { title: "Принимать правки", subtitle: "Разрешает автоматические правки, но не полный bypass." },
+                    bypassPermissions: { title: "Обход разрешений", subtitle: "Разрешает полный обход только если он есть у вызывающей сессии." },
+                    plan: { title: "План", subtitle: "Ограничивает созданные сессии планированием или только чтением." },
+                    "read-only": { title: "Только чтение", subtitle: "Ограничивает созданные сессии режимом только чтения." },
+                    "safe-yolo": { title: "Безопасный yolo", subtitle: "Разрешает безопасные автоматические записи в рабочей области." },
+                    yolo: { title: "Режим yolo", subtitle: "Разрешает до yolo только если он есть у вызывающей сессии." },
                 },
             },
         },
@@ -7283,12 +7600,12 @@ export const ru: TranslationStructure = {
                 subtitle: "Показано внутри блоков голосовых действий и возможностей.",
             },
             session_agent: {
-                title: "Агент сессии",
-                subtitle: "Доступно для агентов внутри сессии как вызываемый инструмент.",
+                title: "AI-сессия",
+                subtitle: "Управляет инструментами, доступными помощнику, работающему внутри сессии Happier.",
             },
             mcp: {
                 title: 'MCP',
-                subtitle: "Доступно через каталог действий MCP.",
+                subtitle: "Управляет внешними MCP-клиентами, использующими каталог действий MCP Happier.",
             },
             cli: {
                 title: "Интерфейс командной строки управления сеансом",
@@ -7308,6 +7625,9 @@ settingsSession: {
 	        tagsTitle: 'Теги сессии',
 	        tagsEnabledSubtitle: 'Управление тегами отображается в списке',
 	        tagsDisabledSubtitle: 'Управление тегами скрыто',
+         agentActivityCountTitle: 'Счётчик агентов в строках',
+         agentActivityCountEnabledSubtitle: 'Показывать, сколько агентов работает в каждой сессии',
+         agentActivityCountDisabledSubtitle: 'Не показывать счётчики агентов в строках',
 	        workingStatusAnimatedTextTitle: 'Анимированный рабочий текст',
 	        workingStatusAnimatedTextEnabledSubtitle: 'Менять рабочие глаголы, пока сессия выполняется',
 	        workingStatusAnimatedTextDisabledSubtitle: 'Показывать постоянную метку работаю..., пока сессия выполняется',
@@ -7349,6 +7669,14 @@ settingsSession: {
 	        identityDisplayAgentLogoSubtitle: 'Показывать логотип агента каждой сессии.',
 	        identityDisplayNoneTitle: 'Нет',
 	        identityDisplayNoneSubtitle: 'Скрыть идентификатор в строках сессий.',
+	        headerIdentityDisplayTitle: 'Идентификатор в заголовке сессии',
+	        headerIdentityDisplaySubtitle: 'Выберите, что отображается перед названием внутри сессии.',
+	        headerIdentityDisplayAvatarTitle: 'Аватар',
+	        headerIdentityDisplayAvatarSubtitle: 'Показывать сгенерированный аватар сессии.',
+	        headerIdentityDisplayAgentLogoTitle: 'Логотип агента',
+	        headerIdentityDisplayAgentLogoSubtitle: 'Показывать логотип агента, выполняющего сессию.',
+	        headerIdentityDisplayNoneTitle: 'Ничего',
+	        headerIdentityDisplayNoneSubtitle: 'Начинать заголовок с названия сессии.',
 	        activeColorTitle: 'Активный цвет заголовка',
 	        activeColorSubtitle: 'Выберите, какие сессии используют активный цвет заголовка.',
 	        activeColorActivityAndAttentionTitle: 'Активность и внимание',
@@ -7428,6 +7756,14 @@ settingsSession: {
             title: 'Среда выполнения и терминал',
             entrySubtitle: 'Tmux, окна Windows Terminal и совместимость Terminal Connect.',
         },
+    banners: {
+        title: 'Баннеры',
+        footer: 'Баннеры над полем ввода можно свернуть в значок состояния. Выберите, запоминать ли это.',
+        rememberVisibilityTitle: 'Запоминать видимость баннеров',
+        rememberVisibilitySubtitle: 'Закрытые баннеры остаются скрытыми во всех сессиях на этом устройстве.',
+        resetHiddenTitle: 'Показать все скрытые баннеры',
+        resetHiddenSubtitle: 'Очистить список баннеров, скрытых на этом устройстве.',
+    },
     inputBehavior: {
         title: 'Поведение ввода',
         footer: 'Настройте отправку по Enter и поведение истории сообщений.',
@@ -7465,6 +7801,17 @@ settingsSession: {
           drainAllTitle: "Обработать всю очередь",
           drainAllSubtitle:
             "Обработать все сообщения в очереди вместе при следующей готовности (старое поведение).",
+        },
+        pendingDeliveryTimingTitle: "Когда отправлять очередь",
+        pendingDeliveryTimingFooter:
+          "Выберите, отправлять ли ожидающие сообщения после готовности основного ответа или ждать, пока вся отслеживаемая активность runtime станет неактивной.",
+        pendingDeliveryTiming: {
+          afterForegroundReadyTitle: "После основного ответа",
+          afterForegroundReadySubtitle:
+            "Отправлять ожидающие сообщения, как только агент может принять следующий ход.",
+          afterRuntimeIdleTitle: "Когда runtime неактивен",
+          afterRuntimeIdleSubtitle:
+            "Держать ожидающие сообщения в очереди, пока продолжается отслеживаемая активность runtime.",
         },
         busySteerPolicyTitle: "Когда агент занят (с поддержкой управления)",
         busySteerPolicyFooter:
@@ -7723,16 +8070,6 @@ settingsSession: {
             thinkingPulseStalePromptTitle: "Окно устаревания размышления (ms)",
             thinkingPulseStalePromptBody:
               "Скрывать активное размышление после этого времени без обновлений.",
-            listImplementationTitle: "Реализация списка транскрипта",
-            listImplementationSubtitle: "Переключить движок списка (debug).",
-            listImplementation: {
-              flashTitle: "FlashList v2 (рекомендуется)",
-              flashSubtitle: "Лучшая производительность для длинных транскриптов.",
-              flashInvertedTitle: "FlashList v2 (инвертированный)",
-              flashInvertedSubtitle: "Пилот инвертированной ориентации чата — новые сообщения закреплены у нижнего края",
-              legacyTitle: "Устаревший FlatList",
-              legacySubtitle: "Запасной вариант для отладки совместимости.",
-            },
           toolCallsStrategyTitle: "Стратегия группировки вызовов",
           toolCallsStrategy: {
             consecutiveTitle: "Последовательные инструменты (по умолчанию)",
@@ -9510,9 +9847,12 @@ settingsSession: {
   },
 
   message: {
+    sessionReferenceUnavailable: "Сессия недоступна",
+    sessionReferenceOpen: ({ name }: { name: string }) => `Открыть сессию ${name}`,
     switchedToMode: ({ mode }: { mode: string }) =>
       `Переключено в режим ${mode}`,
     discarded: "Отброшено",
+    recoveredHistory: "Восстановленная история",
     unknownEvent: "Неизвестное событие",
     contextCompactionStarted: "Сжатие контекста...",
     contextCompactionCompleted: "Контекст сжат",
@@ -9602,7 +9942,7 @@ settingsSession: {
         yesForCommandPrefix:
           "Да, больше не спрашивать для этого префикса команды",
         yesForSubcommand: "Да, больше не спрашивать для этой подкоманды",
-        yesForCommandName: "Да, больше не спрашивать для этой команды",
+        yesForCommandName: "Да, разрешать все совпадающие команды в этой сессии",
         stop: "Остановить",
         noTellClaude: "Нет, дать обратную связь",
       },
@@ -9935,6 +10275,8 @@ settingsSession: {
       anthropic: "Anthropic (по умолчанию)",
       deepseek: "DeepSeek (Рассуждение)",
       zai: "Z.AI (GLM-4.6)",
+      minimax: "MiniMax (M3)",
+      minimaxCn: "MiniMax (M3, CN)",
       codex: "Codex (по умолчанию)",
       openai: "OpenAI (GPT-5)",
       azureOpenai: "Azure OpenAI",
@@ -10103,6 +10445,7 @@ settingsSession: {
       kiloSubtitleExperimental: "Kilo CLI (экспериментально)",
       kiroSubtitleExperimental: "Kiro CLI (экспериментально)",
       customAcpSubtitleExperimental: "Пользовательский ACP CLI (экспериментально)",
+      grokSubtitleExperimental: "Grok Build CLI (экспериментально)",
       piSubtitleExperimental: "Pi CLI (экспериментально)",
       copilotSubtitleExperimental: "GitHub Copilot CLI (экспериментально)",
       cursorSubtitleExperimental: "Cursor Agent CLI (экспериментально)",
@@ -10133,7 +10476,6 @@ settingsSession: {
     environmentVariables: {
       title: "Переменные окружения",
       addVariable: "Добавить переменную",
-      systemManagedSubtitle: "Автоматически управляется для этого профиля.",
       namePlaceholder: "Имя переменной (например, MY_CUSTOM_VAR)",
       valuePlaceholder: "Значение (например, my-value или ${MY_VAR})",
       validation: {
@@ -10141,8 +10483,6 @@ settingsSession: {
         invalidNameFormat:
           "Имена переменных должны содержать заглавные буквы, цифры и подчёркивания и не могут начинаться с цифры.",
         duplicateName: "Такая переменная уже существует.",
-        autoProvisionedReserved:
-          "Эта переменная автоматически управляется для этого профиля.",
       },
       card: {
         valueLabel: "Значение:",
@@ -10219,28 +10559,6 @@ settingsSession: {
           missing: "Отсутствует",
         },
       },
-    },
-    provision: {
-      title: "Подготовить на машине",
-      provisionOnMachine: "Подготовить на машине",
-      modalTitle: ({ backend }: { backend: string }) => `Подготовить ${backend}`,
-      inProgressHint:
-        "Следуйте подсказкам CLI, чтобы завершить вход.",
-      alreadyProvisioned:
-        "Этот профиль уже подготовлен на этой машине.",
-      successHint: "Подготовка профиля завершена.",
-      errorBody: "Не удалось подготовить профиль.",
-    },
-    switch: {
-      title: "Сменить профиль",
-      count: ({ count }: { count: number }) => `Доступно профилей: ${count}`,
-      confirmTitle: "Сменить профиль?",
-      confirmBody:
-        "Текущая сессия будет перезапущена с выбранным профилем.",
-      errorTitle: "Не удалось сменить профиль",
-      errorBody: "Не удалось сменить профиль сессии.",
-      turnInProgress:
-        "Дождитесь завершения текущего хода и повторите попытку.",
     },
     delete: {
       title: "Удалить Профиль",

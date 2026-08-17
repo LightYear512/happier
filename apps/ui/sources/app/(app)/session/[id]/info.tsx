@@ -1,13 +1,12 @@
 import React, { useCallback } from 'react';
 import { View } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Ionicons, Octicons } from '@expo/vector-icons';
 import { Typography } from '@/constants/Typography';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Avatar } from '@/components/ui/avatar/Avatar';
-import { storage, useSession, useIsDataReady, useLocalSetting, useSetting, useSettingMutable } from '@/sync/domains/state/storage';
+import { storage, useSession, useIsDataReady, useLocalSetting, useSessionOrganizationProjection, useSetting } from '@/sync/domains/state/storage';
 import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getSessionAvatarId, type SessionStatus } from '@/utils/sessions/sessionUtils';
 import * as Clipboard from 'expo-clipboard';
 import { Modal } from '@/modal';
@@ -48,7 +47,8 @@ import { resolveSessionHandoffSourceMachineId } from '@/sync/domains/sessionHand
 import {
     resolveSessionHandoffUiAvailability,
 } from '@/sync/domains/sessionHandoff/resolveSessionHandoffUiAvailability';
-import { readDisplayMachineTargetForSession, readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import { readDisplayMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
 import { getActionSpec } from '@happier-dev/protocol';
 import { SessionRetentionNotice } from '@/components/sessions/info/SessionRetentionNotice';
 import { useSessionRouteServerScope, type SessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
@@ -76,7 +76,7 @@ import {
 } from '@/components/sessions/actions/sessionActionIds';
 import { listVisibleSessionActionIds, resolveSessionReadStateActionId } from '@/components/sessions/actions/sessionActionAvailability';
 import { createSessionActionInfoItemProps } from '@/components/sessions/actions/sessionActionPresentation';
-import { getTagsForSession, sessionTagKey, setTagsForSession } from '@/components/sessions/shell/sessionTagUtils';
+import { getTagsForSession, sessionTagKey } from '@/components/sessions/shell/sessionTagUtils';
 import { useSessionListMoveSheet } from '@/components/sessions/shell/move-sheet/useSessionListMoveSheet';
 import type { SessionListMoveSheetTarget } from '@/components/sessions/shell/move-sheet/buildSessionListMoveSheetTargets';
 import {
@@ -87,7 +87,13 @@ import {
 } from '@/sync/domains/session/folders';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
-import { setSessionFolderAssignment } from '@/sync/ops/sessionFolders';
+import {
+    setSessionFolderAssignment as setSessionOrganizationFolderAssignment,
+    setSessionPin as setSessionOrganizationPin,
+    setSessionTagLabels as setSessionOrganizationTagLabels,
+} from '@/sync/ops/sessionOrganization';
+import { buildSessionOrganizationListViewState } from '@/sync/domains/session/organization/viewState';
+import { Icon } from '@/components/ui/icons/Icon';
 import {
     buildSessionDebugInformation,
     isSessionDebugInformationEnabled,
@@ -301,13 +307,13 @@ function SessionInfoVolatileDetailItems({
             <Item
                 title={t('sessionInfo.lastUpdated')}
                 subtitle={formatDate(session.updatedAt)}
-                icon={<Ionicons name="time-outline" size={29} color={theme.colors.accent.blue} />}
+                icon={<Icon name="clock" size={29} color={theme.colors.accent.blue} />}
                 showChevron={false}
             />
             <Item
                 title={t('sessionInfo.sequence')}
                 detail={session.seq.toString()}
-                icon={<Ionicons name="git-commit-outline" size={29} color={theme.colors.accent.blue} />}
+                icon={<Icon name="git-commit" size={29} color={theme.colors.accent.blue} />}
                 showChevron={false}
             />
         </>
@@ -382,7 +388,7 @@ function SessionInfoActivityGroup({
             <Item
                 title={t('sessionInfo.sessionStatus')}
                 detail={sessionStatus.statusText}
-                icon={<Ionicons name="pulse-outline" size={29} color={sessionStatus.statusColor} />}
+                icon={<Icon name="pulse" size={29} color={sessionStatus.statusColor} />}
                 showChevron={false}
             />
             {showRawDiagnostics ? (
@@ -390,14 +396,14 @@ function SessionInfoActivityGroup({
                     <Item
                         title={t('sessionInfo.thinking')}
                         detail={session.thinking ? t('common.yes') : t('common.no')}
-                        icon={<Ionicons name="bulb-outline" size={29} color={session.thinking ? theme.colors.accent.yellow : theme.colors.text.secondary} />}
+                        icon={<Icon name="lightbulb" size={29} color={session.thinking ? theme.colors.accent.yellow : theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                     {session.thinking && (
                         <Item
                             title={t('sessionInfo.thinkingSince')}
                             subtitle={formatDate(session.thinkingAt)}
-                            icon={<Ionicons name="timer-outline" size={29} color={theme.colors.accent.yellow} />}
+                            icon={<Icon name="timer" size={29} color={theme.colors.accent.yellow} />}
                             showChevron={false}
                         />
                     )}
@@ -424,7 +430,7 @@ function SessionInfoExecutionRunsAction({
         <Item
             title={t('runs.title')}
             subtitle={t('sessionInfo.executionRunsSubtitle')}
-            icon={<Ionicons name="play-outline" size={29} color={theme.colors.accent.blue} />}
+            icon={<Icon name="play" size={29} color={theme.colors.accent.blue} />}
             onPress={() => router.push(routeScope.buildHref(sessionId, { suffix: '/runs' }))}
         />
     );
@@ -456,9 +462,6 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const actionsSettingsV1 = useSetting('actionsSettingsV1');
     const sessionReplayEnabled = useSetting('sessionReplayEnabled') === true;
     const hideInactiveSessions = useSetting('hideInactiveSessions') === true;
-    const [pinnedSessionKeysV1, setPinnedSessionKeysV1] = useSettingMutable('pinnedSessionKeysV1');
-    const [sessionTagsV1, setSessionTagsV1] = useSettingMutable('sessionTagsV1');
-    const sessionFoldersV1 = useSetting('sessionFoldersV1');
     const { openMoveSheet } = useSessionListMoveSheet();
     const sharingSupported = useSessionSharingSupport();
     const automationsSupport = useAutomationsSupport();
@@ -579,9 +582,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 return null;
         }
     }, [expandedRawJsonSection, rawSessionStatus, session]);
-    const reachableMachineTarget = React.useMemo(() => {
-        return readMachineTargetForSession(session.id);
-    }, [session.id, session.updatedAt, session.metadata]);
+    const reachableMachineTarget = useSessionMachineTarget(session.id);
     const displayMachineTarget = React.useMemo(() => {
         return readDisplayMachineTargetForSession({
             sessionId: session.id,
@@ -589,9 +590,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         });
     }, [session.id, session.updatedAt, session.metadata]);
     const reachableMachineId = reachableMachineTarget?.machineId ?? null;
-    const newSessionSeedMachineId = displayMachineTarget?.machineId
+    const newSessionSeedTarget = reachableMachineTarget
+        && (!displayMachineTarget || reachableMachineTarget.machineId === displayMachineTarget.machineId)
+        ? reachableMachineTarget
+        : displayMachineTarget;
+    const newSessionSeedMachineId = newSessionSeedTarget?.machineId
         ?? (typeof session.metadata?.machineId === 'string' ? session.metadata.machineId : null);
-    const newSessionSeedDirectory = displayMachineTarget?.basePath
+    const newSessionSeedDirectory = newSessionSeedTarget?.basePath
         ?? (typeof session.metadata?.path === 'string' ? session.metadata.path : null);
     const displayMachineId = displayMachineTarget?.machineId ?? null;
     const sessionLogPath = React.useMemo(() => {
@@ -615,10 +620,17 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const isArchivedSession = session.archivedAt != null;
     const resolvedServerId = resolveServerIdForSessionIdFromLocalCache(session.id);
     const scopedMutationServerId = resolvedServerId ?? sessionServerId ?? routeScope.serverId ?? null;
+    const organizationProjection = useSessionOrganizationProjection(scopedMutationServerId);
+    const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewState({
+        serverId: scopedMutationServerId ?? '',
+        projection: organizationProjection,
+    }), [organizationProjection, scopedMutationServerId]);
+    const sessionSettingsKey = typeof scopedMutationServerId === 'string' && scopedMutationServerId.trim()
+        ? sessionTagKey(scopedMutationServerId, session.id)
+        : null;
     const isPinnedSession = Boolean(
-        resolvedServerId &&
-        Array.isArray(pinnedSessionKeysV1) &&
-        pinnedSessionKeysV1.includes(`${resolvedServerId}:${session.id}`),
+        sessionSettingsKey &&
+        organizationListViewState.pinnedSessionKeysV1.includes(sessionSettingsKey),
     );
     const sessionActionTarget = React.useMemo(
         () => createSessionActionTarget({
@@ -630,7 +642,6 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         }),
         [isPinnedSession, scopedMutationServerId, session, sessionStatus.isConnected],
     );
-    const canStopSession = sessionActionTarget.canStop;
     const canArchiveSession = sessionActionTarget.canArchive;
     const canDeleteSession = sessionActionTarget.canDelete;
     const visibleSessionActionIds = React.useMemo(
@@ -638,11 +649,8 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         [sessionActionTarget],
     );
     const canRenameSession = visibleSessionActionIds.has(SESSION_ACTION_RENAME_ID);
-    const sessionSettingsKey = typeof resolvedServerId === 'string' && resolvedServerId.trim()
-        ? sessionTagKey(resolvedServerId, session.id)
-        : null;
     const sessionInfoTags = sessionSettingsKey
-        ? getTagsForSession(sessionTagsV1 as Record<string, string[]> | null | undefined, sessionSettingsKey)
+        ? getTagsForSession(organizationListViewState.sessionTagsV1 as Record<string, string[]> | null | undefined, sessionSettingsKey)
         : [];
     const pinInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: isPinnedSession ? SESSION_ACTION_UNPIN_ID : SESSION_ACTION_PIN_ID,
@@ -669,9 +677,25 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         iconColor: theme.colors.state.danger.foreground,
     }), [theme.colors.state.danger.foreground]);
     const moveTargets = React.useMemo(() => buildSessionInfoMoveTargets({
-        sessionFolders: sessionFoldersV1,
+        sessionFolders: organizationListViewState.sessionFoldersV1,
         workspace: resolveSessionInfoWorkspaceRef(session, scopedMutationServerId),
-    }), [scopedMutationServerId, session, sessionFoldersV1]);
+    }), [organizationListViewState.sessionFoldersV1, scopedMutationServerId, session]);
+
+    const getOrganizationMutationContext = useCallback(async () => {
+        const serverId = typeof scopedMutationServerId === 'string' ? scopedMutationServerId.trim() : '';
+        if (!serverId) {
+            throw new HappyError(t('errors.unknownError'), false);
+        }
+        const serverProfile = getServerProfileById(serverId);
+        if (!serverProfile) {
+            throw new HappyError(t('errors.unknownError'), false);
+        }
+        const credentials = await TokenStorage.getCredentialsForServerUrl(serverProfile.serverUrl, { serverId: serverProfile.id });
+        if (!credentials) {
+            throw new HappyError(t('errors.unknownError'), false);
+        }
+        return { credentials, serverId: serverProfile.id, serverUrl: serverProfile.serverUrl };
+    }, [scopedMutationServerId]);
 
     const handleTogglePinned = useCallback(async () => {
         if (!sessionSettingsKey) return;
@@ -681,14 +705,17 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
             context: {
                 operations: {
                     setPinned: async (_sessionId, pinned) => {
-                        const current = Array.isArray(pinnedSessionKeysV1) ? pinnedSessionKeysV1 : [];
-                        const withoutSession = current.filter((key) => key !== sessionSettingsKey);
-                        await setPinnedSessionKeysV1(pinned ? [...withoutSession, sessionSettingsKey] : withoutSession);
+                        const mutation = await getOrganizationMutationContext();
+                        await setSessionOrganizationPin({
+                            ...mutation,
+                            sessionId: session.id,
+                            pinned,
+                        });
                     },
                 },
             },
         });
-    }, [isPinnedSession, pinnedSessionKeysV1, sessionActionTarget, sessionSettingsKey, setPinnedSessionKeysV1]);
+    }, [getOrganizationMutationContext, isPinnedSession, session.id, sessionActionTarget, sessionSettingsKey]);
     const [pinningSession, performTogglePinned] = useHappyAction(handleTogglePinned);
 
     const handleEditTags = useCallback(async () => {
@@ -712,16 +739,17 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
             context: {
                 operations: {
                     setTags: async (_sessionId, tags) => {
-                        await setSessionTagsV1(setTagsForSession(
-                            sessionTagsV1 as Record<string, string[]> | null | undefined,
-                            sessionSettingsKey,
-                            [...tags],
-                        ));
+                        const mutation = await getOrganizationMutationContext();
+                        await setSessionOrganizationTagLabels({
+                            ...mutation,
+                            sessionId: session.id,
+                            tags: [...tags],
+                        });
                     },
                 },
             },
         });
-    }, [sessionActionTarget, sessionInfoTags, sessionSettingsKey, sessionTagsV1, setSessionTagsV1]);
+    }, [getOrganizationMutationContext, session.id, sessionActionTarget, sessionInfoTags, sessionSettingsKey]);
     const [editingTags, performEditTags] = useHappyAction(handleEditTags);
 
     const handleMoveToFolder = useCallback(async () => {
@@ -741,22 +769,9 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
             context: {
                 operations: {
                     moveToFolder: async (_target, input) => {
-                        const serverId = typeof scopedMutationServerId === 'string' ? scopedMutationServerId.trim() : '';
-                        if (!serverId) {
-                            throw new HappyError(t('errors.unknownError'), false);
-                        }
-                        const serverProfile = getServerProfileById(serverId);
-                        if (!serverProfile) {
-                            throw new HappyError(t('errors.unknownError'), false);
-                        }
-                        const credentials = await TokenStorage.getCredentialsForServerUrl(serverProfile.serverUrl, { serverId: serverProfile.id });
-                        if (!credentials) {
-                            throw new HappyError(t('errors.unknownError'), false);
-                        }
-                        await setSessionFolderAssignment({
-                            credentials,
-                            serverId: serverProfile.id,
-                            serverUrl: serverProfile.serverUrl,
+                        const mutation = await getOrganizationMutationContext();
+                        await setSessionOrganizationFolderAssignment({
+                            ...mutation,
                             sessionId: session.id,
                             folderId: input?.folderId ?? null,
                         });
@@ -764,7 +779,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 },
             },
         });
-    }, [moveTargets, openMoveSheet, scopedMutationServerId, session.id, sessionActionTarget, sessionFoldersEnabled, sessionName]);
+    }, [getOrganizationMutationContext, moveTargets, openMoveSheet, session.id, sessionActionTarget, sessionFoldersEnabled, sessionName]);
     const [movingToFolder, performMoveToFolder] = useHappyAction(handleMoveToFolder);
 
     const handleStopAndMaybeArchive = useCallback(async () => {
@@ -982,7 +997,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.cliVersionOutdated')}
                             subtitle={t('sessionInfo.updateCliInstructions')}
-                            icon={<Ionicons name="warning-outline" size={29} color={theme.colors.accent.orange} />}
+                            icon={<Icon name="warning" size={29} color={theme.colors.accent.orange} />}
                             showChevron={false}
                             copy="happier self update"
                         />
@@ -996,7 +1011,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     <Item
                         title={t('sessionInfo.happySessionId')}
                         subtitle={`${session.id.substring(0, 8)}...${session.id.substring(session.id.length - 8)}`}
-                        icon={<Ionicons name="finger-print-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="fingerprint" size={29} color={theme.colors.accent.blue} />}
                         copy={session.id}
                     />
                     {vendorResumeId && vendorResumeLabelKey && vendorResumeCopiedKey && (
@@ -1010,13 +1025,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     <Item
                         title={t('sessionInfo.connectionStatus')}
                         detail={sessionStatus.isConnected ? t('status.online') : t('status.offline')}
-                        icon={<Ionicons name="pulse-outline" size={29} color={sessionStatus.isConnected ? theme.colors.state.success.foreground : theme.colors.text.secondary} />}
+                        icon={<Icon name="pulse" size={29} color={sessionStatus.isConnected ? theme.colors.state.success.foreground : theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                     <Item
                         title={t('sessionInfo.created')}
                         subtitle={formatDate(session.createdAt)}
-                        icon={<Ionicons name="calendar-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="calendar" size={29} color={theme.colors.accent.blue} />}
                         showChevron={false}
                     />
                     <SessionInfoVolatileDetailItems sessionId={session.id} formatDate={formatDate} />
@@ -1028,7 +1043,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.renameSession')}
                             subtitle={t('sessionInfo.renameSessionSubtitle')}
-                            icon={<Ionicons name="pencil-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="pencil" size={29} color={theme.colors.accent.blue} />}
                             onPress={handleRenameSession}
                         />
                     )}
@@ -1037,7 +1052,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             testID="session-info-fork-session"
                             title={t('sessionInfo.forkSession')}
                             subtitle={t('sessionInfo.forkSessionSubtitle')}
-                            icon={<Ionicons name="git-branch-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="git-branch" size={29} color={theme.colors.accent.blue} />}
                             onPress={performFork}
                             loading={forkingSession}
                         />
@@ -1046,14 +1061,14 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         testID="session-info-new-session-same-setup"
                         title={t('sessionInfo.newSessionSameSetup')}
                         subtitle={t('sessionInfo.newSessionSameSetupSubtitle')}
-                        icon={<Ionicons name="copy-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
                         onPress={handleNewSessionSameSetup}
                     />
                     {devModeEnabled ? (
                         <Item
                             testID="session-info-copy-debug-information"
                             title={t('sessionInfo.copyDebugInformation')}
-                            icon={<Ionicons name="copy-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
                             copy={sessionDebugInformation.text}
                         />
                     ) : null}
@@ -1061,7 +1076,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={handoffActionSpec.title}
                             subtitle={handoffActionSpec.description}
-                            icon={<Octicons name="arrow-switch" size={24} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="arrows-left-right" size={24} color={theme.colors.accent.blue} />}
                             onPress={performHandoff}
                             loading={handingOffSession}
                         />
@@ -1071,7 +1086,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         scopedMutationServerId={scopedMutationServerId}
                         isPinnedSession={isPinnedSession}
                     />
-                    {sessionSettingsKey && pinInfoItemProps ? (
+                    {!isArchivedSession && sessionSettingsKey && pinInfoItemProps ? (
                         <Item
                             {...pinInfoItemProps}
                             onPress={performTogglePinned}
@@ -1104,7 +1119,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.automationsTitle')}
                             subtitle={t('sessionInfo.automationsSubtitle')}
-                            icon={<Ionicons name="timer-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="timer" size={29} color={theme.colors.accent.blue} />}
                             onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/automations' }))}
                         />
                     ) : null}
@@ -1112,7 +1127,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.copyResumeCommand')}
                             subtitle={t('sessionInfo.resumeCommand', { sessionId: session.id })}
-                            icon={<Ionicons name="terminal-outline" size={29} color={theme.colors.accent.purple} />}
+                            icon={<Icon name="terminal" size={29} color={theme.colors.accent.purple} />}
                             showChevron={false}
                             copy={t('sessionInfo.resumeCommand', { sessionId: session.id })}
                         />
@@ -1120,7 +1135,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     <Item
                         title={t('sessionInfo.viewSessionLogTitle')}
                         subtitle={t('sessionInfo.viewSessionLogSubtitle')}
-                        icon={<Ionicons name="document-text-outline" size={29} color={theme.colors.accent.blue} />}
+                        icon={<Icon name="file-text" size={29} color={theme.colors.accent.blue} />}
                         onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/log' }))}
                     />
                     {displayMachineId && (
@@ -1135,7 +1150,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                                     {displayMachineId}
                                 </Text>
                             }
-                            icon={<Ionicons name="server-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.blue} />}
                             onPress={() => router.push(`/machine/${displayMachineId}`)}
                         />
                     )}
@@ -1143,11 +1158,11 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.manageSharing')}
                             subtitle={t('sessionInfo.manageSharingSubtitle')}
-                            icon={<Ionicons name="share-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="share" size={29} color={theme.colors.accent.blue} />}
                             onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/sharing' }))}
                         />
                     )}
-                    {sessionStatus.isConnected && canStopSession && stopInfoItemProps && (
+                    {visibleSessionActionIds.has(SESSION_ACTION_STOP_ID) && stopInfoItemProps && (
                         <Item
                             {...stopInfoItemProps}
                             onPress={handleStopSession}
@@ -1175,13 +1190,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.host')}
                             subtitle={session.metadata.host}
-                            icon={<Ionicons name="desktop-outline" size={29} color={theme.colors.accent.indigo} />}
+                            icon={<Icon name="desktop" size={29} color={theme.colors.accent.indigo} />}
                             showChevron={false}
                         />
                         <Item
                             title={t('sessionInfo.path')}
                             subtitle={formatPathRelativeToHome(session.metadata.path, session.metadata.homeDir)}
-                            icon={<Ionicons name="folder-outline" size={29} color={theme.colors.accent.indigo} />}
+                            icon={<Icon name="folder" size={29} color={theme.colors.accent.indigo} />}
                             showChevron={false}
                         />
                         {session.metadata.version && (
@@ -1189,7 +1204,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                                 title={t('sessionInfo.cliVersion')}
                                 subtitle={session.metadata.version}
                                 detail={isCliOutdated ? '⚠️' : undefined}
-                                icon={<Ionicons name="git-branch-outline" size={29} color={isCliOutdated ? theme.colors.accent.orange : theme.colors.accent.indigo} />}
+                                icon={<Icon name="git-branch" size={29} color={isCliOutdated ? theme.colors.accent.orange : theme.colors.accent.indigo} />}
                                 showChevron={false}
                             />
                         )}
@@ -1197,7 +1212,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.operatingSystem')}
                                 subtitle={formatOSPlatform(session.metadata.os)}
-                                icon={<Ionicons name="hardware-chip-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="cpu" size={29} color={theme.colors.accent.indigo} />}
                                 showChevron={false}
                             />
                         )}
@@ -1210,14 +1225,14 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                                         ? flavor
                                         : t(getAgentCore(DEFAULT_AGENT_ID).displayNameKey);
                                 })()}
-                                icon={<Ionicons name="sparkles-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />}
                                 showChevron={false}
                             />
                             {useProfiles && session.metadata?.profileId !== undefined && (
                                 <Item
                                     title={t('sessionInfo.aiProfile')}
                                     detail={profileLabel}
-                                    icon={<Ionicons name="person-circle-outline" size={29} color={theme.colors.accent.indigo} />}
+                                    icon={<Icon name="user-circle" size={29} color={theme.colors.accent.indigo} />}
                                     showChevron={false}
                                 />
                             )}
@@ -1225,7 +1240,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                                 <Item
                                     title={t('sessionInfo.processId')}
                                     subtitle={session.metadata.hostPid.toString()}
-                                icon={<Ionicons name="terminal-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="terminal" size={29} color={theme.colors.accent.indigo} />}
                                 showChevron={false}
                             />
                         )}
@@ -1233,7 +1248,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.happyHome')}
                                 subtitle={formatPathRelativeToHome(session.metadata.happyHomeDir, session.metadata.homeDir)}
-                                icon={<Ionicons name="home-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="house" size={29} color={theme.colors.accent.indigo} />}
                                 showChevron={false}
                             />
                         )}
@@ -1241,7 +1256,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionLog.logPathCopyLabel')}
                                 subtitle={formatPathRelativeToHome(sessionLogPath, session.metadata.homeDir)}
-                                icon={<Ionicons name="document-text-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="file-text" size={29} color={theme.colors.accent.indigo} />}
                                 copy={sessionLogPath}
                                 showChevron={false}
                             />
@@ -1250,7 +1265,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.providerSessionLogs', { provider: providerDisplayName })}
                                 subtitle={formatPathRelativeToHome(providerSessionArtifactPath, session.metadata.homeDir)}
-                                icon={<Ionicons name="document-text-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="file-text" size={29} color={theme.colors.accent.indigo} />}
                                 copy={providerSessionArtifactPath}
                                 showChevron={false}
                             />
@@ -1259,7 +1274,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.attachFromTerminal')}
                                 subtitle={attachCommand}
-                                icon={<Ionicons name="terminal-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="terminal" size={29} color={theme.colors.accent.indigo} />}
                                 copy={attachCommand}
                                 showChevron={false}
                             />
@@ -1268,7 +1283,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.tmuxTarget')}
                                 subtitle={tmuxTarget}
-                                icon={<Ionicons name="albums-outline" size={29} color={theme.colors.accent.indigo} />}
+                                icon={<Icon name="stack" size={29} color={theme.colors.accent.indigo} />}
                                 showChevron={false}
                             />
                         )}
@@ -1276,13 +1291,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.tmuxFallback')}
                                 subtitle={tmuxFallbackReason}
-                                icon={<Ionicons name="alert-circle-outline" size={29} color={theme.colors.accent.orange} />}
+                                icon={<Icon name="warning-circle" size={29} color={theme.colors.accent.orange} />}
                                 showChevron={false}
                             />
                         )}
                         <Item
                             title={t('sessionInfo.copyMetadata')}
-                            icon={<Ionicons name="copy-outline" size={29} color={theme.colors.accent.blue} />}
+                            icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
                             copy={JSON.stringify(session.metadata, null, 2)}
                         />
                     </ItemGroup>
@@ -1294,14 +1309,14 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         <Item
                             title={t('sessionInfo.controlledByUser')}
                             detail={session.agentState.controlledByUser ? t('common.yes') : t('common.no')}
-                            icon={<Ionicons name="person-outline" size={29} color={theme.colors.accent.orange} />}
+                            icon={<Icon name="person" size={29} color={theme.colors.accent.orange} />}
                             showChevron={false}
                         />
                         {session.agentState.requests && Object.keys(session.agentState.requests).length > 0 && (
                             <Item
                                 title={t('sessionInfo.pendingRequests')}
                                 detail={Object.keys(session.agentState.requests).length.toString()}
-                                icon={<Ionicons name="hourglass-outline" size={29} color={theme.colors.accent.orange} />}
+                                icon={<Icon name="hourglass" size={29} color={theme.colors.accent.orange} />}
                                 showChevron={false}
                             />
                         )}
@@ -1324,7 +1339,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <>
                                 <Item
                                     title={t('sessionInfo.agentState')}
-                                    icon={<Ionicons name="code-working-outline" size={29} color={theme.colors.accent.orange} />}
+                                    icon={<Icon name="code" size={29} color={theme.colors.accent.orange} />}
                                     onPress={handleToggleAgentStateJson}
                                 />
                                 {expandedRawJsonSection === 'agentState' && expandedRawJsonCode && (
@@ -1341,7 +1356,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <>
                                 <Item
                                     title={t('sessionInfo.metadata')}
-                                    icon={<Ionicons name="information-circle-outline" size={29} color={theme.colors.accent.indigo} />}
+                                    icon={<Icon name="info" size={29} color={theme.colors.accent.indigo} />}
                                     onPress={handleToggleMetadataJson}
                                 />
                                 {expandedRawJsonSection === 'metadata' && expandedRawJsonCode && (
@@ -1358,7 +1373,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <>
                                 <Item
                                     title={t('sessionInfo.sessionStatus')}
-                                    icon={<Ionicons name="analytics-outline" size={29} color={theme.colors.accent.blue} />}
+                                    icon={<Icon name="chart-line" size={29} color={theme.colors.accent.blue} />}
                                     onPress={handleToggleSessionStatusJson}
                                 />
                                 {expandedRawJsonSection === 'sessionStatus' && expandedRawJsonCode && (
@@ -1374,7 +1389,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         {/* Full Session Object */}
                         <Item
                             title={t('sessionInfo.fullSessionObject')}
-                            icon={<Ionicons name="document-text-outline" size={29} color={theme.colors.state.success.foreground} />}
+                            icon={<Icon name="file-text" size={29} color={theme.colors.state.success.foreground} />}
                             onPress={handleToggleSessionJson}
                         />
                         {expandedRawJsonSection === 'session' && expandedRawJsonCode && (
@@ -1410,10 +1425,7 @@ export default () => {
     const session = useSession(sessionId);
     const isDataReady = useIsDataReady();
     const sessionServerId = usePreferredServerIdForSession(sessionId);
-    const reachableMachineIdForHandoff = React.useMemo(
-        () => (session ? readMachineTargetForSession(session.id)?.machineId ?? null : null),
-        [session?.id, session?.updatedAt, session?.metadata],
-    );
+    const reachableMachineIdForHandoff = useSessionMachineTarget(sessionId)?.machineId ?? null;
     const sourceMachineIdForHandoff = React.useMemo(
         () => resolveSessionHandoffSourceMachineId({
             reachableMachineId: reachableMachineIdForHandoff,
@@ -1435,7 +1447,7 @@ export default () => {
         // Still loading data
         return (
             <View testID="session-info-screen" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="hourglass-outline" size={48} color={theme.colors.text.secondary} />
+                <Icon name="hourglass" size={48} color={theme.colors.text.secondary} />
                 <Text style={{ color: theme.colors.text.secondary, fontSize: 17, marginTop: 16, ...Typography.default('semiBold') }}>{t('common.loading')}</Text>
             </View>
         );
@@ -1445,7 +1457,7 @@ export default () => {
         // Session has been deleted or doesn't exist
         return (
             <View testID="session-info-screen" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="trash-outline" size={48} color={theme.colors.text.secondary} />
+                <Icon name="trash" size={48} color={theme.colors.text.secondary} />
                 <Text style={{ color: theme.colors.text.primary, fontSize: 20, marginTop: 16, ...Typography.default('semiBold') }}>{t('errors.sessionDeleted')}</Text>
                 <Text style={{ color: theme.colors.text.secondary, fontSize: 15, marginTop: 8, textAlign: 'center', paddingHorizontal: 32, ...Typography.default() }}>{t('errors.sessionDeletedDescription')}</Text>
             </View>

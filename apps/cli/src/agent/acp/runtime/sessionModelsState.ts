@@ -1,6 +1,8 @@
 import type { Metadata } from '@/api/types';
 import { updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import { normalizeAcpConfigOptionChoices } from '@/agent/acp/configOptionChoiceNormalization';
+import { readNonBlankSessionControlIdentifier } from '@/agent/runtime/sessionControlIdentifiers';
+import { readNewestSessionModelsMetadataStateV1 } from '@happier-dev/agents';
 
 type NormalizedConfigOptionValue = string | number | boolean | null;
 
@@ -75,7 +77,7 @@ export function normalizeConfigOptionsArray(raw: unknown): NormalizedConfigOptio
   const out: NormalizedConfigOption[] = [];
   for (const entry of raw) {
     const o = asRecord(entry);
-    const id = typeof o?.id === 'string' ? String(o.id).trim() : '';
+    const id = readNonBlankSessionControlIdentifier(o?.id) ?? '';
     const name = typeof o?.name === 'string' ? String(o.name).trim() : '';
     const type = typeof o?.type === 'string' ? String(o.type).trim() : '';
     if (!id || !name || !type) continue;
@@ -173,7 +175,7 @@ export function publishAcpSessionModelsState(params: Readonly<{
     params.session,
     (metadata) => {
       const previous = params.preservePreviousAvailableModels === true
-        ? metadata.acpSessionModelsV1
+        ? readNewestSessionModelsMetadataStateV1(metadata as unknown as Record<string, unknown>) as AcpSessionModelsState | null
         : null;
       const next = buildAcpSessionModelsStateFromPayload({
         provider: params.provider,
@@ -181,7 +183,7 @@ export function publishAcpSessionModelsState(params: Readonly<{
         previousAvailableModels: previous?.provider === params.provider ? previous.availableModels : undefined,
         requireAvailableModels: params.requireAvailableModels,
       });
-      return next ? { ...metadata, acpSessionModelsV1: next } : metadata;
+      return next ? { ...metadata, sessionModelsV1: next, acpSessionModelsV1: next } : metadata;
     },
     params.logPrefix,
     params.reason,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ConnectedServiceCredentialBindingMismatchError } from '@happier-dev/protocol';
 
 import { resolveConnectedServiceOauthErrorMessage } from './resolveConnectedServiceOauthErrorMessage';
 
@@ -26,6 +27,14 @@ describe('resolveConnectedServiceOauthErrorMessage', () => {
   it('maps oauth invalid grant to a friendly token-exchange error', () => {
     const message = resolveConnectedServiceOauthErrorMessage(new Error('connect_oauth_invalid_grant'), 'fallback');
     expect(message).toBe('Failed to exchange authorization code');
+  });
+
+  it('maps credential binding mismatch to a visible profile-target error', () => {
+    const message = resolveConnectedServiceOauthErrorMessage(new ConnectedServiceCredentialBindingMismatchError({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+    }), 'fallback');
+    expect(message).toBe('This reconnect returned credentials for a different connected profile. Start reconnect again from the target profile.');
   });
 
   it('keeps human-readable error messages', () => {
