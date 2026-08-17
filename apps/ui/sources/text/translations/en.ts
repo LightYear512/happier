@@ -10078,11 +10078,11 @@ type DeepTranslationShape<T> =
             : T extends readonly (infer U)[]
                 ? readonly DeepTranslationShape<U>[]
                 : T extends object
-                    ? { readonly [K in keyof T]: DeepTranslationShape<T[K]> }
+                    ? { readonly [K in keyof T]?: DeepTranslationShape<T[K]> }
                     : T;
 
 export type TranslationsEn = typeof en;
 
-// Shape contract for all locales: enforce identical key structure without requiring English literal
-// string values. Functions are preserved so parameter lists remain typechecked.
+// Shape contract for non-English locales: accept partial trees because i18n falls back to English
+// for missing keys. Functions are preserved so parameter lists remain typechecked where present.
 export type TranslationStructure = DeepTranslationShape<TranslationsEn>;

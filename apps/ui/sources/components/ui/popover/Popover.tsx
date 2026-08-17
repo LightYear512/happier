@@ -1381,6 +1381,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 backdropAnchorOverlay={backdropAnchorOverlay}
                 backdropStyle={backdropStyle}
                 closeOnBackdropPan={closeOnBackdropPan}
+                backdropPointerEvents="auto"
                 backdropPointerEventsEnabled={backdropPointerEventsEnabled}
                 onRequestClose={onRequestClose}
                 shouldPortal={shouldPortal}

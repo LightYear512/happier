@@ -293,7 +293,7 @@ describe('AgentInput (action bar scroll layout)', () => {
                         controlId: 'mcp',
                         render: () => React.createElement('View', { testID: 'new-session-mcp-chip' }),
                     }]}
-                    autocompletePrefixes={[]}
+                    autocompleteKinds={[]}
                     autocompleteSuggestions={async () => []}
                 />)).tree;
 

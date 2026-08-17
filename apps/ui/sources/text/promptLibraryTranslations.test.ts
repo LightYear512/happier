@@ -16,8 +16,9 @@ describe('prompt library translation keys', () => {
     it('ships the duplicate key in every locale', () => {
         const locales: ReadonlyArray<TranslationStructure> = [en, ru, pl, es, itLocale, pt, ca, zhHans, zhHant, ja];
         for (const locale of locales) {
-            expect(locale.common.duplicate).toEqual(expect.any(String));
-            expect(locale.common.duplicate.trim().length).toBeGreaterThan(0);
+            const duplicate = locale.common?.duplicate;
+            expect(duplicate).toEqual(expect.any(String));
+            expect(duplicate!.trim().length).toBeGreaterThan(0);
         }
     });
 });

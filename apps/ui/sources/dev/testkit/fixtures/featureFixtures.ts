@@ -115,6 +115,7 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
                         configured: false,
                         baseDomain: null,
                         suggestedBaseDomain: null,
+                        source: null,
                     },
                     path: { enabled: false },
                 },

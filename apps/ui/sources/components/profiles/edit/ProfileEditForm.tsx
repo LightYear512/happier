@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, ViewStyle, Linking, Platform, Pressable } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet } from 'react-native-unistyles';
 import { useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';

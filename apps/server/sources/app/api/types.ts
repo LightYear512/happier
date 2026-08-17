@@ -19,5 +19,14 @@ declare module 'fastify' {
     interface FastifyInstance {
         authenticate: any;
         sessionDevPreviewSocketRelay?: SessionDevPreviewSocketRelayBridge;
+        forwardRpcForUser: (params: {
+            userId: string;
+            method: string;
+            params: unknown;
+            timeoutMs?: number;
+        }) => Promise<
+            | { ok: true; result: unknown }
+            | { ok: false; errorCode?: string }
+        >;
     }
 }

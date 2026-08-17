@@ -17,6 +17,14 @@ export const SessionPendingMessageStatus = {
 
 export type SessionPendingMessageStatus = (typeof SessionPendingMessageStatus)[keyof typeof SessionPendingMessageStatus];
 
+export const PendingProviderAction = {
+    send: "send",
+    steer: "steer",
+    interrupt_and_send: "interrupt_and_send",
+} as const;
+
+export type PendingProviderAction = (typeof PendingProviderAction)[keyof typeof PendingProviderAction];
+
 export const RepositoryProviderKind = {
     github: "github",
     gitlab: "gitlab",
@@ -162,14 +170,6 @@ export const MergeabilityState = {
 } as const;
 
 export type MergeabilityState = (typeof MergeabilityState)[keyof typeof MergeabilityState];
-
-export const PendingProviderAction = {
-    send: "send",
-    steer: "steer",
-    interrupt_and_send: "interrupt_and_send",
-} as const;
-
-export type PendingProviderAction = (typeof PendingProviderAction)[keyof typeof PendingProviderAction];
 
 export const AutomationScheduleKind = {
     cron: "cron",

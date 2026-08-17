@@ -24,12 +24,16 @@ describe('text/i18n', () => {
     it('resolves a non-default preferred language and returns to the default when it is cleared', () => {
         // Locale trees are materialized lazily, so a preferred language that is not the default is
         // the case that proves the right tree is reachable rather than silently falling back to `en`.
-        expect(ru.tabs.inbox).not.toBe(en.tabs.inbox);
+        const ruInbox = ru.tabs?.inbox;
+        const ruProfileStacksSubtitle = ru.promptLibrary?.profileStacksSubtitle;
+        expect(ruInbox).toEqual(expect.any(String));
+        expect(ruProfileStacksSubtitle).toEqual(expect.any(Function));
+        expect(ruInbox).not.toBe(en.tabs.inbox);
 
         setPreferredLanguageFromSettings('ru');
-        expect(t('tabs.inbox')).toBe(ru.tabs.inbox);
+        expect(t('tabs.inbox')).toBe(ruInbox);
         expect(t('promptLibrary.profileStacksSubtitle', { count: 2 })).toBe(
-            ru.promptLibrary.profileStacksSubtitle({ count: 2 }),
+            ruProfileStacksSubtitle!({ count: 2 }),
         );
 
         setPreferredLanguageFromSettings(null);

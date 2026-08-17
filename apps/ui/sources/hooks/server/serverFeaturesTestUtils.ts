@@ -129,6 +129,7 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                             configured: false,
                             baseDomain: null,
                             suggestedBaseDomain: null,
+                            source: null,
                         },
                         path: { enabled: false },
                     },
