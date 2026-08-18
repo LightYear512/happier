@@ -3365,6 +3365,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           'build-version': { type: 'string', default: '' },
           'tauri-target': { type: 'string', default: '' },
           'ui-dir': { type: 'string', default: 'apps/ui' },
+          'no-bundle': { type: 'boolean', default: false },
+          'bundle-only': { type: 'boolean', default: false },
           'dry-run': { type: 'boolean', default: false },
           'secrets-source': { type: 'string', default: 'auto' },
           'keychain-service': { type: 'string', default: 'happier/pipeline' },
@@ -3383,6 +3385,11 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       const buildVersion = String(values['build-version'] ?? '').trim();
       const tauriTarget = String(values['tauri-target'] ?? '').trim();
       const uiDir = String(values['ui-dir'] ?? '').trim() || 'apps/ui';
+      const noBundle = values['no-bundle'] === true;
+      const bundleOnly = values['bundle-only'] === true;
+      if (noBundle && bundleOnly) {
+        fail('--no-bundle and --bundle-only are mutually exclusive');
+      }
       const dryRun = values['dry-run'] === true;
 
       const { env, sources } = loadPipelineEnv({ repoRoot });
@@ -3421,6 +3428,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           ...(buildVersion ? ['--build-version', buildVersion] : []),
           ...(tauriTarget ? ['--tauri-target', tauriTarget] : []),
           ...(uiDir ? ['--ui-dir', uiDir] : []),
+          ...(noBundle ? ['--no-bundle'] : []),
+          ...(bundleOnly ? ['--bundle-only'] : []),
           ...(dryRun ? ['--dry-run'] : []),
         ],
       });

@@ -32,6 +32,7 @@ for (const [environment, buildVersion] of [
         'x86_64-unknown-linux-gnu',
         '--ui-dir',
         'apps/ui',
+        '--no-bundle',
         '--dry-run',
       ],
       {
@@ -42,6 +43,28 @@ for (const [environment, buildVersion] of [
     assert.equal(res.status, 0, `expected exit 0, got ${res.status} stderr=${res.stderr}`);
   });
 }
+
+test('pipeline run forwards tauri bundle-only finalization mode (dry-run)', () => {
+  const res = run(
+    [
+      'tauri-build-updater-artifacts',
+      '--environment',
+      'dev',
+      '--build-version',
+      '0.0.0-dev.1',
+      '--tauri-target',
+      'aarch64-apple-darwin',
+      '--ui-dir',
+      'apps/ui',
+      '--bundle-only',
+      '--dry-run',
+    ],
+    {
+      TAURI_SIGNING_PRIVATE_KEY: '/tmp/tauri.signing.key',
+    },
+  );
+  assert.equal(res.status, 0, `expected exit 0, got ${res.status} stderr=${res.stderr}`);
+});
 
 test('pipeline run exposes tauri-notarize-macos-artifacts (dry-run)', () => {
   const res = run(
