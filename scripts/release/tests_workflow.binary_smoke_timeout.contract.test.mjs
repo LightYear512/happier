@@ -61,4 +61,9 @@ test('release binary smoke harness hard-kills nested build commands on timeout',
     /runWithHardTimeout\(\s*serverExtract\.binaryPath,\s*\[\s*\]/,
     'server binary invocation should use hard-timeout wrapper',
   );
+  assert.match(
+    raw,
+    /env:\s*createSmokeCommandEnv\(\{\s*PORT:\s*'3905'[\s\S]*PUBLIC_URL:\s*'http:\/\/127\.0\.0\.1:0'[\s\S]*HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED:\s*'0'/,
+    'server binary smoke should isolate release-validation startup from ambient hosted/fork dev-preview URL defaults',
+  );
 });

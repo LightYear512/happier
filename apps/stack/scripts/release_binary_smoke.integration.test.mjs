@@ -172,16 +172,17 @@ test('compiled happier and server binaries execute from isolated cwd', async (t)
     const serverBoot = runWithHardTimeout(serverExtract.binaryPath, [], {
       cwd: '/tmp',
       encoding: 'utf-8',
-      env: {
-        ...process.env,
+      env: createSmokeCommandEnv({
         PORT: '3905',
+        PUBLIC_URL: 'http://127.0.0.1:0',
         HAPPIER_SERVER_HOST: '127.0.0.1',
+        HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '0',
         HAPPY_DB_PROVIDER: 'sqlite',
         HAPPIER_DB_PROVIDER: 'sqlite',
         DATABASE_URL: `file:${serverDataDir}/happier-server-light.sqlite`,
         HAPPY_SERVER_LIGHT_DATA_DIR: serverDataDir,
         HAPPIER_SERVER_LIGHT_DATA_DIR: serverDataDir,
-      },
+      }),
       timeout: 7000,
     });
     const timedOut = didCommandTimeout(serverBoot);
