@@ -5,6 +5,7 @@
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { fileSha256 } from './lib/release-files.mjs';
@@ -70,6 +71,16 @@ function resolveArtifactSmokeTimeoutMs({ serverBinary }) {
   return serverBinary
     ? readTimeoutOverride(process.env.HAPPIER_RELEASE_SERVER_SMOKE_TIMEOUT_MS, DEFAULT_SERVER_BINARY_SMOKE_TIMEOUT_MS)
     : readTimeoutOverride(process.env.HAPPIER_RELEASE_BINARY_SMOKE_TIMEOUT_MS, DEFAULT_BINARY_SMOKE_TIMEOUT_MS);
+}
+
+export function resolveServerBinarySmokeEnv({ baseEnv = process.env, scratch }) {
+  return {
+    ...baseEnv,
+    PORT: '0',
+    METRICS_PORT: '0',
+    HAPPIER_SERVER_LIGHT_DATA_DIR: join(scratch, 'server-light-data'),
+    HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '0',
+  };
 }
 
 async function runSmokeCommand({ command, args, cwd, env, timeoutMs }) {
@@ -162,12 +173,7 @@ async function smokeTestArchive({ archivePath }) {
     const serverBinary = isServerBinaryCandidate(candidate);
     const args = serverBinary ? [] : ['--version'];
     const env = serverBinary
-      ? {
-          ...process.env,
-          PORT: '0',
-          METRICS_PORT: '0',
-          HAPPIER_SERVER_LIGHT_DATA_DIR: join(scratch, 'server-light-data'),
-        }
+      ? resolveServerBinarySmokeEnv({ scratch })
       : process.env;
     const result = await runSmokeCommand({
       command: binPath,
@@ -262,7 +268,9 @@ async function main() {
   }, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
