@@ -87,6 +87,7 @@ test('release-verify resolves public validation profiles centrally while retaini
 
 test('release-verify workflow supports dev channel and maps installer channel per release lane', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release-verify.yml'), 'utf8');
+  const workflow = YAML.parse(raw, { prettyErrors: true });
 
   assert.match(
     raw,
@@ -97,6 +98,16 @@ test('release-verify workflow supports dev channel and maps installer channel pe
     raw,
     /installers_channel:\s*\$\{\{\s*inputs\.channel == 'production' && 'stable' \|\| inputs\.channel == 'dev' && 'dev' \|\| 'preview'\s*\}\}/,
     'release-verify should map production->stable, dev->dev, preview->preview when forwarding installer channel',
+  );
+  assert.equal(
+    workflow.jobs.verify.with.cli_update_to_source,
+    "${{ inputs.channel == 'dev' && 'local-build' || inputs.candidate_cli_version != '' && 'published-tag' || 'local-build' }}",
+    'dev release verification must validate CLI update continuity against the candidate checkout because npm publishes after candidate verification',
+  );
+  assert.equal(
+    workflow.jobs.verify.with.cli_update_to_ref,
+    "${{ inputs.channel == 'dev' && '.' || inputs.candidate_cli_version != '' && format('cli-v{0}', inputs.candidate_cli_version) || '.' }}",
+    'dev release verification must not require an npm immutable CLI package before npm publish has run',
   );
 });
 
