@@ -116,6 +116,11 @@ for (const product of [
     assert.match(source, /actions\/upload-artifact/);
 
     assert.deepEqual(publish.needs, product.publishNeeds);
+    assert.equal(
+      publish.permissions?.contents,
+      'write',
+      `${product.id} publisher must let the fork GITHUB_TOKEN create immutable release tags when release bot secrets are absent`,
+    );
     const publishSource = JSON.stringify(publish);
     assert.match(publishSource, /actions\/download-artifact/);
     assert.match(publishSource, /--prepared-artifacts/);

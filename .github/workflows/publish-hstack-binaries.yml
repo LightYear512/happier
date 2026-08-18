@@ -530,7 +530,7 @@ jobs:
       RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
       RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     permissions:
-      contents: read
+      contents: write
     outputs:
       version: ${{ needs.prepare.outputs.version }}
     steps:
