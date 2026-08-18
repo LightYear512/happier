@@ -391,7 +391,7 @@ function main() {
   );
   let runtimeVersion =
     explicitRuntimeVersion ||
-    (phase !== 'publish' && platform !== 'all'
+    (phase !== 'publish' && normalizedEnvironment === 'publicdev' && platform !== 'all'
       ? generateCanonicalOtaFingerprintHash({
           opts,
           uiDir,

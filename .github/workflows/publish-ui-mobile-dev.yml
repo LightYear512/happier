@@ -168,6 +168,12 @@ jobs:
           args: --frozen-lockfile --ignore-engines
       - name: Prepare Android OTA artifact without credentials
         env:
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -177,6 +183,12 @@ jobs:
             --eas-cli-version "$EAS_CLI_VERSION"
       - name: Prepare iOS OTA artifact without credentials
         env:
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -234,6 +246,12 @@ jobs:
       - name: Publish Android OTA from validated bytes
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           RELEASE_MESSAGE: ${{ inputs.release_message }}
           SOURCE_SHA: ${{ needs.prepare_ota.outputs.source_sha }}
         run: |
@@ -245,6 +263,12 @@ jobs:
       - name: Publish iOS OTA from validated bytes
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
+          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
+          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
           RELEASE_MESSAGE: ${{ inputs.release_message }}
           SOURCE_SHA: ${{ needs.prepare_ota.outputs.source_sha }}
         run: |
@@ -341,26 +365,6 @@ jobs:
             --in-dir "dist/release-notes-assets" \
             --repo "${{ github.repository }}" \
             --tag "release-notes"
-
-      - name: Expo OTA update (dev lane)
-        if: inputs.publish_ota
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          EXPO_APP_OWNER: ${{ vars.EXPO_APP_OWNER }}
-          EXPO_APP_SLUG: ${{ vars.EXPO_APP_SLUG }}
-          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
-          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
-          EXPO_EAS_PROJECT_ID: ${{ vars.EXPO_EAS_PROJECT_ID }}
-          EXPO_UPDATES_URL: ${{ vars.EXPO_UPDATES_URL }}
-        run: |
-          set -euo pipefail
-          node scripts/pipeline/run.mjs ui-mobile-release \
-            --environment dev \
-            --action ota \
-            --platform all \
-            --release-message "${{ inputs.release_message }}" \
-            --eas-cli-version "${EAS_CLI_VERSION}" \
-            --secrets-source env
 
       - name: Android APK (dev lane) + rolling GitHub release
         if: inputs.publish_android_apk && inputs.eas_builder == 'eas_cloud'

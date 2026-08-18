@@ -62,6 +62,10 @@ function createStubBin(root) {
     `printf '%q ' "$@" >> ${JSON.stringify(logPath)}`,
     `printf 'runtime=%q ' "\${HAPPIER_EXPO_RUNTIME_VERSION:-}" >> ${JSON.stringify(logPath)}`,
     `printf '\n' >> ${JSON.stringify(logPath)}`,
+    'if [[ " $* " == *" fingerprint:generate "* ]]; then',
+    '  printf \'{"sources":[{"type":"contents","id":"runtime","hash":"%s"}]}\\n\' "${STUB_FINGERPRINT_SOURCE_HASH:-prepared}"',
+    '  exit 0',
+    'fi',
     '',
   ].join('\n'));
   return { binDir, logPath };
@@ -108,7 +112,7 @@ test('prepared OTA publication never executes candidate commands with EXPO_TOKEN
     fs.appendFileSync(path.join(preparedDir, 'bundle.js'), 'tampered\n');
     assert.throws(() => run(['--phase', 'publish', '--environment', 'preview', '--platform', 'android', '--message', 'tamper test', '--expected-source-sha', sourceSha, '--input-dir', preparedDir, '--interactive', 'false'], publishEnv));
     const afterTamper = fs.readFileSync(stub.logPath, 'utf8');
-    assert.equal((afterTamper.match(/^npx /gm) ?? []).length, 1, 'tampered bytes must be rejected before EAS executes');
+    assert.equal((afterTamper.match(/^npx .* eas-cli@18\.0\.1 update /gm) ?? []).length, 1, 'tampered bytes must be rejected before EAS executes');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
