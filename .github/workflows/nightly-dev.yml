@@ -259,6 +259,8 @@ jobs:
   promote_server:
     name: Promote verified server candidate
     needs: [prepare_release_candidate, server_runtime, release_verify]
+    permissions:
+      contents: write
     uses: ./.github/workflows/publish-server-runtime.yml
     secrets: inherit
     with:
@@ -270,6 +272,8 @@ jobs:
   promote_hstack:
     name: Promote verified HStack candidate
     needs: [prepare_release_candidate, hstack, promote_server]
+    permissions:
+      contents: write
     uses: ./.github/workflows/publish-hstack-binaries.yml
     secrets: inherit
     with:
@@ -281,6 +285,8 @@ jobs:
   promote_cli:
     name: Promote verified CLI candidate
     needs: [prepare_release_candidate, cli, promote_hstack]
+    permissions:
+      contents: write
     uses: ./.github/workflows/publish-cli-binaries.yml
     secrets: inherit
     with:
@@ -292,6 +298,8 @@ jobs:
   promote_ui_web:
     name: Promote verified UI web candidate
     needs: [prepare_release_candidate, ui_web, promote_cli]
+    permissions:
+      contents: write
     uses: ./.github/workflows/publish-ui-web.yml
     secrets: inherit
     with:

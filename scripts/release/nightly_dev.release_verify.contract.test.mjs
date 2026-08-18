@@ -52,6 +52,13 @@ test('nightly-dev workflow runs reusable release verification against the dev ch
     /promote_cli:[\s\S]*?needs:\s*\[prepare_release_candidate, cli, promote_hstack\][\s\S]*?retry_version:\s*\${{\s*needs\.cli\.outputs\.version\s*}}/,
     'nightly-dev should promote the verified CLI candidate instead of rebuilding it',
   );
+  for (const jobName of ['promote_server', 'promote_hstack', 'promote_cli', 'promote_ui_web']) {
+    assert.match(
+      raw,
+      new RegExp(`${jobName}:[\\s\\S]*?permissions:\\n\\s+contents:\\s*write[\\s\\S]*?uses:\\s*\\.\\/\\.github\\/workflows\\/`),
+      `${jobName} must grant contents: write to reusable rolling promotion so fork GITHUB_TOKEN fallback can create backup tags`,
+    );
+  }
   assert.match(
     raw,
     /docker:[\s\S]*?needs:\s*\[prepare_release_candidate, cli, server_runtime, promote_ui_web\][\s\S]*?server_version:\s*\${{\s*needs\.server_runtime\.outputs\.version\s*}}[\s\S]*?cli_version:\s*\${{\s*needs\.cli\.outputs\.version\s*}}/,
