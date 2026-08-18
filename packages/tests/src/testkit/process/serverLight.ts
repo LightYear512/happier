@@ -501,11 +501,29 @@ function normalizePrismaFieldAttributeOrder(line: string): string {
   return [...tokens.slice(0, 2), ...[...attributes].sort()].join(" ");
 }
 
-function normalizeGeneratedSchemaForFreshnessCheck(input: string): string {
-  return input
+export function normalizeGeneratedSchemaForFreshnessCheck(input: string): string {
+  const lines = input
     .replace(/\r\n/g, '\n')
     .split('\n')
-    .map((line) => normalizePrismaFieldAttributeOrder(line.trim().replace(/\s+/g, ' ')))
+    .map((line) => normalizePrismaFieldAttributeOrder(line.trim().replace(/\s+/g, ' ')));
+  const orderedLines: string[] = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (!line.startsWith('@@')) {
+      orderedLines.push(line);
+      index += 1;
+      continue;
+    }
+
+    const block: string[] = [];
+    while (index < lines.length && lines[index].startsWith('@@')) {
+      block.push(lines[index]);
+      index += 1;
+    }
+    orderedLines.push(...block.sort());
+  }
+
+  return orderedLines
     .join('\n')
     .trim();
 }

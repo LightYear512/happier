@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  normalizeGeneratedSchemaForFreshnessCheck,
   resolveServerLightOwnershipLeasesDir,
   sweepServerLightOwnershipLeases,
 } from './serverLight';
@@ -15,6 +16,29 @@ afterEach(() => {
 });
 
 describe('serverLight ownership leases', () => {
+  it('treats Prisma model-level index and unique order changes as fresh generated schema', () => {
+    const source = `
+model AutomationRun {
+  id String @id
+
+  @@index([accountId, state, dueAt])
+  @@unique([automationId, idempotencyKey])
+}
+`;
+    const generated = `
+model AutomationRun {
+  id String @id
+
+  @@unique([automationId, idempotencyKey])
+  @@index([accountId, state, dueAt])
+}
+`;
+
+    expect(normalizeGeneratedSchemaForFreshnessCheck(generated)).toBe(
+      normalizeGeneratedSchemaForFreshnessCheck(source),
+    );
+  });
+
   it('reclaims a stale server-light lease when the owner is gone and the child start time still matches', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'happier-server-light-lease-'));
     try {
