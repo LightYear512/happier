@@ -87,3 +87,14 @@ test('nightly-dev gates Expo-backed mobile publishing behind an explicit reposit
     );
   }
 });
+
+test('binary reusable retry promotion jobs can create rolling tags with fork token fallback', async () => {
+  for (const workflow of ['publish-cli-binaries.yml', 'publish-hstack-binaries.yml']) {
+    const raw = await readFile(join(repoRoot, '.github', 'workflows', workflow), 'utf8');
+    assert.match(
+      raw,
+      /promote_existing:[\s\S]*?permissions:\n\s+contents:\s*write[\s\S]*?GH_TOKEN:\s*\${{\s*steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token \|\| github\.token\s*}}/,
+      `${workflow} retry promotion must grant contents: write to the reusable job so github.token fallback can create staging tags`,
+    );
+  }
+});
