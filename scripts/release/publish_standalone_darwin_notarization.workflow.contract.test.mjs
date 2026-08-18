@@ -96,6 +96,10 @@ for (const product of [
     assert.match(source, /APPLE_API_KEY_ID/);
     assert.match(source, /APPLE_API_ISSUER_ID/);
     assert.match(source, /APPLE_API_PRIVATE_KEY/);
+    assert.match(source, /Resolve Apple signing mode/);
+    assert.match(source, /inputs\.channel/);
+    assert.match(source, /unsigned-fallback\.json/);
+    assert.match(source, /Apple signing secrets are missing for dev/);
     assert.match(source, /notarize-standalone-binary\.mjs/);
     assert.match(source, /--archive/);
     assert.match(source, new RegExp(`${product.archiveProduct}-v`));
@@ -117,6 +121,8 @@ for (const product of [
     assert.match(publishSource, /--prepared-artifacts/);
     assert.match(publishSource, new RegExp(`darwin-arm64\\.${product.evidenceSuffix}\\.json`));
     assert.match(publishSource, new RegExp(`darwin-x64\\.${product.evidenceSuffix}\\.json`));
+    assert.match(publishSource, new RegExp(`darwin-arm64\\.${product.evidenceSuffix}\\.unsigned-fallback\\.json`));
+    assert.match(publishSource, /using unsigned Darwin fallback for dev/);
     assert.doesNotMatch(
       publishSource,
       /--finalized-artifacts/,

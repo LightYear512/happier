@@ -37,6 +37,11 @@ async function writeProductEvidence(artifactsDir, suffix) {
   await writeFile(join(artifactsDir, `darwin-arm64.${suffix}.json`), '{"target":"darwin-arm64"}\n', 'utf8');
 }
 
+async function writeUnsignedDarwinFallbackMarkers(artifactsDir, suffix) {
+  await writeFile(join(artifactsDir, `darwin-x64.${suffix}.unsigned-fallback.json`), '{"target":"darwin-x64"}\n', 'utf8');
+  await writeFile(join(artifactsDir, `darwin-arm64.${suffix}.unsigned-fallback.json`), '{"target":"darwin-arm64"}\n', 'utf8');
+}
+
 test('finalizePreparedBinaryArtifacts signs one complete native CLI artifact matrix', async () => {
   const artifactsDir = await mkdtemp(join(tmpdir(), 'happier-prebuilt-cli-'));
   const version = '1.2.3-preview.4';
@@ -98,6 +103,65 @@ test('finalizePreparedBinaryArtifacts refuses publication without both Darwin no
         },
         signFile: async () => {
           throw new Error('must not sign an unsigned Darwin matrix');
+        },
+      }),
+      /missing prepared Darwin notarization evidence/iu,
+    );
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test('finalizePreparedBinaryArtifacts allows dev unsigned Darwin fallback when both fallback markers are present', async () => {
+  const artifactsDir = await mkdtemp(join(tmpdir(), 'happier-prebuilt-cli-unsigned-darwin-'));
+  const version = '1.2.3-dev.4';
+  try {
+    await writeCliArchives(artifactsDir, version);
+    await writeUnsignedDarwinFallbackMarkers(artifactsDir, 'cli');
+    const writes = [];
+
+    const result = await finalizePreparedBinaryArtifacts({
+      artifactsDir,
+      productSpec: getBinaryPublishProductSpec('cli'),
+      channel: 'dev',
+      version,
+      targets: CLI_TARGETS.map(([os, arch]) => ({ os, arch })),
+      writeChecksums: async (input) => {
+        writes.push(input);
+        return join(artifactsDir, `checksums-happier-v${version}.txt`);
+      },
+      signFile: async ({ path }) => `${path}.minisig`,
+    });
+
+    assert.deepEqual(
+      writes[0].artifacts.map((artifact) => artifact.name).sort(),
+      CLI_TARGETS.map(([os, arch]) => `happier-v${version}-${os}-${arch}.tar.gz`).sort(),
+    );
+    assert.equal(result.artifacts.length, CLI_TARGETS.length);
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test('finalizePreparedBinaryArtifacts keeps preview fail-closed when unsigned Darwin fallback markers are present', async () => {
+  const artifactsDir = await mkdtemp(join(tmpdir(), 'happier-prebuilt-cli-preview-unsigned-darwin-'));
+  const version = '1.2.3-preview.4';
+  try {
+    await writeCliArchives(artifactsDir, version);
+    await writeUnsignedDarwinFallbackMarkers(artifactsDir, 'cli');
+
+    await assert.rejects(
+      finalizePreparedBinaryArtifacts({
+        artifactsDir,
+        productSpec: getBinaryPublishProductSpec('cli'),
+        channel: 'preview',
+        version,
+        targets: CLI_TARGETS.map(([os, arch]) => ({ os, arch })),
+        writeChecksums: async () => {
+          throw new Error('must not checksum preview unsigned Darwin artifacts');
+        },
+        signFile: async () => {
+          throw new Error('must not sign preview unsigned Darwin artifacts');
         },
       }),
       /missing prepared Darwin notarization evidence/iu,

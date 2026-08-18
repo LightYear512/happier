@@ -126,22 +126,38 @@ export async function finalizePreparedBinaryArtifacts(params) {
     `darwin-arm64.${evidenceSuffix}.json`,
     `darwin-x64.${evidenceSuffix}.json`,
   ];
+  const expectedUnsignedDarwinFallbackNames = [
+    `darwin-arm64.${evidenceSuffix}.unsigned-fallback.json`,
+    `darwin-x64.${evidenceSuffix}.unsigned-fallback.json`,
+  ];
   const evidenceNames = preparedNames
     .filter((name) => name.endsWith(`.${evidenceSuffix}.json`))
     .sort();
   const missingEvidenceNames = expectedEvidenceNames.filter((name) => !evidenceNames.includes(name));
+  const unsignedDarwinFallbackNames = preparedNames
+    .filter((name) => expectedUnsignedDarwinFallbackNames.includes(name))
+    .sort();
+  const allowUnsignedDarwinFallback = channel === 'publicdev'
+    && missingEvidenceNames.length === expectedEvidenceNames.length
+    && unsignedDarwinFallbackNames.length === expectedUnsignedDarwinFallbackNames.length;
   if (missingEvidenceNames.length > 0) {
-    throw new Error(
-      `missing prepared Darwin notarization evidence for ${params.productSpec.id} ${version}: ${missingEvidenceNames.join(', ')}`,
-    );
+    if (!allowUnsignedDarwinFallback) {
+      throw new Error(
+        `missing prepared Darwin notarization evidence for ${params.productSpec.id} ${version}: ${missingEvidenceNames.join(', ')}`,
+      );
+    }
   }
-  if (
+  if (!allowUnsignedDarwinFallback && (
     evidenceNames.length !== expectedEvidenceNames.length
     || evidenceNames.some((name, index) => name !== expectedEvidenceNames[index])
-  ) {
+  )) {
     throw new Error(`unexpected prepared evidence set for ${params.productSpec.id} ${version}`);
   }
-  const admittedNames = new Set([...expectedNames, ...expectedEvidenceNames]);
+  const admittedNames = new Set([
+    ...expectedNames,
+    ...expectedEvidenceNames,
+    ...(allowUnsignedDarwinFallback ? expectedUnsignedDarwinFallbackNames : []),
+  ]);
   const unexpectedNames = preparedNames.filter((name) => !admittedNames.has(name));
   if (unexpectedNames.length > 0) {
     throw new Error(
