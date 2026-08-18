@@ -22,6 +22,10 @@ const PRODUCT_SOURCES = Object.freeze({
     githubTagPrefix: 'server-v',
     npmPackage: '@happier-dev/relay-server',
   }),
+  'ui-web': Object.freeze({
+    githubTagPrefix: 'ui-web-v',
+    npmPackage: '',
+  }),
 });
 
 /**
@@ -122,6 +126,8 @@ function parseRollingVersionBuild(version, { baseVersion, channelSuffix, githubT
   const attempt = match[2] == null ? null : Number(match[2]);
   if (!Number.isSafeInteger(run) || run < 1) return null;
   if (attempt != null && (!Number.isSafeInteger(attempt) || attempt < 1)) return null;
+  if (match[1] !== String(run)) return null;
+  if (attempt != null && match[2] !== String(attempt)) return null;
   return { run, attempt, version: candidate };
 }
 
@@ -375,5 +381,71 @@ export async function resolveRollingPublishVersion(opts) {
     version: `${baseVersion}-${channelSuffix}.${nextRun}`,
     source: sourceLabels.join('+') || 'published',
     previousVersion: previous?.version ?? null,
+  };
+}
+
+/**
+ * @param {{
+ *   productId: string;
+ *   channel: import('@happier-dev/release-runtime/releaseRings').PublicReleaseRingId;
+ *   baseVersion: string;
+ *   version: string;
+ * }} opts
+ */
+export function validateExactRollingPublishVersion(opts) {
+  const product = getProductSource(opts.productId);
+  const version = stripKnownPrefix(String(opts.version ?? '').trim(), product.githubTagPrefix);
+  if (!version) {
+    throw new Error('[release] version is required');
+  }
+
+  const baseVersion = normalizeRollingBaseVersion(opts.baseVersion);
+  if (opts.channel === 'stable') {
+    if (version !== baseVersion) {
+      throw new Error(`[release] ${opts.productId} stable version must equal ${baseVersion} (got: ${version})`);
+    }
+    return version;
+  }
+
+  const channelSuffix = resolveRollingReleaseTagSuffix(opts.channel);
+  const build = parseRollingVersionBuild(version, {
+    baseVersion,
+    channelSuffix,
+    githubTagPrefix: product.githubTagPrefix,
+  });
+  if (!build) {
+    throw new Error(
+      `[release] ${opts.productId} version must match ${baseVersion}-${channelSuffix}.<number> for ${channelSuffix} releases (got: ${version})`,
+    );
+  }
+  return build.version;
+}
+
+/**
+ * Same-version rolling recovery promotes already-created immutable release bytes
+ * back to the rolling tag. It must validate the requested immutable identity
+ * without allocating a newer version or rejecting a version that is already
+ * published for the target surface.
+ *
+ * @param {{
+ *   repoRoot: string;
+ *   productId: string;
+ *   channel: import('@happier-dev/release-runtime/releaseRings').PublicReleaseRingId;
+ *   explicitVersion: string;
+ *   env?: Record<string, string | undefined>;
+ * }} opts
+ */
+export async function resolveRollingRecoveryVersion(opts) {
+  const version = String(opts.explicitVersion ?? '').trim();
+  const validated = validateExactRollingPublishVersion({
+    productId: opts.productId,
+    channel: opts.channel,
+    baseVersion: normalizeRollingBaseVersion(version),
+    version,
+  });
+  return {
+    version: validated,
+    source: 'explicit-recovery',
+    previousVersion: null,
   };
 }
