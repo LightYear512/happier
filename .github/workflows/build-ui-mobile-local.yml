@@ -86,6 +86,11 @@ on:
         required: false
         default: ""
         type: string
+      publish_release_notes_assets:
+        description: "Publish release notes media assets to this repository"
+        required: true
+        default: true
+        type: boolean
   workflow_call:
     inputs:
       source_ref:
@@ -127,6 +132,10 @@ on:
         required: false
         default: ""
         type: string
+      publish_release_notes_assets:
+        required: false
+        default: true
+        type: boolean
     secrets:
       EXPO_TOKEN:
         required: false
@@ -219,6 +228,83 @@ jobs:
             echo "Set the repository secret APPLE_API_PRIVATE_KEY, or run via workflow_call from a trusted workflow that provides it." >&2
             exit 1
           fi
+
+  release_notes_assets:
+    name: Publish release notes assets
+    if: inputs.publish_release_notes_assets
+    needs: [release_actor_guard]
+    runs-on: ubuntu-latest
+    environment: release-shared
+    env:
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub App token
+        id: app_token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547
+        with:
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Checkout source ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          token: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Enable Corepack (Yarn)
+        uses: ./.github/actions/enable-corepack-yarn
+
+      - name: Install dependencies
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,release-runtime,transfers,connection-supervisor,audio-stream-native,sherpa-native"
+          HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile --ignore-engines
+
+      - name: Generate release notes manifest
+        env:
+          HAPPIER_RELEASE_NOTES_ASSET_BASE_URL: https://github.com/${{ github.repository }}/releases/download/release-notes/
+        run: |
+          set -euo pipefail
+          yarn --cwd apps/ui tsx sources/scripts/parseReleaseNotes.ts
+
+      - name: Build release notes assets
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/release-notes/build-release-notes-assets.mjs \
+            --out-dir "dist/release-notes-assets" \
+            --assets-base-url "https://github.com/${{ github.repository }}/releases/download/release-notes/"
+
+      - name: Publish release notes assets
+        env:
+          GH_TOKEN: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/release-notes/publish-release-notes-assets.mjs \
+            --in-dir "dist/release-notes-assets" \
+            --repo "${{ github.repository }}" \
+            --tag "release-notes"
 
   build_android:
     name: Build (android)

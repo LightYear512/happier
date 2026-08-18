@@ -39,6 +39,11 @@ import {
   resolveRollingReleaseTagSuffix,
   normalizePublicReleaseChannel,
 } from './release/lib/public-release-rings.mjs';
+import { resolveRemoteReleasePlanningRefs } from './release/lib/release-planning-remote-refs.mjs';
+import { MATERIALIZED_RELEASE_BUMP_ADMISSION_MESSAGE } from './release/resolve-bump-plan.mjs';
+import { resolvePublicReleaseValidationProfile } from './release/public-release-contract.mjs';
+import { releaseTargets } from './release/component-registry.mjs';
+import { resolveAuthorizedReleaseSource } from './github/resolve-authorized-release-source.mjs';
 
 function fail(message) {
   console.error(message);
@@ -51,6 +56,9 @@ const TAURI_RELEASE_ENVIRONMENT_CHOICES = formatPublicReleaseChannelChoices({
   preferredOrder: ['dev', 'preview', 'stable'],
 });
 const ANDROID_RELEASE_STATUS_CHOICES = ['profile', 'completed', 'draft', 'halted', 'inProgress'];
+const FULL_GIT_SHA = /^[a-f0-9]{40}$/;
+const RELEASE_OPERATION_ID = /^rel_[A-Za-z0-9_-]{8,80}$/;
+const RELEASE_NOTES_ID = /^[a-z0-9][a-z0-9._-]*$/;
 
 /**
  * @param {unknown} value
@@ -110,6 +118,14 @@ function isReleaseDeployEnvironment(v) {
 }
 
 /**
+ * @param {string} action
+ * @returns {'dev' | 'preview'}
+ */
+function resolveReleasePromotionSourceBranch(action) {
+  return action === 'release preview to main' || action === 'reset main from preview' ? 'preview' : 'dev';
+}
+
+/**
  * @param {'dev' | 'preview' | 'production'} environment
  */
 function resolveReleaseEnvironmentChannel(environment) {
@@ -153,7 +169,7 @@ function isDeployComponent(v) {
  * @returns {v is 'ui' | 'server' | 'website' | 'docs' | 'cli' | 'stack' | 'server_runner'}
  */
 function isReleaseTarget(v) {
-  return isDeployComponent(v) || v === 'cli' || v === 'stack' || v === 'server_runner';
+  return releaseTargets.includes(v);
 }
 
 /**
@@ -1048,6 +1064,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             subcommand !== 'release-bump-plan' &&
             subcommand !== 'release-bump-versions-dev' &&
             subcommand !== 'release-sync-installers' &&
+          subcommand !== 'release-contract' &&
           subcommand !== 'release-validate' &&
           subcommand !== 'release-bump-version' &&
           subcommand !== 'release-build-cli-binaries' &&
@@ -1948,6 +1965,19 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       return;
     }
 
+  if (subcommand === 'release-contract') {
+    if (rest.length > 0) fail('release-contract does not accept arguments');
+    const scriptPath = path.join(repoRoot, 'scripts', 'pipeline', 'release', 'public-release-contract.mjs');
+    const output = execFileSync(process.execPath, [scriptPath], {
+      cwd: repoRoot,
+      env: process.env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    process.stdout.write(output);
+    return;
+  }
+
   if (subcommand === 'release-validate') {
     const {
       dryRun,
@@ -1957,6 +1987,30 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       passthrough,
     } = splitWrappedReleaseArgs(rest);
     const keychainAccount = keychainAccountRaw.trim() || undefined;
+
+    // Validation dry-runs are deterministic source planning. Execute the
+    // target-owned planner directly and do not load release credentials merely
+    // to describe a profile or suite command.
+    if (dryRun) {
+      const hasValidationTarget = passthrough.some((arg) => arg === '--profile' || arg === '--suite');
+      if (!hasValidationTarget) {
+        runReleaseValidate({
+          repoRoot,
+          env: process.env,
+          args: [...passthrough, '--dry-run'],
+          dryRun: true,
+          skipExecOnDryRun: true,
+        });
+        return;
+      }
+      runReleaseValidate({
+        repoRoot,
+        env: process.env,
+        args: [...passthrough, '--dry-run'],
+        dryRun: false,
+      });
+      return;
+    }
 
     const { env, sources } = loadPipelineEnv({ repoRoot });
     const { env: mergedEnv, usedKeychain } = loadSecrets({
@@ -1972,17 +2026,6 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
     }
     if (usedKeychain) {
       console.log(`[pipeline] loaded secrets from Keychain service '${keychainService}'`);
-    }
-
-    if (dryRun) {
-      runReleaseValidate({
-        repoRoot,
-        env: mergedEnv,
-        args: [...passthrough, '--dry-run'],
-        dryRun: true,
-        skipExecOnDryRun: true,
-      });
-      return;
     }
 
     runReleaseValidate({
@@ -2507,6 +2550,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       options: {
         environment: { type: 'string' },
         'apk-path': { type: 'string' },
+        'retry-version': { type: 'string', default: '' },
         'target-sha': { type: 'string' },
         'release-message': { type: 'string', default: '' },
         'dry-run': { type: 'boolean', default: false },
@@ -2524,8 +2568,9 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
     const environmentArg = formatMobileReleaseEnvironment(environment);
 
     const apkPath = String(values['apk-path'] ?? '').trim();
+    const retryVersion = String(values['retry-version'] ?? '').trim();
     const targetSha = String(values['target-sha'] ?? '').trim();
-    if (!apkPath) fail('--apk-path is required');
+    if (!apkPath && !retryVersion) fail('--apk-path is required unless --retry-version is supplied');
     if (!targetSha) fail('--target-sha is required');
 
     const releaseMessage = String(values['release-message'] ?? '').trim();
@@ -2564,8 +2609,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       args: [
         '--environment',
         environmentArg,
-        '--apk-path',
-        apkPath,
+        ...(apkPath ? ['--apk-path', apkPath] : []),
+        ...(retryVersion ? ['--retry-version', retryVersion] : []),
         '--target-sha',
         targetSha,
         ...(releaseMessage ? ['--release-message', releaseMessage] : []),
@@ -4167,6 +4212,14 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               'ui-expo-platform': { type: 'string', default: 'all' },
               'ui-expo-android-release-status': { type: 'string', default: 'draft' },
               'desktop-mode': { type: 'string', default: 'none' },
+              'release-profile': { type: 'string', default: '' },
+              'source-sha': { type: 'string', default: '' },
+              'workflow-control-sha': { type: 'string', default: '' },
+              'resume-run-id': { type: 'string', default: '' },
+              'operation-id': { type: 'string', default: '' },
+              'attempt-id': { type: 'string', default: 'attempt_1' },
+              'release-notes-id': { type: 'string', default: '' },
+              'qualified-v4-activation-approval': { type: 'string', default: 'false' },
               'release-message': { type: 'string', default: '' },
               'npm-mode': { type: 'string', default: 'pack+publish' },
               'npm-run-tests': { type: 'string', default: 'auto' },
@@ -4177,6 +4230,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               'secrets-source': { type: 'string', default: 'auto' },
               'keychain-service': { type: 'string', default: 'happier/pipeline' },
               'keychain-account': { type: 'string', default: '' },
+              json: { type: 'boolean', default: false },
             },
             allowPositionals: false,
           });
@@ -4220,18 +4274,31 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           for (const t of deployTargets) {
             if (!isReleaseTarget(t)) {
               fail(
-                `--deploy-targets contains unsupported target '${t}' (supported: ui,server,website,docs,cli,stack,server_runner)`,
+                `--deploy-targets contains unsupported target '${t}' (supported: ${releaseTargets.join(',')})`,
               );
             }
           }
 
           const dryRun = values['dry-run'] === true;
+          const jsonOutput = values.json === true;
           const allowDirty = parseBoolString(values['allow-dirty'], '--allow-dirty');
-          if (!dryRun) assertCleanWorktree({ cwd: repoRoot, allowDirty });
-          assertNoStagedChanges({ cwd: repoRoot, allowDirty, dryRun });
 
           const forceDeploy = parseBoolString(values['force-deploy'], '--force-deploy');
           const bumpPreset = String(values.bump ?? '').trim() || 'none';
+          const authorizedPromotionSourceSha = String(values['source-sha'] ?? '').trim().toLowerCase();
+          const workflowControlSha = String(values['workflow-control-sha'] ?? '').trim();
+          const resumeRunId = String(values['resume-run-id'] ?? '');
+          const operationId = String(values['operation-id'] ?? '').trim();
+          const attemptId = String(values['attempt-id'] ?? '').trim();
+          const releaseNotesId = String(values['release-notes-id'] ?? '').trim();
+          const qualifiedV4ActivationApproval = parseBoolString(
+            values['qualified-v4-activation-approval'],
+            '--qualified-v4-activation-approval',
+          );
+          if (qualifiedV4ActivationApproval) {
+            fail('--qualified-v4-activation-approval is not supported by this release line because it has no Qualified V4 activation path.');
+          }
+          const promotionSourceBranch = resolveReleasePromotionSourceBranch(action);
           const bumpAppOverride = String(values['bump-app-override'] ?? '').trim() || 'preset';
           const bumpCliOverride = String(values['bump-cli-override'] ?? '').trim() || 'preset';
           const bumpStackOverride = String(values['bump-stack-override'] ?? '').trim() || 'preset';
@@ -4257,6 +4324,36 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               fail(`${name} must be one of: none, patch, minor, major${name === '--bump' ? '' : ', preset'} (got: ${v})`);
             }
           }
+          if (bumpPreset !== 'none') {
+            fail(MATERIALIZED_RELEASE_BUMP_ADMISSION_MESSAGE);
+          }
+          if (jsonOutput && !dryRun) {
+            fail('--json is supported only with --dry-run.');
+          }
+          if (jsonOutput && !operationId) {
+            fail('--operation-id is required with --dry-run --json.');
+          }
+          if (operationId && !RELEASE_OPERATION_ID.test(operationId)) {
+            fail('--operation-id must match rel_ followed by 8-80 ASCII letters, digits, underscores, or hyphens.');
+          }
+          if (!/^attempt_[1-9][0-9]*$/u.test(attemptId)) {
+            fail('--attempt-id must match attempt_<positive integer>.');
+          }
+          if (authorizedPromotionSourceSha && !FULL_GIT_SHA.test(authorizedPromotionSourceSha)) {
+            fail('--source-sha must be a full 40-character commit SHA when provided.');
+          }
+          if (workflowControlSha && !FULL_GIT_SHA.test(workflowControlSha)) {
+            fail('--workflow-control-sha must be a full 40-character lowercase Git commit SHA.');
+          }
+          if (resumeRunId && !/^[1-9][0-9]*$/u.test(resumeRunId)) {
+            fail('--resume-run-id must be a positive GitHub Actions run ID.');
+          }
+          if ((deployEnvironment !== 'dev' || jsonOutput) && !releaseNotesId) {
+            fail('--release-notes-id is required for normal preview/production release dispatch.');
+          }
+          if (releaseNotesId && !RELEASE_NOTES_ID.test(releaseNotesId)) {
+            fail('--release-notes-id must contain only lowercase letters, digits, dots, underscores, or hyphens.');
+          }
           if (!['none', 'ota', 'native', 'native_submit'].includes(uiExpoAction)) {
             fail(`--ui-expo-action must be one of: none, ota, native, native_submit (got: ${uiExpoAction})`);
           }
@@ -4278,6 +4375,118 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           const npmServerRunnerDir = String(values['npm-server-runner-dir'] ?? '').trim() || 'packages/relay-server';
           if (npmMode !== 'none' && npmMode !== 'pack' && npmMode !== 'pack+publish') {
             fail(`--npm-mode must be 'none', 'pack', or 'pack+publish' (got: ${npmMode})`);
+          }
+
+          const unsupportedHostedOptions = [
+            ['--bump-app-override', bumpAppOverride, 'preset'],
+            ['--bump-cli-override', bumpCliOverride, 'preset'],
+            ['--bump-stack-override', bumpStackOverride, 'preset'],
+            ['--ui-expo-builder', uiExpoBuilder, 'eas_cloud'],
+            ['--ui-expo-profile', uiExpoProfileRaw, 'auto'],
+            ['--ui-expo-platform', uiExpoPlatform, 'all'],
+            ['--ui-expo-android-release-status', uiExpoAndroidReleaseStatus, 'draft'],
+            ['--npm-mode', npmMode, 'pack+publish'],
+            ['--npm-run-tests', npmRunTests, 'auto'],
+            ['--npm-server-runner-dir', npmServerRunnerDir, 'packages/relay-server'],
+            ['--sync-dev-from-main', String(values['sync-dev-from-main'] ?? 'true').trim() || 'true', 'true'],
+            ['--secrets-source', String(values['secrets-source'] ?? 'auto').trim() || 'auto', 'auto'],
+            ['--keychain-service', String(values['keychain-service'] ?? 'happier/pipeline').trim() || 'happier/pipeline', 'happier/pipeline'],
+            ['--keychain-account', String(values['keychain-account'] ?? '').trim(), ''],
+            ['--release-message', String(values['release-message'] ?? '').trim(), ''],
+          ];
+          for (const [optionName, actualValue, defaultValue] of unsupportedHostedOptions) {
+            if (actualValue !== defaultValue) {
+              fail(`${optionName} is not accepted by the hosted release dispatch command.`);
+            }
+          }
+
+          const requestedReleaseProfileId = String(values['release-profile'] ?? '').trim();
+          const releaseProfileId = requestedReleaseProfileId || (deployEnvironment === 'production' ? 'stable' : 'integrated');
+          const releaseProfile = resolvePublicReleaseValidationProfile(releaseProfileId);
+          if (!releaseProfile) {
+            fail(`--release-profile must be one of: integrated, stable, deep (got: ${releaseProfileId})`);
+          }
+          if (!releaseProfile.normalRelease) {
+            fail(`--release-profile ${releaseProfile.id} is manual comprehensive certification and cannot dispatch a normal release.`);
+          }
+
+          const resolvePromotionSource = () =>
+            resolveAuthorizedReleaseSource({
+              repoRoot,
+              remoteUrl: 'origin',
+              sourceRef: resumeRunId && authorizedPromotionSourceSha
+                ? authorizedPromotionSourceSha
+                : `refs/heads/${promotionSourceBranch}`,
+              authorizedSha: authorizedPromotionSourceSha,
+            });
+
+          if (jsonOutput) {
+            const authorizedPromotionSource = await resolvePromotionSource();
+            process.stdout.write(
+              `${JSON.stringify({
+                kind: 'happier.release-dispatch-plan.v3',
+                schemaVersion: 3,
+                sourceBranch: promotionSourceBranch,
+                authorizedPromotionSourceSha: authorizedPromotionSource.sha,
+                effectiveDeployTargets: deployTargets,
+                validationProfile: releaseProfile.id,
+                operationId,
+                releaseNotesId,
+                ...(resumeRunId ? { resumeRunId } : {}),
+                approvals: { qualifiedV4Activation: qualifiedV4ActivationApproval },
+              })}\n`,
+            );
+            return;
+          }
+
+          if (!dryRun) {
+            if (deployEnvironment === 'dev') {
+              fail('Privileged dev publication is hosted by nightly-dev.yml; the local release command does not publish dev directly.');
+            }
+            if (!authorizedPromotionSourceSha) {
+              fail('--source-sha is required for a hosted release dispatch.');
+            }
+            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+              cwd: repoRoot,
+              env: process.env,
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+              timeout: 10_000,
+            }).trim();
+            if (!/(^|\/)(dev|upstream-dev)$/.test(currentBranch)) {
+              fail(`Local release dispatch expects branch 'dev' or '*\\/upstream-dev' (current: ${currentBranch}).`);
+            }
+            const authorizedPromotionSource = await resolvePromotionSource();
+            const workflowArgs = [
+              'workflow', 'run', 'release.yml',
+              '--repo', repository,
+              '--ref', 'dev',
+              '-f', `validation_profile=${releaseProfile.id}`,
+              '-f', 'dry_run=false',
+              '-f', `environment=${deployEnvironment}`,
+              '-f', `deploy_targets=${deployTargets.join(',')}`,
+              '-f', `force_deploy=${forceDeploy}`,
+              '-f', `ui_expo_action=${uiExpoAction}`,
+              '-f', `desktop_mode=${desktopMode}`,
+              '-f', `bump=${bumpPreset}`,
+              '-f', `authorized_promotion_source_sha=${authorizedPromotionSource.sha}`,
+              '-f', `release_notes_id=${releaseNotesId}`,
+              '-f', `qualified_v4_activation_approval=${qualifiedV4ActivationApproval}`,
+              ...(workflowControlSha ? ['-f', `workflow_control_sha=${workflowControlSha}`] : []),
+              ...(resumeRunId ? ['-f', `resume_run_id=${resumeRunId}`] : []),
+              ...(operationId ? ['-f', `hmaint_operation_id=${operationId}`] : []),
+              ...(operationId ? ['-f', `hmaint_attempt_id=${attemptId}`] : []),
+              '-f', `confirm=${action}`,
+            ];
+            execFileSync('gh', workflowArgs, {
+              cwd: repoRoot,
+              env: process.env,
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+              timeout: 30_000,
+            });
+            console.log(`[pipeline] dispatched hosted release workflow for ${deployEnvironment} (release profile=${releaseProfile.id}); privileged release writes run only in GitHub Actions.`);
+            return;
           }
 
           const { env, sources } = loadPipelineEnv({ repoRoot, deployEnvironment });
@@ -4316,6 +4525,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
 
           const releaseMessage = String(values['release-message'] ?? '').trim();
           console.log(`[pipeline] release: environment=${deployEnvironment} confirm=${action}`);
+          console.log(`[pipeline] release profile=${releaseProfile.id}`);
 
           const releaseRing = resolveReleaseEnvironmentChannel(deployEnvironment);
 
@@ -4329,33 +4539,13 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             console.log(`[pipeline] rolling version suffix: ${releaseRing.rollingVersionPrefix}.${runNumber}`);
           }
 
-            // Plan: compute changed components and resolve bump/publish plan.
-            const releasePlanBranches =
-              deployEnvironment === 'dev' ? ['dev'] : deployEnvironment === 'preview' ? ['dev', 'preview'] : ['main', 'dev', 'preview'];
-            console.log(`[pipeline] release: fetching origin ${releasePlanBranches.join('/')} for plan`);
-            // Release planning only needs branch refs plus immutable component version tags.
-            // Rolling tags move during publishing, so syncing all tags here can fail with
-            // "would clobber existing tag" on healthy repos.
-            execFileSync(
-              'git',
-              [
-                'fetch',
-                'origin',
-                ...releasePlanBranches,
-                '--prune',
-                '--no-tags',
-                'refs/tags/cli-v*:refs/tags/cli-v*',
-                'refs/tags/stack-v*:refs/tags/stack-v*',
-                'refs/tags/server-v*:refs/tags/server-v*',
-                'refs/tags/ui-web-v*:refs/tags/ui-web-v*',
-              ],
-              {
-              cwd: repoRoot,
-              env: process.env,
-              stdio: 'inherit',
-              timeout: 120_000,
-              },
-            );
+            // Plan against remote identities while leaving user-owned local refs untouched.
+            console.log('[pipeline] release: resolving remote main/dev/preview and immutable version tags for plan');
+            const remotePlanningRefs = resolveRemoteReleasePlanningRefs({
+              repoRoot,
+              branchNames: ['main', 'dev', 'preview'],
+              tagPrefixes: ['cli-v', 'stack-v', 'server-v', 'ui-web-v'],
+            });
 
             const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
               cwd: repoRoot,
@@ -4369,39 +4559,9 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               fail(`Local release expects to run from branch 'dev' or '*\\/upstream-dev' (current: ${currentBranch}).`);
             }
 
-            const devSha = execFileSync('git', ['rev-parse', 'HEAD'], {
-              cwd: repoRoot,
-              env: process.env,
-              encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: 10_000,
-          }).trim();
-          const previewSha =
-            deployEnvironment === 'dev'
-              ? devSha
-              : execFileSync('git', ['rev-parse', 'origin/preview'], {
-                  cwd: repoRoot,
-                  env: process.env,
-                  encoding: 'utf8',
-                  stdio: ['ignore', 'pipe', 'pipe'],
-                  timeout: 10_000,
-                }).trim();
-
-          const mainSha =
-            deployEnvironment === 'dev'
-              ? devSha
-              : deployEnvironment === 'preview'
-                ? previewSha
-                : execFileSync('git', ['rev-parse', 'origin/main'], {
-                    cwd: repoRoot,
-                    env: process.env,
-                    encoding: 'utf8',
-                    stdio: ['ignore', 'pipe', 'pipe'],
-                    timeout: 10_000,
-                  }).trim();
-
-          const planHeadSha =
-            action === 'release preview to main' || action === 'reset main from preview' ? previewSha : devSha;
+          const authorizedPromotionSource = await resolvePromotionSource();
+          const mainSha = remotePlanningRefs.branches.main;
+          const planHeadSha = authorizedPromotionSource.sha;
 
           const changedRaw = runJsonScript({
             repoRoot,
@@ -4424,7 +4584,14 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             repoRoot,
             env: { ...process.env },
             scriptRel: 'scripts/pipeline/release/compute-versioned-component-changes.mjs',
-            args: ['--environment', deployEnvironment, '--head', planHeadSha],
+            args: [
+              '--environment',
+              deployEnvironment,
+              '--head',
+              planHeadSha,
+              '--tag-refs-json',
+              JSON.stringify(remotePlanningRefs.tags),
+            ],
           });
 
           const versionedChanged = {
@@ -4490,8 +4657,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
             publish_server: String(bumpPlanRaw?.publish_server ?? '').trim() === 'true',
           };
 
-          const changedComparisonLabel = deployEnvironment === 'dev' ? 'dev-only working ref' : 'main..dev';
-          console.log(`[pipeline] release plan: changed components (${changedComparisonLabel})`);
+          console.log(`[pipeline] release plan: source=${promotionSourceBranch}@${planHeadSha}`);
+          console.log('[pipeline] release plan: changed components (main..authorized source)');
           for (const [k, v] of Object.entries(changed)) {
             console.log(`- ${k.replace(/^changed_/, '')}: ${v}`);
           }
@@ -4544,369 +4711,27 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
                     deploy_docs: { needed: false },
                   }
                 : computeDeployPlan(resolveReleaseEnvironmentChannel(deployEnvironment).sourceRef);
-            const uiExpoProfile =
-              uiExpoProfileRaw === 'auto' ? deployEnvironment : normalizeMobileReleaseProfile(uiExpoProfileRaw) || uiExpoProfileRaw;
-            const predicted = computeReleaseExecutionPlan({
-              environment: deployEnvironment,
-              dryRun: false,
-              forceDeploy,
-              deployTargets,
-              uiExpoAction,
-              desktopMode,
-              npmMode,
-              changed,
-              bumpPlan,
-              deployPlan,
-            });
-
-            console.log('[pipeline] dry-run: would run');
-            for (const [k, v] of Object.entries(predicted)) {
-              console.log(`- ${k}: ${v}`);
+            console.log('[pipeline] release plan: deploy facts');
+            for (const [component, plan] of Object.entries(deployPlan)) {
+              console.log(`- ${component.replace(/^deploy_/, '')}: needed=${String(plan?.needed === true)}`);
             }
-            if (uiExpoAction !== 'none') {
-              console.log(
-                `[pipeline] dry-run: ui expo action configured (action=${uiExpoAction} builder=${uiExpoBuilder} platform=${uiExpoPlatform} profile=${uiExpoProfile} androidReleaseStatus=${uiExpoAndroidReleaseStatus})`,
-              );
+            if (deployEnvironment === 'dev') {
+              console.log('[pipeline] dry-run: hosted dispatch is owned by nightly-dev.yml');
+            } else {
+              console.log('[pipeline] dry-run: hosted dispatch inputs');
+              console.log('- workflow: release.yml');
             }
-            if (desktopMode !== 'none') {
-              console.log(`[pipeline] dry-run: desktop mode configured (${desktopMode}); use GitHub Actions for full matrix builds.`);
-            }
+            console.log(`- environment: ${deployEnvironment}`);
+            console.log(`- deploy_targets: ${deployTargets.join(',')}`);
+            console.log(`- force_deploy: ${forceDeploy}`);
+            console.log(`- ui_expo_action: ${uiExpoAction}`);
+            console.log(`- desktop_mode: ${desktopMode}`);
+            console.log(`- bump: ${bumpPreset}`);
+            console.log(`- confirm: ${action}`);
+            console.log(`- release_profile: ${releaseProfile.id}`);
             return;
           }
 
-          const isProdFromPreview = deployEnvironment === 'production' && (action === 'release preview to main' || action === 'reset main from preview');
-          if (isProdFromPreview && bumpPlan.should_bump) {
-            fail('Production releases from preview do not support version bumps. Cut a preview release (dev -> preview) first.');
-          }
-
-          // Apply bumps (dev commit) if requested.
-          if (bumpPlan.should_bump) {
-            console.log('[pipeline] release: apply version bumps (dev)');
-            runReleaseBumpVersionsDev({
-              repoRoot,
-              env: { ...process.env },
-              dryRun: false,
-              args: [
-                '--bump-app',
-                bumpPlan.bump_app,
-                '--bump-server',
-                bumpPlan.bump_server,
-                '--bump-website',
-                bumpPlan.bump_website,
-                '--bump-cli',
-                bumpPlan.bump_cli,
-                '--bump-stack',
-                bumpPlan.bump_stack,
-              ],
-            });
-          }
-
-          // Preview releases: promote preview from dev so all preview deploy/publish reads from the preview branch.
-          if (deployEnvironment === 'preview') {
-            console.log('[pipeline] release: promote preview from dev (mode=fast_forward)');
-            runGithubPromoteBranch({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: ['--source', 'dev', '--target', 'preview', '--mode', 'fast_forward', '--allow-reset', 'false', '--confirm', 'promote preview from dev'],
-            });
-          }
-
-          // Production releases: promote main from preview (default) or dev (urgent).
-          if (deployEnvironment === 'production') {
-            const source = action === 'release preview to main' || action === 'reset main from preview' ? 'preview' : 'dev';
-            const promoteMode = action === 'reset main from preview' || action === 'reset main from dev' ? 'reset' : 'fast_forward';
-            const allowReset = promoteMode === 'reset' ? 'true' : 'false';
-            const confirmPhrase = promoteMode === 'reset' ? `reset main from ${source}` : `promote main from ${source}`;
-            console.log(`[pipeline] release: promote main from ${source} (mode=${promoteMode})`);
-            runGithubPromoteBranch({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: ['--source', source, '--target', 'main', '--mode', promoteMode, '--allow-reset', allowReset, '--confirm', confirmPhrase],
-            });
-          }
-
-          const releaseSourceRef = releaseRing.sourceRef;
-          const deployPlan =
-            deployEnvironment === 'dev'
-              ? {
-                  deploy_ui: { needed: false },
-                  deploy_server: { needed: false },
-                  deploy_website: { needed: false },
-                  deploy_docs: { needed: false },
-                }
-              : computeDeployPlan(releaseSourceRef);
-
-          const execution = computeReleaseExecutionPlan({
-            environment: deployEnvironment,
-            dryRun: false,
-            forceDeploy,
-            deployTargets,
-            uiExpoAction,
-            desktopMode,
-            npmMode,
-            changed,
-            bumpPlan,
-            deployPlan,
-          });
-
-          console.log('[pipeline] release: execution plan');
-          for (const [k, v] of Object.entries(execution)) {
-            console.log(`- ${k}: ${v}`);
-          }
-
-          // Expo actions (handled via promote-ui in GitHub; run directly here).
-          const uiExpoProfile =
-            uiExpoProfileRaw === 'auto' ? deployEnvironment : normalizeMobileReleaseProfile(uiExpoProfileRaw) || uiExpoProfileRaw;
-          if (uiExpoAction === 'ota') {
-            console.log(`[pipeline] release: expo ota (${deployEnvironment})`);
-            runExpoOtaUpdate({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--environment',
-                deployEnvironment,
-                ...(releaseMessage ? ['--message', releaseMessage] : []),
-              ],
-            });
-          } else if (uiExpoAction === 'native' || uiExpoAction === 'native_submit') {
-            const buildMode = uiExpoBuilder === 'eas_cloud' ? 'cloud' : 'local';
-            const actionName = uiExpoAction;
-            const platforms = uiExpoPlatform === 'all' ? ['android', 'ios'] : [uiExpoPlatform];
-            for (const p of platforms) {
-              const localRuntime = buildMode === 'local' ? (p === 'android' ? 'dagger' : 'host') : '';
-              console.log(`[pipeline] release: expo ${actionName} (${p}) mode=${buildMode}${localRuntime ? ` runtime=${localRuntime}` : ''}`);
-              runUiMobileRelease({
-                repoRoot,
-                env: releaseEnv,
-                dryRun: false,
-                args: [
-                  '--environment',
-                  deployEnvironment,
-                  '--action',
-                  actionName,
-                  '--platform',
-                  p,
-                  '--profile',
-                  uiExpoProfile,
-                  ...(buildMode === 'cloud' ? ['--native-build-mode', 'cloud'] : ['--native-build-mode', 'local']),
-                  ...(buildMode === 'local' ? ['--native-local-runtime', localRuntime] : []),
-                  '--android-release-status',
-                  uiExpoAndroidReleaseStatus,
-                  ...(releaseMessage ? ['--release-message', releaseMessage] : []),
-                ],
-              });
-            }
-          }
-
-          if (desktopMode !== 'none') {
-            console.warn('[pipeline] desktop builds are currently recommended via GitHub Actions (build-tauri.yml) for full platform coverage.');
-          }
-
-          // Preview-only publishing surfaces.
-          if (execution.runPublishUiWeb) {
-            console.log('[pipeline] release: publish ui-web (preview rolling)');
-            runPublishUiWeb({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--channel',
-                releaseRing.publicChannelArg,
-                '--allow-stable',
-                releaseRing.allowStable,
-                '--release-message',
-                releaseMessage,
-                '--run-contracts',
-                'auto',
-                '--check-installers',
-                'true',
-              ],
-            });
-          }
-          if (execution.runPublishServerRuntime) {
-            console.log('[pipeline] release: publish server-runtime (preview rolling)');
-            runPublishServerRuntime({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--channel',
-                releaseRing.publicChannelArg,
-                '--allow-stable',
-                releaseRing.allowStable,
-                '--release-message',
-                releaseMessage,
-                '--run-contracts',
-                'auto',
-                '--check-installers',
-                'true',
-              ],
-            });
-          }
-          if (execution.runPublishDocker) {
-            console.log('[pipeline] release: publish docker images (preview)');
-            runDockerPublishImages({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--channel',
-                releaseRing.dockerChannelArg,
-                '--push-latest',
-                'true',
-                '--build-relay',
-                execution.dockerBuildRelay ? 'true' : 'false',
-                '--build-dev-box',
-                execution.dockerBuildDevBox ? 'true' : 'false',
-              ],
-            });
-          }
-
-          // CLI/stack rolling binaries (preview/stable based on environment).
-          const rollingChannel = releaseRing.publicChannelArg;
-          const allowStable = releaseRing.allowStable;
-          if (execution.runPublishCliBinaries) {
-            console.log(`[pipeline] release: publish cli binaries (${rollingChannel})`);
-            runPublishCliBinaries({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--channel',
-                rollingChannel,
-                '--allow-stable',
-                allowStable,
-                '--release-message',
-                releaseMessage,
-                '--run-contracts',
-                'auto',
-                '--check-installers',
-                'true',
-              ],
-            });
-          }
-          if (execution.runPublishHstackBinaries) {
-            console.log(`[pipeline] release: publish hstack binaries (${rollingChannel})`);
-            runPublishHstackBinaries({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--channel',
-                rollingChannel,
-                '--allow-stable',
-                allowStable,
-                '--release-message',
-                releaseMessage,
-                '--run-contracts',
-                'auto',
-                '--check-installers',
-                'true',
-              ],
-            });
-          }
-
-          // npm packages (preview=next, production=latest)
-          if (execution.runPublishNpm) {
-            console.log(`[pipeline] release: npm channel=${deployEnvironment}`);
-            runNpmReleasePackages({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--channel',
-                releaseRing.npmChannelArg,
-                '--publish-cli',
-                bumpPlan.publish_cli ? 'true' : 'false',
-                '--publish-stack',
-                bumpPlan.publish_stack ? 'true' : 'false',
-                '--publish-server',
-                bumpPlan.publish_server ? 'true' : 'false',
-                '--server-runner-dir',
-                npmServerRunnerDir,
-                '--run-tests',
-                npmRunTests,
-                '--mode',
-                npmMode,
-              ],
-            });
-          }
-
-          /**
-           * @param {'ui'|'server'|'website'|'docs'} component
-           */
-          const deployOne = (component) => {
-            const refName = `deploy/${deployEnvironment}/${component}`;
-            console.log(`[pipeline] promote deploy branch: ${refName} <= ${releaseSourceRef}`);
-            runGithubPromoteDeployBranch({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--deploy-environment',
-                deployEnvironment,
-                '--component',
-                component,
-                '--source-ref',
-                releaseSourceRef,
-              ],
-            });
-
-            console.log(`[pipeline] trigger deploy webhooks: ${component}`);
-            runDeployWebhooks({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--environment',
-                deployEnvironment,
-                '--component',
-                component,
-                '--repository',
-                repository,
-                '--ref-name',
-                refName,
-              ],
-            });
-          };
-
-          // UI web deploy is production-only under current policy.
-          if (execution.runDeployUi && deployEnvironment === 'production' && deployTargets.includes('ui')) {
-            deployOne('ui');
-          }
-          if (execution.runDeployServer && deployTargets.includes('server')) {
-            deployOne('server');
-          }
-          if (execution.runDeployWebsite && deployTargets.includes('website')) {
-            deployOne('website');
-          }
-          if (execution.runDeployDocs && deployTargets.includes('docs')) {
-            deployOne('docs');
-          }
-
-          if (deployEnvironment === 'production' && syncDevFromMain) {
-            console.log('[pipeline] release: sync dev from main');
-            runGithubPromoteBranch({
-              repoRoot,
-              env: releaseEnv,
-              dryRun: false,
-              args: [
-                '--source',
-                'main',
-                '--target',
-                'dev',
-                '--mode',
-                'fast_forward',
-                '--allow-reset',
-                'false',
-                '--confirm',
-                'promote dev from main',
-              ],
-            });
-          }
 
           return;
         }

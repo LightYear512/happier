@@ -47,6 +47,11 @@ on:
         required: true
         default: true
         type: boolean
+      publish_release_notes_assets:
+        description: "Publish release notes media assets to this repository"
+        required: true
+        default: true
+        type: boolean
   workflow_call:
     outputs:
       version:
@@ -80,6 +85,10 @@ on:
         default: ""
         type: string
       publish_rolling:
+        required: false
+        default: true
+        type: boolean
+      publish_release_notes_assets:
         required: false
         default: true
         type: boolean
@@ -503,6 +512,18 @@ jobs:
             --github-output "$GITHUB_OUTPUT" \
             --run-contracts "true" \
             --check-installers "true"
+
+      - name: Publish release notes assets
+        if: inputs.publish_release_notes_assets
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token != '' && steps.app_token.outputs.token || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/release-notes/publish-release-notes-assets.mjs \
+            --in-dir "dist/release-notes-assets" \
+            --repo "${{ github.repository }}" \
+            --tag "release-notes"
 
   promote_existing:
     name: Re-promote exact immutable UI web version after interrupted rolling upload

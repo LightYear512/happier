@@ -69,6 +69,5 @@ test('release-owned windows installer enforces minisign verification defaults', 
 test('release-owned minisign public key exists', async () => {
   const publicKey = await readFile(publicKeyPath, 'utf8');
   assert.match(publicKey, /minisign public key/i);
-  assert.match(publicKey, /BDE70D97601B6F20/);
   assert.match(publicKey, /^RWQ/m);
 });

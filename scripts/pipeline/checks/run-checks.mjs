@@ -109,6 +109,7 @@ function runReleaseValidate(opts, args, extra) {
   const env = { ...process.env, ...(extra?.env ?? {}) };
   if (opts.dryRun) {
     run({ dryRun: true }, process.execPath, commandArgs);
+    console.log(`[pipeline] exec: node ${[...commandArgs, '--dry-run'].map((arg) => JSON.stringify(arg)).join(' ')}`);
     const output = execFileSync(process.execPath, [...commandArgs, '--dry-run'], {
       cwd: process.cwd(),
       env,

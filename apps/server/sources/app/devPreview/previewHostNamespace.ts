@@ -1,6 +1,8 @@
 import { createHmac } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 
+import psl from 'psl';
+
 import { resolveHostPreviewBaseDomain } from './hostPreviewBaseDomainResolution';
 import type { PreviewRouteContext } from './previewRoutePaths';
 
@@ -27,7 +29,7 @@ function isValidBaseDomain(value: string): boolean {
   if (labels.some((label) => !DNS_LABEL_PATTERN.test(label))) {
     return false;
   }
-  return true;
+  return !('error' in psl.parse(value));
 }
 
 function encodeBase32(bytes: Uint8Array): string {

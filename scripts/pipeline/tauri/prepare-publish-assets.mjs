@@ -9,6 +9,7 @@ import {
   formatPublicReleaseChannelChoices,
   normalizePublicReleaseChannel,
 } from '../release/lib/public-release-rings.mjs';
+import { createSignedReleaseAssetEnvelope } from '../release/lib/signed-asset-envelope.mjs';
 
 function fail(message) {
   console.error(message);
@@ -74,7 +75,7 @@ function copyDir(repoRoot, fromDir, toDir, opts) {
  * @param {{ search: string; replacement: string }} replacement
  * @param {{ dryRun: boolean }} opts
  */
-function copyDirWithRenamedBasenames(repoRoot, fromDir, toDir, replacement, opts) {
+function copyDirFlattened(repoRoot, fromDir, toDir, opts) {
   const src = path.resolve(repoRoot, fromDir);
   const dst = path.resolve(repoRoot, toDir);
   if (opts.dryRun) {
@@ -82,60 +83,35 @@ function copyDirWithRenamedBasenames(repoRoot, fromDir, toDir, replacement, opts
     return;
   }
 
+  if (fs.existsSync(dst)) {
+    fail(`Refusing to replace an existing immutable desktop asset directory: ${path.relative(repoRoot, dst)}`);
+  }
+
+  /** @type {Array<{ fromPath: string; name: string }>} */
+  const files = [];
+  const seenNames = new Set();
   const queue = [src];
   while (queue.length > 0) {
     const current = queue.pop();
-    const entries = fs.readdirSync(current, { withFileTypes: true });
+    const entries = fs.readdirSync(current, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       const fromPath = path.join(current, entry.name);
-      const relativeParent = path.relative(src, current);
       if (entry.isDirectory()) {
         queue.push(fromPath);
         continue;
       }
       if (!entry.isFile()) continue;
-
-      const toName = entry.name.replace(replacement.search, replacement.replacement);
-      const toPath = path.join(dst, relativeParent, toName);
-      fs.mkdirSync(path.dirname(toPath), { recursive: true });
-      fs.copyFileSync(fromPath, toPath);
-    }
-  }
-}
-
-/**
- * @param {string} repoRoot
- * @param {string} fromDir
- * @param {string} toDir
- * @param {(name: string) => string} mapName
- * @param {{ dryRun: boolean }} opts
- */
-function copyDirWithMappedBasenames(repoRoot, fromDir, toDir, mapName, opts) {
-  const src = path.resolve(repoRoot, fromDir);
-  const dst = path.resolve(repoRoot, toDir);
-  if (opts.dryRun) {
-    console.log(`[dry-run] copy dir: ${path.relative(repoRoot, src)} -> ${path.relative(repoRoot, dst)}`);
-    return;
-  }
-
-  const queue = [src];
-  while (queue.length > 0) {
-    const current = queue.pop();
-    const entries = fs.readdirSync(current, { withFileTypes: true });
-    for (const entry of entries) {
-      const fromPath = path.join(current, entry.name);
-      const relativeParent = path.relative(src, current);
-      if (entry.isDirectory()) {
-        queue.push(fromPath);
-        continue;
+      if (seenNames.has(entry.name)) {
+        fail(`Cannot flatten desktop release assets with duplicate filename: ${entry.name}`);
       }
-      if (!entry.isFile()) continue;
-
-      const toName = mapName(entry.name);
-      const toPath = path.join(dst, relativeParent, toName);
-      fs.mkdirSync(path.dirname(toPath), { recursive: true });
-      fs.copyFileSync(fromPath, toPath);
+      seenNames.add(entry.name);
+      files.push({ fromPath, name: entry.name });
     }
+  }
+
+  fs.mkdirSync(dst, { recursive: true });
+  for (const { fromPath, name } of files) {
+    fs.copyFileSync(fromPath, path.join(dst, name));
   }
 }
 
@@ -177,30 +153,7 @@ function computeRollingVersion(uiVersion, environment) {
   return `${base}-${suffix}.${runNumber}`;
 }
 
-/**
- * @param {string} name
- * @param {'preview' | 'publicdev'} environment
- * @param {string} version
- */
-function toVersionedPreviewDesktopArtifactName(name, environment, version) {
-  const suffix = environment === 'publicdev' ? 'dev' : 'preview';
-  const prefix = `happier-ui-desktop-${suffix}-`;
-  if (!name.startsWith(prefix)) return name;
-
-  const sigSuffix = name.endsWith('.sig') ? '.sig' : '';
-  const baseName = sigSuffix ? name.slice(0, -sigSuffix.length) : name;
-  const ext = baseName.endsWith('.app.tar.gz')
-    ? '.app.tar.gz'
-    : baseName.endsWith('.AppImage.tar.gz')
-      ? '.AppImage.tar.gz'
-      : baseName.endsWith('.appimage.tar.gz')
-        ? '.appimage.tar.gz'
-        : path.extname(baseName);
-  const stem = ext ? baseName.slice(0, -ext.length) : baseName;
-  return `${stem.replace(prefix, 'happier-ui-desktop-')}-v${version}${ext}${sigSuffix}`;
-}
-
-function main() {
+async function main() {
   const repoRoot = path.resolve(process.cwd());
   const { values } = parseArgs({
     options: {
@@ -288,34 +241,32 @@ function main() {
   if (environment === 'preview') {
     copyFile(repoRoot, latestJsonRel, path.join(previewDir, 'latest.json'), opts);
     copyDir(repoRoot, artifactsDir, previewDir, opts);
-    copyDirWithMappedBasenames(
-      repoRoot,
-      artifactsDir,
-      versionedDir,
-      (name) => toVersionedPreviewDesktopArtifactName(name, 'preview', version),
-      opts,
-    );
   } else if (environment === 'publicdev') {
     copyFile(repoRoot, latestJsonRel, path.join(publicdevDir, 'latest.json'), opts);
     copyDir(repoRoot, artifactsDir, publicdevDir, opts);
-    copyDirWithMappedBasenames(
-      repoRoot,
-      artifactsDir,
-      versionedDir,
-      (name) => toVersionedPreviewDesktopArtifactName(name, 'publicdev', version),
-      opts,
-    );
   } else {
+    if (opts.dryRun) {
+      console.log(`[dry-run] create signed immutable desktop envelope in ${path.relative(repoRoot, versionedDir)}`);
+      return;
+    }
+    copyDirFlattened(repoRoot, artifactsDir, versionedDir, opts);
+    copyFile(repoRoot, latestJsonRel, path.join(versionedDir, 'latest.json'), opts);
+    const assetNames = fs.readdirSync(versionedDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort((left, right) => left.localeCompare(right));
+    await createSignedReleaseAssetEnvelope({
+      assetsDir: versionedDir,
+      product: 'happier-ui-desktop',
+      version: uiVersion,
+      assetNames,
+      trustedComment: `happier-ui-desktop ${uiVersion} production`,
+    });
     copyFile(repoRoot, latestJsonRel, path.join(stableDir, 'latest.json'), opts);
-    copyDirWithRenamedBasenames(
-      repoRoot,
-      artifactsDir,
-      stableDir,
-      { search: `-v${uiVersion}`, replacement: '' },
-      opts,
-    );
-    copyDir(repoRoot, artifactsDir, versionedDir, opts);
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

@@ -510,7 +510,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: happier-assets
           permission-contents: write
-      - name: Publish release notes assets with trusted control
+      - name: Publish release notes assets
         env:
           GH_TOKEN: ${{ steps.release_notes_assets_token.outputs.token }}
           GH_REPO: happier-dev/happier-assets

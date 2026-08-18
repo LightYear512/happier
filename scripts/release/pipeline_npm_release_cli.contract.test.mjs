@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
+const emptyPublishedVersionsFixture = JSON.stringify({ github: {}, npm: {} });
 
 test('pipeline CLI can npm-release in dry-run using env-only secrets', async () => {
   const out = execFileSync(
@@ -27,7 +28,11 @@ test('pipeline CLI can npm-release in dry-run using env-only secrets', async () 
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env, NPM_TOKEN: 'npm-token' },
+      env: {
+        ...process.env,
+        NPM_TOKEN: 'npm-token',
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: emptyPublishedVersionsFixture,
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
@@ -61,7 +66,11 @@ test('pipeline CLI forwards npm package name overrides to npm-release', async ()
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env, NPM_TOKEN: 'npm-token' },
+      env: {
+        ...process.env,
+        NPM_TOKEN: 'npm-token',
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: emptyPublishedVersionsFixture,
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,

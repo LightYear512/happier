@@ -160,14 +160,19 @@ export function resolveReleaseValidationProfile(raw) {
 export function resolveAutomaticReleaseValidationExecution(profileId, context) {
   const profile = RELEASE_VALIDATION_PROFILES.find((candidate) => candidate.id === String(profileId ?? '').trim());
   if (!profile?.normalRelease) throw new Error(`Automatic execution requires a normal release profile: ${profileId}`);
+  const risks = context.risks ?? {
+    cliUpgrade: true,
+    sessionContinuity: true,
+    relayUpgrade: true,
+  };
   const applicable = {
     'artifact-verify': context.hasCliCandidate,
     'binary-smoke': context.hasCliCandidate || context.hasServerCandidate,
-    'session-continuity': context.hasServerCandidate && context.risks.sessionContinuity,
-    'cli-update': context.hasCliCandidate && context.risks.cliUpgrade,
+    'session-continuity': context.hasServerCandidate && risks.sessionContinuity,
+    'cli-update': context.hasCliCandidate && risks.cliUpgrade,
     'docker-release-assets': context.hasServerCandidate
       && context.hasPublishedRelayPredecessor
-      && context.risks.relayUpgrade,
+      && risks.relayUpgrade,
   };
   const selectedSuiteIds = [];
   const skippedSuiteIds = [];

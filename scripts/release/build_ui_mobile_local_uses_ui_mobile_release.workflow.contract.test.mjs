@@ -5,26 +5,16 @@ import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
-test('build-ui-mobile-local workflow delegates local builds to ui-mobile-release pipeline command', () => {
+test('build-ui-mobile-local workflow delegates selectable cloud or local builds to ui-mobile-release pipeline command', () => {
   const src = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-ui-mobile-local.yml'), 'utf8');
-  const androidJob = src.match(/  build_android:[\s\S]*?(?=\n  build_ios:)/)?.[0] ?? '';
-
-  assert.notEqual(androidJob, '', 'expected build_android job to be present');
   assert.match(src, /node scripts\/pipeline\/run\.mjs ui-mobile-release/);
-  assert.match(src, /--native-build-mode local/);
-  assert.match(androidJob, /dagger\/dagger-for-github@v8\.3\.0/);
-  assert.match(androidJob, /version:\s*"0\.19\.11"/);
-  assert.match(androidJob, /EXPO_APP_OWNER:\s*\$\{\{\s*vars\.EXPO_APP_OWNER\s*\}\}/);
-  assert.match(androidJob, /EXPO_APP_SLUG:\s*\$\{\{\s*vars\.EXPO_APP_SLUG\s*\}\}/);
-  assert.match(androidJob, /EXPO_PUBLIC_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_PUBLIC_EAS_PROJECT_ID\s*\}\}/);
-  assert.match(androidJob, /EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EAS_PROJECT_ID\s*\}\}/);
-  assert.match(androidJob, /EXPO_EAS_PROJECT_ID:\s*\$\{\{\s*vars\.EXPO_EAS_PROJECT_ID\s*\}\}/);
-  assert.match(androidJob, /EXPO_UPDATES_URL:\s*\$\{\{\s*vars\.EXPO_UPDATES_URL\s*\}\}/);
-  assert.match(androidJob, /EXPO_ANDROID_PACKAGE:\s*\$\{\{\s*vars\.EXPO_ANDROID_PACKAGE\s*\}\}/);
-  assert.match(androidJob, /HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB:\s*\$\{\{\s*vars\.HAPPIER_EAS_ANDROID_GRADLE_HEAP_MB\s*\}\}/);
-  assert.match(androidJob, /HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB:\s*\$\{\{\s*vars\.HAPPIER_EAS_ANDROID_KOTLIN_DAEMON_HEAP_MB\s*\}\}/);
-  assert.match(androidJob, /HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX:\s*\$\{\{\s*vars\.HAPPIER_EAS_ANDROID_GRADLE_WORKERS_MAX\s*\}\}/);
-  assert.match(androidJob, /--native-local-runtime dagger/);
+  assert.match(src, /native_build_mode:/);
+  assert.match(src, /description: "EAS build runner"/);
+  assert.match(src, /default: local/);
+  assert.match(src, /- cloud/);
+  assert.match(src, /- local/);
+  assert.match(src, /--native-build-mode "\$\{\{ inputs\.native_build_mode \}\}"/);
+  assert.doesNotMatch(src, /--native-build-mode local/);
   assert.match(src, /--action "\$\{\{\s*inputs\.action == 'build_and_submit' && 'native_submit' \|\| 'native'\s*\}\}"/);
   assert.match(src, /--publish-apk-release false/);
   assert.match(src, /APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS:\s*\$\{\{\s*vars\.APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS\s*\}\}/);
@@ -44,4 +34,29 @@ test('build-ui-mobile-local workflow delegates local builds to ui-mobile-release
   assert.doesNotMatch(src, /-\s+production-preview\b/);
   assert.doesNotMatch(src, /-\s+production-preview-apk\b/);
   assert.doesNotMatch(src, /node scripts\/pipeline\/run\.mjs expo-submit/);
+});
+
+test('build-ui-mobile-local exposes immutable APK retry recovery as a workflow input', () => {
+  const src = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-ui-mobile-local.yml'), 'utf8');
+  assert.match(src, /retry_version:/);
+  assert.match(src, /Production version — Reproject an existing immutable APK release without rebuilding/);
+  assert.match(src, /promote_existing_apk:/);
+  assert.match(src, /inputs\.retry_version\s*!=\s*''/);
+  assert.match(src, /resolve-authorized-release-source\.mjs/);
+  assert.match(src, /refs\/tags\/ui-mobile-v\$RETRY_VERSION/);
+  assert.match(src, /pipeline\/expo\/publish-apk-release\.mjs/);
+  assert.match(src, /--retry-version\s+"\$RETRY_VERSION"/);
+  assert.match(src, /--target-sha\s+"\$AUTHORIZED_SHA"/);
+});
+
+test('build-ui-mobile-local passes approved release notes and projects exact retry-candidate notes', () => {
+  const src = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-ui-mobile-local.yml'), 'utf8');
+  assert.match(src, /release_message:/);
+  assert.match(src, /--release-message\s+"\$\{\{\s*inputs\.release_message\s*\}\}"/);
+  assert.match(src, /Project approved release notes from exact immutable candidate/);
+  assert.match(src, /release_notes_github_markdown/);
+  assert.match(src, /ref: \$\{\{ steps\.source\.outputs\.authorized_sha \}\}[\s\S]*?path: candidate/);
+  assert.doesNotMatch(src, /Project approved release notes from exact immutable candidate[\s\S]*?working-directory: candidate/);
+  assert.match(src, /--changelog "\$GITHUB_WORKSPACE\/candidate\/apps\/ui\/CHANGELOG\.md"/);
+  assert.match(src, /--release-message\s+"\$RELEASE_MESSAGE"/);
 });

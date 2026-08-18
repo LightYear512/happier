@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
+const emptyPublishedVersionsFixture = JSON.stringify({ github: {}, npm: {} });
 
 test('pipeline npm release script supports pack-only mode (no publish) in dry-run', async () => {
   const out = execFileSync(
@@ -26,7 +27,10 @@ test('pipeline npm release script supports pack-only mode (no publish) in dry-ru
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: emptyPublishedVersionsFixture,
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
@@ -58,7 +62,11 @@ test('pipeline npm release script can rewrite the published npm package name in 
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env, GITHUB_REPOSITORY: 'LightYear512/happier' },
+      env: {
+        ...process.env,
+        GITHUB_REPOSITORY: 'LightYear512/happier',
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: emptyPublishedVersionsFixture,
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
