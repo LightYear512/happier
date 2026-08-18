@@ -489,7 +489,11 @@ test('existing rolling replacement stages privately, restores after publish fail
     assert.equal(readFileSync(testFixture.channelRef, 'utf8'), oldSha);
     assert.deepEqual(readdirSync(testFixture.rolling), ['old-asset']);
     const failedSwitchLog = readFileSync(testFixture.log, 'utf8');
-    assert.match(failedSwitchLog, /tag_name=happier-rolling-backup-cli-preview/);
+    assert.match(failedSwitchLog, new RegExp(`ref=refs/tags/happier-rolling-backup-cli-preview.*sha=${targetSha}`));
+    assert.match(
+      failedSwitchLog,
+      new RegExp(`tag_name=happier-rolling-backup-cli-preview.*name=\\[backup:happier-rolling-backup-cli-preview:${oldSha}\\] Previous CLI Preview`),
+    );
     assert.match(failedSwitchLog, /releases\/1 .*tag_name=cli-preview/);
     assert.doesNotMatch(failedSwitchLog, /DELETE repos\/test\/test\/releases\/assets\/1-/);
 
@@ -728,9 +732,9 @@ test('retry restores a predecessor stranded under the deterministic backup tag b
     writeFileSync(testFixture.release1Tag, 'happier-rolling-backup-cli-preview');
     writeFileSync(
       join(testFixture.root, 'release-1-name'),
-      '[backup:happier-rolling-backup-cli-preview] Previous CLI Preview',
+      `[backup:happier-rolling-backup-cli-preview:${oldSha}] Previous CLI Preview`,
     );
-    writeFileSync(testFixture.backupRef, oldSha);
+    writeFileSync(testFixture.backupRef, targetSha);
     writeFileSync(testFixture.channelRef, targetSha);
     const result = spawnSync(process.execPath, args(), {
       cwd: repoRoot,

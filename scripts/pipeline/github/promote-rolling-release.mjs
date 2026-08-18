@@ -241,13 +241,26 @@ function sanitizeTagSegment(value) {
   return sanitized;
 }
 
-function backupReleaseName(name, backupTag) {
-  return `[backup:${backupTag}] ${name}`;
+function backupReleaseName(name, backupTag, predecessorSha) {
+  return `[backup:${backupTag}:${predecessorSha}] ${name}`;
 }
 
 function originalReleaseName(name, backupTag) {
   const prefix = `[backup:${backupTag}] `;
-  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  if (name.startsWith(prefix)) return name.slice(prefix.length);
+  const shaPrefix = `[backup:${backupTag}:`;
+  if (!name.startsWith(shaPrefix)) return name;
+  const end = name.indexOf('] ', shaPrefix.length);
+  return end >= 0 ? name.slice(end + 2) : name;
+}
+
+function backupReleasePredecessorSha(name, backupTag) {
+  const prefix = `[backup:${backupTag}:`;
+  if (!name.startsWith(prefix)) return null;
+  const end = name.indexOf('] ', prefix.length);
+  if (end < 0) return null;
+  const value = name.slice(prefix.length, end).toLowerCase();
+  return FULL_SHA.test(value) ? value : null;
 }
 
 function readReleaseAssetRows({ repo, releaseId, env, dryRun }) {
@@ -506,8 +519,9 @@ async function main() {
     let backupRelease = readReleaseByTag({ repo, tag: backupTag, env: ghEnv, dryRun });
 
     if (!dryRun && !rollingRelease && backupRelease) {
-      const backupSha = readTagSha({ repo, tag: backupTag, env: ghEnv, dryRun: false });
-      if (!backupSha) fail(`Interrupted rolling promotion backup ${backupTag} has no tag ref.`);
+      const backupSha = backupReleasePredecessorSha(backupRelease.name, backupTag)
+        ?? readTagSha({ repo, tag: backupTag, env: ghEnv, dryRun: false });
+      if (!backupSha) fail(`Interrupted rolling promotion backup ${backupTag} has no recoverable predecessor SHA.`);
       ensureRefAtSha({ repo, tag: rollingTag, sha: backupSha, env: ghEnv, dryRun: false });
       const restoredName = originalReleaseName(backupRelease.name, backupTag);
       patchReleaseAndConfirm({
@@ -628,11 +642,11 @@ async function main() {
     try {
       if (predecessor) {
         if (!predecessorSha) fail(`Published rolling release ${rollingTag} has no tag ref.`);
-        ensureRefAtSha({ repo, tag: backupTag, sha: predecessorSha, env: ghEnv, dryRun });
+        ensureRefAtSha({ repo, tag: backupTag, sha: targetSha, env: ghEnv, dryRun });
         patchReleaseAndConfirm({
           repo,
           releaseId: predecessor.id,
-          fields: { tag_name: backupTag, name: backupReleaseName(predecessorName, backupTag) },
+          fields: { tag_name: backupTag, name: backupReleaseName(predecessorName, backupTag, predecessorSha) },
           env: ghEnv,
           dryRun,
           confirm: () => readReleaseById({ repo, releaseId: predecessor.id, env: ghEnv, dryRun: false })?.tagName === backupTag,
