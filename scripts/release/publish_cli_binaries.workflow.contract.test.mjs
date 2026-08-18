@@ -14,7 +14,8 @@ async function loadWorkflow(name) {
 test('publish-cli-binaries workflow leaves full validation to the pre-release gate', async () => {
   const raw = await loadWorkflow('publish-cli-binaries.yml');
 
-  assert.match(raw, /node scripts\/pipeline\/run\.mjs publish-cli-binaries/);
-  assert.match(raw, /--run-contracts "false"/);
-  assert.match(raw, /--check-installers "false"/);
+  assert.match(raw, /node scripts\/pipeline\/release\/publish-cli-binaries\.mjs/);
+  assert.match(raw, /--resolve-version-only[\s\S]*?--run-contracts false[\s\S]*?--check-installers false/);
+  assert.match(raw, /--phase "\$PUBLISH_PHASE"[\s\S]*?--run-contracts true[\s\S]*?--check-installers true/);
+  assert.match(raw, /--phase promote-rolling[\s\S]*?--run-contracts false[\s\S]*?--check-installers true/);
 });

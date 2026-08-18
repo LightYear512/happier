@@ -192,7 +192,7 @@ test('pipeline help covers every supported subcommand', async () => {
   }
 });
 
-test('release help exposes the workflow-control fence without reviving manual release notes', () => {
+test('release help exposes current public release orchestration options', () => {
   const help = execFileSync(process.execPath, [pipelineCli, 'help', 'release'], {
     cwd: repoRoot,
     env: { ...process.env },
@@ -201,7 +201,9 @@ test('release help exposes the workflow-control fence without reviving manual re
     timeout: 30_000,
   });
 
-  assert.match(help, /--workflow-control-sha/);
-  assert.match(help, /--resume-run-id/);
-  assert.doesNotMatch(help, /--release-message/);
+  assert.match(help, /--release-message/);
+  assert.match(help, /--sync-dev-from-main/);
+  assert.match(help, /--secrets-source/);
+  assert.doesNotMatch(help, /--workflow-control-sha/);
+  assert.doesNotMatch(help, /--resume-run-id/);
 });

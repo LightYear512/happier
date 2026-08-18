@@ -44,13 +44,8 @@ test('publish-server-runtime falls back to GITHUB_TOKEN when release bot secrets
   );
   assert.match(
     raw,
-    /Create GitHub App token[\s\S]*?if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/,
+    /Create narrowly scoped publish token[\s\S]*?if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/,
     'release bot token creation should be skipped when the fork has no app secrets',
-  );
-  assert.match(
-    raw,
-    /token:\s*\$\{\{\s*\(?steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token\)? \|\| github\.token\s*\}\}/,
-    'source checkout should fall back to GITHUB_TOKEN in forks',
   );
   assert.match(
     raw,
@@ -62,8 +57,8 @@ test('publish-server-runtime falls back to GITHUB_TOKEN when release bot secrets
 test('publish-server-runtime does not run global release contracts inside the publish lane', async () => {
   const raw = await loadWorkflow('publish-server-runtime.yml');
 
-  assert.match(raw, /--run-contracts "false"/);
-  assert.match(raw, /--check-installers "false"/);
+  assert.match(raw, /--run-contracts false/);
+  assert.match(raw, /--check-installers false/);
 });
 
 test('publish-server-runtime supports dev and resolves auto source_ref from the selected channel', async () => {
@@ -166,12 +161,14 @@ test('workflow never interpolates raw inputs into shell and validates adversaria
   assert.match(JSON.stringify(workflow.jobs.release_actor_guard), /AUTHORIZED_SHA/);
 });
 
-test('workflow serializes each called-repository channel and keeps automatic tokens read-only', async () => {
+test('workflow serializes each called-repository channel and scopes automatic write tokens to publish jobs', async () => {
   const workflow = YAML.parse(await loadWorkflow('publish-server-runtime.yml'));
   assert.doesNotMatch(workflow.concurrency.group, /github\.ref/);
   assert.match(workflow.concurrency.group, /github\.repository/);
   assert.equal(workflow.jobs.build_candidate.permissions.contents, 'read');
-  assert.equal(workflow.jobs.finalize_publish.permissions.contents, 'read');
+  assert.equal(workflow.jobs.finalize_publish.permissions.contents, 'write');
+  assert.equal(workflow.jobs.promote_existing.permissions.contents, 'write');
+  assert.equal(workflow.jobs.promote_existing_fresh_runner_retry.permissions.contents, 'write');
 });
 
 test('first secret-free guard rejects every noncanonical workflow channel alias before serialization', async () => {

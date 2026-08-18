@@ -94,8 +94,8 @@ test('pipeline CLI forwards npm package name overrides to preview version alloca
       env: {
         ...process.env,
         HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
-          github: { cli: ['cli-v0.2.7-preview.3'] },
-          npm: { '@happier-dev/cli': ['0.2.7-preview.3'] },
+          github: { cli: ['cli-v0.2.10-preview.1'] },
+          npm: { '@happier-dev/cli': ['0.2.10-preview.1'] },
         }),
       },
       encoding: 'utf8',
@@ -104,7 +104,7 @@ test('pipeline CLI forwards npm package name overrides to preview version alloca
     },
   );
 
-  assert.deepEqual(JSON.parse(out), { cli: '0.2.7-preview.3' });
+  assert.deepEqual(JSON.parse(out), { cli: '0.2.10-preview.1' });
 });
 
 test('npm-release local preview suffix starts at the first unpublished rolling version when no versions exist', async () => {

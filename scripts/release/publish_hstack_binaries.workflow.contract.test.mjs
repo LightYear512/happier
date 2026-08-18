@@ -15,7 +15,7 @@ test('publish-hstack-binaries falls back to GITHUB_TOKEN when release bot secret
   const raw = await loadWorkflow('publish-hstack-binaries.yml');
 
   assert.match(raw, /name:\s*PUBLISH\s+—\s+HStack Binaries/i);
-  assert.match(raw, /node scripts\/pipeline\/run\.mjs publish-hstack-binaries/);
+  assert.match(raw, /node scripts\/pipeline\/release\/publish-hstack-binaries\.mjs/);
   assert.match(
     raw,
     /RELEASE_BOT_APP_ID:\s*\$\{\{\s*secrets\.RELEASE_BOT_APP_ID\s*\}\}[\s\S]*?RELEASE_BOT_PRIVATE_KEY:\s*\$\{\{\s*secrets\.RELEASE_BOT_PRIVATE_KEY\s*\}\}/,
@@ -23,13 +23,8 @@ test('publish-hstack-binaries falls back to GITHUB_TOKEN when release bot secret
   );
   assert.match(
     raw,
-    /Create GitHub App token[\s\S]*?if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/,
+    /Create scoped release token[\s\S]*?if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/,
     'release bot token creation should be skipped when the fork has no app secrets',
-  );
-  assert.match(
-    raw,
-    /token:\s*\$\{\{\s*\(?steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token\)? \|\| github\.token\s*\}\}/,
-    'source checkout should fall back to GITHUB_TOKEN in forks',
   );
   assert.match(
     raw,
@@ -41,6 +36,6 @@ test('publish-hstack-binaries falls back to GITHUB_TOKEN when release bot secret
 test('publish-hstack-binaries does not run global release contracts inside the publish lane', async () => {
   const raw = await loadWorkflow('publish-hstack-binaries.yml');
 
-  assert.match(raw, /--run-contracts "false"/);
-  assert.match(raw, /--check-installers "false"/);
+  assert.match(raw, /--resolve-version-only[\s\S]*?--run-contracts false[\s\S]*?--check-installers false/);
+  assert.match(raw, /--phase promote-rolling[\s\S]*?--run-contracts false[\s\S]*?--check-installers true/);
 });

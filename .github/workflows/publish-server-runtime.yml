@@ -72,7 +72,7 @@ jobs:
     name: Trust called workflow repository and ref
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Reject cross-repository or untrusted workflow control
         env:
@@ -106,9 +106,6 @@ jobs:
     needs: [trusted_ref_guard]
     permissions:
       contents: read
-    env:
-      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
-      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
     outputs:
       authorized_sha: ${{ steps.source.outputs.authorized_sha }}
       source_ref: ${{ steps.source.outputs.canonical_ref }}
@@ -165,15 +162,6 @@ jobs:
           echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
           echo "repository_owner=${WORKFLOW_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
           echo "repository_name=${WORKFLOW_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
-      - name: Create GitHub App token
-        id: app_token
-        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547
-        with:
-          app-id: ${{ env.RELEASE_BOT_APP_ID }}
-          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
-          owner: ${{ steps.source.outputs.repository_owner }}
-          repositories: ${{ steps.source.outputs.repository_name }}
       - name: Checkout authorized source as non-executable data
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -181,7 +169,6 @@ jobs:
           ref: ${{ steps.source.outputs.authorized_sha }}
           path: authorized-source
           fetch-depth: 1
-          token: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
           persist-credentials: false
       - name: Read synchronized version from authorized source data
         id: source_version
@@ -218,7 +205,7 @@ jobs:
           node scripts/pipeline/release/publish-server-runtime.mjs \
             --phase "$PHASE" --channel "$CHANNEL" --base-version "$BASE_VERSION" \
             "${VERSION_ARGS[@]}" \
-            --allow-stable "$ALLOW_STABLE" --run-contracts "false" --check-installers "false" \
+            --allow-stable "$ALLOW_STABLE" --run-contracts false --check-installers false \
             --dry-run --github-output "$GITHUB_OUTPUT"
 
   build_candidate:
@@ -404,11 +391,11 @@ jobs:
     if: ${{ inputs.retry_version == '' && inputs.resume_version == '' }}
     runs-on: ubuntu-latest
     environment: release-shared
-    permissions:
-      contents: read
     env:
       RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
       RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout called workflow control bytes only
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -454,7 +441,7 @@ jobs:
           permission-contents: write
       - name: Validate opaque files, recompute, sign, manifest, and publish
         env:
-          GH_TOKEN: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token != '' && steps.app_token.outputs.token || github.token }}
           GH_REPO: ${{ job.workflow_repository }}
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSPHRASE: ${{ secrets.MINISIGN_PASSPHRASE }}
@@ -471,7 +458,7 @@ jobs:
             --phase finalize-candidate --prepared-artifacts \
             --authorized-sha "$AUTHORIZED_SHA" --base-version "$BASE_VERSION" --version "$VERSION" \
             --channel "$CHANNEL" --allow-stable "$ALLOW_STABLE" \
-            --release-message "$RELEASE_MESSAGE" --run-contracts "false" --check-installers "false" \
+            --release-message "$RELEASE_MESSAGE" --run-contracts false --check-installers false \
             --publish-rolling "$PUBLISH_ROLLING"
 
   promote_existing:
@@ -480,11 +467,11 @@ jobs:
     if: ${{ inputs.retry_version != '' && inputs.resume_version == '' }}
     runs-on: ubuntu-latest
     environment: release-shared
-    permissions:
-      contents: read
     env:
       RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
       RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+    permissions:
+      contents: write
     outputs:
       requires_fresh_runner_retry: ${{ steps.promote.outputs.requires_fresh_runner_retry }}
     steps:
@@ -513,7 +500,7 @@ jobs:
       - name: Re-promote exact verified immutable release bytes
         id: promote
         env:
-          GH_TOKEN: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token != '' && steps.app_token.outputs.token || github.token }}
           GH_REPO: ${{ job.workflow_repository }}
           AUTHORIZED_SHA: ${{ needs.release_actor_guard.outputs.authorized_sha }}
           VERSION: ${{ needs.release_actor_guard.outputs.version }}
@@ -526,7 +513,7 @@ jobs:
           node scripts/pipeline/release/publish-server-runtime.mjs \
             --phase promote-rolling --authorized-sha "$AUTHORIZED_SHA" --version "$VERSION" \
             --base-version "$BASE_VERSION" --channel "$CHANNEL" --allow-stable "$ALLOW_STABLE" \
-            --release-message "$RELEASE_MESSAGE" --run-contracts "false" --check-installers "false"
+            --release-message "$RELEASE_MESSAGE" --run-contracts false --check-installers false
           status=$?
           set -e
           if [ "$status" -eq 75 ]; then
@@ -542,11 +529,11 @@ jobs:
     if: ${{ inputs.retry_version != '' && inputs.resume_version == '' && needs.promote_existing.outputs.requires_fresh_runner_retry == 'true' }}
     runs-on: ubuntu-latest
     environment: release-shared
-    permissions:
-      contents: read
     env:
       RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
       RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout called workflow control bytes only
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -572,7 +559,7 @@ jobs:
           permission-contents: write
       - name: Re-promote exact verified immutable release bytes
         env:
-          GH_TOKEN: ${{ (steps.app_token.outputs.token != '' && steps.app_token.outputs.token) || github.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token != '' && steps.app_token.outputs.token || github.token }}
           GH_REPO: ${{ job.workflow_repository }}
           AUTHORIZED_SHA: ${{ needs.release_actor_guard.outputs.authorized_sha }}
           VERSION: ${{ needs.release_actor_guard.outputs.version }}
@@ -584,4 +571,4 @@ jobs:
           node scripts/pipeline/release/publish-server-runtime.mjs \
             --phase promote-rolling --authorized-sha "$AUTHORIZED_SHA" --version "$VERSION" \
             --base-version "$BASE_VERSION" --channel "$CHANNEL" --allow-stable "$ALLOW_STABLE" \
-            --release-message "$RELEASE_MESSAGE" --run-contracts "false" --check-installers "false"
+            --release-message "$RELEASE_MESSAGE" --run-contracts false --check-installers false

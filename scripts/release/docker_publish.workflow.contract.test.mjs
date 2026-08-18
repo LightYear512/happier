@@ -139,12 +139,12 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   assert.match(release, /publish_cli_binaries:/);
   assert.match(
     release,
-    /publish_server_runtime:[\s\S]*?\(needs\.plan\.outputs\.publish_server == 'true' \|\| inputs\.force_deploy == true \|\| needs\.plan\.outputs\.changed_ui == 'true' \|\| needs\.plan\.outputs\.changed_server == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true'\)/,
+    /publish_server_runtime_needed:\s*\${{\s*needs\.resolve_resume\.outputs\.server_requested == 'true' \|\| inputs\.force_deploy == true \|\| steps\.bump_plan\.outputs\.publish_server == 'true' \|\| steps\.plan\.outputs\.changed_ui == 'true' \|\| steps\.plan\.outputs\.changed_server == 'true' \|\| steps\.plan\.outputs\.changed_shared == 'true'\s*}}/,
     'server runtime artifacts should publish when server code or its embedded UI changes',
   );
   assert.match(
     release,
-    /publish_ui_web:[\s\S]*?\(contains\(format\(',\{0\},', inputs\.deploy_targets\), ',ui,'\) \|\| inputs\.force_deploy == true \|\| needs\.plan\.outputs\.changed_ui == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true'\)/,
+    /publish_ui_web:[\s\S]*?needs\.resolve_resume\.outputs\.ui_web_requested == 'true' \|\| contains\(format\(',\{0\},', inputs\.deploy_targets\), ',ui,'\) \|\| inputs\.force_deploy == true \|\| needs\.plan\.outputs\.changed_ui == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true'/,
     'UI web artifacts should publish when relay Docker needs a fresh embedded UI bundle',
   );
   assert.match(release, /uses:\s+\.\/\.github\/workflows\/publish-docker\.yml/);

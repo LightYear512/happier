@@ -88,6 +88,7 @@ if (args[0] === 'buildx' && args[1] === 'inspect') process.stdout.write('Driver:
           DOCKERHUB_TOKEN: 'docker-token',
           GHCR_USERNAME: 'gh-user',
           GHCR_TOKEN: 'gh-token',
+          GHCR_NAMESPACE: 'ghcr.io/happier-dev',
           HAPPIER_DOCKER_SERVER_VERSION: '0.2.10-test',
           GITHUB_ACTIONS: 'false',
         },

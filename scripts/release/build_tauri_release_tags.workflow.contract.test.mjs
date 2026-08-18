@@ -25,9 +25,8 @@ test('build-tauri publishes desktop releases under ui-desktop-* tags', async () 
 
   assert.match(raw, /tag:\s*ui-desktop-preview\b/);
   assert.match(raw, /tag:\s*ui-desktop-dev\b/);
-  assert.match(raw, /tag:\s*ui-desktop-v\$\{\{\s*needs\.prepare_assets\.outputs\.release_version\s*\}\}/);
   assert.match(raw, /tag:\s*ui-desktop-v\$\{\{\s*needs\.prepare_assets\.outputs\.ui_version\s*\}\}/);
-  assert.match(raw, /tag:\s*ui-desktop-stable\b/);
+  assert.match(raw, /--rolling-tag ui-desktop-stable\b/);
 
   assert.doesNotMatch(raw, /tag:\s*ui-preview\b/);
   assert.doesNotMatch(raw, /tag:\s*ui-stable\b/);
@@ -43,7 +42,6 @@ test('build-tauri keeps the public manual workflow surface on dev while retainin
   assert.doesNotMatch(raw, /^\s+- publicdev$/m);
 
   assert.match(raw, /publish_dev:/);
-  assert.match(raw, /publish_dev_versioned:/);
   assert.doesNotMatch(raw, /publish_publicdev:/);
   assert.match(raw, /tag:\s*ui-desktop-dev\b/);
   assert.doesNotMatch(raw, /inputs\.environment\s*==\s*'publicdev'/);
@@ -80,29 +78,32 @@ test('build-tauri latest.json generator uses ui-desktop-* release tags and publi
   assert.match(raw, /assets_dir:\s*dist\/ui-desktop-assets\/ui-desktop-preview/);
   assert.match(raw, /assets_dir:\s*dist\/ui-desktop-assets\/ui-desktop-dev/);
   assert.match(raw, /assets_dir:\s*dist\/ui-desktop-assets\/ui-desktop-v/);
-  assert.match(raw, /assets_dir:\s*dist\/ui-desktop-assets\/ui-desktop-stable/);
 });
 
-test('build-tauri publishes the stable update feed after stable versioned assets exist', async () => {
+test('build-tauri promotes the stable update feed after stable versioned assets exist', async () => {
   const raw = await loadWorkflow('build-tauri.yml');
 
   assert.match(
     raw,
-    /publish_stable_feed:\n(?:.*\n){0,8}\s+needs:\s*\[\s*prepare_assets\s*,\s*publish_stable_release\s*\]/,
+    /promote_stable_feed:\n(?:.*\n){0,8}\s+needs:\s*\[\s*resolve_source\s*,\s*publish_stable_release\s*\]/,
   );
+  assert.match(raw, /--source-tag "\$SOURCE_TAG"/);
+  assert.match(raw, /--rolling-tag ui-desktop-stable\b/);
 });
 
-test('build-tauri publishes immutable preview and dev desktop releases after rolling releases', async () => {
+test('build-tauri publishes rolling preview and dev desktop releases directly', async () => {
   const raw = await loadWorkflow('build-tauri.yml');
 
   assert.match(
     raw,
-    /publish_preview_versioned:\n(?:.*\n){0,8}\s+needs:\s*\[\s*prepare_assets\s*,\s*publish_preview\s*\]/,
+    /publish_preview:\n(?:.*\n){0,8}\s+needs:\s*\[\s*prepare_assets\s*,\s*resolve_source\s*\]/,
   );
   assert.match(
     raw,
-    /publish_dev_versioned:\n(?:.*\n){0,8}\s+needs:\s*\[\s*prepare_assets\s*,\s*publish_dev\s*\]/,
+    /publish_dev:\n(?:.*\n){0,8}\s+needs:\s*\[\s*prepare_assets\s*,\s*resolve_source\s*\]/,
   );
-  assert.match(raw, /release_version="\$\{ui_version\}-preview\.\$\{GITHUB_RUN_NUMBER\}"/);
-  assert.match(raw, /release_version="\$\{ui_version\}-dev\.\$\{GITHUB_RUN_NUMBER\}"/);
+  assert.match(raw, /tag:\s*ui-desktop-preview\b/);
+  assert.match(raw, /tag:\s*ui-desktop-dev\b/);
+  assert.doesNotMatch(raw, /publish_preview_versioned:/);
+  assert.doesNotMatch(raw, /publish_dev_versioned:/);
 });

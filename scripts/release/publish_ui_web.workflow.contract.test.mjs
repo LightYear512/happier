@@ -18,7 +18,7 @@ test('publish-ui-web workflow exists and is a dedicated rolling release publishe
   assert.match(raw, /workflow_dispatch:/);
   assert.match(raw, /workflow_call:/);
 
-  assert.match(raw, /node scripts\/pipeline\/run\.mjs publish-ui-web/);
+  assert.match(raw, /node scripts\/pipeline\/release\/publish-ui-web\.mjs/);
 
   assert.doesNotMatch(raw, /deploy\//, 'ui web bundle publishing must not manage deploy/* branches');
 });
@@ -26,9 +26,10 @@ test('publish-ui-web workflow exists and is a dedicated rolling release publishe
 test('publish-ui-web uses release bot GitHub App token for rolling tag updates', async () => {
   const raw = await loadWorkflow('publish-ui-web.yml');
 
-  assert.match(raw, /actions\/create-github-app-token@v1/);
+  assert.match(raw, /actions\/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547/);
   assert.match(raw, /RELEASE_BOT_APP_ID/);
   assert.match(raw, /RELEASE_BOT_PRIVATE_KEY/);
+  assert.match(raw, /GH_TOKEN:\s*\$\{\{\s*steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token \|\| github\.token\s*\}\}/);
 });
 
 test('publish-ui-web supports dev and resolves auto source_ref from the selected channel', async () => {
@@ -37,7 +38,7 @@ test('publish-ui-web supports dev and resolves auto source_ref from the selected
   assert.match(raw, /options:[\s\S]*?- preview[\s\S]*?- dev[\s\S]*?- stable/);
   assert.match(raw, /node scripts\/pipeline\/release\/resolve-public-release-channel-meta\.mjs/);
   assert.match(raw, /id:\s*channel_meta/);
-  assert.match(raw, /ref:\s*\$\{\{\s*steps\.channel_meta\.outputs\.source_ref\s*\}\}/);
+  assert.match(raw, /ref:\s*\$\{\{\s*inputs\.authorized_sha != '' && inputs\.authorized_sha \|\| steps\.channel_meta\.outputs\.source_ref\s*\}\}/);
   assert.doesNotMatch(
     raw,
     /if \[ "\$src" = "auto" \]; then[\s\S]*?src="dev"[\s\S]*?src="preview"[\s\S]*?src="main"/,
@@ -49,17 +50,17 @@ test('publish-ui-web embeds build feature policy defaults and exports production
 
   assert.match(
     raw,
-    /HAPPIER_EMBEDDED_POLICY_ENV:\s*\$\{\{\s*steps\.channel_meta\.outputs\.embedded_policy_env\s*\}\}/,
+    /HAPPIER_EMBEDDED_POLICY_ENV:\s*\$\{\{\s*needs\.prepare\.outputs\.embedded_policy_env\s*\}\}/,
     'ui web publishing should set HAPPIER_EMBEDDED_POLICY_ENV to production for stable bundles',
   );
   assert.match(
     raw,
-    /APP_ENV:\s*\$\{\{\s*steps\.channel_meta\.outputs\.app_env\s*\}\}/,
+    /APP_ENV:\s*\$\{\{\s*needs\.prepare\.outputs\.app_env\s*\}\}/,
     'ui web publishing should set APP_ENV so stable bundles use production config',
   );
   assert.match(
     raw,
-    /EXPO_UPDATES_CHANNEL:\s*\$\{\{\s*steps\.channel_meta\.outputs\.expo_updates_channel\s*\}\}/,
+    /EXPO_UPDATES_CHANNEL:\s*\$\{\{\s*needs\.prepare\.outputs\.expo_updates_channel\s*\}\}/,
     'ui web publishing should set EXPO_UPDATES_CHANNEL so updates headers match stable, preview, and dev channels',
   );
   assert.match(
@@ -73,7 +74,7 @@ test('publish-ui-web embeds build feature policy defaults and exports production
 test('publish-ui-web workflow leaves full validation to the pre-release gate', async () => {
   const raw = await loadWorkflow('publish-ui-web.yml');
 
-  assert.match(raw, /node scripts\/pipeline\/run\.mjs publish-ui-web/);
-  assert.match(raw, /--run-contracts "false"/);
-  assert.match(raw, /--check-installers "false"/);
+  assert.match(raw, /node scripts\/pipeline\/release\/publish-ui-web\.mjs/);
+  assert.match(raw, /--resolve-version-only[\s\S]*?--run-contracts false[\s\S]*?--check-installers false/);
+  assert.match(raw, /--phase promote-rolling[\s\S]*?--run-contracts false --check-installers false/);
 });

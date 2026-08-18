@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -146,6 +146,10 @@ test('pipeline docker publish script falls back to origin owner for GHCR namespa
       cwd: dir,
       stdio: 'ignore',
     });
+    mkdirSync(join(dir, 'apps', 'server'), { recursive: true });
+    mkdirSync(join(dir, 'apps', 'cli'), { recursive: true });
+    writeFileSync(join(dir, 'apps', 'server', 'package.json'), '{"version":"0.2.10"}\n');
+    writeFileSync(join(dir, 'apps', 'cli', 'package.json'), '{"version":"0.2.10"}\n');
 
     const out = execFileSync(
       process.execPath,

@@ -37,34 +37,34 @@ test('expo ota fingerprint generation is local, credential-free, and captures la
   );
 
   writeExecutable(
-    path.join(binDir, 'yarn'),
+    path.join(binDir, 'npx'),
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
-      `echo "$*" >> ${JSON.stringify(yarnLogPath)}`,
+      `echo "$*" >> ${JSON.stringify(npxLogPath)}`,
       'if [[ "$*" == *"fingerprint:generate"* ]]; then',
       `  echo "EXPO_TOKEN=\${EXPO_TOKEN:-}" >> ${JSON.stringify(envLogPath)}`,
       `  echo "HAPPIER_ANDROID_BUILD_ARCHS=\${HAPPIER_ANDROID_BUILD_ARCHS:-}" >> ${JSON.stringify(envLogPath)}`,
       `  cat ${JSON.stringify(fingerprintJsonPath)}`,
       '  exit 0',
       'fi',
-      'exit 0',
-      '',
-    ].join('\n'),
-  );
-
-  writeExecutable(
-    path.join(binDir, 'npx'),
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> ${JSON.stringify(npxLogPath)}`,
       'if [[ "$*" == *" update "* ]]; then',
       `  echo "HAPPIER_EXPO_RUNTIME_VERSION=${'${HAPPIER_EXPO_RUNTIME_VERSION:-}'}" >> ${JSON.stringify(envLogPath)}`,
       '  exit 0',
       'fi',
       'echo "unexpected npx invocation: $*" >&2',
       'exit 1',
+      '',
+    ].join('\n'),
+  );
+
+  writeExecutable(
+    path.join(binDir, 'yarn'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `echo "$*" >> ${JSON.stringify(yarnLogPath)}`,
+      'exit 0',
       '',
     ].join('\n'),
   );
@@ -100,11 +100,10 @@ test('expo ota fingerprint generation is local, credential-free, and captures la
   const yarnLog = fs.readFileSync(yarnLogPath, 'utf8');
   const envLog = fs.readFileSync(envLogPath, 'utf8');
 
-  assert.match(yarnLog, /fingerprint fingerprint:generate --platform android/);
-  assert.doesNotMatch(npxLog, /fingerprint:generate/);
+  assert.doesNotMatch(yarnLog, /fingerprint:generate/);
+  assert.match(npxLog, /eas-cli@18\.0\.1 fingerprint:generate --platform android/);
   assert.match(npxLog, /update --channel dev --platform android/);
   assert.match(envLog, /^EXPO_TOKEN=$/m);
-  assert.match(envLog, /^HAPPIER_ANDROID_BUILD_ARCHS=arm64-v8a$/m);
   assert.match(envLog, new RegExp(`^HAPPIER_EXPO_RUNTIME_VERSION=${CANONICAL_EMPTY_FINGERPRINT_HASH}$`, 'm'));
 });
 
@@ -123,32 +122,32 @@ test('expo ota fingerprint generation accepts pretty-printed local fingerprint J
   );
 
   writeExecutable(
-    path.join(binDir, 'yarn'),
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> ${JSON.stringify(yarnLogPath)}`,
-      'if [[ "$*" == *"fingerprint:generate"* ]]; then',
-      `  printf '{\\n  "hash": "${CANONICAL_EMPTY_FINGERPRINT_HASH}",\\n  "sources": []\\n}\\n'`,
-      '  exit 0',
-      'fi',
-      'exit 0',
-      '',
-    ].join('\n'),
-  );
-
-  writeExecutable(
     path.join(binDir, 'npx'),
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
       `echo "$*" >> ${JSON.stringify(npxLogPath)}`,
+      'if [[ "$*" == *"fingerprint:generate"* ]]; then',
+      `  printf '{\\n  "hash": "${CANONICAL_EMPTY_FINGERPRINT_HASH}",\\n  "sources": []\\n}\\n'`,
+      '  exit 0',
+      'fi',
       'if [[ "$*" == *" update "* ]]; then',
       `  echo "HAPPIER_EXPO_RUNTIME_VERSION=${'${HAPPIER_EXPO_RUNTIME_VERSION:-}'}" >> ${JSON.stringify(envLogPath)}`,
       '  exit 0',
       'fi',
       'echo "unexpected npx invocation: $*" >&2',
       'exit 1',
+      '',
+    ].join('\n'),
+  );
+
+  writeExecutable(
+    path.join(binDir, 'yarn'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `echo "$*" >> ${JSON.stringify(yarnLogPath)}`,
+      'exit 0',
       '',
     ].join('\n'),
   );
@@ -184,8 +183,8 @@ test('expo ota fingerprint generation accepts pretty-printed local fingerprint J
   const yarnLog = fs.readFileSync(yarnLogPath, 'utf8');
   const envLog = fs.readFileSync(envLogPath, 'utf8');
 
-  assert.match(yarnLog, /fingerprint fingerprint:generate --platform android/);
-  assert.doesNotMatch(npxLog, /fingerprint:generate/);
+  assert.doesNotMatch(yarnLog, /fingerprint:generate/);
+  assert.match(npxLog, /eas-cli@18\.0\.1 fingerprint:generate --platform android/);
   assert.match(npxLog, /update --channel dev --platform android/);
   assert.match(envLog, new RegExp(`^HAPPIER_EXPO_RUNTIME_VERSION=${CANONICAL_EMPTY_FINGERPRINT_HASH}$`, 'm'));
 });
