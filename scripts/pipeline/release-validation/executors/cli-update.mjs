@@ -5,7 +5,10 @@ import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 
 import { execYarn } from '../../../workspaces/execYarnCommand.mjs';
-import { resolveCoreE2eSlowSuiteCommand } from './core-e2e-slow-suite.mjs';
+import {
+  RELEASE_VALIDATION_SERVER_LIGHT_ENV,
+  resolveCoreE2eSlowSuiteCommand,
+} from './core-e2e-slow-suite.mjs';
 
 const CLI_UPDATE_CONTINUITY_TEST_FILES = [
   'suites/core-e2e/session.continuity.fakeClaude.cliUpdate.slow.e2e.test.ts',
@@ -171,8 +174,12 @@ export function resolveCliUpdateExecution({ repoRoot, update }) {
     ...resolveCoreE2eSlowSuiteCommand({
       repoRoot,
       testFiles: CLI_UPDATE_CONTINUITY_TEST_FILES,
+      env: buildCliUpdateEnv(resolvedUpdate),
     }),
-    env: buildCliUpdateEnv(resolvedUpdate),
+    env: {
+      ...RELEASE_VALIDATION_SERVER_LIGHT_ENV,
+      ...buildCliUpdateEnv(resolvedUpdate),
+    },
   };
 }
 

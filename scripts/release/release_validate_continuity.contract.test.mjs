@@ -17,6 +17,10 @@ const repoRoot = resolve(here, '..', '..');
 const testsWorkspaceRoot = resolve(repoRoot, 'packages', 'tests');
 const vitestRunner = resolve(testsWorkspaceRoot, 'scripts', 'run-vitest-with-heartbeat.mjs');
 const vitestConfig = resolve(testsWorkspaceRoot, 'vitest.core.slow.config.ts');
+const releaseValidationServerEnv = {
+  PUBLIC_URL: 'http://127.0.0.1:0',
+  HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '0',
+};
 
 test('daemon-continuity plans the daemon continuity core e2e lane through the shared test runner', () => {
   const execution = resolveDaemonContinuityExecution({
@@ -39,6 +43,7 @@ test('daemon-continuity plans the daemon continuity core e2e lane through the sh
       ),
     ],
     cwd: testsWorkspaceRoot,
+    env: releaseValidationServerEnv,
   });
 });
 
@@ -63,6 +68,7 @@ test('session-continuity plans the server-restart continuity core e2e lane throu
       ),
     ],
     cwd: testsWorkspaceRoot,
+    env: releaseValidationServerEnv,
   });
 });
 
@@ -123,6 +129,10 @@ test('continuity validation dispatch executes the planned command', () => {
       ],
       options: {
         cwd: testsWorkspaceRoot,
+        env: {
+          ...process.env,
+          ...releaseValidationServerEnv,
+        },
         stdio: 'inherit',
       },
     },
@@ -141,6 +151,10 @@ test('continuity validation dispatch executes the planned command', () => {
       ],
       options: {
         cwd: testsWorkspaceRoot,
+        env: {
+          ...process.env,
+          ...releaseValidationServerEnv,
+        },
         stdio: 'inherit',
       },
     },

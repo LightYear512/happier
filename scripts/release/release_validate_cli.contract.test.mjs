@@ -10,6 +10,10 @@ import { runCliUpdateValidation } from '../pipeline/release-validation/executors
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const scriptPath = resolve(repoRoot, 'scripts', 'pipeline', 'release-validation', 'validate-release.mjs');
+const releaseValidationServerEnv = {
+  PUBLIC_URL: 'http://127.0.0.1:0',
+  HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '0',
+};
 
 test('release-validate resolves a published-channel dry-run request', async () => {
   const raw = execFileSync(
@@ -207,6 +211,7 @@ test('release-validate resolves explicit from/to dry-run updates', async () => {
     },
   });
   assert.deepEqual(parsed.execution?.env, {
+    ...releaseValidationServerEnv,
     HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_FROM_SOURCE_KIND: 'published-tag',
     HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_FROM_SOURCE_REF: 'cli-preview',
     HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_TO_SOURCE_KIND: 'local-build',
@@ -305,6 +310,7 @@ test('release-validate plans cli-update continuity against the core e2e lane', a
     ],
     cwd: resolve(repoRoot, 'packages', 'tests'),
     env: {
+      ...releaseValidationServerEnv,
       HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_FROM_SOURCE_KIND: 'published-channel',
       HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_FROM_SOURCE_REF: 'preview',
       HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_TO_SOURCE_KIND: 'local-build',
@@ -366,6 +372,7 @@ test('release-validate materializes cli-update local-build targets before runnin
   assert.notEqual(packDestinationFlagIndex, -1);
   assert.deepEqual(calls[3].options.env, {
     ...process.env,
+    ...releaseValidationServerEnv,
     HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_FROM_SOURCE_KIND: 'published-channel',
     HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_FROM_SOURCE_REF: 'preview',
     HAPPIER_RELEASE_VALIDATION_CLI_UPDATE_TO_SOURCE_KIND: 'local-pack',
@@ -838,6 +845,7 @@ test('release-validate plans daemon continuity against the local-build continuit
       ),
     ],
     cwd: resolve(repoRoot, 'packages', 'tests'),
+    env: releaseValidationServerEnv,
   });
 });
 
@@ -889,5 +897,6 @@ test('release-validate plans session continuity against the local-build server-r
       ),
     ],
     cwd: resolve(repoRoot, 'packages', 'tests'),
+    env: releaseValidationServerEnv,
   });
 });

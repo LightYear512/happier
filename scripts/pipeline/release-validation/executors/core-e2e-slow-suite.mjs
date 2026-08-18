@@ -8,13 +8,19 @@ import { resolve } from 'node:path';
  * @typedef {(command: string, args: string[], options?: import('node:child_process').ExecFileSyncOptions) => unknown} ExecFileSyncLike
  */
 
+export const RELEASE_VALIDATION_SERVER_LIGHT_ENV = {
+  PUBLIC_URL: 'http://127.0.0.1:0',
+  HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '0',
+};
+
 /**
  * @param {{
  *   repoRoot: string;
  *   testFiles: readonly string[];
+ *   env?: Record<string, string>;
  * }} params
  */
-export function resolveCoreE2eSlowSuiteCommand({ repoRoot, testFiles }) {
+export function resolveCoreE2eSlowSuiteCommand({ repoRoot, testFiles, env = {} }) {
   const testsWorkspaceRoot = resolve(repoRoot, 'packages', 'tests');
   return {
     type: 'command',
@@ -26,6 +32,10 @@ export function resolveCoreE2eSlowSuiteCommand({ repoRoot, testFiles }) {
       ...testFiles.map((testFile) => resolve(testsWorkspaceRoot, testFile)),
     ],
     cwd: testsWorkspaceRoot,
+    env: {
+      ...RELEASE_VALIDATION_SERVER_LIGHT_ENV,
+      ...env,
+    },
   };
 }
 
@@ -58,6 +68,10 @@ export function runCoreE2eSlowSuiteValidation({ repoRoot, source, testFiles, sui
   const execution = resolveCoreE2eSlowSuiteExecution({ repoRoot, source, testFiles, suiteId });
   exec(execution.command, execution.args, {
     cwd: execution.cwd,
+    env: {
+      ...process.env,
+      ...execution.env,
+    },
     stdio: 'inherit',
   });
 }
