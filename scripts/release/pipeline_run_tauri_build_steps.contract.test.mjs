@@ -119,6 +119,13 @@ test('pipeline run exposes tauri-bundle-candidate pack mode', () => {
   }
 });
 
+test('pipeline run exposes tauri-sign-updater-artifacts', () => {
+  const res = run(['tauri-sign-updater-artifacts', '--ui-dir', 'apps/ui']);
+  assert.notEqual(res.status, 0, 'signing without a signing key should fail in the delegated signer');
+  assert.doesNotMatch(res.stderr, /Unsupported subcommand/);
+  assert.match(res.stderr, /TAURI_SIGNING_PRIVATE_KEY is required/);
+});
+
 for (const environment of ['preview', 'dev']) {
   test(`pipeline run exposes tauri-collect-updater-artifacts for ${environment} (dry-run)`, () => {
     const res = run(
