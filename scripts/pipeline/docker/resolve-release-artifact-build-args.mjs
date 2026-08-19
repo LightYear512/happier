@@ -10,6 +10,7 @@ import {
 import { versionedComponents } from '../release/component-registry.mjs';
 
 const DEFAULT_RELEASE_BASE_URL = 'https://github.com/happier-dev/happier/releases/download';
+const GITHUB_REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 
 const ARTIFACT_SPECS = Object.freeze({
   server: Object.freeze({
@@ -57,6 +58,21 @@ function normalizeBaseVersion(version) {
 function normalizeBaseUrl(value) {
   const raw = String(value ?? '').trim() || DEFAULT_RELEASE_BASE_URL;
   return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+}
+
+/**
+ * @param {Record<string, string | undefined>} env
+ */
+function resolveReleaseBaseUrl(env) {
+  const explicit = String(env.HAPPIER_DOCKER_RELEASE_BASE_URL ?? '').trim();
+  if (explicit) return normalizeBaseUrl(explicit);
+
+  const repository = String(env.GITHUB_REPOSITORY ?? env.GH_REPO ?? '').trim();
+  if (GITHUB_REPOSITORY_NAME.test(repository)) {
+    return `https://github.com/${repository}/releases/download`;
+  }
+
+  return DEFAULT_RELEASE_BASE_URL;
 }
 
 /**
@@ -138,7 +154,7 @@ export async function resolveDockerReleaseArtifactInputs(params) {
   ]);
 
   return {
-    releaseBaseUrl: normalizeBaseUrl(env.HAPPIER_DOCKER_RELEASE_BASE_URL),
+    releaseBaseUrl: resolveReleaseBaseUrl(env),
     relay: { server },
     devBox: { cli },
   };

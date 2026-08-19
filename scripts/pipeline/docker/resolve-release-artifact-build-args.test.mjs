@@ -43,6 +43,21 @@ test('uses explicit Docker artifact version overrides without GitHub lookups', a
   assert.deepEqual(inputs.devBox.cli, { releaseTag: 'cli-v1.0.0-dev.3', version: '1.0.0-dev.3' });
 });
 
+test('defaults Docker release artifact downloads to the current GitHub repository', async () => {
+  const inputs = await resolveDockerReleaseArtifactInputs({
+    channel: 'dev',
+    repoRoot: process.cwd(),
+    dryRun: false,
+    env: {
+      GITHUB_REPOSITORY: 'LightYear512/happier',
+      HAPPIER_DOCKER_SERVER_VERSION: '1.0.0-dev.1',
+      HAPPIER_DOCKER_CLI_VERSION: '1.0.0-dev.3',
+    },
+  });
+
+  assert.equal(inputs.releaseBaseUrl, 'https://github.com/LightYear512/happier/releases/download');
+});
+
 test('requires the exact CLI version when publishing only the dev-box image', async () => {
   await assert.rejects(
     resolveDockerReleaseArtifactInputs({
