@@ -88,8 +88,8 @@ test('nightly-dev gates Expo-backed mobile publishing behind an explicit reposit
   }
 });
 
-test('binary reusable retry promotion jobs can create rolling tags with fork token fallback', async () => {
-  for (const workflow of ['publish-cli-binaries.yml', 'publish-hstack-binaries.yml']) {
+test('reusable retry promotion jobs can create rolling tags with fork token fallback', async () => {
+  for (const workflow of ['publish-cli-binaries.yml', 'publish-hstack-binaries.yml', 'publish-ui-web.yml']) {
     const raw = await readFile(join(repoRoot, '.github', 'workflows', workflow), 'utf8');
     assert.match(
       raw,
