@@ -61,6 +61,38 @@ test('signUpdaterArtifacts signs every updater artifact and replaces only its pa
   }
 });
 
+test('signUpdaterArtifacts passes an explicit empty password in CI when the signing key has no passphrase', (t) => {
+  const fixture = createFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const signature = Buffer.alloc(96, 9).toString('base64');
+  const calls = [];
+
+  signUpdaterArtifacts({
+    uiDir: fixture.root,
+    searchDir: fixture.bundleDir,
+    tmpRoot: fixture.root,
+    env: {
+      CI: 'true',
+      TAURI_SIGNING_PRIVATE_KEY: 'opaque-key',
+    },
+    platform: 'linux',
+  }, {
+    ensureSigningKeyFile: () => path.join(fixture.root, 'signing.key'),
+    resolveYarnInvocation: () => ({ cmd: 'yarn', prefixArgs: [] }),
+    runSigner: (cmd, args, options) => {
+      calls.push({ cmd, args, options });
+      return `Signature: ${signature}\n`;
+    },
+  });
+
+  assert.ok(calls.length > 0);
+  for (const call of calls) {
+    const passwordIndex = call.args.indexOf('--password');
+    assert.notEqual(passwordIndex, -1);
+    assert.equal(call.args[passwordIndex + 1], '');
+  }
+});
+
 test('signUpdaterArtifacts rejects orphaned signatures before invoking the signer', (t) => {
   const fixture = createFixture();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));

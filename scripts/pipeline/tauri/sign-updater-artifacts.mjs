@@ -47,7 +47,7 @@ export function signUpdaterArtifacts(options, deps = {}) {
   for (const signaturePath of signatures) {
     const artifactPath = signaturePath.slice(0, -'.sig'.length);
     const args = [...yarn.prefixArgs, '--silent', 'tauri', 'signer', 'sign', '--private-key-path', signingKeyPath];
-    if (password) args.push('--password', password);
+    args.push('--password', password);
     args.push(artifactPath);
     const stdout = runSigner(yarn.cmd, args, { cwd: options.uiDir, env: { ...options.env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: 10 * 60_000 });
     const signature = extractTauriUpdaterSignature(stdout);
