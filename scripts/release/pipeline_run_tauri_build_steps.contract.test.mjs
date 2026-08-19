@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,6 +80,43 @@ test('pipeline run exposes tauri-notarize-macos-artifacts (dry-run)', () => {
     ],
   );
   assert.equal(res.status, 0, `expected exit 0, got ${res.status} stderr=${res.stderr}`);
+});
+
+test('pipeline run exposes tauri-bundle-candidate pack mode', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'happier-tauri-bundle-run-'));
+  try {
+    const uiDir = path.join(root, 'apps', 'ui');
+    const releaseDir = path.join(uiDir, 'src-tauri', 'target', 'release');
+    const binariesDir = path.join(uiDir, 'src-tauri', 'binaries');
+    mkdirSync(releaseDir, { recursive: true });
+    mkdirSync(binariesDir, { recursive: true });
+    writeFileSync(path.join(releaseDir, 'app'), 'app');
+    writeFileSync(path.join(binariesDir, 'hsetup-x86_64-unknown-linux-gnu'), 'hsetup');
+    writeFileSync(path.join(binariesDir, 'hsetup-x86_64-unknown-linux-gnu.gz'), 'hsetup-gz');
+
+    const res = run([
+      'tauri-bundle-candidate',
+      '--mode',
+      'pack',
+      '--platform-key',
+      'linux-x86_64',
+      '--source-sha',
+      '0123456789abcdef0123456789abcdef01234567',
+      '--environment',
+      'dev',
+      '--ui-version',
+      '0.0.0',
+      '--build-version',
+      '0.0.0-dev.1',
+      '--ui-dir',
+      uiDir,
+      '--out-dir',
+      path.join(root, 'candidate'),
+    ]);
+    assert.equal(res.status, 0, `expected exit 0, got ${res.status} stderr=${res.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 for (const environment of ['preview', 'dev']) {

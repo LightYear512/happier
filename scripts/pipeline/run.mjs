@@ -822,6 +822,22 @@ function runTauriBuildUpdaterArtifacts({ repoRoot, env, args, dryRun }) {
 /**
  * @param {{ repoRoot: string; env: Record<string, string>; args: string[]; dryRun: boolean }} opts
  */
+function runTauriBundleCandidate({ repoRoot, env, args, dryRun }) {
+  const scriptPath = path.join(repoRoot, 'scripts', 'pipeline', 'tauri', 'bundle-candidate.mjs');
+  const fullArgs = [scriptPath, ...args];
+  if (dryRun) {
+    console.log(`[pipeline] exec: node ${fullArgs.map((a) => JSON.stringify(a)).join(' ')}`);
+  }
+  execFileSync(process.execPath, fullArgs, {
+    cwd: repoRoot,
+    env,
+    stdio: 'inherit',
+  });
+}
+
+/**
+ * @param {{ repoRoot: string; env: Record<string, string>; args: string[]; dryRun: boolean }} opts
+ */
 function runTauriNotarizeMacosArtifacts({ repoRoot, env, args, dryRun }) {
   const scriptPath = path.join(repoRoot, 'scripts', 'pipeline', 'tauri', 'notarize-macos-artifacts.mjs');
   const fullArgs = [scriptPath, ...args];
@@ -1089,6 +1105,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       subcommand !== 'tauri-prepare-assets' &&
       subcommand !== 'tauri-validate-updater-pubkey' &&
       subcommand !== 'tauri-build-updater-artifacts' &&
+      subcommand !== 'tauri-bundle-candidate' &&
       subcommand !== 'tauri-notarize-macos-artifacts' &&
       subcommand !== 'tauri-collect-updater-artifacts' &&
       subcommand !== 'testing-create-auth-credentials' &&
@@ -3490,6 +3507,17 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           ...(tauriTarget ? ['--tauri-target', tauriTarget] : []),
           ...(dryRun ? ['--dry-run'] : []),
         ],
+      });
+
+      return;
+    }
+
+    if (subcommand === 'tauri-bundle-candidate') {
+      runTauriBundleCandidate({
+        repoRoot,
+        env: process.env,
+        dryRun: false,
+        args: rest,
       });
 
       return;
