@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import {
   parseTrailingJsonObjectForTests,
+  resolveBootstrapProcessArchitectureEnvForTests,
   resolveSigningEnvForTests,
 } from '../pipeline/release-validation/executors/installers-smoke-local-build.mjs';
 
@@ -36,6 +37,20 @@ $ node scripts/pipeline/release/build-cli-binaries.mjs --channel preview --targe
     checksums: '/tmp/dist/release-assets/cli/checksums-happier-v1.2.3-preview.4.txt',
     signature: '/tmp/dist/release-assets/cli/checksums-happier-v1.2.3-preview.4.txt.minisig',
   });
+});
+
+test('installers-smoke local-build passes Node process architecture to Windows minisign bootstrap', () => {
+  const env = resolveBootstrapProcessArchitectureEnvForTests({
+    platform: 'win32',
+    nodeArch: 'x64',
+    baseEnv: {
+      PROCESSOR_ARCHITECTURE: 'ARM64',
+      PROCESSOR_ARCHITEW6432: 'ARM64',
+    },
+  });
+
+  assert.equal(env.PROCESSOR_ARCHITECTURE, 'AMD64');
+  assert.equal(env.PROCESSOR_ARCHITEW6432, '');
 });
 
 test('installers-smoke local-build bootstrap still returns a minisign dir when GITHUB_PATH is set', async () => {

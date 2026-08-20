@@ -75,6 +75,17 @@ const next = (() => {
     if (remoteCommand.includes('server.env')) {
         return { status: 0, stdout: '\\n', stderr: '' };
     }
+    if (remoteCommand.includes('relay host install')) {
+        return {
+            status: 0,
+            stdout: JSON.stringify({
+                ok: true,
+                kind: 'relay_host_install',
+                data: { relayUrl: 'http://127.0.0.1:3005', mode: 'user' },
+            }) + '\\n',
+            stderr: '',
+        };
+    }
     return { status: 0, stdout: '', stderr: '' };
 })();
 
@@ -292,7 +303,7 @@ describe('installOrUpdateRelayRuntimeDefault', () => {
 
             const remoteCommands = fakeSsh.readInvocations().map((args) => args.join(' ')).join('\n');
             expect(remoteCommands).not.toContain('hstack');
-            expect(remoteCommands).not.toContain("'$HOME/");
+            expect(remoteCommands).toContain('relay host install');
         } finally {
             fakeSsh.cleanup();
         }

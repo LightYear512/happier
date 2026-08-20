@@ -30,6 +30,33 @@ function minisignAvailable(env) {
 }
 
 /**
+ * @param {{ baseEnv?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; nodeArch?: string }} params
+ */
+function resolveBootstrapProcessArchitectureEnv({
+  baseEnv = process.env,
+  platform = process.platform,
+  nodeArch = process.arch,
+} = {}) {
+  if (platform !== 'win32') {
+    return { ...baseEnv };
+  }
+  const normalizedArch = String(nodeArch ?? '').trim().toLowerCase();
+  const processArchitecture =
+    normalizedArch === 'x64'
+      ? 'AMD64'
+      : normalizedArch === 'arm64'
+        ? 'ARM64'
+        : String(baseEnv.PROCESSOR_ARCHITECTURE ?? '');
+  return {
+    ...baseEnv,
+    PROCESSOR_ARCHITECTURE: processArchitecture,
+    PROCESSOR_ARCHITEW6432: '',
+  };
+}
+
+export const resolveBootstrapProcessArchitectureEnvForTests = resolveBootstrapProcessArchitectureEnv;
+
+/**
  * @param {string} raw
  */
 function parseTrailingJsonObject(raw) {
@@ -75,7 +102,7 @@ function resolveSigningEnv({ repoRoot, scratchDir, baseEnv = process.env }) {
   const bootstrapStdout = execFileSync('bash', [bootstrapPath], {
     cwd: repoRoot,
     env: {
-      ...baseEnv,
+      ...resolveBootstrapProcessArchitectureEnv({ baseEnv }),
       // The local-build helper needs the bootstrapped bin dir immediately.
       // Force the script into its stdout-returning mode instead of depending
       // on GitHub Actions' $GITHUB_PATH side-effect file contract.
