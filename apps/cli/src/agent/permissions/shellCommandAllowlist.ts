@@ -16,6 +16,20 @@ function matchesPrefixTokenBoundary(command: string, prefix: string): boolean {
   return command[prefix.length] === ' ';
 }
 
+function stripLeadingEnvAssignments(command: string): string {
+  let rest = command.trim();
+  while (true) {
+    const match = rest.match(/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)(?:\s+|$)/);
+    if (!match) return rest;
+    rest = rest.slice(match[0].length).trimStart();
+  }
+}
+
+function isUnsetEnvironmentPrelude(segment: string): boolean {
+  const parts = segment.trim().split(/\s+/).filter(Boolean);
+  return parts.length > 1 && parts[0] === 'unset' && parts.slice(1).every((part) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(part));
+}
+
 /**
  * Split a shell command into top-level segments by control operators (`&&`, `||`, `|`, `;`, `&`, newlines).
  *
@@ -122,6 +136,7 @@ type ShellAllowPattern =
 function isSegmentAllowed(segment: string, patterns: ShellAllowPattern[]): boolean {
   const raw = segment.trim();
   if (!raw) return false;
+  if (isUnsetEnvironmentPrelude(raw)) return true;
 
   for (const p of patterns) {
     if (p.kind === 'exact') {
@@ -129,8 +144,8 @@ function isSegmentAllowed(segment: string, patterns: ShellAllowPattern[]): boole
     }
   }
 
-  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) return false;
-  const effective = raw;
+  const effective = stripLeadingEnvAssignments(raw);
+  if (!effective) return false;
   const firstWord = effective.split(/\s+/).filter(Boolean)[0] ?? '';
 
   for (const p of patterns) {

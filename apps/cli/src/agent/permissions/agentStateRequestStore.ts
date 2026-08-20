@@ -154,7 +154,7 @@ export class AgentStateRequestStore {
                 if (hasPermissionResponseClaimV1(existingRequest)) {
                     (entry as Record<string, unknown>)[PERMISSION_RESPONSE_CLAIM_V1] = existingRequest[PERMISSION_RESPONSE_CLAIM_V1];
                 }
-                if (isAgentStateRequestCoveredByCompletedRequests({
+                if (!params.replaceCompletedRequest && isAgentStateRequestCoveredByCompletedRequests({
                     requestId: params.requestId,
                     request: entry,
                     completedRequests,
