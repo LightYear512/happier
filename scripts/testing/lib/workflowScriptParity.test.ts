@@ -47,7 +47,8 @@ jobs:
       - run: yarn workspace @happier-dev/bootstrap test
       - run: yarn workspace @happier-dev/app test:unit
       - run: yarn workspace @happier-dev/app test:integration
-      - run: yarn workspace @happier-dev/cli test:unit
+      - run: node apps/cli/scripts/runVitestBatches.mjs --config vitest.config.ts
+      - run: yarn workspace @happier-dev/cli test:import-cycles
       - run: yarn workspace @happier-dev/cli test:integration
       - run: yarn --cwd apps/server test:unit
       - run: yarn --cwd apps/server test:integration

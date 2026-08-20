@@ -973,8 +973,12 @@ async function waitForPrepareJobFastPath(runPromise: Promise<void>): Promise<'co
 function isDirectPeerTransferProtocolError(error: unknown): boolean {
   if (error instanceof SyntaxError) return true;
   if (!(error instanceof Error)) return false;
-  return error.message === 'Invalid session handoff transfer payload'
-    || error.message.startsWith('Direct peer transfer manifest mismatch for ');
+  return isSessionHandoffTransferProtocolErrorMessage(error.message);
+}
+
+function isSessionHandoffTransferProtocolErrorMessage(message: string): boolean {
+  return message === 'Invalid session handoff transfer payload'
+    || message.startsWith('Direct peer transfer manifest mismatch for ');
 }
 
 async function requestServerRoutedPrepareProviderBundle(params: Readonly<{
@@ -3063,6 +3067,12 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
         }
         if (completedJob.lastErrorMessage === missingHandoffMetadataV2().error) {
           return missingHandoffMetadataV2();
+        }
+        if (isSessionHandoffTransferProtocolErrorMessage(completedJob.lastErrorMessage)) {
+          return {
+            handoffId: parsed.data.handoffId,
+            status: completedJob.status,
+          };
         }
         throw new Error(completedJob.lastErrorMessage);
       }

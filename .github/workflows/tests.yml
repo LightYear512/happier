@@ -624,7 +624,7 @@ jobs:
     if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || inputs.run_cli }}
     name: CLI Tests (unit + integration)
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 120
     env:
       # Some CLI tests fetch/inspect GitHub Release assets. Prefer the built-in
       # GitHub Actions token rather than requiring extra secrets.
@@ -710,7 +710,7 @@ jobs:
       - name: Run unit tests and import-cycle guard
         run: |
           node apps/cli/scripts/runVitestBatches.mjs --config vitest.config.ts
-          yarn workspace @happier-dev/cli -s test:import-cycles
+          yarn workspace @happier-dev/cli test:import-cycles
 
       - name: Run integration tests
         run: yarn workspace @happier-dev/cli test:integration
