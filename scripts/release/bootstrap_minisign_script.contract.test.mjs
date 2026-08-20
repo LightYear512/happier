@@ -32,9 +32,10 @@ test('bootstrap-minisign script selects linux minisign binary by runner architec
 
 test('bootstrap-minisign script selects the Windows minisign binary by runner architecture before generic discovery', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'actions', 'bootstrap-minisign', 'bootstrap-minisign.sh'), 'utf8');
-  assert.match(raw, /if \[\[ -z "\$\{bin_path\}" && \( "\$\{os\}" == msys\* \|\| "\$\{os\}" == mingw\* \|\| "\$\{os\}" == cygwin\* \) \]\]; then[\s\S]*?windows_process_arch=/);
-  assert.match(raw, /case "\$\{windows_process_arch:-\$\{arch\}\}" in[\s\S]*?x86_64\|amd64\)[\s\S]*?windows_arch="x64"/);
-  assert.match(raw, /case "\$\{windows_process_arch:-\$\{arch\}\}" in[\s\S]*?aarch64\|arm64\)[\s\S]*?windows_arch="aarch64"/);
+  assert.match(raw, /if \[\[ -z "\$\{bin_path\}" && \( "\$\{os\}" == msys\* \|\| "\$\{os\}" == mingw\* \|\| "\$\{os\}" == cygwin\* \) \]\]; then[\s\S]*?HAPPIER_MINISIGN_WINDOWS_ARCH/);
+  assert.match(raw, /case "\$\{explicit_windows_arch\}" in[\s\S]*?x86_64\|amd64\)[\s\S]*?windows_arch="x64"/);
+  assert.match(raw, /case "\$\{explicit_windows_arch\}" in[\s\S]*?aarch64\|arm64\)[\s\S]*?windows_arch="aarch64"/);
+  assert.match(raw, /if \[\[ -z "\$\{windows_arch\}" \]\]; then[\s\S]*?windows_process_arch=/);
   assert.match(
     raw,
     /candidate="\$\{extract_dir\}\/minisign-win64\/\$\{windows_arch\}\/minisign\.exe"/,
@@ -270,6 +271,103 @@ chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisi
     /minisign-win64\/x64$/,
     'expected stdout to contain the x64 minisign directory on x64 Windows runners',
   );
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test('bootstrap-minisign script honors explicit Windows minisign architecture over host architecture', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'bootstrap-minisign-win-explicit-arch-'));
+  const binDir = join(root, 'bin');
+  const runnerTemp = join(root, 'runner-temp');
+  const fixtureDir = join(root, 'fixture');
+  await mkdir(binDir, { recursive: true });
+  await mkdir(runnerTemp, { recursive: true });
+  await mkdir(fixtureDir, { recursive: true });
+
+  const expectedSha = '37b600344e20c19314b2e82813db2bfdcc408b77b876f7727889dbd46d539479';
+  const assetName = 'minisign-0.12-win64.zip';
+  const fixtureArchivePath = join(fixtureDir, assetName);
+  await writeFile(fixtureArchivePath, 'dummy-minisign-zip', 'utf8');
+
+  await writeFile(join(binDir, 'uname'), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" = "-s" ]]; then
+  echo MINGW64_NT-10.0
+  exit 0
+fi
+if [[ "$1" = "-m" ]]; then
+  echo aarch64
+  exit 0
+fi
+echo MINGW64_NT-10.0
+`, 'utf8');
+  await chmod(join(binDir, 'uname'), 0o755);
+
+  await writeFile(join(binDir, 'curl'), `#!/usr/bin/env bash
+set -euo pipefail
+out=""
+for ((i=1; i<=$#; i++)); do
+  if [[ "\${!i}" = "-o" ]]; then
+    j=$((i+1))
+    out="\${!j}"
+  fi
+done
+cp ${JSON.stringify(fixtureArchivePath)} "$out"
+`, 'utf8');
+  await chmod(join(binDir, 'curl'), 0o755);
+
+  await writeFile(join(binDir, 'sha256sum'), `#!/usr/bin/env bash
+set -euo pipefail
+echo "${expectedSha}  $1"
+`, 'utf8');
+  await chmod(join(binDir, 'sha256sum'), 0o755);
+
+  await writeFile(join(binDir, 'unzip'), `#!/usr/bin/env bash
+set -euo pipefail
+destination=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -d)
+      destination="$2"
+      shift 2
+      ;;
+    -q)
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+mkdir -p "$destination/minisign-win64/aarch64"
+printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/aarch64/minisign.exe"
+mkdir -p "$destination/minisign-win64/x64"
+printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x64/minisign.exe"
+chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x64/minisign.exe"
+`, 'utf8');
+  await chmod(join(binDir, 'unzip'), 0o755);
+
+  const bootstrapPath = join(repoRoot, '.github', 'actions', 'bootstrap-minisign', 'bootstrap-minisign.sh');
+  const result = spawnSync('bash', [bootstrapPath], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      HAPPIER_MINISIGN_WINDOWS_ARCH: 'x64',
+      PROCESSOR_ARCHITECTURE: 'ARM64',
+      PROCESSOR_ARCHITEW6432: 'ARM64',
+      RUNNER_TEMP: runnerTemp,
+      GITHUB_PATH: '',
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(
+    result.status,
+    0,
+    `bootstrap script should honor the explicit Windows minisign architecture:\nstdout=${String(result.stdout ?? '')}\nstderr=${String(result.stderr ?? '')}`,
+  );
+  assert.match(String(result.stdout ?? '').trim(), /minisign-win64\/x64$/);
 
   await rm(root, { recursive: true, force: true });
 });

@@ -104,15 +104,26 @@ if [[ "${os}" == "linux" ]]; then
 fi
 if [[ -z "${bin_path}" && ( "${os}" == msys* || "${os}" == mingw* || "${os}" == cygwin* ) ]]; then
   windows_arch=""
-  windows_process_arch="$(printf '%s' "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-}}" | tr '[:upper:]' '[:lower:]')"
-  case "${windows_process_arch:-${arch}}" in
-    x86_64|amd64)
+  explicit_windows_arch="$(printf '%s' "${HAPPIER_MINISIGN_WINDOWS_ARCH:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${explicit_windows_arch}" in
+    x64|x86_64|amd64)
       windows_arch="x64"
       ;;
     aarch64|arm64)
       windows_arch="aarch64"
       ;;
   esac
+  if [[ -z "${windows_arch}" ]]; then
+    windows_process_arch="$(printf '%s' "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-}}" | tr '[:upper:]' '[:lower:]')"
+    case "${windows_process_arch:-${arch}}" in
+      x86_64|amd64)
+        windows_arch="x64"
+        ;;
+      aarch64|arm64)
+        windows_arch="aarch64"
+        ;;
+    esac
+  fi
   if [[ -n "${windows_arch}" ]]; then
     candidate="${extract_dir}/minisign-win64/${windows_arch}/minisign.exe"
     if [[ -f "${candidate}" ]]; then

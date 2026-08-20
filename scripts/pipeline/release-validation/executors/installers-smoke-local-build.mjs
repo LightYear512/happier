@@ -47,8 +47,15 @@ function resolveBootstrapProcessArchitectureEnv({
       : normalizedArch === 'arm64'
         ? 'ARM64'
         : String(baseEnv.PROCESSOR_ARCHITECTURE ?? '');
+  const minisignWindowsArch =
+    normalizedArch === 'x64'
+      ? 'x64'
+      : normalizedArch === 'arm64'
+        ? 'aarch64'
+        : String(baseEnv.HAPPIER_MINISIGN_WINDOWS_ARCH ?? '');
   return {
     ...baseEnv,
+    HAPPIER_MINISIGN_WINDOWS_ARCH: minisignWindowsArch,
     PROCESSOR_ARCHITECTURE: processArchitecture,
     PROCESSOR_ARCHITEW6432: '',
   };

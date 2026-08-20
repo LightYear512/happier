@@ -28,4 +28,11 @@ test('tests workflow gates installer smoke on existing release tags (bootstrap-f
     assert.doesNotMatch(block, /releases\/tags\//, 'installer smoke jobs should not own GitHub release tag probing directly');
     assert.doesNotMatch(block, /steps\.cli_tag\.outputs\.tag_exists/, 'installer smoke jobs should not gate execution with inline cli_tag logic');
   }
+
+  const windowsBlock = installerJobs[2];
+  assert.match(
+    windowsBlock,
+    /HAPPIER_MINISIGN_WINDOWS_ARCH:\s*x64/,
+    'Windows installer smoke should force the executable minisign architecture used by the local-build bootstrap',
+  );
 });

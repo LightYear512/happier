@@ -51,6 +51,7 @@ test('installers-smoke local-build passes Node process architecture to Windows m
 
   assert.equal(env.PROCESSOR_ARCHITECTURE, 'AMD64');
   assert.equal(env.PROCESSOR_ARCHITEW6432, '');
+  assert.equal(env.HAPPIER_MINISIGN_WINDOWS_ARCH, 'x64');
 });
 
 test('installers-smoke local-build bootstrap still returns a minisign dir when GITHUB_PATH is set', async () => {
