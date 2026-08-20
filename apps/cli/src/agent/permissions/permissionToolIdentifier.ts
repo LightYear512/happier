@@ -19,6 +19,13 @@ function extractStringArray(value: unknown): string[] | null {
 }
 
 const SHELL_TOOL_NAMES = new Set(['bash', 'execute', 'shell']);
+const AUTH_TOKEN_ENV_NAMES = new Set([
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_SETUP_TOKEN',
+]);
 
 function isShellToolName(name: string): boolean {
   return SHELL_TOOL_NAMES.has(name.toLowerCase());
@@ -46,6 +53,14 @@ function parseParenIdentifier(value: string): { name: string; spec: string } | n
   const match = value.match(/^([^(]+)\((.*)\)$/);
   if (!match) return null;
   return { name: match[1], spec: match[2] };
+}
+
+function stripKnownUnsetPrelude(command: string): string {
+  const match = command.trim().match(/^unset\s+([A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*)\s*;\s*(.+)$/);
+  if (!match) return command;
+  const names = match[1].split(/\s+/).filter(Boolean);
+  if (names.length === 0 || !names.every((name) => AUTH_TOKEN_ENV_NAMES.has(name))) return command;
+  return match[2].trim();
 }
 
 export function extractShellCommand(input: unknown): string | null {
@@ -124,6 +139,7 @@ export function isToolAllowedForSession(
 
   // Shell tools: accept per-command identifiers across shell-tool synonyms and prefix patterns.
   if (isShell && command) {
+    const commandForSessionApproval = stripKnownUnsetPrelude(command);
     const patterns: Array<{ kind: 'exact'; value: string } | { kind: 'prefix'; value: string }> = [];
     for (const item of allowedIdentifiers) {
       if (typeof item !== 'string') continue;
@@ -140,7 +156,7 @@ export function isToolAllowedForSession(
       }
     }
 
-    if (patterns.length > 0 && isShellCommandAllowed(command, patterns)) return true;
+    if (patterns.length > 0 && isShellCommandAllowed(commandForSessionApproval, patterns)) return true;
   }
 
   return false;

@@ -16,18 +16,24 @@ function matchesPrefixTokenBoundary(command: string, prefix: string): boolean {
   return command[prefix.length] === ' ';
 }
 
-function stripLeadingEnvAssignments(command: string): string {
-  let rest = command.trim();
-  while (true) {
-    const match = rest.match(/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)(?:\s+|$)/);
-    if (!match) return rest;
-    rest = rest.slice(match[0].length).trimStart();
-  }
+function isSafeLeadingEnvAssignment(name: string): boolean {
+  return !(
+    name === 'PATH'
+    || name === 'NODE_OPTIONS'
+    || name.startsWith('GIT_')
+    || name.startsWith('LD_')
+    || name.startsWith('DYLD_')
+  );
 }
 
-function isUnsetEnvironmentPrelude(segment: string): boolean {
-  const parts = segment.trim().split(/\s+/).filter(Boolean);
-  return parts.length > 1 && parts[0] === 'unset' && parts.slice(1).every((part) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(part));
+function stripLeadingEnvAssignments(command: string): { ok: true; command: string } | { ok: false } {
+  let rest = command.trim();
+  while (true) {
+    const match = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|[^\s]+)(?:\s+|$)/);
+    if (!match) return { ok: true, command: rest };
+    if (!isSafeLeadingEnvAssignment(match[1])) return { ok: false };
+    rest = rest.slice(match[0].length).trimStart();
+  }
 }
 
 /**
@@ -136,7 +142,6 @@ type ShellAllowPattern =
 function isSegmentAllowed(segment: string, patterns: ShellAllowPattern[]): boolean {
   const raw = segment.trim();
   if (!raw) return false;
-  if (isUnsetEnvironmentPrelude(raw)) return true;
 
   for (const p of patterns) {
     if (p.kind === 'exact') {
@@ -144,7 +149,9 @@ function isSegmentAllowed(segment: string, patterns: ShellAllowPattern[]): boole
     }
   }
 
-  const effective = stripLeadingEnvAssignments(raw);
+  const stripped = stripLeadingEnvAssignments(raw);
+  if (!stripped.ok) return false;
+  const effective = stripped.command;
   if (!effective) return false;
   const firstWord = effective.split(/\s+/).filter(Boolean)[0] ?? '';
 
