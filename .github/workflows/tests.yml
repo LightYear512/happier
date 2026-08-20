@@ -526,6 +526,8 @@ jobs:
     name: Server Tests (unit + integration)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

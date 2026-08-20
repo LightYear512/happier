@@ -449,3 +449,17 @@ export async function shutdownDbPglite(): Promise<void> {
         await release().catch(() => {});
     }
 }
+
+export async function shutdownDbClientForTestHarness(): Promise<void> {
+    if (_provider === "pglite") {
+        await shutdownDbPglite();
+        return;
+    }
+
+    const client = _db;
+    _db = null;
+    _provider = null;
+    if (client) {
+        await client.$disconnect();
+    }
+}
