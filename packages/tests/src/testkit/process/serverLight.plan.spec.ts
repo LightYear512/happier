@@ -9,6 +9,7 @@ import {
   hasServerGeneratedProviderOutputs,
   resolveServerLightSqliteDatabaseUrl,
   resolveServerStartLaunchSpec,
+  resolveServerLightBaseEnvForTests,
   shouldRetryServerStartFromFailureContext,
   resolveSharedDepsBuildArgs,
   resolveTestDbProvider,
@@ -88,6 +89,16 @@ describe("startServerLight planning helpers", () => {
 
   it("builds shared server dependencies before startup", () => {
     expect(resolveSharedDepsBuildArgs()).toEqual(["-s", "workspace", resolveServerAppWorkspaceName(), "build:shared"]);
+  });
+
+  it("disables host-based session dev preview relay for server-light tests by default", () => {
+    const env = resolveServerLightBaseEnvForTests({
+      dataDir: "/tmp/happier-e2e",
+      mergedEnv: {},
+      dbProvider: "sqlite",
+    });
+
+    expect(env.HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED).toBe("0");
   });
 
   it("generates canonical SQLite DATABASE_URL params while preserving explicit DATABASE_URL", () => {

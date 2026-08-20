@@ -172,7 +172,7 @@ export type MachineRpcHandlers = {
     options: SpawnSessionOptions,
     hooks: import('@/rpc/handlers/registerSessionHandlers').SpawnSessionRunnerAcceptanceHooks,
   ) => Promise<SpawnSessionResult>;
-  resolveSpawnSessionByNonce?: (spawnNonce: string) => Promise<
+  resolveSpawnSessionByNonce?: (spawnNonce: string, remainingTimeoutMs?: number) => Promise<
     import('@happier-dev/protocol').SpawnSessionNonceResolution
   >;
   abandonSpawnSessionByNonce?: (spawnNonce: string) => Promise<

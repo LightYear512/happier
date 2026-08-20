@@ -639,6 +639,38 @@ export function resolveSharedDepsBuildArgs(): string[] {
   return ['-s', 'workspace', resolveServerAppWorkspaceName(), 'build:shared'];
 }
 
+function resolveServerLightBaseEnv(params: {
+  mergedEnv: NodeJS.ProcessEnv;
+  dataDir: string;
+  dbProvider: TestDbProvider;
+}): NodeJS.ProcessEnv {
+  return {
+    ...params.mergedEnv,
+    CI: '1',
+    // Avoid global port conflicts during test runs.
+    METRICS_ENABLED: 'false',
+    // Core E2E assumes a fresh auth key can always mint an account token unless a test explicitly disables it.
+    AUTH_ANONYMOUS_SIGNUP_ENABLED: params.mergedEnv.AUTH_ANONYMOUS_SIGNUP_ENABLED ?? 'true',
+    // Core E2E suite expects public file storage to work without extra services (Minio/S3).
+    HAPPIER_FILES_BACKEND: 'local',
+    HAPPY_SERVER_LIGHT_DATA_DIR: params.dataDir,
+    HAPPY_SERVER_LIGHT_DB_DIR: join(params.dataDir, 'pglite'),
+    HAPPY_SERVER_LIGHT_FILES_DIR: join(params.dataDir, 'files'),
+    HAPPIER_SERVER_LIGHT_DATA_DIR: params.dataDir,
+    HAPPIER_SERVER_LIGHT_DB_DIR: join(params.dataDir, 'pglite'),
+    HAPPIER_SERVER_LIGHT_FILES_DIR: join(params.dataDir, 'files'),
+    HAPPIER_DB_PROVIDER: params.dbProvider,
+    HAPPY_DB_PROVIDER: params.dbProvider,
+    // Server-light tests run without a deploy wildcard host; path-based previews remain independently testable.
+    HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '0',
+    // Some sandboxed environments disallow binding to 0.0.0.0; prefer loopback for E2E.
+    HAPPIER_SERVER_HOST: '127.0.0.1',
+    HAPPY_SERVER_HOST: '127.0.0.1',
+  };
+}
+
+export const resolveServerLightBaseEnvForTests = resolveServerLightBaseEnv;
+
 export function shouldSkipServerSharedDepsBuild(env: NodeJS.ProcessEnv): boolean {
   const raw = (
     env.HAPPIER_E2E_PROVIDER_SKIP_SERVER_SHARED_DEPS_BUILD ??
@@ -893,27 +925,7 @@ export async function startServerLight(params: {
   const dbProvider = params.dbProvider ?? resolveTestDbProvider(mergedEnv);
   const currentOwnerInspection = inspectOwnedProcess(process.pid);
 
-  const baseEnv: NodeJS.ProcessEnv = {
-    ...mergedEnv,
-    CI: '1',
-    // Avoid global port conflicts during test runs.
-    METRICS_ENABLED: 'false',
-    // Core E2E assumes a fresh auth key can always mint an account token unless a test explicitly disables it.
-    AUTH_ANONYMOUS_SIGNUP_ENABLED: mergedEnv.AUTH_ANONYMOUS_SIGNUP_ENABLED ?? 'true',
-    // Core E2E suite expects public file storage to work without extra services (Minio/S3).
-    HAPPIER_FILES_BACKEND: 'local',
-    HAPPY_SERVER_LIGHT_DATA_DIR: dataDir,
-    HAPPY_SERVER_LIGHT_DB_DIR: join(dataDir, 'pglite'),
-    HAPPY_SERVER_LIGHT_FILES_DIR: join(dataDir, 'files'),
-    HAPPIER_SERVER_LIGHT_DATA_DIR: dataDir,
-    HAPPIER_SERVER_LIGHT_DB_DIR: join(dataDir, 'pglite'),
-    HAPPIER_SERVER_LIGHT_FILES_DIR: join(dataDir, 'files'),
-    HAPPIER_DB_PROVIDER: dbProvider,
-    HAPPY_DB_PROVIDER: dbProvider,
-    // Some sandboxed environments disallow binding to 0.0.0.0; prefer loopback for E2E.
-    HAPPIER_SERVER_HOST: '127.0.0.1',
-    HAPPY_SERVER_HOST: '127.0.0.1',
-  };
+  const baseEnv = resolveServerLightBaseEnv({ mergedEnv, dataDir, dbProvider });
 
   // Keep workspace package ESM exports current before booting server processes.
   await ensureServerSharedDepsBuilt({ testDir: params.testDir, env: baseEnv });

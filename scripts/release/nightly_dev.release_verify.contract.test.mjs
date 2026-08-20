@@ -12,8 +12,8 @@ test('nightly-dev workflow runs reusable release verification against the dev ch
 
   assert.match(
     raw,
-    /cron:\s*"0 14 \* \* \*"/,
-    'nightly-dev should run at 22:00 Asia/Shanghai (14:00 UTC)',
+    /cron:\s*"7 14 \* \* \*"/,
+    'nightly-dev should run at 22:07 Asia/Shanghai (14:07 UTC)',
   );
 
   assert.match(

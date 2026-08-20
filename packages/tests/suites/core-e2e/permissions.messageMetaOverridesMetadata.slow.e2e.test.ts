@@ -146,7 +146,6 @@ await connection.closed;
       ...process.env,
       CI: '1',
       HAPPIER_VARIANT: 'dev',
-      HAPPIER_CODEX_BACKEND_MODE: 'acp',
       HAPPIER_HOME_DIR: cliHome,
       HAPPIER_SERVER_URL: server.baseUrl,
       HAPPIER_WEBAPP_URL: server.baseUrl,

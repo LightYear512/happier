@@ -1138,7 +1138,7 @@ describe('createZellijTerminalHostAdapter', () => {
     )).resolves.toMatchObject({ status: 'injected', bytesWritten: Buffer.byteLength('line one\nline two') });
 
     expect(calls).toEqual([
-      'paste:terminal_1:line one\nline two:123',
+      'paste:terminal_1:line one\nline two:15000',
       expect.stringMatching(/^enter:terminal_1:\d+$/),
     ]);
   });
@@ -1198,9 +1198,9 @@ describe('createZellijTerminalHostAdapter', () => {
 
     expect(calls).toEqual([
       'paste:terminal_1',
-      'enter:terminal_1',
       'dump:terminal_1',
       'enter:terminal_1',
+      'dump:terminal_1',
       'dump:terminal_1',
     ]);
   });
@@ -1258,9 +1258,9 @@ describe('createZellijTerminalHostAdapter', () => {
 
     expect(calls).toEqual([
       'paste:terminal_1',
-      'enter:terminal_1',
       'dump:terminal_1',
       'enter:terminal_1',
+      'dump:terminal_1',
       'dump:terminal_1',
     ]);
   });
@@ -1442,7 +1442,9 @@ describe('createZellijTerminalHostAdapter', () => {
 
     expect(calls).toEqual([
       'paste:terminal_1',
+      'dump:terminal_1',
       'enter:terminal_1',
+      'dump:terminal_1',
       'dump:terminal_1',
     ]);
   });
@@ -1494,7 +1496,7 @@ describe('createZellijTerminalHostAdapter', () => {
     )).resolves.toMatchObject({ status: 'injected', bytesWritten: Buffer.byteLength('hello') });
 
     expect(calls).toEqual([
-      `write:terminal_1:hello:${DEFAULT_ZELLIJ_WRITE_BYTES_CHUNK_SIZE}:123`,
+      `write:terminal_1:hello:${DEFAULT_ZELLIJ_WRITE_BYTES_CHUNK_SIZE}:15000`,
       expect.stringMatching(/^enter:terminal_1:\d+$/),
     ]);
   });
@@ -1548,7 +1550,7 @@ describe('createZellijTerminalHostAdapter', () => {
 
     expect(calls).toEqual([
       'paste',
-      'write:terminal_1:hello:123',
+      'write:terminal_1:hello:15000',
       expect.stringMatching(/^enter:terminal_1:\d+$/),
     ]);
   });
@@ -4659,7 +4661,7 @@ describe('createZellijTerminalHostAdapter', () => {
       attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared' },
     });
 
-    expect(liveness.paneScreenDumpError).toContain('ANTHROPIC_API_KEY=[redacted-token]');
+    expect(liveness.paneScreenDumpError).toContain('ANTHROPIC_API_KEY: [REDACTED]');
     expect(liveness.paneScreenDumpError).not.toContain('sk-ant-secret-value');
     expect(liveness.paneScreenDumpError).not.toContain('provider-bearer-secret');
   });

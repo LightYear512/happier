@@ -120,6 +120,10 @@ function createIoHarness() {
     const sockets = new Set<FakeSocket>();
     const io = {
         emit: vi.fn(),
+        serverSideEmit: vi.fn(),
+        of: vi.fn(() => ({
+            adapter: {},
+        })),
         use: vi.fn((middleware: SocketMiddleware) => {
             middlewares.push(middleware);
             return io;

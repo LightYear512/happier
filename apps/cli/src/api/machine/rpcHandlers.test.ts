@@ -1012,7 +1012,7 @@ describe('registerMachineRpcHandlers', () => {
       type: 'success',
       sessionId: 'session-from-legacy-contract',
     });
-    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('spawn-nonce-legacy-pending');
+    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('spawn-nonce-legacy-pending', expect.any(Number));
     expect(spawnSession).toHaveBeenCalledTimes(1);
   });
 
@@ -2458,7 +2458,7 @@ describe('registerMachineRpcHandlers', () => {
     });
 
     expect(result).toMatchObject({ ok: true, childSessionId: 'sess_child' });
-    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('nonce-abc');
+    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('nonce-abc', expect.any(Number));
     expect(spawnSession).toHaveBeenCalledTimes(1);
     // No replay fall-through: the replay path would create a fresh session via POST.
     expect(postSpy).not.toHaveBeenCalled();

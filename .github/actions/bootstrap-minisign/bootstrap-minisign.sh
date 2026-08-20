@@ -104,7 +104,8 @@ if [[ "${os}" == "linux" ]]; then
 fi
 if [[ -z "${bin_path}" && ( "${os}" == msys* || "${os}" == mingw* || "${os}" == cygwin* ) ]]; then
   windows_arch=""
-  case "${arch}" in
+  windows_process_arch="$(printf '%s' "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-}}" | tr '[:upper:]' '[:lower:]')"
+  case "${windows_process_arch:-${arch}}" in
     x86_64|amd64)
       windows_arch="x64"
       ;;

@@ -1358,6 +1358,7 @@ jobs:
       PORT: "3005"
       HAPPIER_SERVER_URL: http://localhost:3005
       HAPPIER_WEBAPP_URL: http://localhost:3005
+      HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: "0"
       HAPPIER_HOME_DIR: /tmp/happier-dev-test
       DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING: "true"
       HAPPIER_SERVER_LIGHT_DATA_DIR: /tmp/happier-server-light

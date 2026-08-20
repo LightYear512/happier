@@ -118,7 +118,7 @@ describe('RelayHostEngine (local uninstall cleanup)', () => {
         const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
         return {
           ...actual,
-          existsSync: () => false,
+          existsSync: (path: string) => path.endsWith('happier-server.ps1'),
         };
       });
 
@@ -290,10 +290,10 @@ describe('RelayHostEngine (local uninstall cleanup)', () => {
             }
             if (cmd === 'powershell.exe') {
               const script = String(args?.[2] ?? '');
-              if (script.includes("'happier-server-preview'")) {
+              if (script.includes('"happier-server-preview"') || script.includes("'happier-server-preview'")) {
                 return { status: 0, stdout: '{"exists":false}', stderr: '' };
               }
-              if (script.includes("'happier-server'")) {
+              if (script.includes('"happier-server"') || script.includes("'happier-server'")) {
                 return { status: 0, stdout: '{"exists":true,"enabled":true,"active":true}', stderr: '' };
               }
             }
@@ -306,7 +306,7 @@ describe('RelayHostEngine (local uninstall cleanup)', () => {
         const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
         return {
           ...actual,
-          existsSync: () => false,
+          existsSync: (path: string) => path.endsWith('happier-server.ps1'),
         };
       });
 
@@ -340,8 +340,14 @@ describe('RelayHostEngine (local uninstall cleanup)', () => {
         action: 'uninstall',
       });
 
-      expect(invoked.some((cmd) => cmd.includes('schtasks /End /TN Happier\\happier-server'))).toBe(true);
-      expect(invoked.some((cmd) => cmd.includes('schtasks /Delete /F /TN Happier\\happier-server'))).toBe(true);
+      expect(
+        invoked.some((cmd) => cmd.includes('$taskName = "happier-server"') && cmd.includes('Stop-ScheduledTask')),
+        invoked.join('\n'),
+      ).toBe(true);
+      expect(
+        invoked.some((cmd) => cmd.includes('$taskName = "happier-server"') && cmd.includes('Unregister-ScheduledTask')),
+        invoked.join('\n'),
+      ).toBe(true);
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
       vi.resetModules();
