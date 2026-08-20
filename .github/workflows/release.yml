@@ -802,10 +802,13 @@ jobs:
       source: dev
       source_sha: ${{ needs.admit_release_notes.outputs.source_sha }}
       target: preview
-      mode: fast_forward
+      # Temporary fork recovery: current preview history predates the renewed dev
+      # release line, so this one promotion must reset preview to the admitted dev
+      # SHA. After this succeeds, preview should again be fast-forwardable from dev.
+      mode: reset
       dry_run: ${{ inputs.dry_run }}
-      allow_reset: false
-      confirm: promote preview from dev
+      allow_reset: true
+      confirm: reset preview from dev
 
   prepare_release_candidate:
     if: always() && needs.plan.result == 'success' && inputs.dry_run != true && ((inputs.environment == 'production' && needs.promote_main.result == 'success') || (inputs.environment == 'preview' && needs.promote_preview.result == 'success'))

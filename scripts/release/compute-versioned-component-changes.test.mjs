@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 function run(cwd, cmd, args) {
-  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (res.error) throw res.error;
   return res;
 }
@@ -113,4 +113,26 @@ test('compute-versioned-component-changes accepts remote tag identities without 
   assert.equal(parsed.changed_cli, 'true');
   assert.equal(parsed.cli_baseline_tag, 'cli-v0.1.0');
   assert.equal(git(dir, ['for-each-ref', '--format=%(refname)', 'refs/tags']), '');
+});
+
+test('compute-versioned-component-changes handles large git output without buffer overflow', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'happier-versioned-components-large-'));
+
+  git(dir, ['init']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+  git(dir, ['config', 'user.name', 'Test']);
+
+  const longSegment = 'x'.repeat(180);
+  for (let i = 0; i < 7000; i++) {
+    await writeRepoFile(dir, `apps/cli/large-${String(i).padStart(5, '0')}-${longSegment}.txt`, 'cli\n');
+  }
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'large tree']);
+
+  const script = resolve(process.cwd(), 'scripts', 'pipeline', 'release', 'compute-versioned-component-changes.mjs');
+  const res = run(dir, process.execPath, [script, '--environment', 'dev', '--head', 'HEAD']);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+
+  const parsed = JSON.parse(String(res.stdout).trim());
+  assert.equal(parsed.changed_cli, 'true');
 });

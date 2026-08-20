@@ -145,6 +145,11 @@ test('release workflow admits exact candidate notes before branch promotion and 
   );
   assert.match(
     raw,
+    /promote_preview:[\s\S]*?target:\s*preview[\s\S]*?mode:\s*reset[\s\S]*?allow_reset:\s*true[\s\S]*?confirm:\s*reset preview from dev/,
+    'temporary fork preview promotion must be an explicit reset while the preview branch baseline is being repaired',
+  );
+  assert.match(
+    raw,
     /prepare_release_candidate:[\s\S]*?needs:\s*\[plan, promote_preview, promote_main\][\s\S]*?SOURCE_REF:\s*\$\{\{\s*inputs\.environment == 'production' && 'main' \|\| 'preview'\s*\}\}[\s\S]*?resolve-authorized-release-source\.mjs/,
     'post-promotion candidate binding must still prove the promoted target points at the admitted SHA',
   );

@@ -14,6 +14,8 @@ async function loadWorkflow(name) {
 test('promote-branch delegates branch updates to pipeline script', async () => {
   const raw = await loadWorkflow('promote-branch.yml');
   assert.match(raw, /actions\/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547/);
+  assert.match(raw, /if:\s*\$\{\{\s*env\.RELEASE_BOT_APP_ID != '' && env\.RELEASE_BOT_PRIVATE_KEY != ''\s*\}\}/);
+  assert.match(raw, /GH_TOKEN:\s*\$\{\{\s*steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token \|\| github\.token\s*\}\}/);
   assert.match(raw, /node scripts\/pipeline\/run\.mjs promote-branch/);
 });
 
