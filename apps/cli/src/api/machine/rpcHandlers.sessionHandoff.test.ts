@@ -6721,10 +6721,14 @@ function createLoopbackMachineTransferChannels() {
       },
     });
 
-    const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET);
-    expect(prepare).toBeDefined();
-
     const handoffId = 'handoff_invalid_server_routed_inline_fallback';
+    const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET);
+    const statusGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET);
+    const resultGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET);
+    expect(prepare).toBeDefined();
+    expect(statusGet).toBeDefined();
+    expect(resultGet).toBeDefined();
+
     const providerBundleTransferId = `session-handoff:${handoffId}:provider-bundle-file`;
     const preparePromise = prepare!({
       handoffId,
@@ -6770,8 +6774,32 @@ function createLoopbackMachineTransferChannels() {
       });
     }
 
-	    await expect(preparePromise).rejects.toThrow();
-	    expect(importSessionBundle).not.toHaveBeenCalled();
+    const prepareResult = await preparePromise;
+    expect(prepareResult).toMatchObject({
+      handoffId,
+      status: {
+        handoffId,
+        status: expect.stringMatching(/^(pending|awaiting_recovery)$/),
+        phase: 'staging_target',
+        jobId: expect.any(String),
+      },
+    });
+    await vi.waitFor(async () => {
+      await expect(statusGet!({ handoffId })).resolves.toMatchObject({
+        handoffId,
+        status: {
+          handoffId,
+          status: 'awaiting_recovery',
+          phase: 'staging_target',
+          jobId: expect.any(String),
+        },
+      });
+    });
+    await expect(resultGet!({ handoffId })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'awaiting_recovery',
+    });
+    expect(importSessionBundle).not.toHaveBeenCalled();
 	  });
 
   it('fails closed when the server-routed transfer payload does not satisfy the canonical handoff schemas', async () => {

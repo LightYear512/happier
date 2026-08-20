@@ -58,6 +58,7 @@ export type RuntimeAuthRecoveryIntakeResult = Readonly<{
 export type RuntimeAuthRecoveryIntent = Readonly<{
   v: 1 | 2;
   attemptId?: string;
+  attemptIdSource?: 'generated' | 'report';
   lastSettledTransition?: RuntimeAuthRecoveryTransition;
   pendingVisibleEvents?: ReadonlyArray<RuntimeAuthRecoveryPendingVisibleEvent>;
   sessionId: string;
@@ -276,6 +277,7 @@ function normalizeIntent(value: unknown): RuntimeAuthRecoveryIntent | null {
   return {
     v: value.v,
     ...(readString(value.attemptId) ? { attemptId: readString(value.attemptId) as string } : {}),
+    attemptIdSource: value.attemptIdSource === 'report' ? 'report' : 'generated',
     ...(lastSettledTransition ? { lastSettledTransition } : {}),
     ...(pendingVisibleEvents.length > 0 ? { pendingVisibleEvents } : {}),
     sessionId,
@@ -1010,7 +1012,7 @@ function mergeRuntimeAuthRecoveryIntent(
     // Only a fresh in-band provider report owns a new recovery epoch. A later handler/apply
     // failure without the original attempt id is still fallout from the settled attempt and must
     // not revive it merely because its caller omitted the report id.
-    return next.lastSettledTransition === 'working' ? next : previous;
+    return next.lastSettledTransition === 'working' && next.attemptIdSource === 'report' ? next : previous;
   }
   const sameEvidence = hasSameRuntimeAuthRecoveryEvidence(previous, next);
   const previousSourceKey = previous.classification.sourceKey;
@@ -2249,6 +2251,9 @@ export class RuntimeAuthRecoveryScheduler {
         : Math.max(1, Math.trunc(this.deps.baseBackoffMs ?? 1_000))
     );
     const attemptId = buildRuntimeAuthRecoveryAttemptId(input.reportId);
+    const attemptIdSource = typeof input.reportId === 'string' && input.reportId.trim().length > 0
+      ? 'report'
+      : 'generated';
     const uxDiagnostic = input.projectScheduled
       ? buildRuntimeAuthRecoveryScheduledUxDiagnostic({
           classification,
@@ -2269,6 +2274,7 @@ export class RuntimeAuthRecoveryScheduler {
     const intent: RuntimeAuthRecoveryIntent = {
       v: 2,
       attemptId,
+      attemptIdSource,
       lastSettledTransition: input.transition,
       ...(transcriptEvent ? {
         pendingVisibleEvents: [{ attemptId, transition: input.transition, transcriptEvent }],
