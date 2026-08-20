@@ -107,7 +107,7 @@ if [[ -z "${bin_path}" && ( "${os}" == msys* || "${os}" == mingw* || "${os}" == 
   explicit_windows_arch="$(printf '%s' "${HAPPIER_MINISIGN_WINDOWS_ARCH:-}" | tr '[:upper:]' '[:lower:]')"
   case "${explicit_windows_arch}" in
     x64|x86_64|amd64)
-      windows_arch="x64"
+      windows_arch="x86_64"
       ;;
     aarch64|arm64)
       windows_arch="aarch64"
@@ -117,7 +117,7 @@ if [[ -z "${bin_path}" && ( "${os}" == msys* || "${os}" == mingw* || "${os}" == 
     windows_process_arch="$(printf '%s' "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-}}" | tr '[:upper:]' '[:lower:]')"
     case "${windows_process_arch:-${arch}}" in
       x86_64|amd64)
-        windows_arch="x64"
+        windows_arch="x86_64"
         ;;
       aarch64|arm64)
         windows_arch="aarch64"

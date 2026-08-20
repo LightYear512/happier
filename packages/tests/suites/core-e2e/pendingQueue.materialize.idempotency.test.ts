@@ -68,17 +68,14 @@ describe('core e2e: pending queue v2 materialize idempotency', () => {
       });
       expect(writeMsg.status).toBe(200);
 
-      // 2) Enqueue pending with the same localId (simulates crash/retry leaving a stale pending row).
-      const pendingCiphertext = Buffer.from('PENDING_STALE_ROW', 'utf8').toString('base64');
-      const enqueue = await enqueuePendingQueueV2({ baseUrl: server.baseUrl, token: auth.token, sessionId, localId, ciphertext: pendingCiphertext, timeoutMs: 20_000 });
+      // 2) Enqueue pending with the same localId/content. The public API now short-circuits
+      // duplicate transcript localIds as terminal instead of allowing a stale pending row.
+      const enqueue = await enqueuePendingQueueV2({ baseUrl: server.baseUrl, token: auth.token, sessionId, localId, ciphertext: transcriptCiphertext, timeoutMs: 20_000 });
       expect(enqueue.status).toBe(200);
+      expect(enqueue.data?.didWrite).toBe(false);
+      expect(enqueue.data?.terminal).toBe(true);
 
-      // 3) Materialize-next must not create a duplicate transcript message; it should drain the pending row.
-      const ack = await socket.emitWithAck<any>('pending-materialize-next', { sid: sessionId }, 20_000);
-      expect(ack?.ok).toBe(true);
-      expect(ack?.didMaterialize).toBe(true);
-      expect(ack?.message?.localId).toBe(localId);
-
+      // 3) The transcript remains de-duped and no pending row is left to materialize.
       const messages = await fetchAllMessages(server.baseUrl, auth.token, sessionId);
       expect(messages.filter((m) => m.localId === localId).length).toBe(1);
       expect(countDuplicateLocalIds(messages)).toBe(0);

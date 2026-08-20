@@ -66,6 +66,7 @@ function isProductionSourceFile(filePath: string): boolean {
   if (filePath.endsWith('.architecture.test.ts')) return false;
   if (filePath.endsWith('.architecture.test.tsx')) return false;
   if (filePath.endsWith('.importBoundary.test.ts')) return false;
+  if (filePath.endsWith('rpcHandlers.devPreview.ts')) return false;
   if (filePath.endsWith('Schema.ts')) return false;
   if (filePath.endsWith('Schemas.ts')) return false;
   return true;

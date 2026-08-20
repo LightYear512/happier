@@ -31,7 +31,6 @@ const {
 const { buildWorkflowSpec } = require('./fake-claude-workflow-transcript.cjs');
 
 const argv = process.argv.slice(2);
-const isVersionProbe = argv.length === 1 && (argv[0] === '--version' || argv[0] === 'version');
 const invocationId =
   process.env.HAPPIER_E2E_FAKE_CLAUDE_INVOCATION_ID ||
   process.env.HAPPY_E2E_FAKE_CLAUDE_INVOCATION_ID ||
@@ -98,11 +97,6 @@ const workflowSignalsEnabled = workflowSignalPath.length > 0;
 const workflowTerminalSignalPath = String(
   process.env.HAPPIER_E2E_FAKE_CLAUDE_WORKFLOW_TERMINAL_SIGNAL || '',
 ).trim();
-
-if (isVersionProbe) {
-  process.stdout.write('0.0.0-fake\n');
-  process.exit(0);
-}
 
 function resolveClaudeConfigDir() {
   const explicit = String(process.env.CLAUDE_CONFIG_DIR || '').trim();

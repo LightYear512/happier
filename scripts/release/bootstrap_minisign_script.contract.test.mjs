@@ -33,7 +33,7 @@ test('bootstrap-minisign script selects linux minisign binary by runner architec
 test('bootstrap-minisign script selects the Windows minisign binary by runner architecture before generic discovery', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'actions', 'bootstrap-minisign', 'bootstrap-minisign.sh'), 'utf8');
   assert.match(raw, /if \[\[ -z "\$\{bin_path\}" && \( "\$\{os\}" == msys\* \|\| "\$\{os\}" == mingw\* \|\| "\$\{os\}" == cygwin\* \) \]\]; then[\s\S]*?HAPPIER_MINISIGN_WINDOWS_ARCH/);
-  assert.match(raw, /case "\$\{explicit_windows_arch\}" in[\s\S]*?x86_64\|amd64\)[\s\S]*?windows_arch="x64"/);
+  assert.match(raw, /case "\$\{explicit_windows_arch\}" in[\s\S]*?x86_64\|amd64\)[\s\S]*?windows_arch="x86_64"/);
   assert.match(raw, /case "\$\{explicit_windows_arch\}" in[\s\S]*?aarch64\|arm64\)[\s\S]*?windows_arch="aarch64"/);
   assert.match(raw, /if \[\[ -z "\$\{windows_arch\}" \]\]; then[\s\S]*?windows_process_arch=/);
   assert.match(
@@ -241,9 +241,9 @@ while [[ "$#" -gt 0 ]]; do
 done
 mkdir -p "$destination/minisign-win64/aarch64"
 printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/aarch64/minisign.exe"
-mkdir -p "$destination/minisign-win64/x64"
-printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x64/minisign.exe"
-chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x64/minisign.exe"
+mkdir -p "$destination/minisign-win64/x86_64"
+printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x86_64/minisign.exe"
+chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x86_64/minisign.exe"
 `,
     'utf8',
   );
@@ -268,8 +268,8 @@ chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisi
   );
   assert.match(
     String(result.stdout ?? '').trim(),
-    /minisign-win64\/x64$/,
-    'expected stdout to contain the x64 minisign directory on x64 Windows runners',
+    /minisign-win64\/x86_64$/,
+    'expected stdout to contain the x86_64 minisign directory on x64 Windows runners',
   );
 
   await rm(root, { recursive: true, force: true });
@@ -341,9 +341,9 @@ while [[ "$#" -gt 0 ]]; do
 done
 mkdir -p "$destination/minisign-win64/aarch64"
 printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/aarch64/minisign.exe"
-mkdir -p "$destination/minisign-win64/x64"
-printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x64/minisign.exe"
-chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x64/minisign.exe"
+mkdir -p "$destination/minisign-win64/x86_64"
+printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x86_64/minisign.exe"
+chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x86_64/minisign.exe"
 `, 'utf8');
   await chmod(join(binDir, 'unzip'), 0o755);
 
@@ -367,7 +367,7 @@ chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisi
     0,
     `bootstrap script should honor the explicit Windows minisign architecture:\nstdout=${String(result.stdout ?? '')}\nstderr=${String(result.stderr ?? '')}`,
   );
-  assert.match(String(result.stdout ?? '').trim(), /minisign-win64\/x64$/);
+  assert.match(String(result.stdout ?? '').trim(), /minisign-win64\/x86_64$/);
 
   await rm(root, { recursive: true, force: true });
 });
@@ -438,9 +438,9 @@ while [[ "$#" -gt 0 ]]; do
 done
 mkdir -p "$destination/minisign-win64/aarch64"
 printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/aarch64/minisign.exe"
-mkdir -p "$destination/minisign-win64/x64"
-printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x64/minisign.exe"
-chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x64/minisign.exe"
+mkdir -p "$destination/minisign-win64/x86_64"
+printf '#!/usr/bin/env bash\\nexit 0\\n' > "$destination/minisign-win64/x86_64/minisign.exe"
+chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisign-win64/x86_64/minisign.exe"
 `, 'utf8');
   await chmod(join(binDir, 'unzip'), 0o755);
 
@@ -463,7 +463,7 @@ chmod +x "$destination/minisign-win64/aarch64/minisign.exe" "$destination/minisi
     0,
     `bootstrap script should select the Windows binary for the current process architecture:\nstdout=${String(result.stdout ?? '')}\nstderr=${String(result.stderr ?? '')}`,
   );
-  assert.match(String(result.stdout ?? '').trim(), /minisign-win64\/x64$/);
+  assert.match(String(result.stdout ?? '').trim(), /minisign-win64\/x86_64$/);
 
   await rm(root, { recursive: true, force: true });
 });

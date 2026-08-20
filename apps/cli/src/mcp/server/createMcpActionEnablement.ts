@@ -38,14 +38,14 @@ export function createMcpActionSettingsProvider(params: Readonly<{
   return {
     getAccountSettings: () =>
       readAccountSettingsSafely(params.getAccountSettings)
-        ?? getActiveAccountSettingsSnapshot()?.settings
         ?? params.accountSettings
+        ?? getActiveAccountSettingsSnapshot()?.settings
         ?? null,
     getActionsSettings: () => {
       const accountSettings =
         readAccountSettingsSafely(params.getAccountSettings)
-          ?? getActiveAccountSettingsSnapshot()?.settings
           ?? params.accountSettings
+          ?? getActiveAccountSettingsSnapshot()?.settings
           ?? null;
       if (accountSettings) {
         return accountSettings.actionsSettingsV1 ?? EMPTY_ACTIONS_SETTINGS;

@@ -87,7 +87,7 @@ function resolveEffectiveWindowsMinisignArch(baseEnv, nodeArch = process.arch) {
   const explicitMinisignWindowsArch = String(baseEnv.HAPPIER_MINISIGN_WINDOWS_ARCH ?? '').trim().toLowerCase();
   const effectiveWindowsArch = explicitMinisignWindowsArch || String(nodeArch ?? '').trim().toLowerCase();
   if (effectiveWindowsArch === 'x64' || effectiveWindowsArch === 'x86_64' || effectiveWindowsArch === 'amd64') {
-    return 'x64';
+    return 'x86_64';
   }
   if (effectiveWindowsArch === 'arm64' || effectiveWindowsArch === 'aarch64') {
     return 'aarch64';

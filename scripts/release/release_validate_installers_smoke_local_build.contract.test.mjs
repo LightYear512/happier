@@ -82,7 +82,7 @@ test('installers-smoke local-build corrects a Windows bootstrap directory that d
     },
   });
 
-  assert.equal(fallbackDir, join('extract', 'minisign-win64', 'x64'));
+  assert.equal(fallbackDir, join('extract', 'minisign-win64', 'x86_64'));
 });
 
 test('installers-smoke local-build bootstrap still returns a minisign dir when GITHUB_PATH is set', async () => {

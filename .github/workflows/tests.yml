@@ -708,7 +708,9 @@ jobs:
           fi
 
       - name: Run unit tests and import-cycle guard
-        run: yarn workspace @happier-dev/cli test:unit
+        run: |
+          node apps/cli/scripts/runVitestBatches.mjs --config vitest.config.ts
+          yarn workspace @happier-dev/cli -s test:import-cycles
 
       - name: Run integration tests
         run: yarn workspace @happier-dev/cli test:integration

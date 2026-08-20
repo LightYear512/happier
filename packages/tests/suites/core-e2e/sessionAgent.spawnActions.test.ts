@@ -16,18 +16,27 @@ import { repoRootDir } from '../../src/testkit/paths';
 import type { Metadata } from '../../../../apps/cli/src/api/types';
 
 const {
+  closeDaemonSessionDevPreview,
   fetchSessionById,
+  listDaemonSessionDevPreviews,
+  registerDaemonSessionDevPreview,
   resolveDaemonSpawnSessionByNonce,
   spawnDaemonSession,
   updateSessionMetadataWithRetry,
 } = vi.hoisted(() => ({
+  closeDaemonSessionDevPreview: vi.fn(),
   fetchSessionById: vi.fn(),
+  listDaemonSessionDevPreviews: vi.fn(),
+  registerDaemonSessionDevPreview: vi.fn(),
   resolveDaemonSpawnSessionByNonce: vi.fn(),
   spawnDaemonSession: vi.fn(),
   updateSessionMetadataWithRetry: vi.fn(),
 }));
 
 vi.mock('../../../../apps/cli/src/daemon/controlClient', () => ({
+  closeDaemonSessionDevPreview,
+  listDaemonSessionDevPreviews,
+  registerDaemonSessionDevPreview,
   resolveDaemonSpawnSessionByNonce,
   spawnDaemonSession,
 }));
@@ -177,6 +186,9 @@ async function createSessionAgentMcpScenario(params?: Readonly<{
 describe('core e2e: session-agent spawn actions', () => {
   beforeEach(() => {
     fetchSessionById.mockReset();
+    closeDaemonSessionDevPreview.mockReset();
+    listDaemonSessionDevPreviews.mockReset();
+    registerDaemonSessionDevPreview.mockReset();
     resolveDaemonSpawnSessionByNonce.mockReset();
     spawnDaemonSession.mockReset();
     updateSessionMetadataWithRetry.mockReset();
@@ -258,7 +270,10 @@ describe('core e2e: session-agent spawn actions', () => {
         connectedServices,
         connectedServicesUpdatedAt: 1700000000003,
         mcpSelection,
-        initialPrompt: 'Use inherited parent context.',
+        pendingFirstInput: expect.objectContaining({
+          localId: expect.any(String),
+          text: 'Use inherited parent context.',
+        }),
       }));
 
       const richConfig = buildAcpConfigOptionOverridesV1({
@@ -297,7 +312,10 @@ describe('core e2e: session-agent spawn actions', () => {
         sessionConfigOptionOverrides: richConfig,
         connectedServices,
         mcpSelection,
-        initialPrompt: 'Use explicit rich options.',
+        pendingFirstInput: expect.objectContaining({
+          localId: expect.any(String),
+          text: 'Use explicit rich options.',
+        }),
       }));
 
       const spawnCallsBeforeEscalation = spawnDaemonSession.mock.calls.length;
@@ -351,6 +369,26 @@ describe('core e2e: session-agent spawn actions', () => {
           reason: 'disabled_by_settings',
         }),
       }));
+      const spawnCallsBeforeDisabledExecute = spawnDaemonSession.mock.calls.length;
+      const disabledExecutePayload = parseMcpJsonText(await disabledScenario.client.callTool({
+        name: 'action_execute',
+        arguments: {
+          actionId: 'session.spawn_new',
+          input: {
+            title: 'Disabled child',
+            initialMessage: 'Should not spawn.',
+          },
+        },
+      }));
+      expect(disabledExecutePayload).toEqual(expect.objectContaining({
+        errorCode: 'action_disabled',
+        details: expect.objectContaining({
+          actionId: 'session.spawn_new',
+          surface: 'session_agent',
+          reason: 'disabled_by_settings',
+        }),
+      }));
+      expect(spawnDaemonSession).toHaveBeenCalledTimes(spawnCallsBeforeDisabledExecute);
     } finally {
       await disabledScenario.close();
     }
