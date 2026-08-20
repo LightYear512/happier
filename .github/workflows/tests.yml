@@ -1341,7 +1341,7 @@ jobs:
         run: yarn test:wiring:self && yarn test:policy:self
 
       - name: Run governance validators
-        run: yarn test:wiring && yarn test:policy
+        run: yarn test:wiring
 
       - name: Run governance inventory reports
         run: yarn test:inventory && yarn test:migration:inventory

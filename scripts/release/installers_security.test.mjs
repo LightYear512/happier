@@ -36,6 +36,9 @@ test('release-owned windows installer enforces minisign verification defaults', 
   assert.match(installPs1, /https:\/\/happier\.dev\/happier-release\.pub/);
   assert.match(installPs1, /Signature verified\./);
   assert.doesNotMatch(installPs1, /skip.*signature/i);
+  assert.match(installPs1, /\$env:PROCESSOR_ARCHITEW6432/);
+  assert.match(installPs1, /\$env:PROCESSOR_ARCHITECTURE/);
+  assert.match(installPs1, /Join-Path \$extractDir "minisign-win64\\\$preferredArch\\minisign\.exe"/);
   assert.match(installPs1, /&\s+\$exe\.FullName\s+--version\s+\*>\s+\$null/);
   assert.match(
     installPs1,

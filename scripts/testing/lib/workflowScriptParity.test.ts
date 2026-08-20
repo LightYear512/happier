@@ -62,7 +62,7 @@ jobs:
       - run: yarn -s test:e2e:mobile
       - run: yarn workspace @happier-dev/tests providers:run all smoke
       - run: yarn test:stress
-      - run: yarn test:wiring:self && yarn test:wiring && yarn test:policy && yarn test:inventory && yarn test:migration:inventory
+      - run: yarn test:wiring:self && yarn test:policy:self && yarn test:wiring && yarn test:inventory && yarn test:migration:inventory
 `;
 }
 

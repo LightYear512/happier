@@ -2042,7 +2042,25 @@ function Ensure-Minisign {
   $extractDir = Join-Path $TempRoot "minisign-extract"
   New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
   Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-  $exe = Get-ChildItem -Path $extractDir -Filter "minisign.exe" -Recurse | Select-Object -First 1
+  $processArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+  $processArchString = [string] $processArch
+  $preferredArch = switch ($processArchString.ToLowerInvariant()) {
+    "amd64" { "x64"; break }
+    "x86_64" { "x64"; break }
+    "arm64" { "aarch64"; break }
+    "aarch64" { "aarch64"; break }
+    default { "" }
+  }
+  $exe = $null
+  if ($preferredArch) {
+    $preferredExe = Join-Path $extractDir "minisign-win64\$preferredArch\minisign.exe"
+    if (Test-Path -LiteralPath $preferredExe) {
+      $exe = Get-Item -LiteralPath $preferredExe
+    }
+  }
+  if (-not $exe) {
+    $exe = Get-ChildItem -Path $extractDir -Filter "minisign.exe" -Recurse | Select-Object -First 1
+  }
   if (-not $exe) {
     throw "Failed to locate minisign.exe in bootstrap archive."
   }
