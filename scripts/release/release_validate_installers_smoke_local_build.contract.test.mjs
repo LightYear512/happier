@@ -54,6 +54,22 @@ test('installers-smoke local-build passes Node process architecture to Windows m
   assert.equal(env.HAPPIER_MINISIGN_WINDOWS_ARCH, 'x64');
 });
 
+test('installers-smoke local-build preserves explicit Windows minisign architecture over Node architecture', () => {
+  const env = resolveBootstrapProcessArchitectureEnvForTests({
+    platform: 'win32',
+    nodeArch: 'arm64',
+    baseEnv: {
+      HAPPIER_MINISIGN_WINDOWS_ARCH: 'x64',
+      PROCESSOR_ARCHITECTURE: 'ARM64',
+      PROCESSOR_ARCHITEW6432: 'ARM64',
+    },
+  });
+
+  assert.equal(env.PROCESSOR_ARCHITECTURE, 'AMD64');
+  assert.equal(env.PROCESSOR_ARCHITEW6432, '');
+  assert.equal(env.HAPPIER_MINISIGN_WINDOWS_ARCH, 'x64');
+});
+
 test('installers-smoke local-build bootstrap still returns a minisign dir when GITHUB_PATH is set', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-installers-smoke-local-build-test-'));
   const repoRoot = join(root, 'repo');

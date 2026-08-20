@@ -2505,7 +2505,9 @@ export class ApiSessionClient extends EventEmitter {
 	                lastObservedUserMessageSeq: this.lastObservedUserMessageSeq,
 	                hasSelfEchoSuppressedLocalId: (localId) => this.hasSelfEchoSuppressedLocalId(localId),
 	                hasAgentQueueEchoSuppressedLocalId: (localId) => this.hasAgentQueueEchoSuppressedLocalId(localId),
+	                hasAgentQueueDeliveredLocalId: (localId) => this.hasAgentQueueDeliveredLocalId(localId),
 	                markAgentQueueEchoSuppressedLocalId: (localId) => this.markAgentQueueEchoSuppressedLocalId(localId),
+	                markAgentQueueDeliveredLocalId: (localId) => this.markAgentQueueDeliveredLocalId(localId),
 	                hasPendingQueueMaterializedLocalId: (localId) => this.hasPendingQueueMaterializedLocalId(localId),
 	                deleteMaterializedLocalId: (localId) => this.deleteMaterializedLocalId(localId),
 	                pendingMessageCallback: this.pendingMessageCallback,
@@ -3077,6 +3079,16 @@ export class ApiSessionClient extends EventEmitter {
             }
             this.markAgentQueueEchoSuppressedLocalId(localId);
             this.markAgentQueueDeliveredLocalId(localId);
+            const echoCleanupTimer = this.agentQueueEchoSuppressedLocalIdCleanupTimers.get(localId) ?? null;
+            if (echoCleanupTimer) {
+                clearTimeout(echoCleanupTimer);
+                this.agentQueueEchoSuppressedLocalIdCleanupTimers.delete(localId);
+            }
+            const deliveredCleanupTimer = this.agentQueueDeliveredLocalIdCleanupTimers.get(localId) ?? null;
+            if (deliveredCleanupTimer) {
+                clearTimeout(deliveredCleanupTimer);
+                this.agentQueueDeliveredLocalIdCleanupTimers.delete(localId);
+            }
         }
         if (this.pendingMessageCallback) {
             await this.pendingMessageCallback(userMessage, {

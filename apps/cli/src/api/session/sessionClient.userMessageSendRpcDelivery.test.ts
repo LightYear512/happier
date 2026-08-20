@@ -106,6 +106,22 @@ const {
   resolveAcceptedPendingQueueV2DeliveryMock: vi.fn(),
 }));
 
+const {
+  enqueueSessionTurnMock,
+  enqueueTranscriptMessageMock,
+  enqueueRuntimeActivitySnapshotMock,
+  setSessionSyncPendingInputServerContractMock,
+  flushSessionMutationOutboxMock,
+  closeSessionMutationOutboxMock,
+} = vi.hoisted(() => ({
+  enqueueSessionTurnMock: vi.fn(),
+  enqueueTranscriptMessageMock: vi.fn(),
+  enqueueRuntimeActivitySnapshotMock: vi.fn(),
+  setSessionSyncPendingInputServerContractMock: vi.fn(),
+  flushSessionMutationOutboxMock: vi.fn(),
+  closeSessionMutationOutboxMock: vi.fn(),
+}));
+
 vi.mock('@/daemon/controlClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/daemon/controlClient')>();
   return {
@@ -127,6 +143,30 @@ vi.mock('./pendingQueueV2Transport', async (importOriginal) => {
     resolveAcceptedPendingQueueV2Delivery: (...args: unknown[]) => resolveAcceptedPendingQueueV2DeliveryMock(...args),
   };
 });
+
+vi.mock('./mutations/createSessionMutationOutbox', () => ({
+  createSessionMutationOutbox: () => ({
+    enqueueSessionTurn: (mutation: unknown) => enqueueSessionTurnMock(mutation),
+    enqueueTranscriptMessage: (mutation: unknown) => enqueueTranscriptMessageMock(mutation),
+    enqueueRuntimeActivitySnapshot: (mutation: unknown) => enqueueRuntimeActivitySnapshotMock(mutation),
+    setSessionSyncPendingInputServerContract: (result: unknown) => setSessionSyncPendingInputServerContractMock(result),
+    readRuntimeActivitySnapshotTail: () => ({
+      sequence: 1,
+      custody: null,
+      settlement: {
+        identity: { mutationKey: 'runtime-activity-snapshot:s1', admissionOrder: 1 },
+        desiredValue: { state: 'idle', activeCount: 0 },
+        result: 'applied',
+        committedProjection: { state: 'idle', activeCount: 0, observedAt: 1, revision: 1 },
+        committedRevision: 1,
+      },
+    }),
+    waitForRuntimeActivitySnapshotTailChange: async () => false,
+    awaitReady: async () => {},
+    flush: (reason: unknown) => flushSessionMutationOutboxMock(reason),
+    close: () => closeSessionMutationOutboxMock(),
+  }),
+}));
 
 import { ApiSessionClient } from './sessionClient';
 
@@ -182,6 +222,18 @@ describe('ApiSessionClient session.userMessage.send delivery', () => {
     }), { status: 200 })));
     enqueuePendingQueueV2MessageViaHttpMock.mockReset();
     enqueuePendingQueueV2MessageViaHttpMock.mockResolvedValue(undefined);
+    enqueueSessionTurnMock.mockReset();
+    enqueueSessionTurnMock.mockResolvedValue(undefined);
+    enqueueTranscriptMessageMock.mockReset();
+    enqueueTranscriptMessageMock.mockResolvedValue({ persisted: true, delivered: false });
+    enqueueRuntimeActivitySnapshotMock.mockReset();
+    enqueueRuntimeActivitySnapshotMock.mockResolvedValue({ persisted: true, delivered: true });
+    setSessionSyncPendingInputServerContractMock.mockReset();
+    setSessionSyncPendingInputServerContractMock.mockResolvedValue(undefined);
+    flushSessionMutationOutboxMock.mockReset();
+    flushSessionMutationOutboxMock.mockResolvedValue(undefined);
+    closeSessionMutationOutboxMock.mockReset();
+    closeSessionMutationOutboxMock.mockResolvedValue(undefined);
     materializeNextPendingQueueV2MessageMock.mockReset();
     listPendingQueueV2DeliveryStatusesFromServerMock.mockReset();
     listPendingQueueV2DeliveryStatusesFromServerMock.mockResolvedValue([]);

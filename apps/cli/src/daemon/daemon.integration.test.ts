@@ -21,7 +21,9 @@ import {
   notifyDaemonSessionStarted, 
   stopDaemon,
   checkIfDaemonRunningAndCleanupStaleState,
+  resolveDaemonSpawnSessionByNonce,
 } from '@/daemon/controlClient';
+import { awaitSpawnedSessionId } from '@/session/services/awaitSpawnedSessionId';
 import { readCredentials, readDaemonState, clearDaemonStateForTests, writeDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
@@ -300,6 +302,28 @@ async function waitForSessionById(sessionId: string, opts: WaitForOptions): Prom
   }, opts);
 }
 
+async function spawnDaemonSessionAndAwaitId(
+  request: string | Parameters<typeof spawnDaemonSession>[0],
+  sessionId?: string,
+): Promise<Readonly<{ response: any; sessionId: string }>> {
+  const response = typeof request === 'string'
+    ? await spawnDaemonSession(request, sessionId)
+    : await spawnDaemonSession(request);
+  expect(response, `spawnDaemonSession response=${JSON.stringify(response)}`).toHaveProperty('success', true);
+
+  const resolved = await awaitSpawnedSessionId({
+    result: response,
+    resolveSpawnSessionByNonce: resolveDaemonSpawnSessionByNonce,
+    timeoutMs: 60_000,
+    pollIntervalMs: 250,
+  });
+  if (resolved.type !== 'success') {
+    throw new Error(`spawnDaemonSession did not resolve to a session id: ${JSON.stringify({ response, resolved })}`);
+  }
+
+  return { response, sessionId: resolved.sessionId };
+}
+
 async function waitForDaemonExit(pid: number, opts: WaitForOptions): Promise<void> {
   await waitForCondition(async () => !isProcessAlive(pid), opts);
 }
@@ -504,16 +528,13 @@ describe.skipIf(!daemonIntegrationSuiteEnabled)('Daemon Integration Tests', { ti
   });
 
   it('should spawn & stop a session via HTTP (not testing RPC route, but similar enough)', { timeout: 60_000 }, async () => {
-    const response = await spawnDaemonSession('/tmp', 'spawned-test-456');
-
-    expect(response, `spawnDaemonSession(/tmp) response=${JSON.stringify(response)}`).toHaveProperty('success', true);
-    expect(response).toHaveProperty('sessionId');
+    const { sessionId } = await spawnDaemonSessionAndAwaitId('/tmp', 'spawned-test-456');
 
     // Verify session is tracked
-    await waitForSessionById(response.sessionId, SESSION_CONSISTENCY_WAIT);
+    await waitForSessionById(sessionId, SESSION_CONSISTENCY_WAIT);
 
     const sessions = await listDaemonSessionsTyped();
-    const spawnedSession = sessions.find((session) => session.happySessionId === response.sessionId);
+    const spawnedSession = sessions.find((session) => session.happySessionId === sessionId);
     
     expect(spawnedSession).toBeDefined();
     if (!spawnedSession) {
@@ -560,7 +581,7 @@ describe.skipIf(!daemonIntegrationSuiteEnabled)('Daemon Integration Tests', { ti
     });
 
     // Spawn a daemon session
-    const spawnResponse = await spawnDaemonSession('/tmp', 'daemon-session-bbb');
+    const spawnedDaemon = await spawnDaemonSessionAndAwaitId('/tmp', 'daemon-session-bbb');
 
     // List all sessions
     await waitForSessionCount(2, {
@@ -574,7 +595,7 @@ describe.skipIf(!daemonIntegrationSuiteEnabled)('Daemon Integration Tests', { ti
     const terminalSession =
       sessions.find((session) => session.pid === terminalHappyProcess.pid)
       ?? sessions.find((session) => session.startedBy !== 'daemon');
-    const daemonSession = sessions.find((session) => session.happySessionId === spawnResponse.sessionId);
+    const daemonSession = sessions.find((session) => session.happySessionId === spawnedDaemon.sessionId);
 
     expect(terminalSession).toBeDefined();
     if (!terminalSession) {
@@ -603,17 +624,17 @@ describe.skipIf(!daemonIntegrationSuiteEnabled)('Daemon Integration Tests', { ti
 
   it('should update session metadata when webhook is called', { timeout: 60_000 }, async () => {
     // Spawn a session
-    const spawnResponse = await spawnDaemonSession('/tmp');
+    const spawned = await spawnDaemonSessionAndAwaitId('/tmp');
 
     // Verify webhook was processed (session ID updated)
-    await waitForSessionById(spawnResponse.sessionId, {
+    await waitForSessionById(spawned.sessionId, {
       timeoutMs: 30_000,
       intervalMs: 250,
       label: 'session metadata webhook propagation',
     });
 
     // Clean up
-    await stopDaemonSession(spawnResponse.sessionId);
+    await stopDaemonSession(spawned.sessionId);
   });
 
   it('should not allow starting a second daemon', { timeout: 60_000 }, async () => {
@@ -644,7 +665,7 @@ describe.skipIf(!daemonIntegrationSuiteEnabled)('Daemon Integration Tests', { ti
       promises.push(
         // Ensure each request is distinct; otherwise the daemon coalesces identical spawn requests
         // to prevent accidental double-spawns (e.g. user double-clicks).
-        spawnDaemonSession({ directory: '/tmp', spawnNonce: randomUUID() })
+        spawnDaemonSessionAndAwaitId({ directory: '/tmp', spawnNonce: randomUUID() })
       );
     }
 
@@ -652,7 +673,7 @@ describe.skipIf(!daemonIntegrationSuiteEnabled)('Daemon Integration Tests', { ti
 
     // All should succeed
     results.forEach(res => {
-      expect(res.success, `concurrent spawn result=${JSON.stringify(res)}`).toBe(true);
+      expect(res.response.success, `concurrent spawn result=${JSON.stringify(res.response)}`).toBe(true);
       expect(res.sessionId).toBeDefined();
     });
 

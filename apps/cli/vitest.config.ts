@@ -9,6 +9,9 @@ import {
     workspacePackageSourcesPlugin,
 } from './scripts/vitestWorkspacePackageResolution'
 
+const maxForksEnv = Number.parseInt(process.env.HAPPIER_CLI_VITEST_MAX_FORKS ?? '', 10);
+const maxForks = Number.isFinite(maxForksEnv) && maxForksEnv > 0 ? maxForksEnv : undefined;
+
 const testEnv = dotenv.config({
     path: '.env.integration-test'
 }).parsed
@@ -37,6 +40,13 @@ export default defineConfig({
         // Multiple CLI unit tests mutate `process.env.HAPPIER_HOME_DIR` / config at runtime.
         // Running them in isolated forked processes prevents cross-file env races.
         pool: 'forks',
+        poolOptions: maxForks === undefined
+            ? undefined
+            : {
+                forks: {
+                    maxForks,
+                },
+            },
         globals: false,
         environment: 'node',
         // CLI "unit" tests include real filesystem/process work; 5s default is too tight under fork pools.

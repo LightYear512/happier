@@ -632,6 +632,7 @@ jobs:
       HAPPIER_GITHUB_TOKEN: ${{ github.token }}
       HAPPIER_CLI_TMUX_INTEGRATION: "1"
       HAPPIER_CLI_DAEMON_REATTACH_INTEGRATION: "1"
+      HAPPIER_CLI_VITEST_MAX_FORKS: "2"
       HAPPIER_NO_BROWSER_OPEN: "1"
       NODE_OPTIONS: --max-old-space-size=6144
       TMPDIR: /tmp

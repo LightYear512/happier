@@ -41,16 +41,24 @@ function resolveBootstrapProcessArchitectureEnv({
     return { ...baseEnv };
   }
   const normalizedArch = String(nodeArch ?? '').trim().toLowerCase();
+  const explicitMinisignWindowsArch = String(baseEnv.HAPPIER_MINISIGN_WINDOWS_ARCH ?? '').trim().toLowerCase();
+  const effectiveWindowsArch = explicitMinisignWindowsArch || normalizedArch;
   const processArchitecture =
-    normalizedArch === 'x64'
+    effectiveWindowsArch === 'x64'
+      || effectiveWindowsArch === 'x86_64'
+      || effectiveWindowsArch === 'amd64'
       ? 'AMD64'
-      : normalizedArch === 'arm64'
+      : effectiveWindowsArch === 'arm64'
+        || effectiveWindowsArch === 'aarch64'
         ? 'ARM64'
         : String(baseEnv.PROCESSOR_ARCHITECTURE ?? '');
   const minisignWindowsArch =
-    normalizedArch === 'x64'
+    effectiveWindowsArch === 'x64'
+      || effectiveWindowsArch === 'x86_64'
+      || effectiveWindowsArch === 'amd64'
       ? 'x64'
-      : normalizedArch === 'arm64'
+      : effectiveWindowsArch === 'arm64'
+        || effectiveWindowsArch === 'aarch64'
         ? 'aarch64'
         : String(baseEnv.HAPPIER_MINISIGN_WINDOWS_ARCH ?? '');
   return {
