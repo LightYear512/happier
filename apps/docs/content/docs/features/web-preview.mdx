@@ -85,11 +85,11 @@ Host-based native preview needs:
 - a server/relay URL reachable from the device
 - WebSocket relay support for dev-server HMR
 
-For a server hosted at `https://proxyapi.layaair.com`, a deployment can set
-`HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN=proxyapi.layaair.com`; preview URLs
-then use hosts like `hp-example.proxyapi.layaair.com`, which are covered by a
-`*.proxyapi.layaair.com` certificate. The base domain does not need a
-`preview.` prefix.
+For a server hosted at `https://proxyapi.layaair.com`, the hosted deployment sets
+`HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN=preview.proxyapi.layaair.com`;
+preview URLs then use hosts like `hp-example.preview.proxyapi.layaair.com`,
+which are covered by a `*.preview.proxyapi.layaair.com` certificate. Configure
+the base domain without a `*.` prefix.
 
 `*.localhost` is a web-local fallback only. In iOS or Android, `localhost` means the device itself, not the Mac or server that owns the dev server.
 

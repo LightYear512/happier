@@ -60,11 +60,11 @@ describe('resolveHostPreviewBaseDomain', () => {
 
     it('preserves default web URL diagnostics when explicit preview domain is validated against the default', () => {
         expect(resolveHostPreviewBaseDomain({
-            HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.layaair.com',
+            HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.proxyapi.layaair.com',
             HANDY_MASTER_SECRET: 'secret',
         })).toMatchObject({
             enabled: true,
-            baseDomain: 'preview.layaair.com',
+            baseDomain: 'preview.proxyapi.layaair.com',
             source: 'explicit',
             effectiveWebUrl: 'https://proxyapi.layaair.com',
             effectiveWebUrlSource: 'default',
