@@ -3,7 +3,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFile, mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { loadCliCommonDistModule } from '../../../ensureCliCommonDistModule.mjs';
 
 /**
@@ -72,6 +72,40 @@ function resolveBootstrapProcessArchitectureEnv({
 export const resolveBootstrapProcessArchitectureEnvForTests = resolveBootstrapProcessArchitectureEnv;
 
 /**
+ * @param {NodeJS.ProcessEnv} baseEnv
+ * @param {string} nodeArch
+ */
+function resolveEffectiveWindowsMinisignArch(baseEnv, nodeArch = process.arch) {
+  const explicitMinisignWindowsArch = String(baseEnv.HAPPIER_MINISIGN_WINDOWS_ARCH ?? '').trim().toLowerCase();
+  const effectiveWindowsArch = explicitMinisignWindowsArch || String(nodeArch ?? '').trim().toLowerCase();
+  if (effectiveWindowsArch === 'x64' || effectiveWindowsArch === 'x86_64' || effectiveWindowsArch === 'amd64') {
+    return 'x64';
+  }
+  if (effectiveWindowsArch === 'arm64' || effectiveWindowsArch === 'aarch64') {
+    return 'aarch64';
+  }
+  return '';
+}
+
+/**
+ * @param {{ minisignDir: string; baseEnv?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; nodeArch?: string }} params
+ */
+function resolveWindowsMinisignDirFallback({
+  minisignDir,
+  baseEnv = process.env,
+  platform = process.platform,
+  nodeArch = process.arch,
+}) {
+  if (platform !== 'win32') return '';
+  const windowsArch = resolveEffectiveWindowsMinisignArch(baseEnv, nodeArch);
+  if (!windowsArch) return '';
+  const candidate = join(dirname(minisignDir), windowsArch);
+  return candidate === minisignDir ? '' : candidate;
+}
+
+export const resolveWindowsMinisignDirFallbackForTests = resolveWindowsMinisignDirFallback;
+
+/**
  * @param {string} raw
  */
 function parseTrailingJsonObject(raw) {
@@ -131,13 +165,24 @@ function resolveSigningEnv({ repoRoot, scratchDir, baseEnv = process.env }) {
   if (!minisignDir) {
     throw new Error('installers-smoke local-build bootstrap did not return a minisign binary directory');
   }
-  const env = prependPathEntries(baseEnv, [minisignDir]);
+  let env = prependPathEntries(baseEnv, [minisignDir]);
+  let effectiveMinisignDir = minisignDir;
   if (!minisignAvailable(env)) {
-    throw new Error(`installers-smoke local-build could not execute minisign after bootstrap: ${minisignDir}`);
+    const fallbackMinisignDir = resolveWindowsMinisignDirFallback({ minisignDir, baseEnv });
+    if (fallbackMinisignDir) {
+      const fallbackEnv = prependPathEntries(baseEnv, [fallbackMinisignDir]);
+      if (minisignAvailable(fallbackEnv)) {
+        env = fallbackEnv;
+        effectiveMinisignDir = fallbackMinisignDir;
+      }
+    }
+  }
+  if (!minisignAvailable(env)) {
+    throw new Error(`installers-smoke local-build could not execute minisign after bootstrap: ${effectiveMinisignDir}`);
   }
   return {
     env,
-    keyPathEntries: [minisignDir],
+    keyPathEntries: [effectiveMinisignDir],
   };
 }
 

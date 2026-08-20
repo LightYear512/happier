@@ -8,6 +8,7 @@ import {
   parseTrailingJsonObjectForTests,
   resolveBootstrapProcessArchitectureEnvForTests,
   resolveSigningEnvForTests,
+  resolveWindowsMinisignDirFallbackForTests,
 } from '../pipeline/release-validation/executors/installers-smoke-local-build.mjs';
 
 test('installers-smoke local-build parses the trailing build-cli JSON payload after tool chatter', () => {
@@ -68,6 +69,19 @@ test('installers-smoke local-build preserves explicit Windows minisign architect
   assert.equal(env.PROCESSOR_ARCHITECTURE, 'AMD64');
   assert.equal(env.PROCESSOR_ARCHITEW6432, '');
   assert.equal(env.HAPPIER_MINISIGN_WINDOWS_ARCH, 'x64');
+});
+
+test('installers-smoke local-build corrects a Windows bootstrap directory that disagrees with the requested architecture', () => {
+  const fallbackDir = resolveWindowsMinisignDirFallbackForTests({
+    platform: 'win32',
+    nodeArch: 'arm64',
+    minisignDir: join('extract', 'minisign-win64', 'aarch64'),
+    baseEnv: {
+      HAPPIER_MINISIGN_WINDOWS_ARCH: 'x64',
+    },
+  });
+
+  assert.equal(fallbackDir, join('extract', 'minisign-win64', 'x64'));
 });
 
 test('installers-smoke local-build bootstrap still returns a minisign dir when GITHUB_PATH is set', async () => {
