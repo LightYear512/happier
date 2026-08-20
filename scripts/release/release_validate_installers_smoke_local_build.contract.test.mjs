@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import {
   parseTrailingJsonObjectForTests,
+  prependPathEntriesForTests,
   resolveBootstrapProcessArchitectureEnvForTests,
   resolveSigningEnvForTests,
   resolveWindowsMinisignDirFallbackForTests,
@@ -155,3 +156,17 @@ fi
 
   await rm(root, { recursive: true, force: true });
 });
+
+test('installers-smoke local-build prepends minisign to an existing Windows-style Path key', () => {
+  const env = prependPathEntriesForTests({
+    Path: 'C:\\Windows\\System32',
+    PATH: 'C:\\stale',
+  }, ['C:\\minisign']);
+
+  assert.equal(env.PATH, undefined);
+  assert.equal(env.Path, `C:\\minisign${pathDelimiterForTests()}C:\\Windows\\System32`);
+});
+
+function pathDelimiterForTests() {
+  return process.platform === 'win32' ? ';' : ':';
+}

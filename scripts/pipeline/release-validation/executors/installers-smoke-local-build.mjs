@@ -16,9 +16,17 @@ function prependPathEntries(baseEnv, entries) {
   if (cleanEntries.length === 0) {
     return next;
   }
-  next.PATH = [...cleanEntries, String(baseEnv.PATH ?? '')].filter(Boolean).join(delimiter);
+  const pathKey = Object.keys(next).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+  next[pathKey] = [...cleanEntries, String(next[pathKey] ?? '')].filter(Boolean).join(delimiter);
+  for (const key of Object.keys(next)) {
+    if (key !== pathKey && key.toLowerCase() === 'path') {
+      delete next[key];
+    }
+  }
   return next;
 }
+
+export const prependPathEntriesForTests = prependPathEntries;
 
 function minisignAvailable(env) {
   const probe = spawnSync('minisign', ['-v'], {
