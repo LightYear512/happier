@@ -1872,6 +1872,24 @@ export async function runClaudeUnifiedTerminalSession<Mode extends EnhancedMode 
       // text steers instead of deferring to turn end. No bridge -> unchanged refusal/defer behavior.
       const bridgeForInFlightModeApply = runtimeControlBridge;
       let arbiterForPromptCustody: ClaudeUnifiedInputArbiter<Mode> | null = null;
+      const acceptedProviderBatches = new WeakSet<object>();
+      let acceptedTranscriptConfirmationTail = Promise.resolve();
+      let replayRecentAcceptedTranscriptCandidates: () => boolean = () => false;
+      const hasNearTermProviderAcceptance = async (
+        batch: ClaudeUnifiedPromptBatch<Mode>,
+      ): Promise<boolean> => {
+        const startedAt = Date.now();
+        // Ambiguous write failures race exact hook/JSONL evidence; wait briefly for already-arriving
+        // provider proof before surfacing a recoverable terminal issue for the same batch.
+        while (Date.now() - startedAt <= 100) {
+          if (acceptedProviderBatches.has(batch)) return true;
+          replayRecentAcceptedTranscriptCandidates();
+          await acceptedTranscriptConfirmationTail.catch(() => undefined);
+          if (acceptedProviderBatches.has(batch)) return true;
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        }
+        return false;
+      };
       const steerWiring = createClaudeUnifiedInFlightSteerEvaluator<Mode>({
         hostAdapter: hostResolution.adapter,
         handle: activeHandle,
@@ -1925,6 +1943,13 @@ export async function runClaudeUnifiedTerminalSession<Mode extends EnhancedMode 
               return undefined;
             }
           };
+          if (
+            failure.failureState === 'failed_ambiguous'
+            && failure.result.recoverable
+            && await hasNearTermProviderAcceptance(failure.batch)
+          ) {
+            return { action: 'claimed_pending_delivery' as const };
+          }
           if (failure.failureState === 'failed_terminal') {
             if (failure.batch.pendingProviderAction) {
               return await notifyTerminalInjectionFailure('[unified]: failed to surface exact pending delivery failure (non-fatal)');
@@ -1962,6 +1987,7 @@ export async function runClaudeUnifiedTerminalSession<Mode extends EnhancedMode 
           });
         },
         onPromptAccepted: (batch, acceptance) => {
+          acceptedProviderBatches.add(batch);
           acceptedPromptTranscriptDiscovery.consumeAcceptedPromptByBatch({
             message: batch.message,
             maxUserMessageSeq: batch.maxUserMessageSeq ?? null,
@@ -2078,7 +2104,6 @@ export async function runClaudeUnifiedTerminalSession<Mode extends EnhancedMode 
           }
         }
       };
-      let acceptedTranscriptConfirmationTail = Promise.resolve();
       const pendingAcceptedTranscriptMatchKeys = new Set<string>();
       const buildAcceptedTranscriptMatchKey = (match: Readonly<{
         acceptedPromptId: string;
@@ -2093,7 +2118,7 @@ export async function runClaudeUnifiedTerminalSession<Mode extends EnhancedMode 
         }
         return false;
       };
-      const replayRecentAcceptedTranscriptCandidates = (): boolean => (
+      replayRecentAcceptedTranscriptCandidates = (): boolean => (
         recentAcceptedTranscriptCandidates.length > 0
         && confirmPromptAcceptedFromTranscript([...recentAcceptedTranscriptCandidates], { rememberUnmatched: false })
       );
