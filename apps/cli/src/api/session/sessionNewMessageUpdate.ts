@@ -237,6 +237,10 @@ export function handleSessionNewMessageUpdate(params: {
             && isDeterministicDaemonInitialPromptLocalId(agentQueueLocalId, params.sessionId);
         const isSelfEchoSuppressedCliWrite =
             isSelfEchoSuppressedLocalId && source === 'cli';
+        const isSelfEchoSuppressedLocalWrite = Boolean(
+            agentQueueLocalId
+            && isSelfEchoSuppressedLocalId,
+        );
         const isAgentQueueEchoSuppressedCliWrite =
             isAgentQueueEchoSuppressedForDelivery && source === 'cli';
         const isProviderOwnedUserMessageEcho = params.isProviderOwnedUserMessageEcho?.(userResult.data, params.update) === true;
@@ -254,6 +258,7 @@ export function handleSessionNewMessageUpdate(params: {
         const shouldDeliverToAgentQueue =
             !isAgentQueueDeliveredLocalId
             && !isEffectivelyAgentQueueEchoSuppressedLocalId
+            && !isSelfEchoSuppressedLocalWrite
             && !isAlreadyPendingAgentQueueMessage
             && !isSelfEchoSuppressedCliWrite
             && !isAgentQueueEchoSuppressedCliWrite
@@ -285,6 +290,7 @@ export function handleSessionNewMessageUpdate(params: {
                 isAgentQueueDeliveredLocalId
                 || isEffectivelyAgentQueueEchoSuppressedLocalId
                 || isAlreadyPendingAgentQueueMessage
+                || isSelfEchoSuppressedLocalWrite
                 || isSelfEchoSuppressedCliWrite
                 || isAgentQueueEchoSuppressedCliWrite
                 || isDeterministicDaemonInitialPrompt;
@@ -302,6 +308,7 @@ export function handleSessionNewMessageUpdate(params: {
                 isAgentQueueDeliveredLocalId,
                 isAlreadyPendingAgentQueueMessage,
                 isPendingQueueMaterializedLocalId,
+                isSelfEchoSuppressedLocalWrite,
                 isSelfEchoSuppressedCliWrite,
                 isAgentQueueEchoSuppressedCliWrite,
                 isProviderOwnedUserMessageEcho,
@@ -344,6 +351,10 @@ export function handleSessionNewMessageUpdate(params: {
                     && params.hasSelfEchoSuppressedLocalId(agentQueueLocalId)
                     && parsedSource === 'cli',
                 );
+                const isSelfEchoSuppressedLocalWrite = Boolean(
+                    agentQueueLocalId
+                    && params.hasSelfEchoSuppressedLocalId(agentQueueLocalId),
+                );
                 const isAgentQueueEchoSuppressedCliWrite =
                     isAgentQueueEchoSuppressedForDelivery && parsedSource === 'cli';
                 const isDeterministicDaemonInitialPrompt =
@@ -362,6 +373,7 @@ export function handleSessionNewMessageUpdate(params: {
                     !isAgentQueueDeliveredLocalId
                     && !isAlreadyPendingAgentQueueMessage
                     && !isEffectivelyAgentQueueEchoSuppressedLocalId
+                    && !isSelfEchoSuppressedLocalWrite
                     && !isSelfEchoSuppressedCliWrite
                     && !isAgentQueueEchoSuppressedCliWrite
                     && !isDeterministicDaemonInitialPrompt
@@ -387,6 +399,7 @@ export function handleSessionNewMessageUpdate(params: {
                         isAgentQueueDeliveredLocalId
                         || isEffectivelyAgentQueueEchoSuppressedLocalId
                         || isAlreadyPendingAgentQueueMessage
+                        || isSelfEchoSuppressedLocalWrite
                         || isSelfEchoSuppressedCliWrite
                         || isAgentQueueEchoSuppressedCliWrite
                         || isDeterministicDaemonInitialPrompt;
@@ -400,6 +413,7 @@ export function handleSessionNewMessageUpdate(params: {
                         isAgentQueueEchoSuppressedForDelivery,
                         isAgentQueueDeliveredLocalId,
                         isEffectivelyAgentQueueEchoSuppressedLocalId,
+                        isSelfEchoSuppressedLocalWrite,
                         isSelfEchoSuppressedCliWrite,
                         isAgentQueueEchoSuppressedCliWrite,
                         isDeterministicDaemonInitialPrompt,

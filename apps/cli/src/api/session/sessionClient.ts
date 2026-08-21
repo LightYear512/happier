@@ -573,6 +573,7 @@ export class ApiSessionClient extends EventEmitter {
     // pendingQueueMaterializedLocalIds: pending queue rows already emitted locally.
     // agentQueueEchoSuppressedLocalIds: local prompt echoes already handled for the live queue.
     // agentQueueDeliveredLocalIds: prompt attempts already handed to the live agent queue.
+    // locallyEnqueuedProviderPromptLocalIds: local durable user prompts awaiting transcript echo.
     // explicitUserRecoveryDecisionsByLocalId: one provider-neutral pre-delivery decision for each
     //   fresh direct prompt id. The result, including a blocking result, is replayed exactly once.
     private readonly pendingMaterializedLocalIds = new Set<string>();
@@ -587,6 +588,7 @@ export class ApiSessionClient extends EventEmitter {
     private readonly sourceCutoverDeferredPendingLocalIds = new Set<string>();
     private readonly agentQueueEchoSuppressedLocalIds = new Set<string>();
     private readonly agentQueueDeliveredLocalIds = new Set<string>();
+    private readonly locallyEnqueuedProviderPromptLocalIds = new Set<string>();
     private readonly explicitUserRecoveryDecisionsByLocalId = new Map<string, Promise<ExplicitUserRecoveryDecision>>();
     private readonly acceptedProviderInputLocalIds = new Set<string>();
     private providerInputOutcomeProducerGeneration = 0;
@@ -598,6 +600,7 @@ export class ApiSessionClient extends EventEmitter {
     private readonly committedLocalIdCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly agentQueueEchoSuppressedLocalIdCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly agentQueueDeliveredLocalIdCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    private readonly locallyEnqueuedProviderPromptLocalIdCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly explicitUserRecoveryCheckedLocalIdCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private pendingWakeSeq = 0;
     private pendingQueueState: PendingQueueState = UNKNOWN_PENDING_QUEUE_STATE;
@@ -887,58 +890,58 @@ export class ApiSessionClient extends EventEmitter {
         });
     }
 
-        constructor(
-            token: string,
-            session: Session,
-            runtimeActivity?: SessionRuntimeActivityClientConfig,
-        ) {
-	        super()
-	        this.token = token;
-	        this.sessionId = session.id;
-	        this.metadata = session.metadata;
-	        this.metadataVersion = session.metadataVersion;
-            this.sessionSocketMachineId = resolveSessionSocketMachineIdForBootstrap(session.metadata);
-            this.agentState = session.agentState;
-	        this.agentStateVersion = session.agentStateVersion;
-            this.pendingQueueState = readKnownPendingQueueState(session) ?? UNKNOWN_PENDING_QUEUE_STATE;
-            const initialLatestTurnStatus = readLatestTurnStatusSnapshot(
-                (session as { latestTurnStatus?: unknown }).latestTurnStatus,
+    constructor(
+        token: string,
+        session: Session,
+        runtimeActivity?: SessionRuntimeActivityClientConfig,
+    ) {
+        super()
+        this.token = token;
+        this.sessionId = session.id;
+        this.metadata = session.metadata;
+        this.metadataVersion = session.metadataVersion;
+        this.sessionSocketMachineId = resolveSessionSocketMachineIdForBootstrap(session.metadata);
+        this.agentState = session.agentState;
+        this.agentStateVersion = session.agentStateVersion;
+        this.pendingQueueState = readKnownPendingQueueState(session) ?? UNKNOWN_PENDING_QUEUE_STATE;
+        const initialLatestTurnStatus = readLatestTurnStatusSnapshot(
+            (session as { latestTurnStatus?: unknown }).latestTurnStatus,
+        );
+        if (initialLatestTurnStatus !== undefined) {
+            this.applyLatestTurnStatusProjection(
+                initialLatestTurnStatus,
+                (session as { latestTurnStatusObservedAt?: unknown }).latestTurnStatusObservedAt,
             );
-            if (initialLatestTurnStatus !== undefined) {
-                this.applyLatestTurnStatusProjection(
-                    initialLatestTurnStatus,
-                    (session as { latestTurnStatusObservedAt?: unknown }).latestTurnStatusObservedAt,
-                );
-            }
-            this.runtimeActivityProjection = readRuntimeActivityProjectionForPendingDrain(session);
-            this.lastObservedMessageSeq =
-                typeof session.seq === 'number' && Number.isFinite(session.seq) && session.seq >= 0
-                    ? Math.trunc(session.seq)
-                    : 0;
-            this.startupMessageCatchUpExplicitAfterSeq =
-                typeof session.initialTranscriptAfterSeq === 'number'
-                && Number.isFinite(session.initialTranscriptAfterSeq)
-                && session.initialTranscriptAfterSeq >= 0
-                    ? Math.trunc(session.initialTranscriptAfterSeq)
-                    : null;
-	        if (session.encryptionMode === 'plain') {
-	            this.sessionEncryptionMode = 'plain';
-	            // Plaintext sessions should not require encryption materials. Keep dummy values for
-	            // legacy surfaces that still accept encryption key args; they must branch on
-	            // `sessionEncryptionMode` and never encrypt/decrypt.
-	            this.encryptionKey = new Uint8Array(32);
-	            this.encryptionVariant = 'dataKey';
-	        } else {
-	            this.sessionEncryptionMode = 'e2ee';
-	            this.encryptionKey = session.encryptionKey;
-	            this.encryptionVariant = session.encryptionVariant;
-	        }
-	        this.transcriptStorage = (() => {
-	            const raw = typeof process.env.HAPPIER_TRANSCRIPT_STORAGE === 'string'
-	                ? process.env.HAPPIER_TRANSCRIPT_STORAGE.trim().toLowerCase()
-	                : '';
-	            return raw === 'direct' ? 'direct' : 'persisted';
-	        })();
+        }
+        this.runtimeActivityProjection = readRuntimeActivityProjectionForPendingDrain(session);
+        this.lastObservedMessageSeq =
+            typeof session.seq === 'number' && Number.isFinite(session.seq) && session.seq >= 0
+                ? Math.trunc(session.seq)
+                : 0;
+        this.startupMessageCatchUpExplicitAfterSeq =
+            typeof session.initialTranscriptAfterSeq === 'number'
+            && Number.isFinite(session.initialTranscriptAfterSeq)
+            && session.initialTranscriptAfterSeq >= 0
+                ? Math.trunc(session.initialTranscriptAfterSeq)
+                : null;
+        if (session.encryptionMode === 'plain') {
+            this.sessionEncryptionMode = 'plain';
+            // Plaintext sessions should not require encryption materials. Keep dummy values for
+            // legacy surfaces that still accept encryption key args; they must branch on
+            // `sessionEncryptionMode` and never encrypt/decrypt.
+            this.encryptionKey = new Uint8Array(32);
+            this.encryptionVariant = 'dataKey';
+        } else {
+            this.sessionEncryptionMode = 'e2ee';
+            this.encryptionKey = session.encryptionKey;
+            this.encryptionVariant = session.encryptionVariant;
+        }
+        this.transcriptStorage = (() => {
+            const raw = typeof process.env.HAPPIER_TRANSCRIPT_STORAGE === 'string'
+                ? process.env.HAPPIER_TRANSCRIPT_STORAGE.trim().toLowerCase()
+                : '';
+            return raw === 'direct' ? 'direct' : 'persisted';
+        })();
         this.startedByDaemonProcess = (() => {
             const idx = process.argv.indexOf('--started-by');
             if (idx < 0) return false;
@@ -1334,6 +1337,22 @@ export class ApiSessionClient extends EventEmitter {
         copyCallableSessionRuntimeControls(this.sessionRuntimeControls, this.baseSessionRuntimeControls);
         for (const registration of this.sessionRuntimeControlRegistrations) {
             copyCallableSessionRuntimeControls(this.sessionRuntimeControls, registration);
+        }
+        const handleUserMessage = this.sessionRuntimeControls.handleUserMessage;
+        if (typeof handleUserMessage === 'function') {
+            this.sessionRuntimeControls.handleUserMessage = async (request) => {
+                const result = await handleUserMessage(request);
+                const runtimeHandled = result && typeof result === 'object' && 'handled' in result
+                    ? result.handled
+                    : undefined;
+                if (runtimeHandled !== false) {
+                    const localId = readPendingLocalId(request.localId);
+                    if (localId) {
+                        this.markLocallyEnqueuedProviderPromptLocalId(localId);
+                    }
+                }
+                return result;
+            };
         }
         this.sessionRuntimeControls.wakePendingMaterialization = () => this.wakePendingMaterialization();
         this.sessionRuntimeControls.isPendingMaterializationAvailable = () => (
@@ -2206,6 +2225,30 @@ export class ApiSessionClient extends EventEmitter {
         this.agentQueueDeliveredLocalIdCleanupTimers.set(localId, timer);
     }
 
+    private markLocallyEnqueuedProviderPromptLocalId(localId: string): void {
+        if (!localId) return;
+        this.locallyEnqueuedProviderPromptLocalIds.add(localId);
+        const existingTimer = this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.get(localId) ?? null;
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+        }
+        const timer = setTimeout(() => {
+            this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.delete(localId);
+            this.locallyEnqueuedProviderPromptLocalIds.delete(localId);
+        }, configuration.transcriptRecoveryMaxWaitMs);
+        timer.unref?.();
+        this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.set(localId, timer);
+    }
+
+    private clearLocallyEnqueuedProviderPromptLocalId(localId: string): void {
+        this.locallyEnqueuedProviderPromptLocalIds.delete(localId);
+        const timer = this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.get(localId) ?? null;
+        if (timer) {
+            clearTimeout(timer);
+            this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.delete(localId);
+        }
+    }
+
     private retainExplicitUserRecoveryDecision(localId: string, decision: Promise<ExplicitUserRecoveryDecision>): void {
         const existingTimer = this.explicitUserRecoveryCheckedLocalIdCleanupTimers.get(localId) ?? null;
         if (existingTimer) clearTimeout(existingTimer);
@@ -2491,6 +2534,8 @@ export class ApiSessionClient extends EventEmitter {
                 }
             }
 
+            const passiveCommittedUserMessageLocalId =
+                this.readAcceptedCanonicalPendingDeliveryLocalIdFromUpdate(data);
             this.recordCommittedUserMessageSeqFromUpdate(data);
 
             const newMessageHandlingResult = handleSessionNewMessageUpdate({
@@ -2501,18 +2546,20 @@ export class ApiSessionClient extends EventEmitter {
                 receivedMessageIds: this.receivedMessageIds,
                 replayPreviouslyObservedMessageIdsForObservation:
                     opts.replayPreviouslyObservedMessageIdsForObservation,
-	                lastObservedMessageSeq: this.lastObservedMessageSeq,
-	                lastObservedUserMessageSeq: this.lastObservedUserMessageSeq,
-	                hasSelfEchoSuppressedLocalId: (localId) => this.hasSelfEchoSuppressedLocalId(localId),
-	                hasAgentQueueEchoSuppressedLocalId: (localId) => this.hasAgentQueueEchoSuppressedLocalId(localId),
-	                hasAgentQueueDeliveredLocalId: (localId) => this.hasAgentQueueDeliveredLocalId(localId),
-	                markAgentQueueEchoSuppressedLocalId: (localId) => this.markAgentQueueEchoSuppressedLocalId(localId),
-	                markAgentQueueDeliveredLocalId: (localId) => this.markAgentQueueDeliveredLocalId(localId),
-	                hasPendingQueueMaterializedLocalId: (localId) => this.hasPendingQueueMaterializedLocalId(localId),
-	                deleteMaterializedLocalId: (localId) => this.deleteMaterializedLocalId(localId),
-	                pendingMessageCallback: this.pendingMessageCallback,
-	                pendingMessages: this.pendingMessages,
-	                onObservedMessage: (message) => {
+                lastObservedMessageSeq: this.lastObservedMessageSeq,
+                lastObservedUserMessageSeq: this.lastObservedUserMessageSeq,
+                hasSelfEchoSuppressedLocalId: (localId) => this.hasSelfEchoSuppressedLocalId(localId),
+                hasAgentQueueEchoSuppressedLocalId: (localId) => this.hasAgentQueueEchoSuppressedLocalId(localId),
+                hasPassiveCommittedUserMessageLocalId: (localId) =>
+                    passiveCommittedUserMessageLocalId === localId,
+                hasAgentQueueDeliveredLocalId: (localId) => this.hasAgentQueueDeliveredLocalId(localId),
+                markAgentQueueEchoSuppressedLocalId: (localId) => this.markAgentQueueEchoSuppressedLocalId(localId),
+                markAgentQueueDeliveredLocalId: (localId) => this.markAgentQueueDeliveredLocalId(localId),
+                hasPendingQueueMaterializedLocalId: (localId) => this.hasPendingQueueMaterializedLocalId(localId),
+                deleteMaterializedLocalId: (localId) => this.deleteMaterializedLocalId(localId),
+                pendingMessageCallback: this.pendingMessageCallback,
+                pendingMessages: this.pendingMessages,
+                onObservedMessage: (message) => {
                     if (isProviderProgressTranscriptBody(message.body) && this.sessionTurnLifecycle.hasActiveTurn()) {
                         this.lastLocalActiveTurnProgressAtMs = message.createdAt ?? Date.now();
                     }
@@ -2665,6 +2712,42 @@ export class ApiSessionClient extends EventEmitter {
             seq: committedSeq,
         });
         this.clearCanonicalPendingDeliveryLocalState(localId);
+        this.clearLocallyEnqueuedProviderPromptLocalId(localId);
+    }
+
+    private readAcceptedCanonicalPendingDeliveryLocalIdFromUpdate(data: Update): string | null {
+        const body = data.body as any;
+        if (
+            body?.sid !== this.sessionId
+            || (body?.t !== 'new-message' && body?.t !== 'message-updated')
+        ) {
+            return null;
+        }
+        const message = body.message;
+        const messageRole =
+            message?.messageRole
+            ?? message?.content?.v?.role
+            ?? message?.content?.role
+            ?? null;
+        if (messageRole !== 'user') {
+            return null;
+        }
+        const localId = readPendingLocalId(message.localId);
+        if (
+            localId === null
+            || (
+                !this.locallyEnqueuedProviderPromptLocalIds.has(localId)
+                &&
+                !this.acceptedProviderInputLocalIds.has(localId)
+                && (
+                    this.providerInputTerminalOutcomeByLocalId.get(localId) !== 'accepted'
+                    || !this.canonicalPendingDeliveryByLocalId.has(localId)
+                )
+            )
+        ) {
+            return null;
+        }
+        return localId;
     }
 
     private async getAccountId(): Promise<string | null> {
@@ -2803,7 +2886,7 @@ export class ApiSessionClient extends EventEmitter {
                     return true;
                 })
                 .then((shouldContinue) => {
-                    if (shouldContinue !== false) {
+                    if (shouldContinue === true) {
                         this.scheduleNextStartupMessageCatchUpRetry();
                     }
                 });
@@ -3165,7 +3248,7 @@ export class ApiSessionClient extends EventEmitter {
                     return true;
                 })
                 .then((shouldContinue) => {
-                    if (shouldContinue !== false) {
+                    if (shouldContinue === true) {
                         this.scheduleNextStartupMessageCatchUpRetry();
                     }
                 });
@@ -4510,6 +4593,7 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         const providerAcceptancePending = this.isCurrentPendingInputServerContract();
+        this.markLocallyEnqueuedProviderPromptLocalId(localId);
         await this.enqueueProviderAcceptedUserPrompt({
             text,
             localId,
@@ -5581,6 +5665,7 @@ export class ApiSessionClient extends EventEmitter {
         this.committedUserMessageSeqTracker.clear();
         this.agentQueueEchoSuppressedLocalIds.clear();
         this.agentQueueDeliveredLocalIds.clear();
+        this.locallyEnqueuedProviderPromptLocalIds.clear();
         this.explicitUserRecoveryDecisionsByLocalId.clear();
         this.acceptedProviderInputLocalIds.clear();
         this.providerInputTerminalOutcomeByLocalId.clear();
@@ -5600,6 +5685,10 @@ export class ApiSessionClient extends EventEmitter {
             clearTimeout(timer);
         }
         this.agentQueueDeliveredLocalIdCleanupTimers.clear();
+        for (const timer of this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.locallyEnqueuedProviderPromptLocalIdCleanupTimers.clear();
         for (const timer of this.explicitUserRecoveryCheckedLocalIdCleanupTimers.values()) {
             clearTimeout(timer);
         }

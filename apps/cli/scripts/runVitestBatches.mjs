@@ -65,7 +65,7 @@ async function runBatch({ configPath, files, batchIndex, batchCount, nodeOptions
   console.log(`[vitest] batch ${batchIndex}/${batchCount} (${files.length} files)`);
   const result = await runManagedChildCommand({
     command: vitestBin,
-    args: ['run', '--config', configPath, ...files],
+    args: ['run', '--config', configPath, '--maxWorkers=1', ...files],
     spawnOptions: {
       cwd: cliRoot,
       env: {
@@ -96,7 +96,7 @@ async function main() {
   const configPath = process.argv.includes('--config')
     ? process.argv[process.argv.indexOf('--config') + 1]
     : 'vitest.config.ts';
-  const batchSize = parsePositiveInt(process.env.HAPPIER_CLI_VITEST_BATCH_SIZE, 40);
+  const batchSize = parsePositiveInt(process.env.HAPPIER_CLI_VITEST_BATCH_SIZE, 1);
   const files = [
     ...collectTestFiles(resolve(cliRoot, 'src')),
     ...collectTestFiles(resolve(cliRoot, 'scripts')),
