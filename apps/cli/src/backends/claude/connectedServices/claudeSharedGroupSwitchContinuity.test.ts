@@ -15,6 +15,7 @@ import {
   ConnectedServiceSessionAuthSwitchLockRegistry,
   createConnectedServiceSessionAuthSwitchCore,
 } from '@/daemon/connectedServices/runtimeAuth/connectedServiceSessionAuthSwitchCore';
+import { createConnectedServiceGroupMutationCurrentnessValidator } from '@/daemon/connectedServices/credentials/createConnectedServiceGroupMutationCurrentnessValidator';
 import { resolveTrackedConnectedServiceSwitchContinuityContext } from '@/daemon/connectedServices/sessionAuthSwitch/resolveTrackedConnectedServiceSwitchContinuityContext';
 import { createSessionConnectedServiceAuthHotApply } from '@/daemon/connectedServices/sessionAuthSwitch/sessionConnectedServiceAuthHotApply';
 import {
@@ -132,10 +133,17 @@ describe('Claude shared-group switch continuity', () => {
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
     } satisfies Credentials;
     const api = {
+      getAccountEncryptionMode: async () => 'plain' as const,
       listConnectedServiceProfiles: async () => ({
         serviceId: 'claude-subscription' as const,
         profiles: [{ profileId: 'lb_bat', status: 'connected' as const }],
       }),
+      getConnectedServiceCredentialPlain: async () => ({
+        content: { t: 'plain' as const, v: selectedRecord },
+        revisionSemantics: 'revisioned' as const,
+        credentialRevision: NEW_CREDENTIAL_REVISION,
+      }),
+      getConnectedServiceCredentialSealed: async () => null,
       getConnectedServiceAuthGroup: async () => ({
         v: 1 as const,
         serviceId: 'claude-subscription' as const,
@@ -250,6 +258,10 @@ describe('Claude shared-group switch continuity', () => {
       restartSession,
       hotApply: createSessionConnectedServiceAuthHotApply({
         resolveRuntimeAuthAdapter: async () => createClaudeConnectedServiceRuntimeAuthAdapter(),
+        validateGroupMutationCurrentness: createConnectedServiceGroupMutationCurrentnessValidator({
+          api: api as unknown as ApiClient,
+          credentials,
+        }),
       }),
       persistSessionBindings: vi.fn(),
       registerHotApplyTargets,
