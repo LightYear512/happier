@@ -1343,12 +1343,14 @@ describe('ApiSessionClient durable mutation outbox', () => {
     }
   });
 
-  it('uses HTTP fallback for session-end when the socket is disconnected', async () => {
-    vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { ok: true } } as never);
+  it('queues canonical session-turn death without delivering legacy session-end', async () => {
+    vi.mocked(axios.post).mockRejectedValue(new Error('legacy session-end should not be reached'));
+    const deliveredEvents: string[] = [];
     sessionSocketStub = createApiSessionSocketStub({
       connected: false,
-      emitWithAck: async () => {
-        throw new Error('socket emit should not be reached while disconnected');
+      emitWithAck: async (event: string) => {
+        deliveredEvents.push(event);
+        return { ok: true };
       },
     });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
@@ -1356,55 +1358,21 @@ describe('ApiSessionClient durable mutation outbox', () => {
     const { ApiSessionClient } = await import('./sessionClient');
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
 
+    client.sendAgentMessage('codex', { type: 'task_started', id: 'turn-1' });
     client.sendSessionDeath();
 
-    await expect.poll(() => vi.mocked(axios.post).mock.calls.length).toBeGreaterThan(0);
-    expect(vi.mocked(axios.post).mock.calls[0]?.[0]).toContain('/v1/sessions/s1/end');
-    expect(vi.mocked(axios.post).mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-      time: expect.any(Number),
-    }));
-    await client.close();
-  });
-
-  it('keeps connected session-end mutations queued until HTTP confirms delivery', async () => {
-    vi.mocked(axios.post).mockRejectedValue(new Error('server offline'));
-    sessionSocketStub = createApiSessionSocketStub({
-      connected: true,
-    });
-    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-
-    const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
-
-    client.sendSessionDeath();
-
-    await expect.poll(() => vi.mocked(axios.post).mock.calls.length).toBeGreaterThan(0);
+    await expect.poll(() => readPersistedOutboxMutationCount('s1')).toBe(2);
+    expect(vi.mocked(axios.post).mock.calls[0]?.[0]).toContain('/v1/sessions/s1/turns/mutations');
+    expect(vi.mocked(axios.post).mock.calls.some(([url]) => String(url).includes('/v1/sessions/s1/end'))).toBe(false);
     expect(sessionSocketStub.emit).not.toHaveBeenCalledWith('session-end', expect.anything());
     expect(sessionSocketStub.emitWithAck).not.toHaveBeenCalledWith('session-end', expect.anything());
-    await expect.poll(() => readPersistedOutboxMutationCount('s1')).toBe(1);
-    await client.close();
-  });
+    expect(deliveredEvents).toEqual([]);
 
-  it('keeps connected session-end mutations queued when unsupported HTTP only has unacked legacy delivery', async () => {
-    vi.mocked(axios.post).mockRejectedValue({ response: { status: 404 } });
-    sessionSocketStub = createApiSessionSocketStub({
-      connected: true,
-    });
-    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-
-    const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
-    await supervisorConnect?.();
-
-    await client.sendSessionDeath();
-
-    await expect.poll(() => vi.mocked(axios.post).mock.calls.length).toBeGreaterThan(0);
+    sessionSocketStub.connected = true;
     await client.flush();
-    expect(sessionSocketStub.emitWithAck).toHaveBeenCalledWith(
-      'session-end',
-      expect.objectContaining({ sid: 's1', time: expect.any(Number) }),
-    );
-    await expect.poll(() => readPersistedOutboxMutationCount('s1')).toBe(1);
+
+    expect(deliveredEvents).toContain('session-turn-mutation');
+    await expect.poll(() => readPersistedOutboxMutationCount('s1')).toBe(0);
     await client.close();
   });
 
