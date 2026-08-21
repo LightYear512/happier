@@ -1850,6 +1850,7 @@ export class ApiSessionClient extends EventEmitter {
         pendingQueueDeliveryTiming?: SessionPendingQueueDeliveryTiming;
     } = {}): boolean {
         if (this.hasMaterializationBlockingCanonicalPendingDelivery()) return false;
+        if (this.resolvePendingForegroundState(opts.activeTurnSteerability) === 'active_unsteerable') return false;
         return countMaterializablePendingRows(this.pendingQueueState) > 0;
     }
 
@@ -3241,7 +3242,7 @@ export class ApiSessionClient extends EventEmitter {
                 replayPreviouslyObservedMessageIdsForObservation:
                     startupCursor.replayPreviouslyObservedMessageIdsForObservation,
             })
-                .catch((error) => {
+                .then(() => true, (error) => {
                     if (isAuthenticationError(error)) {
                         logger.debug('[API] Initial transcript catch-up failed with terminal auth', {
                             error: serializeAxiosErrorForLog(error),
@@ -6545,6 +6546,9 @@ export class ApiSessionClient extends EventEmitter {
             await this.reconcilePendingQueueState({ force: !this.pendingQueueState.known });
         }
         if (countMaterializablePendingRows(this.pendingQueueState) <= 0) {
+            return false;
+        }
+        if (this.resolvePendingForegroundState() === 'active_unsteerable') {
             return false;
         }
         const refreshedTurnStatus = await this.reconcileTurnStatusBeforePendingMaterializationIfNeeded();

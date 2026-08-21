@@ -142,7 +142,7 @@ export function createSessionSyncPendingInputServerContractController(options: R
         probe: ContractProbe,
         attempt: NonNullable<typeof active>,
     ): Promise<SessionSyncPendingInputServerContractResult> {
-        if (!probe.machineId?.trim() || probe.socket.connected !== true) {
+        if (probe.socket.connected !== true) {
             return result(probe, INDETERMINATE);
         }
 
@@ -177,7 +177,7 @@ export function createSessionSyncPendingInputServerContractController(options: R
 
     return {
         resolve(probe: ContractProbe): Promise<SessionSyncPendingInputServerContractResult> {
-            if (!probe.machineId?.trim() || probe.socket.connected !== true) {
+            if (probe.socket.connected !== true) {
                 active = null;
                 return Promise.resolve(result(probe, INDETERMINATE));
             }

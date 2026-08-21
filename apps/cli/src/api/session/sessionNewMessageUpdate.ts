@@ -197,6 +197,7 @@ export function handleSessionNewMessageUpdate(params: {
                 ? params.update.createdAt
                 : undefined;
     const historyReplayProvenance = readSessionHistoryReplayProvenance(params.update);
+    const isSessionHistoryReplay = historyReplayProvenance !== null;
     const bodyWithTransportFields = {
         ...(bodyWithLocalId as any),
         // Attach server timestamps so downstream consumers can make clock-safe decisions.
@@ -265,6 +266,7 @@ export function handleSessionNewMessageUpdate(params: {
             && !isDeterministicDaemonInitialPrompt
             && !isProviderOwnedUserMessageEcho
             && !isPassiveCommittedUserMessageLocalId
+            && !isSessionHistoryReplay
             && (params.shouldDeliverUserMessageToAgentQueue?.(userResult.data, params.update) ?? true);
         if (shouldDeliverToAgentQueue) {
             const deliverableSeq = typeof msgSeq === 'number' && Number.isFinite(msgSeq) ? msgSeq : null;
@@ -379,6 +381,7 @@ export function handleSessionNewMessageUpdate(params: {
                     && !isDeterministicDaemonInitialPrompt
                     && !isProviderOwnedUserMessageEcho
                     && !isPassiveCommittedUserMessageLocalId
+                    && !isSessionHistoryReplay
                     && (params.shouldDeliverUserMessageToAgentQueue?.(parsedCandidate.data, params.update) ?? true);
                 if (shouldDeliverToAgentQueue) {
                     const deliverableSeq = typeof msgSeq === 'number' && Number.isFinite(msgSeq) ? msgSeq : null;

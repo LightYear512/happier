@@ -97,6 +97,27 @@ describe('session server capability selection', () => {
         expect(socket.emitWithAck).not.toHaveBeenCalled();
     });
 
+    it('probes server features when the connected session socket has no machine id', async () => {
+        const fetchImpl = vi.fn().mockResolvedValue(response(features()));
+        const socket = { connected: true };
+        const controller = createSessionSyncPendingInputServerContractController({
+            serverUrl: 'https://server.example',
+            token: 'token',
+            fetchImpl,
+        });
+
+        await expect(controller.resolve({
+            sessionConnectionEpoch: 1,
+            socket,
+            machineId: undefined,
+        })).resolves.toMatchObject({
+            mode: 'session_sync_v2_pending_input_v1',
+            runtimeActivity: 'v2',
+            pendingInput: 'v1',
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
     it.each([[401], [403]] as const)('classifies HTTP %s as auth_failed', async (status) => {
         const controller = createSessionSyncPendingInputServerContractController({
             serverUrl: 'https://server.example',

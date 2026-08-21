@@ -299,6 +299,26 @@ function getSessionMessagesGetCalls(getSpy: ReturnType<typeof vi.spyOn>, session
     );
 }
 
+function currentServerFeaturesResponse(): Response {
+    return new Response(JSON.stringify({
+        features: {
+            sharing: {
+                pendingQueueV2: { enabled: true },
+                pendingDeliveryState: { enabled: true },
+            },
+        },
+        capabilities: {
+            session: {
+                runtimeActivity: { protocolVersion: 2 },
+                pendingInput: { protocolVersion: 1 },
+            },
+        },
+    }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    });
+}
+
 function removeStartedByArgvFlag(): void {
     process.argv = process.argv.filter((arg) => arg !== '--started-by');
 }
@@ -498,6 +518,7 @@ describe('ApiSessionClient connection handling', () => {
         vi.spyOn(console, 'log').mockImplementation(() => {});
         mockFetchSessionSystemRecordHttp.mockReset();
         mockUpsertSessionSystemRecordHttp.mockReset();
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(currentServerFeaturesResponse());
 
         replaceSocketPair();
 
