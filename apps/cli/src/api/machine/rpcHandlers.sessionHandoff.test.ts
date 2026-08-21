@@ -3647,7 +3647,7 @@ function createLoopbackMachineTransferChannels() {
 
       const prepareJobsDirectory = join(activeServerDir, 'session-handoff', 'prepare-target-jobs');
       const recoveryRecordLockPreparationPrefix = `${prepareJobId}.json.lock.owner-`;
-      const statusPromise = statusGet!({ handoffId });
+      let statusPromise: Promise<any> | null = statusGet!({ handoffId });
       const leaseOperationLockPath = join(
         activeServerDir,
         'session-handoff',
@@ -3659,42 +3659,49 @@ function createLoopbackMachineTransferChannels() {
       // Waiting for its job-record lock attempt identifies the later recovery critical
       // section, where proof validation has completed and the operation lock stays held.
       let recoveryOwner: Record<string, unknown> | null = null;
-      await vi.waitFor(async () => {
-        const recordLockContenders = await readdir(prepareJobsDirectory);
-        expect(recordLockContenders.some((name) => name.startsWith(recoveryRecordLockPreparationPrefix))).toBe(true);
-        recoveryOwner = JSON.parse(await readFile(leaseOperationLockPath, 'utf8')) as Record<string, unknown>;
-      });
-      expect(recoveryOwner).toMatchObject({ pid: process.pid, ownerToken: expect.any(String) });
-      await rm(
-        join(activeServerDir, 'session-handoff', 'prepare-target-jobs-staging', prepareJobId, 'lease'),
-        { recursive: true, force: true },
-      );
-      let realRunnerSettled = false;
-      const realRunnerLeasePromise = tryAcquireSessionHandoffPrepareTargetJobLease({
-        activeServerDir,
-        jobId: prepareJobId,
-        ownerId: realRunnerOwnerId,
-        nowMs: Date.now(),
-        ttlMs: 60_000,
-      }).then((lease) => {
-        realRunnerSettled = true;
-        return lease;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(realRunnerSettled).toBe(false);
-      releaseMutationLock.resolve();
-      await mutationLock;
-      const result = await statusPromise;
-      const realRunnerLease = await realRunnerLeasePromise;
-      await releaseSessionHandoffPrepareTargetJobLease({
-        activeServerDir,
-        jobId: prepareJobId,
-        ownerId: realRunnerOwnerId,
-        leaseId: realRunnerLease.lease!.leaseId!,
-      });
+      try {
+        await vi.waitFor(async () => {
+          const recordLockContenders = await readdir(prepareJobsDirectory);
+          expect(recordLockContenders.some((name) => name.startsWith(recoveryRecordLockPreparationPrefix))).toBe(true);
+          recoveryOwner = JSON.parse(await readFile(leaseOperationLockPath, 'utf8')) as Record<string, unknown>;
+        }, { timeout: 5_000, interval: 25 });
+        expect(recoveryOwner).toMatchObject({ pid: process.pid, ownerToken: expect.any(String) });
+        await rm(
+          join(activeServerDir, 'session-handoff', 'prepare-target-jobs-staging', prepareJobId, 'lease'),
+          { recursive: true, force: true },
+        );
+        let realRunnerSettled = false;
+        const realRunnerLeasePromise = tryAcquireSessionHandoffPrepareTargetJobLease({
+          activeServerDir,
+          jobId: prepareJobId,
+          ownerId: realRunnerOwnerId,
+          nowMs: Date.now(),
+          ttlMs: 60_000,
+        }).then((lease) => {
+          realRunnerSettled = true;
+          return lease;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(realRunnerSettled).toBe(false);
+        releaseMutationLock.resolve();
+        await mutationLock;
+        const result = await statusPromise;
+        statusPromise = null;
+        const realRunnerLease = await realRunnerLeasePromise;
+        await releaseSessionHandoffPrepareTargetJobLease({
+          activeServerDir,
+          jobId: prepareJobId,
+          ownerId: realRunnerOwnerId,
+          leaseId: realRunnerLease.lease!.leaseId!,
+        });
 
-      expect(realRunnerLease.acquired).toBe(true);
-      expect(result.status?.status).toBe('awaiting_recovery');
+        expect(realRunnerLease.acquired).toBe(true);
+        expect(result.status?.status).toBe('awaiting_recovery');
+      } finally {
+        releaseMutationLock.resolve();
+        await mutationLock.catch(() => undefined);
+        await statusPromise?.catch(() => undefined);
+      }
     } finally {
       vi.doUnmock('@/configuration');
       vi.resetModules();
