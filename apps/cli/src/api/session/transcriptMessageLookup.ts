@@ -259,12 +259,13 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
         });
     }
 
-    const startedAt = Date.now();
+    if (maxWaitMs <= 0) return null;
+    const deadlineAt = Date.now() + maxWaitMs;
     let currentErrorBackoffMs = errorBackoffBaseMs;
-    while (Date.now() - startedAt < maxWaitMs) {
-        const elapsedMs = Date.now() - startedAt;
-        const remainingMs = maxWaitMs - elapsedMs;
-        if (remainingMs <= 0) break;
+    let attemptedRequest = false;
+    while (!attemptedRequest || Date.now() < deadlineAt) {
+        attemptedRequest = true;
+        const remainingMs = Math.max(1, deadlineAt - Date.now());
 
         const outcome = await findTranscriptEncryptedMessageByLocalIdV2({
             token: params.token,
@@ -299,7 +300,7 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
             currentErrorBackoffMs = errorBackoffBaseMs;
         }
 
-        const remainingAfterAttemptMs = maxWaitMs - (Date.now() - startedAt);
+        const remainingAfterAttemptMs = deadlineAt - Date.now();
         if (remainingAfterAttemptMs <= 0) break;
 
         await new Promise((r) => setTimeout(r, Math.min(delayMs, remainingAfterAttemptMs)));
