@@ -40,11 +40,34 @@ function resolvePreparedDistSnapshotEntrypoint(snapshotDir: string): string {
   return entrypoint;
 }
 
+function isSnapshotProjectFileFresh(snapshotDir: string, rootDir: string, relPath: string): boolean {
+  const target = resolve(rootDir, 'apps', 'cli', relPath);
+  if (!existsSync(target)) return true;
+  const dest = resolve(snapshotDir, relPath);
+  if (!existsSync(dest)) return false;
+
+  try {
+    return readFileSync(dest).equals(readFileSync(target));
+  } catch {
+    return false;
+  }
+}
+
 function ensureCliSourceSnapshot(
   snapshotDir: string,
   rootDir: string,
   env: NodeJS.ProcessEnv,
 ): void {
+  if (
+    existsSync(snapshotDir) &&
+    (
+      !isSnapshotProjectFileFresh(snapshotDir, rootDir, 'package.json') ||
+      !isSnapshotProjectFileFresh(snapshotDir, rootDir, 'tsconfig.json')
+    )
+  ) {
+    rmSync(snapshotDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+
   mkdirSync(snapshotDir, { recursive: true });
 
   const linkTargets = ['src', 'scripts', 'tools', 'bin'];
@@ -117,7 +140,6 @@ function ensureCliSourceSnapshot(
     const target = resolve(rootDir, 'apps', 'cli', relPath);
     if (!existsSync(target)) continue;
     const dest = resolve(snapshotDir, relPath);
-    if (existsSync(dest)) continue;
     writeFileSync(dest, readFileSync(target));
   }
 }

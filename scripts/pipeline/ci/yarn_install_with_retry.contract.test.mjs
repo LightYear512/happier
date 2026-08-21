@@ -130,6 +130,49 @@ test('yarn-install-with-retry retries aggregate network-unreachable failures', (
   );
 });
 
+test('yarn-install-with-retry retries transient prebuild download failures', () => {
+  const root = createFakeYarnWorkspace({
+    installBody: `  count_file="\${FAKE_YARN_INSTALL_COUNT_FILE:?}"
+  count=0
+  if [ -f "$count_file" ]; then
+    count="$(cat "$count_file")"
+  fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$count_file"
+  if [ "$count" -eq 1 ]; then
+    echo 'prebuild-install http 504 https://github.com/homebridge/node-pty-prebuilt-multiarch/releases/download/v0.13.1/node-pty-prebuilt-multiarch-v0.13.1-node-v127-win32-x64.tar.gz' >&2
+    echo 'prebuild-install warn install No prebuilt binaries found (target=22.23.2 runtime=node arch=x64 libc= platform=win32)' >&2
+    exit 1
+  fi
+  exit 0`,
+  });
+  const stateFile = path.join(root, 'state.log');
+  const installCountFile = path.join(root, 'install-count.txt');
+
+  const res = spawnSync('bash', [scriptPath, '--frozen-lockfile'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
+      FAKE_YARN_STATE_FILE: stateFile,
+      FAKE_YARN_INSTALL_COUNT_FILE: installCountFile,
+      YARN_INSTALL_RETRY_SLEEP_SECONDS: '0',
+    },
+  });
+
+  assert.equal(res.status, 0, `expected prebuild HTTP 504 to retry, stderr:\n${res.stderr}`);
+  assert.deepEqual(
+    readFileSync(stateFile, 'utf8').trim().split('\n').filter(Boolean),
+    [
+      'config set registry https://registry.npmjs.org/',
+      'install --frozen-lockfile',
+      'cache clean',
+      'install --frozen-lockfile',
+    ],
+  );
+});
+
 test('yarn-install-with-retry does not retry non-transient failures', () => {
   const root = createFakeYarnWorkspace({
     installBody: `  echo 'error Command failed with exit code 1.' >&2

@@ -60,25 +60,33 @@ describe('claudeLocal abort escalation timers', () => {
 
       const kill = vi.fn(() => true);
 
-      mockSpawn.mockReturnValueOnce({
-        pid: 4242,
-        killed: false,
-        stdio: [null, null, null, null],
-        on: vi.fn((event: string, callback: (...args: any[]) => void) => {
-          if (event === 'exit') {
-            // Resolve after SIGKILL would have fired (50ms + 100ms + 50ms = 150ms).
-            setTimeout(() => callback(0, null), 150);
-          }
-        }),
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        kill,
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        stdin: {
-          on: vi.fn(),
-          end: vi.fn(),
-        },
+      let spawned: () => void = () => {};
+      const spawnedPromise = new Promise<void>((resolve) => {
+        spawned = resolve;
+      });
+
+      mockSpawn.mockImplementationOnce(() => {
+        spawned();
+        return {
+          pid: 4242,
+          killed: false,
+          stdio: [null, null, null, null],
+          on: vi.fn((event: string, callback: (...args: any[]) => void) => {
+            if (event === 'exit') {
+              // Resolve after SIGKILL would have fired (50ms + 100ms + 50ms = 150ms).
+              setTimeout(() => callback(0, null), 150);
+            }
+          }),
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          kill,
+          stdout: { on: vi.fn() },
+          stderr: { on: vi.fn() },
+          stdin: {
+            on: vi.fn(),
+            end: vi.fn(),
+          },
+        };
       });
 
       const controller = new AbortController();
@@ -91,6 +99,7 @@ describe('claudeLocal abort escalation timers', () => {
         claudeArgs: [],
       });
 
+      await spawnedPromise;
       controller.abort();
 
       expect(kill).toHaveBeenCalledWith('SIGINT');

@@ -155,6 +155,75 @@ describe('resolveCliTestLaunchSpec', () => {
     }
   });
 
+  it('recreates a copied source-entrypoint snapshot when the CLI package dependency graph changed', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'happier-cli-launch-spec-drift-'));
+    const snapshotDir = resolve(repoRoot, 'snapshot');
+
+    try {
+      mkdirSync(resolve(repoRoot, 'apps', 'cli', 'src'), { recursive: true });
+      mkdirSync(resolve(repoRoot, 'apps', 'cli', 'node_modules', '@agentclientprotocol', 'sdk'), { recursive: true });
+      mkdirSync(resolve(snapshotDir, 'node_modules', '@agentclientprotocol', 'sdk'), { recursive: true });
+
+      writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({ name: 'repo', private: true }), 'utf8');
+      writeFileSync(
+        resolve(repoRoot, 'apps', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@happier-dev/cli',
+          dependencies: {
+            '@agentclientprotocol/sdk': '^1.2.1',
+          },
+        }),
+        'utf8',
+      );
+      writeFileSync(resolve(repoRoot, 'apps', 'cli', 'tsconfig.json'), '{}', 'utf8');
+      writeFileSync(resolve(repoRoot, 'apps', 'cli', 'src', 'index.ts'), 'export const ok = true;\n', 'utf8');
+      writeFileSync(
+        resolve(repoRoot, 'apps', 'cli', 'node_modules', '@agentclientprotocol', 'sdk', 'package.json'),
+        JSON.stringify({ name: '@agentclientprotocol/sdk', version: '1.2.1' }),
+        'utf8',
+      );
+
+      writeFileSync(
+        resolve(snapshotDir, 'package.json'),
+        JSON.stringify({
+          name: '@happier-dev/cli',
+          dependencies: {
+            '@agentclientprotocol/sdk': '^0.14.1',
+          },
+        }),
+        'utf8',
+      );
+      writeFileSync(resolve(snapshotDir, 'tsconfig.json'), '{}', 'utf8');
+      writeFileSync(
+        resolve(snapshotDir, 'node_modules', '@agentclientprotocol', 'sdk', 'package.json'),
+        JSON.stringify({ name: '@agentclientprotocol/sdk', version: '0.14.1' }),
+        'utf8',
+      );
+
+      const spec = await resolveCliTestLaunchSpec(
+        {
+          testDir: resolve(repoRoot, '.project'),
+          env: {
+            ...process.env,
+            HAPPIER_E2E_PROVIDER_USE_CLI_SOURCE_ENTRYPOINT: '1',
+            HAPPIER_E2E_CLI_SNAPSHOT_NODE_MODULES_MODE: 'copy',
+          },
+        },
+        {
+          repoRoot,
+          snapshotDir,
+        },
+      );
+
+      expect(spec.command).toBe(process.execPath);
+      expect(spec.args).toContain(resolve(snapshotDir, 'src', 'index.ts'));
+      expect(readFileSync(resolve(snapshotDir, 'package.json'), 'utf8')).toContain('^1.2.1');
+      expect(readFileSync(resolve(snapshotDir, 'node_modules', '@agentclientprotocol', 'sdk', 'package.json'), 'utf8')).toContain('"1.2.1"');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it('can skip refreshing shared deps when source-entrypoint launches only need existing outputs', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'happier-cli-launch-spec-skip-'));
     const snapshotDir = resolve(repoRoot, 'snapshot');

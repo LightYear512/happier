@@ -792,4 +792,77 @@ describe('ensureCliDistSnapshotEntrypoint', () => {
     expect(existsSync(repairedIndexFilePath)).toBe(true);
     await expect(readFile(repairedIndexFilePath, 'utf8')).resolves.toContain('source-zod');
   });
+
+  it('recreates a ready snapshot when the CLI package manifest dependency graph changed', async () => {
+    const repoRoot = await createRepoRoot();
+    const snapshotDir = join(repoRoot, '.project', 'tmp', 'cli-dist-snapshot');
+    const snapshotDistDir = join(snapshotDir, 'dist');
+    const snapshotReadyMarkerPath = join(snapshotDir, '.cli-dist-snapshot.ready.json');
+    const currentSdkPackageDir = join(
+      repoRoot,
+      'apps',
+      'cli',
+      'node_modules',
+      '@agentclientprotocol',
+      'sdk',
+    );
+    const snapshotSdkPackageDir = join(
+      snapshotDir,
+      'node_modules',
+      '@agentclientprotocol',
+      'sdk',
+    );
+
+    await writeFile(
+      join(repoRoot, 'apps', 'cli', 'package.json'),
+      JSON.stringify({
+        name: '@happier-dev/cli',
+        dependencies: {
+          '@agentclientprotocol/sdk': '^1.2.1',
+        },
+      }),
+      'utf8',
+    );
+    await mkdir(currentSdkPackageDir, { recursive: true });
+    await writeFile(
+      join(currentSdkPackageDir, 'package.json'),
+      JSON.stringify({ name: '@agentclientprotocol/sdk', version: '1.2.1' }),
+      'utf8',
+    );
+
+    await mkdir(snapshotDistDir, { recursive: true });
+    await writeFile(join(snapshotDistDir, 'index.mjs'), 'export const ok = true;\n', 'utf8');
+    await writeFile(
+      join(snapshotDir, 'package.json'),
+      JSON.stringify({
+        name: '@happier-dev/cli',
+        dependencies: {
+          '@agentclientprotocol/sdk': '^0.14.1',
+        },
+      }),
+      'utf8',
+    );
+    await mkdir(snapshotSdkPackageDir, { recursive: true });
+    await writeFile(
+      join(snapshotSdkPackageDir, 'package.json'),
+      JSON.stringify({ name: '@agentclientprotocol/sdk', version: '0.14.1' }),
+      'utf8',
+    );
+    await writeFile(snapshotReadyMarkerPath, JSON.stringify({ v: 1 }), 'utf8');
+
+    const snapshotEntrypoint = await ensureCliDistSnapshotEntrypoint(
+      { testDir: join(repoRoot, '.project'), env: process.env },
+      {
+        repoRoot,
+        snapshotDir,
+        runCommand: async () => {
+          throw new Error('unexpected dist rebuild');
+        },
+      },
+    );
+
+    expect(snapshotEntrypoint).toBe(join(snapshotDistDir, 'index.mjs'));
+    await expect(readFile(join(snapshotDir, 'package.json'), 'utf8')).resolves.toContain('^1.2.1');
+    await expect(readFile(join(snapshotSdkPackageDir, 'package.json'), 'utf8')).resolves.toContain('"1.2.1"');
+  });
 });

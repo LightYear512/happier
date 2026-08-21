@@ -827,6 +827,19 @@ function isSnapshotFreshForDist(params: {
   }
 }
 
+function isSnapshotProjectFileFresh(snapshotDir: string, rootDir: string, relPath: string): boolean {
+  const target = resolve(rootDir, 'apps', 'cli', relPath);
+  if (!existsSync(target)) return true;
+  const snapshotPath = resolve(snapshotDir, relPath);
+  if (!existsSync(snapshotPath)) return false;
+
+  try {
+    return readFileSync(snapshotPath).equals(readFileSync(target));
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureCliDistSnapshotEntrypoint(
   params: { testDir: string; env: NodeJS.ProcessEnv },
   options: EnsureCliDistSnapshotOptions,
@@ -900,10 +913,14 @@ export async function ensureCliDistSnapshotEntrypoint(
             }
           };
 
-          const snapshotFreshForCurrentDist = (): boolean => isSnapshotFreshForDist({
-            snapshotEntrypoint,
-            canonicalEntrypoint,
-          });
+          const snapshotFreshForCurrentDist = (): boolean => (
+            isSnapshotFreshForDist({
+              snapshotEntrypoint,
+              canonicalEntrypoint,
+            })
+            && isSnapshotProjectFileFresh(options.snapshotDir, rootDir, 'package.json')
+            && isSnapshotProjectFileFresh(options.snapshotDir, rootDir, 'tsconfig.json')
+          );
 
           if (isHealthyCliDist(snapshotDistDir) && snapshotHasReadyMarker() && snapshotFreshForCurrentDist()) {
             // Fast path: keep daemon startups cheap during slow E2E lanes.
