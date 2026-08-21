@@ -1326,6 +1326,37 @@ describe('registerMachineRpcHandlers', () => {
     }));
   });
 
+  it('preserves provider transcript paths through the production resume adapter', async () => {
+    const registered = new Map<string, (params: any) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    const spawnSession = vi.fn(async () => ({ type: 'success', sessionId: 's1' } as const));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+    });
+
+    await registered.get(RPC_METHODS.SPAWN_HAPPY_SESSION)?.({
+      type: 'resume-session',
+      sessionId: 'sess-paused',
+      directory: '/tmp',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      providerTranscriptPath: ' /tmp/claude/projects/proj-a/session-1.jsonl ',
+    });
+
+    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+      existingSessionId: 'sess-paused',
+      providerTranscriptPath: '/tmp/claude/projects/proj-a/session-1.jsonl',
+    }));
+  });
+
   it('passes agentRuntimeDescriptorV1 through resume requests and derives codexBackendMode from canonical providerExtra affinity', async () => {
     const registered = new Map<string, (params: any) => Promise<any>>();
     const rpcHandlerManager = {

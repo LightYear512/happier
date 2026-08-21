@@ -27,6 +27,10 @@ function isDeterministicDaemonInitialPromptLocalId(localId: string | null, sessi
     return localId === `daemon-initial-prompt:${sessionId}`;
 }
 
+export function isDirectImportTranscriptLocalId(localId: string | null): boolean {
+    return typeof localId === 'string' && localId.startsWith('direct-import:v1:');
+}
+
 export function handleSessionNewMessageUpdate(params: {
     update: Update;
     sessionId: string;
@@ -237,7 +241,11 @@ export function handleSessionNewMessageUpdate(params: {
             isAgentQueueEchoSuppressedForDelivery && source === 'cli';
         const isProviderOwnedUserMessageEcho = params.isProviderOwnedUserMessageEcho?.(userResult.data, params.update) === true;
         const isPassiveCommittedUserMessageLocalId = Boolean(
-            agentQueueLocalId && params.hasPassiveCommittedUserMessageLocalId?.(agentQueueLocalId),
+            agentQueueLocalId
+            && (
+                params.hasPassiveCommittedUserMessageLocalId?.(agentQueueLocalId) === true
+                || isDirectImportTranscriptLocalId(agentQueueLocalId)
+            ),
         );
         const shouldRespectAgentQueueEchoSuppression = isAlreadyPendingAgentQueueMessage;
         const isEffectivelyAgentQueueEchoSuppressedLocalId =
@@ -344,7 +352,11 @@ export function handleSessionNewMessageUpdate(params: {
                 const isProviderOwnedUserMessageEcho =
                     params.isProviderOwnedUserMessageEcho?.(parsedCandidate.data, params.update) === true;
                 const isPassiveCommittedUserMessageLocalId = Boolean(
-                    agentQueueLocalId && params.hasPassiveCommittedUserMessageLocalId?.(agentQueueLocalId),
+                    agentQueueLocalId
+                    && (
+                        params.hasPassiveCommittedUserMessageLocalId?.(agentQueueLocalId) === true
+                        || isDirectImportTranscriptLocalId(agentQueueLocalId)
+                    ),
                 );
                 const shouldDeliverToAgentQueue =
                     !isAgentQueueDeliveredLocalId

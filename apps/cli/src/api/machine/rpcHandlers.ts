@@ -371,6 +371,7 @@ export function registerMachineRpcHandlers(params: Readonly<{
       modelUpdatedAt,
       accountSettingsVersionHint,
       initialTranscriptAfterSeq,
+      providerTranscriptPath,
       executionAuthorization,
       initialGoal,
       sessionConfigOptionOverrides,
@@ -403,6 +404,10 @@ export function registerMachineRpcHandlers(params: Readonly<{
       && Number.isInteger(initialTranscriptAfterSeq)
       && initialTranscriptAfterSeq >= 0
         ? initialTranscriptAfterSeq
+        : undefined;
+    const normalizedProviderTranscriptPath =
+      typeof providerTranscriptPath === 'string' && providerTranscriptPath.trim().length > 0
+        ? providerTranscriptPath.trim()
         : undefined;
     const normalizedExecutionAuthorization = (() => {
       if (executionAuthorization === undefined) return undefined;
@@ -522,6 +527,7 @@ export function registerMachineRpcHandlers(params: Readonly<{
       mcpSelectionForceExcludeCount: normalizedMcpSelection?.forceExcludeServerIds.length ?? 0,
       hasResume: normalizedResume !== undefined,
       hasInitialTranscriptAfterSeq: normalizedInitialTranscriptAfterSeq !== undefined,
+      hasProviderTranscriptPath: normalizedProviderTranscriptPath !== undefined,
       hasInitialGoal: normalizedInitialGoal !== undefined,
       codexBackendMode: normalizedCodexBackendMode,
     });
@@ -543,6 +549,7 @@ export function registerMachineRpcHandlers(params: Readonly<{
       permissionModeUpdatedAt: normalizedPermissionModeUpdatedAt,
       accountSettingsVersionHint: normalizedAccountSettingsVersionHint,
       initialTranscriptAfterSeq: normalizedInitialTranscriptAfterSeq,
+      providerTranscriptPath: normalizedProviderTranscriptPath,
       executionAuthorization: normalizedExecutionAuthorization,
       initialGoal: normalizedInitialGoal,
       agentModeId: normalizedAgentModeId,

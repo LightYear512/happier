@@ -110,7 +110,7 @@ describe('importDirectSessionTranscript', () => {
         credentials: { token: 'token-1', encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3]) } },
         sessionId: 'sess_direct_import',
         workingDirectory,
-      })).resolves.toEqual({ importedCount: 1 });
+      })).resolves.toEqual({ importedCount: 1, latestImportedSeq: 1 });
 
       expect(commitSessionStoredMessageMock).toHaveBeenCalledTimes(1);
       const committed = commitSessionStoredMessageMock.mock.calls[0]?.[0];

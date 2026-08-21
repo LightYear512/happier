@@ -475,8 +475,13 @@ safeAppendJsonl(logPath, {
   mergedMcpServers,
 });
 
-if (argv.includes('--version') || argv.includes('-v')) {
+if (argv.includes('--version') || argv.includes('version') || argv.includes('-v')) {
   process.stdout.write('0.0.0-fake\n');
+  process.exit(0);
+}
+
+if (argv.includes('--help') || argv.includes('help')) {
+  process.stdout.write('Usage: claude [options] [command]\n');
   process.exit(0);
 }
 

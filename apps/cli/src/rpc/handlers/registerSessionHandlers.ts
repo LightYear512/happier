@@ -98,6 +98,11 @@ export interface SpawnSessionOptions {
      * delivered once without replaying older turns.
      */
     initialTranscriptAfterSeq?: number;
+    /**
+     * Provider-native transcript path needed to validate an explicit vendor resume before
+     * the provider hook can report the same path again.
+     */
+    providerTranscriptPath?: string;
     executionAuthorization?: import('@happier-dev/protocol').SpawnSessionExecutionAuthorization;
     /**
      * Optional native goal to apply immediately after provider attach/resume and before

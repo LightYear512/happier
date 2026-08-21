@@ -271,9 +271,10 @@ export async function importDirectSessionTranscript(params: Readonly<{
   credentials: Credentials;
   sessionId: string;
   workingDirectory?: string;
-}>): Promise<Readonly<{ importedCount: number }>> {
+}>): Promise<Readonly<{ importedCount: number; latestImportedSeq: number | null }>> {
   const items = await loadAllDirectTranscriptItems({ linked: params.linked });
   let importedCount = 0;
+  let latestImportedSeq: number | null = null;
   const workingDirectory = readString(params.workingDirectory) ?? params.linked.sessionPath;
 
   for (const item of items) {
@@ -289,7 +290,7 @@ export async function importDirectSessionTranscript(params: Readonly<{
       raw,
     });
 
-    await commitSessionStoredMessage({
+    const committed = await commitSessionStoredMessage({
       token: params.credentials.token,
       sessionId: params.sessionId,
       content,
@@ -300,8 +301,11 @@ export async function importDirectSessionTranscript(params: Readonly<{
         directItemId: item.id,
       }),
     });
+    if (Number.isSafeInteger(committed.seq) && committed.seq >= 0) {
+      latestImportedSeq = Math.max(latestImportedSeq ?? 0, committed.seq);
+    }
     importedCount += 1;
   }
 
-  return { importedCount };
+  return { importedCount, latestImportedSeq };
 }

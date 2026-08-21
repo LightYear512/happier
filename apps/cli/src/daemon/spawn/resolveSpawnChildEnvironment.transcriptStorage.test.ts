@@ -40,6 +40,25 @@ describe('resolveSpawnChildEnvironment (transcript storage)', () => {
     expect(result.extraEnvForChild.HAPPIER_TRANSCRIPT_STORAGE).toBeUndefined();
   });
 
+  it('passes provider transcript paths to child runners', async () => {
+    const result = await resolveSpawnChildEnvironment({
+      options: {
+        directory: '/tmp',
+        providerTranscriptPath: ' /tmp/claude/projects/proj-a/session-1.jsonl ',
+      },
+      profileEnvironmentVariables: {},
+      daemonSpawnHooks: null,
+      processEnv: {},
+      logDebug: () => {},
+      logInfo: () => {},
+      logWarn: () => {},
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.extraEnvForChild.HAPPIER_PROVIDER_TRANSCRIPT_PATH).toBe('/tmp/claude/projects/proj-a/session-1.jsonl');
+  });
+
   it('sets HAPPIER_SESSION_ATTACH_METADATA_IDENTITY_POLICY when requested', async () => {
     const result = await resolveSpawnChildEnvironment({
       options: {

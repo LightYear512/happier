@@ -130,6 +130,7 @@ interface LoopOptions {
         sessionId: string;
         metadata: import('@/api/types').Metadata;
     }>) => Promise<void> | void
+    providerTranscriptPath?: string | null
     runtimeActivityContributions?: Readonly<{
         activateProviderTasks(): Promise<Readonly<{
             providerTasks: SessionRuntimeActivityContributionHandle;
@@ -168,6 +169,7 @@ export async function loop(opts: LoopOptions): Promise<number> {
         hookSettingsPath: opts.hookSettingsPath,
         hookPluginDir: opts.hookPluginDir ?? null,
         claudeStatuslineForwarder: opts.statuslineForwarder ?? null,
+        providerTranscriptPath: opts.providerTranscriptPath ?? null,
         jsRuntime: opts.jsRuntime,
         startedBy: opts.startedBy ?? 'terminal',
         terminalRuntime: opts.terminalRuntime ?? null,

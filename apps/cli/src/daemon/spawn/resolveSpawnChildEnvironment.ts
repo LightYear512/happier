@@ -243,6 +243,12 @@ export async function resolveSpawnChildEnvironment(params: {
   if (params.options.transcriptStorage === 'direct') {
     extraEnvForChild.HAPPIER_TRANSCRIPT_STORAGE = 'direct';
   }
+  const providerTranscriptPath = typeof params.options.providerTranscriptPath === 'string'
+    ? params.options.providerTranscriptPath.trim()
+    : '';
+  if (providerTranscriptPath) {
+    extraEnvForChild.HAPPIER_PROVIDER_TRANSCRIPT_PATH = providerTranscriptPath;
+  }
   if (params.options.attachMetadataIdentityPolicy) {
     extraEnvForChild.HAPPIER_SESSION_ATTACH_METADATA_IDENTITY_POLICY = params.options.attachMetadataIdentityPolicy;
   }

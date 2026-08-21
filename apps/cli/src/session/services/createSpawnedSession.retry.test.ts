@@ -75,7 +75,37 @@ describe('createSpawnedSession retry custody', () => {
     expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
       spawnNonce: stableAttempt.spawnNonce,
     }));
-    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenNthCalledWith(1, stableAttempt.spawnNonce);
-    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenNthCalledWith(2, stableAttempt.spawnNonce);
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenNthCalledWith(1, stableAttempt.spawnNonce, expect.any(Number));
+    expect(resolveDaemonSpawnSessionByNonce).toHaveBeenNthCalledWith(2, stableAttempt.spawnNonce, expect.any(Number));
+  });
+
+  it('passes existing Happier session and provider resume ids into daemon spawn requests', async () => {
+    spawnDaemonSession.mockResolvedValue({
+      success: true,
+      sessionId: 'sess_happy_persist',
+    });
+    fetchSessionById.mockResolvedValue({
+      id: 'sess_happy_persist',
+      createdAt: 1,
+      updatedAt: 1,
+      active: true,
+      activeAt: 1,
+      pendingCount: 0,
+      metadataVersion: 1,
+      metadata: { path: '/repo', host: 'host' },
+    });
+
+    await createSpawnedSession({
+      credentials,
+      directory: '/repo',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      existingSessionId: 'sess_happy_persist',
+      resume: 'claude-native-session',
+    });
+
+    expect(spawnDaemonSession).toHaveBeenCalledWith(expect.objectContaining({
+      existingSessionId: 'sess_happy_persist',
+      resume: 'claude-native-session',
+    }));
   });
 });

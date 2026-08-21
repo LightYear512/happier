@@ -124,6 +124,15 @@ describe('SpawnDaemonSessionRequestSchema', () => {
     expect(parsed.initialTranscriptAfterSeq).toBe(36);
   });
 
+  it('accepts provider transcript paths from resume requests', () => {
+    const parsed = SpawnDaemonSessionRequestSchema.parse({
+      directory: '/tmp',
+      providerTranscriptPath: '/tmp/claude/projects/proj-a/session-1.jsonl',
+    });
+
+    expect(parsed.providerTranscriptPath).toBe('/tmp/claude/projects/proj-a/session-1.jsonl');
+  });
+
   it('accepts fresh user-request execution authorization with an opaque request id', () => {
     const parsed = SpawnDaemonSessionRequestSchema.parse({
       directory: '/tmp',

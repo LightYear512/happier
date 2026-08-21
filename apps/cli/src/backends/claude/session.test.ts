@@ -465,6 +465,68 @@ describe('Session', () => {
     }
   });
 
+  it('adopts a proven provider transcript path for explicit resumes before hooks run', () => {
+    const transcript = createTempClaudeTranscript('sess_1');
+    const client = createSessionClientStub();
+
+    const session = new Session({
+      client,
+      path: '/tmp',
+      logPath: '/tmp/log',
+      sessionId: null,
+      claudeArgs: ['--resume', 'sess_1'],
+      providerTranscriptPath: transcript.transcriptPath,
+      messageQueue: new MessageQueue2<EnhancedMode>(() => 'mode'),
+      onModeChange: () => {},
+      hookSettingsPath: '/tmp/hooks.json',
+    });
+
+    try {
+      expect(session.sessionId).toBe('sess_1');
+      expect(session.transcriptPath).toBe(transcript.transcriptPath);
+    } finally {
+      session.cleanup();
+      rmSync(transcript.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('adopts provider transcript paths proven by Claude queue operation rows', () => {
+    const transcript = createTempClaudeTranscript('sess_queue');
+    writeFileSync(
+      transcript.transcriptPath,
+      `${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: 'sess_queue' })}\n`
+      + `${JSON.stringify({ type: 'queue-operation', operation: 'dequeue', sessionId: 'sess_queue' })}\n`
+      + `${JSON.stringify({
+        type: 'user',
+        uuid: 'user-1',
+        cwd: '/workspace/project',
+        message: { content: 'hello' },
+      })}\n`,
+      'utf8',
+    );
+    const client = createSessionClientStub();
+
+    const session = new Session({
+      client,
+      path: '/tmp',
+      logPath: '/tmp/log',
+      sessionId: null,
+      claudeArgs: ['--resume', 'sess_queue'],
+      providerTranscriptPath: transcript.transcriptPath,
+      messageQueue: new MessageQueue2<EnhancedMode>(() => 'mode'),
+      onModeChange: () => {},
+      hookSettingsPath: '/tmp/hooks.json',
+    });
+
+    try {
+      expect(session.sessionId).toBe('sess_queue');
+      expect(session.transcriptPath).toBe(transcript.transcriptPath);
+    } finally {
+      session.cleanup();
+      rmSync(transcript.tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports discovered Claude session metadata back to the daemon tracker', async () => {
     const transcript = createTempClaudeTranscript('claude-session-1');
     let metadata: Metadata = createMetadataStub({ startedBy: 'daemon' });

@@ -114,6 +114,7 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
     agentRuntimeDescriptorV1: options.agentRuntimeDescriptorV1,
   }) ?? null;
   const resume = normalizeNonEmptyString(options.resume);
+  const providerTranscriptPath = normalizeNonEmptyString(options.providerTranscriptPath);
   const pendingFirstInput = options.pendingFirstInput ?? null;
   const initialTranscriptAfterSeq = typeof options.initialTranscriptAfterSeq === 'number'
     && Number.isSafeInteger(options.initialTranscriptAfterSeq)
@@ -136,6 +137,7 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
     modelId,
     codexBackendMode,
     resume,
+    providerTranscriptPath,
     pendingFirstInputHash: pendingFirstInput ? sha256Hex(stableJsonStringify(pendingFirstInput)) : null,
     initialTranscriptAfterSeq,
     initialGoal: options.initialGoal === undefined ? null : toStableJson(options.initialGoal, new WeakSet()),

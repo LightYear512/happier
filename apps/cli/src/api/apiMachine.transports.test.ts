@@ -76,6 +76,12 @@ vi.mock('./rpc/RpcHandlerManager', () => ({
     async invokeLocal() {
       return { ok: true };
     }
+    hasHandler() {
+      return false;
+    }
+    async waitForRegisteredHandlers() {
+      return { status: 'disconnected', missingMethods: [] };
+    }
     async waitForIdle() {}
   },
 }));

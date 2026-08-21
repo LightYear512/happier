@@ -3,6 +3,7 @@ import { getClaudeDirectSessionWorkingDirectory } from './getClaudeDirectSession
 import { listClaudeSessionCandidates } from './listClaudeSessionCandidates';
 import { pageClaudeTranscript } from './pageClaudeTranscript';
 import { readAfterClaudeTranscript } from './readAfterClaudeTranscript';
+import { resolveClaudeDirectSessionFile } from './resolveClaudeDirectSessionFile';
 import { resolveClaudeConfigDirForDirectSessions } from './resolveClaudeConfigDir';
 
 import { createPollingDirectSessionFollowLease } from '@/api/directSessions/backgroundFollow/createPollingDirectSessionFollowLease';
@@ -43,6 +44,11 @@ export const claudeDirectSessionProviderOps: DirectSessionProviderOps = {
   }),
   resolveTakeoverSpawnOptions: async ({ linked, sessionId }) => {
     const configDir = resolveClaudeConfigDirForDirectSessions({ source: linked.source, env: process.env });
+    const resolvedSessionFile = await resolveClaudeDirectSessionFile({
+      source: linked.source,
+      remoteSessionId: linked.remoteSessionId,
+      env: process.env,
+    });
     const directory =
       linked.sessionPath ??
       (await getClaudeDirectSessionWorkingDirectory({
@@ -56,6 +62,7 @@ export const claudeDirectSessionProviderOps: DirectSessionProviderOps = {
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       existingSessionId: sessionId,
       resume: linked.remoteSessionId,
+      ...(resolvedSessionFile ? { providerTranscriptPath: resolvedSessionFile.filePath } : {}),
       approvedNewDirectoryCreation: true,
       transcriptStorage: 'direct',
       environmentVariables: mergeDirectSessionEnvironmentVariables([{ CLAUDE_CONFIG_DIR: configDir }]),

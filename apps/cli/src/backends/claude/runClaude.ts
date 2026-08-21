@@ -183,6 +183,7 @@ export interface StartOptions {
      * Used for resuming inactive sessions.
      */
     existingSessionId?: string
+    providerTranscriptPath?: string | null
     /** Account settings snapshot for this runner (used for notification policy + seeds). */
     accountSettings?: import('@happier-dev/protocol').AccountSettings | null
 }
@@ -267,6 +268,18 @@ async function createClaudeBackendRunRuntimeActivityLifecycle(
     };
 }
 
+function resolveProviderTranscriptPath(
+    optionValue: string | null | undefined,
+    env: NodeJS.ProcessEnv,
+): string | null {
+    if (typeof optionValue === 'string' && optionValue.trim().length > 0) {
+        return optionValue.trim();
+    }
+    return typeof env.HAPPIER_PROVIDER_TRANSCRIPT_PATH === 'string' && env.HAPPIER_PROVIDER_TRANSCRIPT_PATH.trim().length > 0
+        ? env.HAPPIER_PROVIDER_TRANSCRIPT_PATH.trim()
+        : null;
+}
+
 export async function runClaude(credentials: Credentials, options: StartOptions = {}): Promise<void> {
     const accountSettingsSecretsReadKeys = deriveSettingsSecretsReadKeysForCredentials(credentials);
     logger.debug(`[CLAUDE] ===== CLAUDE MODE STARTING =====`);
@@ -301,6 +314,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         typeof options.existingSessionId === 'string' && options.existingSessionId.trim().length > 0
             ? options.existingSessionId.trim()
             : null;
+    const providerTranscriptPath = resolveProviderTranscriptPath(options.providerTranscriptPath, process.env);
     const attachEnvPath =
         typeof process.env.HAPPIER_SESSION_ATTACH_FILE === 'string' && process.env.HAPPIER_SESSION_ATTACH_FILE.trim().length > 0
             ? process.env.HAPPIER_SESSION_ATTACH_FILE.trim()
@@ -1285,6 +1299,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             startedBy: options.startedBy,
             messageQueue,
             session,
+            providerTranscriptPath,
             pushSender: api.push(),
             accountSettings,
             runtimeActivityContributions: {
@@ -2173,6 +2188,7 @@ async function runClaudeLocalFastStart(credentials: Credentials, options: StartO
                         },
                         session: artifacts.deferredSession,
                         claudeArgs: options.claudeArgs,
+                        providerTranscriptPath: resolveProviderTranscriptPath(options.providerTranscriptPath, process.env),
                         hookSettingsPath,
                         hookPluginDir,
                         statuslineForwarder: artifacts.hookServer

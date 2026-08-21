@@ -550,6 +550,50 @@ describe('runClaude fast-start', () => {
     }
   });
 
+  it('passes provider transcript paths from daemon env into the main loop', async () => {
+    vi.resetModules();
+    loopStarted = createDeferred<void>();
+    loopExit = createDeferred<number>();
+    lastLoopOpts = null;
+    autoSessionReady = true;
+    initResolved = false;
+    backendInitDelayMs = 0;
+    getOrCreateSessionSpy.mockImplementation(async () => ({ id: 'sess_provider_transcript', metadataVersion: 1 }));
+
+    const previousProviderTranscriptPath = process.env.HAPPIER_PROVIDER_TRANSCRIPT_PATH;
+    process.env.HAPPIER_PROVIDER_TRANSCRIPT_PATH = ' /tmp/claude/projects/proj-a/session-1.jsonl ';
+
+    const { runClaude } = await import('./runClaude');
+    const credentials = createLegacyCredentials();
+
+    let testError: unknown = null;
+    const runPromise = runClaude(credentials, { startedBy: 'daemon', startingMode: 'remote' }).catch((e) => {
+      testError = e;
+      loopStarted.resolve();
+    });
+
+    try {
+      await expect(waitFor(loopStarted.promise, loopStartWaitMs)).resolves.toBeUndefined();
+      if (testError) {
+        throw testError;
+      }
+      expect(lastLoopOpts?.providerTranscriptPath).toBe('/tmp/claude/projects/proj-a/session-1.jsonl');
+    } catch (e) {
+      testError = new Error(
+        `${e instanceof Error ? e.message : String(e)} | calls: readSettings=${readSettingsCalls}, initializeBackendApiContext=${initializeBackendApiContextCalls}, startHookServer=${startHookServerCalls}, generateHookSettings=${generateHookSettingsCalls}, resolveRunnerMcpServers=${resolveRunnerMcpServersCalls}, resolveEffectiveCodingPrompt=${resolveEffectiveCodingPromptCalls}, loop=${loopCalls}, initResolved=${initResolved}`,
+      );
+    } finally {
+      loopExit.resolve(0);
+      await runPromise;
+      if (previousProviderTranscriptPath === undefined) delete process.env.HAPPIER_PROVIDER_TRANSCRIPT_PATH;
+      else process.env.HAPPIER_PROVIDER_TRANSCRIPT_PATH = previousProviderTranscriptPath;
+    }
+
+    if (testError) {
+      throw testError;
+    }
+  });
+
   it('does not complete true fast-start readiness before the selected model effort catalog settles', async () => {
     vi.resetModules();
     const catalogRequested = createDeferred<void>();

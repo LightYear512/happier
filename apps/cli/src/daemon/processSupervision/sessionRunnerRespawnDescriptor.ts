@@ -163,6 +163,7 @@ export const SessionRunnerRespawnDescriptorV1Schema = z
     directory: z.string(),
     backendTarget: BackendTargetRefSchema.optional(),
     resume: z.string().optional(),
+    providerTranscriptPath: z.string().optional(),
     vendorResumeId: z.string().optional(),
     existingSessionId: z.string().optional(),
     spawnNonce: z.string().optional(),
@@ -214,6 +215,7 @@ export function buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
   const directory = normalizeOptionalString(spawnOptions.directory);
   if (!directory) return null;
   const resume = normalizeOptionalString(spawnOptions.resume);
+  const providerTranscriptPath = normalizeOptionalString(spawnOptions.providerTranscriptPath);
   const vendorResumeId = normalizeOptionalString(options?.vendorResumeId);
   const existingSessionId = normalizeOptionalString(spawnOptions.existingSessionId);
   const spawnNonce = normalizeOptionalString(spawnOptions.spawnNonce);
@@ -236,6 +238,7 @@ export function buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
     directory,
     ...(spawnOptions.backendTarget ? { backendTarget: spawnOptions.backendTarget } : {}),
     ...(resume ? { resume } : {}),
+    ...(providerTranscriptPath ? { providerTranscriptPath } : {}),
     ...(vendorResumeId ? { vendorResumeId } : {}),
     ...(existingSessionId ? { existingSessionId } : {}),
     ...(spawnNonce ? { spawnNonce } : {}),
@@ -291,6 +294,7 @@ export function buildSpawnSessionOptionsFromRespawnDescriptorV1(
     directory: descriptor.directory,
     ...(descriptor.backendTarget ? { backendTarget: descriptor.backendTarget } : {}),
     ...(typeof descriptor.resume === 'string' ? { resume: descriptor.resume } : {}),
+    ...(typeof descriptor.providerTranscriptPath === 'string' ? { providerTranscriptPath: descriptor.providerTranscriptPath } : {}),
     ...(typeof descriptor.existingSessionId === 'string' ? { existingSessionId: descriptor.existingSessionId } : {}),
     ...(typeof descriptor.spawnNonce === 'string' ? { spawnNonce: descriptor.spawnNonce } : {}),
     ...(descriptor.transcriptStorage === 'direct' ? { transcriptStorage: 'direct' } : {}),

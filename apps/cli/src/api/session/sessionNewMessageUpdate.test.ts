@@ -631,6 +631,59 @@ describe('handleSessionNewMessageUpdate', () => {
     expect(emitted.some((e: any) => e.event === 'user-message')).toBe(true);
   });
 
+  it('treats direct-import transcript user rows as passive history', () => {
+    const delivered: any[] = [];
+    const emitted: any[] = [];
+
+    const update = {
+      id: 'u-direct-import',
+      createdAt: Date.now(),
+      body: {
+        t: 'new-message',
+        sid: 'sess_1',
+        message: {
+          id: 'm-direct-import',
+          seq: 13,
+          content: {
+            t: 'plain',
+            v: {
+              role: 'user',
+              content: { type: 'text', text: 'direct import hello' },
+              localId: 'direct-import:v1:claude:abcdef1234567890abcdef12',
+              meta: { source: 'provider-generated', sentFrom: 'cli' },
+            },
+          },
+          localId: 'direct-import:v1:claude:abcdef1234567890abcdef12',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      },
+    } as unknown as Update;
+
+    handleSessionNewMessageUpdate({
+      update,
+      sessionId: 'sess_1',
+      encryptionKey: new Uint8Array(32),
+      encryptionVariant: 'legacy',
+      receivedMessageIds: new Set<string>(),
+      lastObservedMessageSeq: 0,
+      lastObservedUserMessageSeq: 0,
+      hasSelfEchoSuppressedLocalId: () => false,
+      hasAgentQueueEchoSuppressedLocalId: () => false,
+      markAgentQueueEchoSuppressedLocalId: () => void 0,
+      hasPendingQueueMaterializedLocalId: () => false,
+      deleteMaterializedLocalId: () => void 0,
+      pendingMessageCallback: (message, info) => delivered.push({ message, info }),
+      pendingMessages: [],
+      emit: (event, payload) => emitted.push({ event, payload }),
+      debug: () => void 0,
+      debugLargeJson: () => void 0,
+    });
+
+    expect(delivered).toEqual([]);
+    expect(emitted.some((e: any) => e.event === 'user-message')).toBe(true);
+  });
+
   it('does not redeliver deterministic daemon-initial-prompt user messages already sent by this agent process', () => {
     const pendingMessages: any[] = [];
     const emitted: any[] = [];

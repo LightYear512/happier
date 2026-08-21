@@ -40,6 +40,9 @@ export type CreateSpawnedSessionParams = Readonly<{
   connectedServicesUpdatedAt?: number;
   mcpSelection?: SessionMcpSelectionV1;
   transcriptStorage?: 'persisted' | 'direct';
+  existingSessionId?: string;
+  resume?: string;
+  providerTranscriptPath?: SpawnDaemonSessionRequest['providerTranscriptPath'];
   terminal?: SpawnDaemonSessionRequest['terminal'];
   windowsRemoteSessionLaunchMode?: SpawnDaemonSessionRequest['windowsRemoteSessionLaunchMode'];
   windowsRemoteSessionConsole?: SpawnDaemonSessionRequest['windowsRemoteSessionConsole'];
@@ -147,6 +150,9 @@ export async function createSpawnedSession(
       : {}),
     ...(params.mcpSelection ? { mcpSelection: params.mcpSelection } : {}),
     ...(params.transcriptStorage ? { transcriptStorage: params.transcriptStorage } : {}),
+    ...(params.existingSessionId ? { existingSessionId: params.existingSessionId } : {}),
+    ...(params.resume ? { resume: params.resume } : {}),
+    ...(params.providerTranscriptPath ? { providerTranscriptPath: params.providerTranscriptPath } : {}),
     ...(params.terminal ? { terminal: params.terminal } : {}),
     ...(params.windowsRemoteSessionLaunchMode ? { windowsRemoteSessionLaunchMode: params.windowsRemoteSessionLaunchMode } : {}),
     ...(params.windowsRemoteSessionConsole ? { windowsRemoteSessionConsole: params.windowsRemoteSessionConsole } : {}),

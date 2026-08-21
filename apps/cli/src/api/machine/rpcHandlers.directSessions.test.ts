@@ -276,12 +276,19 @@ describe('registerMachineDirectSessionsRpcHandlers', () => {
       encryptionMode: 'plain',
       metadata: JSON.stringify(metadata),
     });
-    commitSessionStoredMessageMock.mockResolvedValue({
-      didWrite: true,
-      messageId: 'msg-1',
-      seq: 1,
-      createdAt: Date.now(),
-    });
+    commitSessionStoredMessageMock
+      .mockResolvedValueOnce({
+        didWrite: true,
+        messageId: 'msg-1',
+        seq: 1,
+        createdAt: Date.now(),
+      })
+      .mockResolvedValueOnce({
+        didWrite: true,
+        messageId: 'msg-2',
+        seq: 2,
+        createdAt: Date.now(),
+      });
     updateSessionMetadataWithRetryMock.mockImplementation(async ({ updater }: { updater: (current: Record<string, unknown>) => Record<string, unknown> }) => ({
       version: 2,
       metadata: updater(metadata),
@@ -321,6 +328,7 @@ describe('registerMachineDirectSessionsRpcHandlers', () => {
         existingSessionId: 'sess_happy_persist',
         resume: 'sess-claude-persist',
         approvedNewDirectoryCreation: true,
+        initialTranscriptAfterSeq: 2,
       }),
     );
     expect(spawnSession).toHaveBeenCalledWith(

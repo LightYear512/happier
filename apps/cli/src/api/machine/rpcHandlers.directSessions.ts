@@ -651,13 +651,15 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
       return err('invalid_request', 'direct_session_directory_unavailable') satisfies DirectSessionTakeoverPersistResponse;
     }
 
+    let latestImportedSeq: number | null = null;
     try {
-      await importDirectSessionTranscript({
+      const imported = await importDirectSessionTranscript({
         linked: validatedLinkedSession,
         credentials,
         sessionId: parsed.data.sessionId,
         workingDirectory: directSpawnOptions.directory,
       });
+      latestImportedSeq = imported.latestImportedSeq;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'direct_session_import_failed';
       return err('internal_error', message) satisfies DirectSessionTakeoverPersistResponse;
@@ -666,6 +668,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
     const persistedSpawnOptions: SpawnSessionOptions = {
       ...directSpawnOptions,
       transcriptStorage: 'persisted',
+      ...(latestImportedSeq !== null ? { initialTranscriptAfterSeq: latestImportedSeq } : {}),
     };
     const spawnResult = await params.spawnSession(persistedSpawnOptions);
     if (spawnResult.type !== 'success') {
@@ -685,6 +688,14 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
         delete next.directSessionV1;
         if (typeof next.path !== 'string' || !next.path.trim()) {
           next.path = directSpawnOptions.directory;
+        }
+        if (
+          validatedLinkedSession.providerId === 'claude'
+          && typeof directSpawnOptions.providerTranscriptPath === 'string'
+          && directSpawnOptions.providerTranscriptPath.trim()
+        ) {
+          next.claudeSessionId = validatedLinkedSession.remoteSessionId;
+          next.claudeTranscriptPath = directSpawnOptions.providerTranscriptPath.trim();
         }
         next.externalHistoryImportV1 = {
           v: 1,

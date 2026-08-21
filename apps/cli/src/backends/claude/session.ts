@@ -187,6 +187,7 @@ function readClaudeTranscriptRecordSessionId(record: Record<string, unknown>): s
         case 'last-prompt':
         case 'mode':
         case 'permission-mode':
+        case 'queue-operation':
         case 'system':
         case 'user':
         case 'assistant':
@@ -432,6 +433,7 @@ export class Session {
         terminalRuntime?: TerminalRuntimeFlags | null,
         defaultSystemPromptText?: string,
         precomputedMcpBridge?: { mcpServers: Record<string, McpServerConfig>; stop: () => void } | null,
+        providerTranscriptPath?: string | null,
         reportSessionMetadataToDaemon?: SessionMetadataDaemonReporter | null,
         runtimeActivityContributions?: Readonly<{
             providerTasks?: SessionRuntimeActivityContributionHandle | null;
@@ -462,6 +464,17 @@ export class Session {
         this.queue = opts.messageQueue;
         this.claudeArgs = opts.claudeArgs;
         this.adoptExplicitResumeSessionIdFromArgs();
+        const providerTranscriptPath = readTrimmedString(opts.providerTranscriptPath);
+        if (
+            this.sessionId
+            && providerTranscriptPath
+            && isProvenClaudeTranscriptPath({
+                sessionId: this.sessionId,
+                transcriptPath: providerTranscriptPath,
+            })
+        ) {
+            this.transcriptPath = providerTranscriptPath;
+        }
         this._onModeChange = opts.onModeChange;
         this.hookSettingsPath = opts.hookSettingsPath;
         this.hookPluginDir = opts.hookPluginDir ?? null;

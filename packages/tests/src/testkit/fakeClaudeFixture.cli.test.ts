@@ -22,6 +22,15 @@ describe('fake Claude CLI fixture', () => {
     expect(result.stderr).toBe('');
   });
 
+  it('returns help output without entering interactive mode for --help', async () => {
+    const result = await execFileAsync(process.execPath, [fakeClaudeFixturePath(), '--help'], {
+      timeout: 1_000,
+    });
+
+    expect(result.stdout).toContain('Usage: claude');
+    expect(result.stderr).toBe('');
+  });
+
   it('emits an Android simulator MCP tool call in the simulator preview scenario', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'fake-claude-simulator-mcp-'));
     const logPath = join(tempDir, 'fake-claude.jsonl');

@@ -72,6 +72,24 @@ function createLinkedOpenCodeSessionFixture(params: Readonly<{
   };
 }
 
+function createLinkedClaudeSessionFixture(params: Readonly<{
+  remoteSessionId: string;
+  source: LoadedLinkedDirectSession['source'];
+  sessionPath?: string | null;
+  metadata?: LoadedLinkedDirectSession['metadata'];
+}>): LoadedLinkedDirectSession {
+  return {
+    rawSession: {} as RawSessionRecord,
+    metadata: params.metadata ?? {},
+    sessionPath: params.sessionPath ?? null,
+    providerId: 'claude',
+    machineId: 'machine-1',
+    remoteSessionId: params.remoteSessionId,
+    source: params.source,
+    codexBackendMode: null,
+  };
+}
+
 describe('resolveDirectTakeoverSpawnOptions', () => {
   beforeEach(() => {
     listSessionMarkersMock.mockReset();
@@ -80,6 +98,46 @@ describe('resolveDirectTakeoverSpawnOptions', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('passes Claude direct session transcript paths into persisted takeover spawns', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-direct-takeover-claude-'));
+    const configDir = join(root, '.claude');
+    const sessionFile = join(configDir, 'projects', 'proj-direct', 'sess-direct.jsonl');
+    await mkdir(join(configDir, 'projects', 'proj-direct'), { recursive: true });
+    await writeFile(
+      sessionFile,
+      jsonlLine({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess-direct',
+        uuid: 'init-1',
+      }),
+      'utf8',
+    );
+
+    const spawnOptions = await resolveDirectTakeoverSpawnOptions({
+      linked: createLinkedClaudeSessionFixture({
+        remoteSessionId: 'sess-direct',
+        sessionPath: '/tmp/direct-claude-project',
+        source: { kind: 'claudeConfig', configDir, projectId: 'proj-direct' },
+      }),
+      sessionId: 'sess_happy_direct_claude',
+    });
+
+    expect(spawnOptions).toEqual(expect.objectContaining({
+      directory: '/tmp/direct-claude-project',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      existingSessionId: 'sess_happy_direct_claude',
+      resume: 'sess-direct',
+      providerTranscriptPath: sessionFile,
+      transcriptStorage: 'direct',
+      environmentVariables: {
+        CLAUDE_CONFIG_DIR: configDir,
+      },
+    }));
+
+    await rm(root, { recursive: true, force: true });
   });
 
   it('lets direct Codex takeovers inherit the default backend mode instead of forcing ACP', async () => {

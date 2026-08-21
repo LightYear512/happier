@@ -507,4 +507,62 @@ describe.sequential('claudeRemoteLauncher legacy Runtime Activity subscriber', (
       ]));
     }
   }, 60_000);
+
+  it('parks an empty daemon-started remote resume until the next queued prompt arrives', async () => {
+    const awaitPhase = async <T>(label: string, promise: Promise<T>): Promise<T> => {
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 5_000);
+          }),
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    };
+    const { session, switchHandlerReady } = createHarness();
+    const promptOutcome = createDeferred<string | null>();
+
+    mockClaudeRemoteAgentSdk.mockImplementationOnce(async (opts: Readonly<{
+      nextMessage: () => Promise<Readonly<{ message: string }> | null>;
+    }>) => {
+      const next = await opts.nextMessage();
+      promptOutcome.resolve(next?.message ?? null);
+    });
+
+    const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+    const launcherPromise = claudeRemoteLauncher(session);
+    const launcherOutcome = launcherPromise.then(
+      (value) => ({ status: 'resolved' as const, value }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+    const switchHandler = await switchHandlerReady;
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(await Promise.race([
+        launcherOutcome,
+        Promise.resolve({ status: 'parked' as const }),
+      ])).toEqual({ status: 'parked' });
+
+      session.queue.push(
+        'post-resume prompt',
+        {
+          permissionMode: 'default',
+          claudeRemoteAgentSdkEnabled: true,
+          claudeUnifiedTerminalEnabled: false,
+        },
+        { userMessageLocalId: 'local-post-resume' },
+      );
+
+      await expect(awaitPhase('post-resume prompt dispatch', promptOutcome.promise)).resolves.toBe('post-resume prompt');
+    } finally {
+      await awaitPhase('launcher shutdown', Promise.all([
+        Promise.resolve(switchHandler({ to: 'local' })),
+        session.cleanup(),
+        launcherPromise,
+      ]));
+    }
+  }, 60_000);
 });
