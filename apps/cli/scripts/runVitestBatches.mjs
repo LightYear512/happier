@@ -30,6 +30,10 @@ function isExcludedTestFile(filePath) {
   );
 }
 
+function isIsolatedTestFile(filePath) {
+  return filePath.startsWith('src/api/session/mutations/');
+}
+
 function collectTestFiles(rootDir) {
   const out = [];
   const stack = [rootDir];
@@ -54,8 +58,24 @@ function collectTestFiles(rootDir) {
 
 function chunk(files, size) {
   const chunks = [];
-  for (let index = 0; index < files.length; index += size) {
-    chunks.push(files.slice(index, index + size));
+  let current = [];
+  for (const file of files) {
+    if (isIsolatedTestFile(file)) {
+      if (current.length > 0) {
+        chunks.push(current);
+        current = [];
+      }
+      chunks.push([file]);
+      continue;
+    }
+    current.push(file);
+    if (current.length >= size) {
+      chunks.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 0) {
+    chunks.push(current);
   }
   return chunks;
 }

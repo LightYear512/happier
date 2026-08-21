@@ -636,7 +636,7 @@ jobs:
       HAPPIER_CLI_DAEMON_REATTACH_INTEGRATION: "1"
       HAPPIER_CLI_VITEST_MAX_FORKS: "1"
       HAPPIER_NO_BROWSER_OPEN: "1"
-      NODE_OPTIONS: --max-old-space-size=6144
+      NODE_OPTIONS: --max-old-space-size=8192
       TMPDIR: /tmp
     steps:
       - name: Checkout
