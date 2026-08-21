@@ -16,10 +16,16 @@ import {
   resolveClaudeCodeCredentialsFilePath,
   writeClaudeCodeCredentialsFile,
 } from './claudeCodeCredentialFile';
-import { CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE } from './claudeCodeCredentialScopes';
+import {
+  CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
+  parseClaudeCodeCredentialScopes,
+} from './claudeCodeCredentialScopes';
 
 const REALISTIC_ISSUED_AT_MS = Date.parse('2026-06-05T12:00:00.000Z');
 const REALISTIC_EXPIRES_AT_MS = REALISTIC_ISSUED_AT_MS + 60 * 60 * 1000;
+const EXPECTED_RECOMMENDED_OAUTH_SCOPES = parseClaudeCodeCredentialScopes(
+  CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE,
+);
 
 describe('claudeCodeCredentialFile', () => {
   beforeEach(() => {
@@ -55,13 +61,7 @@ describe('claudeCodeCredentialFile', () => {
         claudeAiOauth: {
           accessToken: 'access-placeholder',
           expiresAt: REALISTIC_EXPIRES_AT_MS,
-          scopes: [
-            'user:inference',
-            'user:profile',
-            'user:sessions:claude_code',
-            'user:mcp_servers',
-            'user:file_upload',
-          ],
+          scopes: EXPECTED_RECOMMENDED_OAUTH_SCOPES,
         },
       },
     });
@@ -122,13 +122,7 @@ describe('claudeCodeCredentialFile', () => {
         claudeAiOauth: {
           accessToken: 'access-placeholder',
           expiresAt: REALISTIC_EXPIRES_AT_MS,
-          scopes: [
-            'user:inference',
-            'user:profile',
-            'user:sessions:claude_code',
-            'user:mcp_servers',
-            'user:file_upload',
-          ],
+          scopes: EXPECTED_RECOMMENDED_OAUTH_SCOPES,
           subscriptionType: 'max',
           rateLimitTier: 'max_20x',
         },
