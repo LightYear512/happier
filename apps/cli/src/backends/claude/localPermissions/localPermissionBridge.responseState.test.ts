@@ -7,6 +7,9 @@ import {
 import { ClaudeLocalPermissionBridge, DEFAULT_PROVIDER_HOOK_CEILING_MS } from './localPermissionBridge';
 
 describe('ClaudeLocalPermissionBridge (response state)', () => {
+  const claudeTokenUnsetPrelude =
+    'unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SETUP_TOKEN';
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -104,19 +107,19 @@ describe('ClaudeLocalPermissionBridge (response state)', () => {
     const first = bridge.handlePermissionHook({
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
-      tool_input: { command: 'unset FOO; find .' },
+      tool_input: { command: `${claudeTokenUnsetPrelude}; find .` },
       tool_use_id: 'toolu_allowlist_match_1',
     });
     const matching = bridge.handlePermissionHook({
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
-      tool_input: { command: 'unset BAR; find src -maxdepth 1' },
+      tool_input: { command: `${claudeTokenUnsetPrelude}; find src -maxdepth 1` },
       tool_use_id: 'toolu_allowlist_match_2',
     });
     const unrelated = bridge.handlePermissionHook({
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
-      tool_input: { command: 'unset BAZ; rm -rf /tmp/keep-prompting' },
+      tool_input: { command: `${claudeTokenUnsetPrelude}; rm -rf /tmp/keep-prompting` },
       tool_use_id: 'toolu_allowlist_unrelated_1',
     });
 
