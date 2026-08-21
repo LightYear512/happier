@@ -31,6 +31,26 @@ async function waitForInterruptHandler(
     throw new Error('interrupt handler was not registered');
 }
 
+async function createResumeTranscriptFixture(prefix: string) {
+    const baseDir = await mkdtemp(join(tmpdir(), prefix));
+    const claudeConfigDir = join(baseDir, 'claude-config');
+    const dir = join(baseDir, 'work');
+    await mkdir(claudeConfigDir, { recursive: true });
+    await mkdir(dir, { recursive: true });
+    const transcriptPath = join(getProjectPath(dir, claudeConfigDir), 'sess_1.jsonl');
+    await mkdir(dirname(transcriptPath), { recursive: true });
+    await writeFile(transcriptPath, `${JSON.stringify({ type: 'summary' })}\n`, 'utf8');
+    return { claudeConfigDir, dir, transcriptPath };
+}
+
+function restoreEnvVar(name: string, previous: string | undefined): void {
+    if (previous === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = previous;
+    }
+}
+
 describe('claudeRemoteAgentSdk abort repair', () => {
     it('appends an interrupted tool_result when aborting a turn mid-tool', async () => {
         const baseDir = await mkdtemp(join(tmpdir(), 'happier-claude-abort-repair-'));
@@ -315,10 +335,9 @@ describe('claudeRemoteAgentSdk abort repair', () => {
     });
 
     it('uses stopTask(taskId) for active background tasks and does not always fall back to interrupt()', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'happier-claude-stop-task-'));
-        const transcriptPath = join(dir, 'sess_1.jsonl');
-
-        await writeFile(transcriptPath, '', 'utf8');
+        const { claudeConfigDir, dir, transcriptPath } = await createResumeTranscriptFixture('happier-claude-stop-task-');
+        const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+        process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 
         let interruptHandler: (() => Promise<void>) | null = null;
         const taskStartedYielded = createDeferred<void>();
@@ -371,46 +390,50 @@ describe('claudeRemoteAgentSdk abort repair', () => {
             return { message: 'hello', mode: makeMode({ permissionMode: 'default' } as any) };
         });
 
-        const runPromise = claudeRemoteAgentSdk({
-            sessionId: 'sess_1',
-            transcriptPath,
-            path: dir,
-            claudeArgs: [],
-            claudeExecutablePath: '/tmp/claude',
-            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
-            isAborted: () => false,
-            nextMessage,
-            onReady: () => {},
-            onSessionFound: () => {},
-            onMessage: () => {},
-            setTurnInterrupt: (handler: () => Promise<void>) => {
-                interruptHandler = handler;
-            },
-            createQuery,
-        } as any);
+        try {
+            const runPromise = claudeRemoteAgentSdk({
+                sessionId: 'sess_1',
+                transcriptPath,
+                path: dir,
+                claudeArgs: [],
+                claudeExecutablePath: '/tmp/claude',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                isAborted: () => false,
+                nextMessage,
+                onReady: () => {},
+                onSessionFound: () => {},
+                onMessage: () => {},
+                setTurnInterrupt: (handler: () => Promise<void>) => {
+                    interruptHandler = handler;
+                },
+                createQuery,
+            } as any);
 
-        await taskStartedYielded.promise;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const handler = await waitForInterruptHandler(() => interruptHandler);
-        await handler();
-        await Promise.race([
-            stopTaskCalled.promise,
-            new Promise<void>((_resolve, reject) => {
-                const timer = setTimeout(() => reject(new Error('stopTask was not called')), 2000);
-                timer.unref?.();
-            }),
-        ]);
-        await runPromise;
+            await taskStartedYielded.promise;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const handler = await waitForInterruptHandler(() => interruptHandler);
+            await handler();
+            await Promise.race([
+                stopTaskCalled.promise,
+                new Promise<void>((_resolve, reject) => {
+                    const timer = setTimeout(() => reject(new Error('stopTask was not called')), 2000);
+                    timer.unref?.();
+                }),
+            ]);
+            await runPromise;
 
-        expect(stopTask).toHaveBeenCalledTimes(1);
-        expect(stopTask).toHaveBeenCalledWith('task_1');
-        expect(interrupt).not.toHaveBeenCalled();
+            expect(stopTask).toHaveBeenCalledTimes(1);
+            expect(stopTask).toHaveBeenCalledWith('task_1');
+            expect(interrupt).not.toHaveBeenCalled();
+        } finally {
+            restoreEnvVar('CLAUDE_CONFIG_DIR', previousClaudeConfigDir);
+        }
     });
 
     it('replaces a terminal detached target with another active blocker and never reselects the terminal task', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'happier-claude-stop-task-replacement-'));
-        const transcriptPath = join(dir, 'sess_1.jsonl');
-        await writeFile(transcriptPath, '', 'utf8');
+        const { claudeConfigDir, dir, transcriptPath } = await createResumeTranscriptFixture('happier-claude-stop-task-replacement-');
+        const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+        process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 
         let interruptHandler: (() => Promise<void>) | null = null;
         const terminalYielded = createDeferred<void>();
@@ -484,22 +507,25 @@ describe('claudeRemoteAgentSdk abort repair', () => {
             createQuery,
         } as any);
 
-        await terminalYielded.promise;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const handler = await waitForInterruptHandler(() => interruptHandler);
-        await handler();
-        await runPromise;
+        try {
+            await terminalYielded.promise;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const handler = await waitForInterruptHandler(() => interruptHandler);
+            await handler();
+            await runPromise;
 
-        expect(stopTask).toHaveBeenCalledWith('task_1');
-        expect(stopTask).not.toHaveBeenCalledWith('task_2');
-        expect(interrupt).not.toHaveBeenCalled();
+            expect(stopTask).toHaveBeenCalledWith('task_1');
+            expect(stopTask).not.toHaveBeenCalledWith('task_2');
+            expect(interrupt).not.toHaveBeenCalled();
+        } finally {
+            restoreEnvVar('CLAUDE_CONFIG_DIR', previousClaudeConfigDir);
+        }
     });
 
     it('falls back to interrupt() when stopTask(taskId) throws', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'happier-claude-stop-task-throws-'));
-        const transcriptPath = join(dir, 'sess_1.jsonl');
-
-        await writeFile(transcriptPath, '', 'utf8');
+        const { claudeConfigDir, dir, transcriptPath } = await createResumeTranscriptFixture('happier-claude-stop-task-throws-');
+        const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+        process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 
         let interruptHandler: (() => Promise<void>) | null = null;
         const taskStartedYielded = createDeferred<void>();
@@ -552,38 +578,42 @@ describe('claudeRemoteAgentSdk abort repair', () => {
             return { message: 'hello', mode: makeMode({ permissionMode: 'default' } as any) };
         });
 
-        const runPromise = claudeRemoteAgentSdk({
-            sessionId: 'sess_1',
-            transcriptPath,
-            path: dir,
-            claudeArgs: [],
-            claudeExecutablePath: '/tmp/claude',
-            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
-            isAborted: () => false,
-            nextMessage,
-            onReady: () => {},
-            onSessionFound: () => {},
-            onMessage: () => {},
-            setTurnInterrupt: (handler: () => Promise<void>) => {
-                interruptHandler = handler;
-            },
-            createQuery,
-        } as any);
+        try {
+            const runPromise = claudeRemoteAgentSdk({
+                sessionId: 'sess_1',
+                transcriptPath,
+                path: dir,
+                claudeArgs: [],
+                claudeExecutablePath: '/tmp/claude',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                isAborted: () => false,
+                nextMessage,
+                onReady: () => {},
+                onSessionFound: () => {},
+                onMessage: () => {},
+                setTurnInterrupt: (handler: () => Promise<void>) => {
+                    interruptHandler = handler;
+                },
+                createQuery,
+            } as any);
 
-        await taskStartedYielded.promise;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const handler = await waitForInterruptHandler(() => interruptHandler);
+            await taskStartedYielded.promise;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const handler = await waitForInterruptHandler(() => interruptHandler);
 
-        await handler();
+            await handler();
 
-        // Ensure the stream can terminate even if the interrupt path is buggy.
-        stopGate.resolve(undefined);
+            // Ensure the stream can terminate even if the interrupt path is buggy.
+            stopGate.resolve(undefined);
 
-        await runPromise;
+            await runPromise;
 
-        expect(stopTask).toHaveBeenCalledTimes(1);
-        expect(stopTask).toHaveBeenCalledWith('task_1');
-        expect(interrupt).toHaveBeenCalledTimes(1);
+            expect(stopTask).toHaveBeenCalledTimes(1);
+            expect(stopTask).toHaveBeenCalledWith('task_1');
+            expect(interrupt).toHaveBeenCalledTimes(1);
+        } finally {
+            restoreEnvVar('CLAUDE_CONFIG_DIR', previousClaudeConfigDir);
+        }
     });
 
     it('repairs missing tool_result on best-effort interrupt even when the Agent SDK does not throw AbortError', async () => {
