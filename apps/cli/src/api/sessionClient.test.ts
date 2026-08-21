@@ -1809,7 +1809,7 @@ describe('ApiSessionClient connection handling', () => {
         getSpy.mockRestore();
     });
 
-    it('retries startup transcript catch-up after a race but keeps non-explicit rows observe-only', async () => {
+    it('keeps non-explicit startup transcript catch-up rows observe-only', async () => {
         vi.useFakeTimers();
         try {
             const axiosMod = await import('axios');
@@ -1822,13 +1822,12 @@ describe('ApiSessionClient connection handling', () => {
                 meta: { source: 'cli', sentFrom: 'cli' },
             };
             const getSpy = vi.spyOn(axios, 'get')
-                .mockResolvedValueOnce(buildMessagesListResponse([]))
                 .mockResolvedValueOnce(
                     buildMessagesListResponse([
                         buildEncryptedTranscriptMessage({
                             session: mockSession,
                             plaintext,
-                            id: 'm-catchup-race-1',
+                            id: 'm-startup-catchup-1',
                             seq: 1,
                             createdAt,
                         }),
@@ -1847,7 +1846,7 @@ describe('ApiSessionClient connection handling', () => {
             await vi.advanceTimersByTimeAsync(0);
             await vi.advanceTimersByTimeAsync(5_000);
 
-            expect(getSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+            expect(getSpy.mock.calls.length).toBe(1);
             expect(onUserMessage).not.toHaveBeenCalled();
 
             getSpy.mockRestore();

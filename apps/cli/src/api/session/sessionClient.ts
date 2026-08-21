@@ -3242,7 +3242,7 @@ export class ApiSessionClient extends EventEmitter {
                 replayPreviouslyObservedMessageIdsForObservation:
                     startupCursor.replayPreviouslyObservedMessageIdsForObservation,
             })
-                .then(() => true, (error) => {
+                .catch((error) => {
                     if (isAuthenticationError(error)) {
                         logger.debug('[API] Initial transcript catch-up failed with terminal auth', {
                             error: serializeAxiosErrorForLog(error),
