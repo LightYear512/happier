@@ -1249,11 +1249,13 @@ export class ApiSessionClient extends EventEmitter {
                 if (isReconnect) {
                     this.reassertSessionPresenceAfterReconnect();
                 }
+                let didRequestRuntimeActivityReoffer = false;
                 if (supportsRuntimeActivityV2(serverContract)) {
-                    await this.runtimeActivitySnapshotPublisher[RUNTIME_ACTIVITY_DESIRED_REOFFER_REQUEST]().catch((error) => {
+                    didRequestRuntimeActivityReoffer = await this.runtimeActivitySnapshotPublisher[RUNTIME_ACTIVITY_DESIRED_REOFFER_REQUEST]().catch((error) => {
                         logger.debug('[API] Failed to reoffer Runtime Activity snapshot on reconnect', {
                             error: serializeAxiosErrorForLog(error),
                         });
+                        return false;
                     });
                 }
 
@@ -1262,6 +1264,10 @@ export class ApiSessionClient extends EventEmitter {
                         error: serializeAxiosErrorForLog(error),
                     });
                 });
+                if (requiresRuntimeActivityPublisherReadiness && !didRequestRuntimeActivityReoffer) {
+                    this.sessionSyncPendingInputServerContract = serverContract;
+                    clearPendingInputReadiness();
+                }
                 if (requiresRuntimeActivityPublisherReadiness) {
                     while (
                         isResolvedContractCurrent()

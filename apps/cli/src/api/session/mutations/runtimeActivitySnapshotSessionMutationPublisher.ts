@@ -17,7 +17,7 @@ export const RUNTIME_ACTIVITY_DESIRED_REOFFER_REQUEST = Symbol('runtimeActivityD
 
 export type RuntimeActivitySnapshotSessionMutationPublisher = SessionRuntimeActivitySnapshotPublisher & Readonly<{
     subscribeDesiredReoffer(listener: () => Promise<void>): () => void;
-    [RUNTIME_ACTIVITY_DESIRED_REOFFER_REQUEST](): Promise<void>;
+    [RUNTIME_ACTIVITY_DESIRED_REOFFER_REQUEST](): Promise<boolean>;
 }>;
 
 export function createRuntimeActivitySnapshotSessionMutationPublisher(
@@ -71,10 +71,12 @@ export function createRuntimeActivitySnapshotSessionMutationPublisher(
         subscribeDesiredReoffer,
         close,
         async [RUNTIME_ACTIVITY_DESIRED_REOFFER_REQUEST]() {
-            if (!accepting) return;
-            for (const listener of [...desiredReofferListeners]) {
+            if (!accepting) return false;
+            const listeners = [...desiredReofferListeners];
+            for (const listener of listeners) {
                 await listener();
             }
+            return listeners.length > 0;
         },
     };
 }
