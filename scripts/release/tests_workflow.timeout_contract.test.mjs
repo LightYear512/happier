@@ -15,6 +15,7 @@ test('tests workflow keeps slow CI jobs above the observed timeout floor', async
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'tests.yml'), 'utf8');
   const uiE2eJob = extractJobBlock(raw, 'ui-e2e');
   const uiJob = extractJobBlock(raw, 'ui');
+  const serverJob = extractJobBlock(raw, 'server');
   const stackJob = extractJobBlock(raw, 'stack');
   const installerSmokeWindowsJob = extractJobBlock(raw, 'installers-smoke-windows');
 
@@ -31,9 +32,15 @@ test('tests workflow keeps slow CI jobs above the observed timeout floor', async
   );
 
   assert.match(
+    serverJob,
+    /name:\s*Server Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*45\b/,
+    'Server Tests job should reserve enough time to finish the full unit and integration lane on GitHub-hosted runners',
+  );
+
+  assert.match(
     stackJob,
-    /name:\s*Stack Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*20\b/,
-    'Stack Tests job should reserve enough time to finish on GitHub-hosted runners',
+    /name:\s*Stack Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*45\b/,
+    'Stack Tests job should reserve enough time to finish the full unit and integration lane on GitHub-hosted runners',
   );
 
   assert.match(

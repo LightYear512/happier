@@ -114,6 +114,7 @@ describe('session dev preview websocket relay (integration)', () => {
   it('relays websocket preview frames through the machine-scoped socket and preserves the accepted subprotocol', async () => {
     harness.resetEnv({
       NODE_ENV: 'development',
+      HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '1',
       HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
     });
     const fixture = await createFixture();
@@ -302,6 +303,7 @@ describe('session dev preview websocket relay (integration)', () => {
 
   it('relays websocket preview frames through a host-based preview origin', async () => {
     harness.resetEnv({
+      HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '1',
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
       HAPPIER_PUBLIC_SERVER_URL: 'http://app.example.test',
       HAPPIER_WEBAPP_URL: undefined,
