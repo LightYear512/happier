@@ -55,7 +55,16 @@ vi.mock("@/app/share/sessionParticipants", () => ({
     getSessionParticipantUserIds,
 }));
 
-const accessKeyFindUnique = vi.hoisted(() => vi.fn(async (): Promise<{ machineId: string } | null> => ({ machineId: "m1" })));
+type AccessKeyAccessProof = Readonly<{
+    machine: Readonly<{ revokedAt: Date | null; replacedByMachineId: string | null }>;
+    session: Readonly<{ accountId: string }>;
+}>;
+
+const currentAccessProof: AccessKeyAccessProof = {
+    machine: { revokedAt: null, replacedByMachineId: null },
+    session: { accountId: "u1" },
+};
+const accessKeyFindUnique = vi.hoisted(() => vi.fn(async (): Promise<AccessKeyAccessProof | null> => currentAccessProof));
 vi.mock("@/storage/db", () => ({
     db: {
         accessKey: {
@@ -117,7 +126,7 @@ describe("sessionUpdateHandler (transcript-stream-segment relay)", () => {
         requireAccessLevel.mockReset();
         getSessionParticipantUserIds.mockReset();
         accessKeyFindUnique.mockReset();
-        accessKeyFindUnique.mockResolvedValue({ machineId: "m1" });
+        accessKeyFindUnique.mockResolvedValue(currentAccessProof);
         checkSessionAccess.mockImplementation(async (userId, sessionId) => ({
             userId,
             sessionId,

@@ -55,7 +55,16 @@ vi.mock("@/app/share/sessionParticipants", () => ({
     getSessionParticipantUserIds,
 }));
 
-const accessKeyFindUnique = vi.hoisted(() => vi.fn(async (): Promise<{ machineId: string } | null> => ({ machineId: "m1" })));
+type AccessKeyAccessProof = Readonly<{
+    machine: Readonly<{ revokedAt: Date | null; replacedByMachineId: string | null }>;
+    session: Readonly<{ accountId: string }>;
+}>;
+
+const currentAccessProof: AccessKeyAccessProof = {
+    machine: { revokedAt: null, replacedByMachineId: null },
+    session: { accountId: "u1" },
+};
+const accessKeyFindUnique = vi.hoisted(() => vi.fn(async (): Promise<AccessKeyAccessProof | null> => currentAccessProof));
 vi.mock("@/storage/db", () => ({
     db: {
         accessKey: {
@@ -104,7 +113,7 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
         requireAccessLevel.mockReset();
         getSessionParticipantUserIds.mockReset();
         accessKeyFindUnique.mockReset();
-        accessKeyFindUnique.mockResolvedValue({ machineId: "m1" });
+        accessKeyFindUnique.mockResolvedValue(currentAccessProof);
         checkSessionAccess.mockImplementation(async (userId, sessionId) => ({
             userId,
             sessionId,
@@ -245,7 +254,14 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
                     sessionId: "s1",
                 },
             },
-            select: { machineId: true },
+            select: {
+                machine: {
+                    select: { revokedAt: true, replacedByMachineId: true },
+                },
+                session: {
+                    select: { accountId: true },
+                },
+            },
         });
         expect(checkSessionAccess).not.toHaveBeenCalled();
         expect(getSessionParticipantUserIds).not.toHaveBeenCalled();
@@ -524,7 +540,7 @@ describe("sessionUpdateHandler (transcript-stream-segment)", () => {
         requireAccessLevel.mockReset();
         getSessionParticipantUserIds.mockReset();
         accessKeyFindUnique.mockReset();
-        accessKeyFindUnique.mockResolvedValue({ machineId: "m1" });
+        accessKeyFindUnique.mockResolvedValue(currentAccessProof);
         checkSessionAccess.mockResolvedValue({
             userId: "u1",
             sessionId: "s1",

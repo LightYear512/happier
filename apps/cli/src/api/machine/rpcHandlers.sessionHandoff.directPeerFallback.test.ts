@@ -500,16 +500,21 @@ describe('rpcHandlers (session handoff direct-peer fallback)', () => {
 
         try {
             const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET);
+            const statusGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET);
+            const resultGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET);
             expect(prepare).toBeDefined();
+            expect(statusGet).toBeDefined();
+            expect(resultGet).toBeDefined();
 
             const providerBundleTransferId = 'session-handoff:handoff_direct_peer_invalid_payload:provider-bundle-file';
+            const handoffId = 'handoff_direct_peer_invalid_payload';
             const endpointCandidate = buildDirectPeerEndpointCandidate({
                 transferId: 'handoff_direct_peer',
                 expiresAt: Date.now() + 30_000,
             });
 
             await expect(prepare!({
-                handoffId: 'handoff_direct_peer_invalid_payload',
+                handoffId,
                 sourceMachineId: 'machine_source',
                 targetMachineId: 'machine_target',
                 negotiatedTransportStrategy: 'direct_peer',
@@ -524,7 +529,23 @@ describe('rpcHandlers (session handoff direct-peer fallback)', () => {
                         endpointCandidates: [endpointCandidate],
                     },
                 },
-            })).rejects.toThrow('Invalid session handoff transfer payload');
+            })).resolves.toMatchObject({
+                handoffId,
+                status: expect.objectContaining({
+                    status: expect.stringMatching(/^(pending|awaiting_recovery)$/),
+                }),
+            });
+            await vi.waitFor(async () => {
+                await expect(statusGet!({ handoffId })).resolves.toMatchObject({
+                    status: expect.objectContaining({
+                        status: 'awaiting_recovery',
+                    }),
+                });
+            });
+            await expect(resultGet!({ handoffId })).resolves.toMatchObject({
+                ok: false,
+                errorCode: 'awaiting_recovery',
+            });
 
             expect(requestPayloadFile).toHaveBeenCalledTimes(1);
             expect(sendEnvelope).not.toHaveBeenCalled();
@@ -564,9 +585,14 @@ describe('rpcHandlers (session handoff direct-peer fallback)', () => {
 
     try {
       const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET);
+      const statusGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET);
+      const resultGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET);
       expect(prepare).toBeDefined();
+      expect(statusGet).toBeDefined();
+      expect(resultGet).toBeDefined();
 
       const providerBundleTransferId = 'session-handoff:handoff_direct_peer_invalid_json_payload:provider-bundle-file';
+      const handoffId = 'handoff_direct_peer_invalid_json_payload';
       const endpointCandidates = [
         buildDirectPeerEndpointCandidate({
           transferId: 'candidate-1',
@@ -581,7 +607,7 @@ describe('rpcHandlers (session handoff direct-peer fallback)', () => {
       ];
 
       await expect(prepare!({
-        handoffId: 'handoff_direct_peer_invalid_json_payload',
+        handoffId,
         sourceMachineId: 'machine_source',
         targetMachineId: 'machine_target',
         negotiatedTransportStrategy: 'direct_peer',
@@ -596,7 +622,23 @@ describe('rpcHandlers (session handoff direct-peer fallback)', () => {
             endpointCandidates,
           },
         },
-      })).rejects.toThrow('Invalid session handoff transfer payload');
+      })).resolves.toMatchObject({
+        handoffId,
+        status: expect.objectContaining({
+          status: expect.stringMatching(/^(pending|awaiting_recovery)$/),
+        }),
+      });
+      await vi.waitFor(async () => {
+        await expect(statusGet!({ handoffId })).resolves.toMatchObject({
+          status: expect.objectContaining({
+            status: 'awaiting_recovery',
+          }),
+        });
+      });
+      await expect(resultGet!({ handoffId })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'awaiting_recovery',
+      });
 
       expect(requestPayloadFile).toHaveBeenCalledTimes(1);
       expect(sendEnvelope).not.toHaveBeenCalled();

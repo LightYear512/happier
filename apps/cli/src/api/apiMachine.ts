@@ -69,7 +69,7 @@ import { buildInstallationProofForMachine } from '@/daemon/identity/proof';
 import { readInstallationIdentityIfExistsSync } from '@/daemon/identity/store';
 import { readMachineOwnerConflictFromSocketError, type MachineOwnerConflictDetails } from '@/api/machine/machineOwnerConflict';
 import { readAccountSettingsVersionFromHint } from '@/settings/accountSettings/accountSettingsVersion';
-import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
+import { resolveRuntimeServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 import { fetchAccountProfile } from '@/api/accountProfile';
 import type { RpcHandlerActiveExecution } from '@/api/rpc/types';
 
@@ -731,7 +731,7 @@ export class ApiMachineClient {
         onOwnershipConflict?: (conflict: { owner: MachineOwnerConflictDetails }) => void;
         onMachineReplaced?: () => void;
     }) {
-        logger.debug(`[API MACHINE] Connecting to ${resolveServerHttpBaseUrl()}`);
+        logger.debug(`[API MACHINE] Connecting to ${resolveRuntimeServerHttpBaseUrl()}`);
         let takeoverOnNextConnect = params?.takeover === true;
 
         if (!this.connectionSupervisor) {
@@ -739,7 +739,7 @@ export class ApiMachineClient {
                 ...DEFAULT_MANAGED_CONNECTION_POLICY,
                 classifyTransportErrorToProbeResult: classifyMachineTransportErrorToProbeResult,
                 createTransport: () => {
-                    const serverUrl = resolveServerHttpBaseUrl();
+                    const serverUrl = resolveRuntimeServerHttpBaseUrl();
                     const transportGeneration = this.activeTransportGeneration + 1;
                     this.activeTransportGeneration = transportGeneration;
                     const installationIdentity = readInstallationIdentityIfExistsSync();
@@ -774,7 +774,7 @@ export class ApiMachineClient {
                     return transport;
                 },
                 probeReadiness: async () => await createLoopbackReadinessProbe({
-                    serverUrl: resolveServerHttpBaseUrl(),
+                    serverUrl: resolveRuntimeServerHttpBaseUrl(),
                     token: this.token,
                 })(),
                 onStateChange: (state) => {
@@ -1064,7 +1064,7 @@ export class ApiMachineClient {
 
     private async refreshMachineFromServer(signal?: AbortSignal): Promise<void> {
         try {
-            const serverUrl = resolveServerHttpBaseUrl();
+            const serverUrl = resolveRuntimeServerHttpBaseUrl();
             const request = async () => {
                 const response = await axios.get(`${serverUrl}/v1/machines/${this.machine.id}`, {
                     headers: {

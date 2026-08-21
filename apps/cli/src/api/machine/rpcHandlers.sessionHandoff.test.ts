@@ -6897,8 +6897,24 @@ function createLoopbackMachineTransferChannels() {
       },
     });
 
-	    await expect(preparePromise).rejects.toThrow();
-	    expect(importSessionBundle).not.toHaveBeenCalled();
+    await expect(preparePromise).resolves.toMatchObject({
+      handoffId,
+      status: expect.objectContaining({
+        status: expect.stringMatching(/^(pending|awaiting_recovery)$/),
+      }),
+    });
+    await vi.waitFor(async () => {
+      await expect(statusGet!({ handoffId })).resolves.toMatchObject({
+        status: expect.objectContaining({
+          status: 'awaiting_recovery',
+        }),
+      });
+    });
+    await expect(resultGet!({ handoffId })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'awaiting_recovery',
+    });
+    expect(importSessionBundle).not.toHaveBeenCalled();
 	  });
 
   it('fails closed when the server-routed workspace replication manifest payload uses the legacy non-streaming format', async () => {
@@ -7300,8 +7316,14 @@ function createLoopbackMachineTransferChannels() {
       const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET);
       expect(prepare).toBeDefined();
 
+      const handoffId = 'handoff_invalid_direct_peer_payload';
+      const statusGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET);
+      const resultGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET);
+      expect(statusGet).toBeDefined();
+      expect(resultGet).toBeDefined();
+
       await expect(prepare!({
-        handoffId: 'handoff_invalid_direct_peer_payload',
+        handoffId,
         sourceMachineId: 'machine_source',
         targetMachineId: 'machine_target',
         negotiatedTransportStrategy: 'direct_peer',
@@ -7332,7 +7354,23 @@ function createLoopbackMachineTransferChannels() {
             }),
           },
         ],
-      })).rejects.toThrow();
+      })).resolves.toMatchObject({
+        handoffId,
+        status: expect.objectContaining({
+          status: expect.stringMatching(/^(pending|awaiting_recovery)$/),
+        }),
+      });
+      await vi.waitFor(async () => {
+        await expect(statusGet!({ handoffId })).resolves.toMatchObject({
+          status: expect.objectContaining({
+            status: 'awaiting_recovery',
+          }),
+        });
+      });
+      await expect(resultGet!({ handoffId })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'awaiting_recovery',
+      });
 
       expect(importSessionBundle).not.toHaveBeenCalled();
     } finally {
@@ -7381,8 +7419,14 @@ function createLoopbackMachineTransferChannels() {
       const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET);
       expect(prepare).toBeDefined();
 
+      const handoffId = 'handoff_invalid_direct_peer_workspace_artifacts';
+      const statusGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET);
+      const resultGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET);
+      expect(statusGet).toBeDefined();
+      expect(resultGet).toBeDefined();
+
       await expect(prepare!({
-        handoffId: 'handoff_invalid_direct_peer_workspace_artifacts',
+        handoffId,
         sourceMachineId: 'machine_source',
         targetMachineId: 'machine_target',
         negotiatedTransportStrategy: 'direct_peer',
@@ -7411,7 +7455,23 @@ function createLoopbackMachineTransferChannels() {
             expiresAt: Date.now() + 30_000,
           },
         ],
-      })).rejects.toThrow();
+      })).resolves.toMatchObject({
+        handoffId,
+        status: expect.objectContaining({
+          status: expect.stringMatching(/^(pending|awaiting_recovery)$/),
+        }),
+      });
+      await vi.waitFor(async () => {
+        await expect(statusGet!({ handoffId })).resolves.toMatchObject({
+          status: expect.objectContaining({
+            status: 'awaiting_recovery',
+          }),
+        });
+      });
+      await expect(resultGet!({ handoffId })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'awaiting_recovery',
+      });
 
       expect(importSessionBundle).not.toHaveBeenCalled();
     } finally {

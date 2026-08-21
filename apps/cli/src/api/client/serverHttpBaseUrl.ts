@@ -10,6 +10,13 @@ export function resolveServerHttpBaseUrl(): string {
   return normalizeServerHttpBaseUrl(configuration.apiServerUrl);
 }
 
+export function resolveRuntimeServerHttpBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const runtimeServerUrl =
+    (env.HAPPIER_LOCAL_SERVER_URL ?? '').trim()
+    || (env.HAPPIER_SERVER_URL ?? '').trim();
+  return runtimeServerUrl ? normalizeServerHttpBaseUrl(runtimeServerUrl) : resolveServerHttpBaseUrl();
+}
+
 function readErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object') return null;
   const code = (error as { code?: unknown }).code;

@@ -6,17 +6,10 @@ import {
   createHttpStatusError,
   isAuthenticationStatus,
 } from '@/api/client/httpStatusError';
-import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
-
-function resolveAccountProfileServerUrl(): string {
-  const runtimeServerUrl =
-    (process.env.HAPPIER_LOCAL_SERVER_URL ?? '').trim()
-    || (process.env.HAPPIER_SERVER_URL ?? '').trim();
-  return runtimeServerUrl ? normalizeServerHttpBaseUrl(runtimeServerUrl) : resolveServerHttpBaseUrl();
-}
+import { resolveRuntimeServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 
 export async function fetchAccountProfile(opts: Readonly<{ token: string; signal?: AbortSignal }>): Promise<AccountProfileResponse> {
-  const serverUrl = resolveAccountProfileServerUrl();
+  const serverUrl = resolveRuntimeServerHttpBaseUrl();
   const response = await axios.get(`${serverUrl}/v1/account/profile`, {
     headers: {
       Authorization: `Bearer ${opts.token}`,
