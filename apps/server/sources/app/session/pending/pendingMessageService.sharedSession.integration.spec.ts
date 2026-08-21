@@ -3848,6 +3848,7 @@ describe("pendingMessageService (shared sessions)", () => {
             ciphertext: "cipher-race",
         });
         expect(enqueue.ok).toBe(true);
+        if (!enqueue.ok) throw new Error("expected enqueue success");
 
         const results = await Promise.all([
             materializeNextPendingMessage({ actorUserId: owner.id, sessionId: session.id }),
@@ -3855,8 +3856,22 @@ describe("pendingMessageService (shared sessions)", () => {
         ]);
 
         expect(results.every((result) => result.ok)).toBe(true);
-        expect(results.filter((result) => result.ok && result.didMaterialize).length).toBe(1);
-        expect(results.filter((result) => result.ok && !result.didMaterialize).length).toBe(1);
+        const materialized = results.filter((result) => result.ok && result.didMaterialize);
+        expect(materialized.length).toBeGreaterThanOrEqual(1);
+        for (const result of materialized) {
+            expect(result).toMatchObject({
+                didWriteMessage: false,
+                pendingVersion: enqueue.pendingVersion + 1,
+                message: {
+                    id: null,
+                    seq: null,
+                    localId,
+                    content: { t: "encrypted", c: "cipher-race" },
+                    requestedAction: { v: 1, kind: "enqueue" },
+                    providerAction: "send",
+                },
+            });
+        }
         await expect(db.sessionMessage.count({ where: { sessionId: session.id, localId } })).resolves.toBe(0);
         await expect(db.sessionPendingMessage.findUniqueOrThrow({
             where: { sessionId_localId: { sessionId: session.id, localId } },

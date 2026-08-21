@@ -26,6 +26,18 @@ const { trackApp, closeTrackedApps } = createAppCloseTracker();
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 
+function expectConnectedServicesAccountBroadcasts(accountId: string): void {
+    expect(emitUpdate).toHaveBeenCalledTimes(2);
+    expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        userId: accountId,
+        recipientFilter: { type: "user-machine-scoped-only" },
+    }));
+    expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        userId: accountId,
+        recipientFilter: { type: "user-scoped-only" },
+    }));
+}
+
 function createTestApp() {
     const app = Fastify();
     app.setValidatorCompiler(validatorCompiler);
@@ -268,7 +280,7 @@ describe("connectRoutes (connected services v2) sealed credential endpoints (int
             reason: "revision_mismatch",
             credentialRevision,
         });
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expectConnectedServicesAccountBroadcasts(user.id);
     });
 
     it("fences credential persistence with the active refresh lease owner", async () => {
@@ -423,7 +435,7 @@ describe("connectRoutes (connected services v2) sealed credential endpoints (int
         expect(persisted.statusCode).toBe(200);
         const revisionB = (persisted.json() as { credentialRevision: string }).credentialRevision;
         expect(revisionB).not.toBe(revisionA);
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expectConnectedServicesAccountBroadcasts(user.id);
 
         vi.clearAllMocks();
         const replay = await app.inject({
@@ -526,7 +538,7 @@ describe("connectRoutes (connected services v2) sealed credential endpoints (int
             },
         })));
         expect(writes.map((response) => response.statusCode).sort()).toEqual([200, 409]);
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expectConnectedServicesAccountBroadcasts(user.id);
     });
 
     it("rejects sealed ciphertext longer than CONNECTED_SERVICE_CREDENTIAL_MAX_LEN", async () => {

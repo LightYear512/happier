@@ -27,6 +27,21 @@ const ACTIVE_SESSION_RUN_STATES = [
     SessionRunState.waiting_user,
 ] as const;
 
+function toJsonSafe<T>(value: T): T {
+    if (typeof value === "bigint") {
+        return Number(value) as T;
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => toJsonSafe(item)) as T;
+    }
+    if (value && typeof value === "object" && !(value instanceof Date) && !ArrayBuffer.isView(value)) {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, toJsonSafe(item)]),
+        ) as T;
+    }
+    return value;
+}
+
 type SessionRunFilters = Readonly<{
     sessionId?: string;
     externalIssueRefId?: string;
@@ -166,7 +181,7 @@ export async function ensureAutomatedSessionRunForIssue(params: Readonly<{
             activePrimaryRunId: activeRun.id,
             transitionReason: params.triggerKind,
         });
-        return { run: activeRun, session };
+        return toJsonSafe({ run: activeRun, session });
     }
 
     const existingRun = await params.tx.sessionRun.findFirst({
@@ -182,7 +197,7 @@ export async function ensureAutomatedSessionRunForIssue(params: Readonly<{
                 accountId: params.accountId,
             },
         });
-        return session ? { run: existingRun, session } : null;
+        return session ? toJsonSafe({ run: existingRun, session }) : null;
     }
 
     const activeLink = await params.tx.sessionIssueLink.findFirst({
@@ -258,7 +273,7 @@ export async function ensureAutomatedSessionRunForIssue(params: Readonly<{
         transitionReason: params.triggerKind,
     });
 
-    return { run, session };
+    return toJsonSafe({ run, session });
 }
 
 async function loadSessionRunWorkflow(accountId: string, runId: string) {
@@ -314,7 +329,7 @@ async function loadSessionRunWorkflow(accountId: string, runId: string) {
             take: 50,
         }),
     ]);
-    return { run, workflow, session, repositoryConnection, externalIssue, verification, mergeability, events };
+    return toJsonSafe({ run, workflow, session, repositoryConnection, externalIssue, verification, mergeability, events });
 }
 
 export async function launchOrAttachSessionRun(params: Readonly<{
@@ -340,7 +355,7 @@ export async function launchOrAttachSessionRun(params: Readonly<{
             if (!existingSession) {
                 return null;
             }
-            return { run: existingRun, session: existingSession };
+            return toJsonSafe({ run: existingRun, session: existingSession });
         }
 
         const issue = await tx.externalIssueRef.findFirst({
@@ -441,12 +456,12 @@ export async function launchOrAttachSessionRun(params: Readonly<{
             transitionReason: "launch",
         });
 
-        return { run, session };
+        return toJsonSafe({ run, session });
     });
 }
 
 export async function listSessionRuns(accountId: string, filters: SessionRunFilters) {
-    return await db.sessionRun.findMany({
+    const runs = await db.sessionRun.findMany({
         where: {
             accountId,
             sessionId: filters.sessionId,
@@ -456,10 +471,12 @@ export async function listSessionRuns(accountId: string, filters: SessionRunFilt
         },
         orderBy: [{ createdAt: "asc" }],
     });
+    return toJsonSafe(runs);
 }
 
 export async function getSessionRun(accountId: string, runId: string) {
-    return await loadSessionRunWorkflow(accountId, runId);
+    const result = await loadSessionRunWorkflow(accountId, runId);
+    return result ? toJsonSafe(result) : null;
 }
 
 export async function claimSessionRun(params: Readonly<{
@@ -547,7 +564,7 @@ export async function claimSessionRun(params: Readonly<{
                     leaseExpiresAt: claimedRun.leaseExpiresAt?.toISOString() ?? null,
                 },
             });
-            return claimedRun;
+            return toJsonSafe(claimedRun);
         }
 
         return null;
@@ -582,11 +599,11 @@ export async function heartbeatSessionRun(params: Readonly<{
         if (updated.count !== 1) {
             return null;
         }
-        return {
+        return toJsonSafe({
             ok: true,
             leaseExpiresAt,
             serverDirective: "continue" as const,
-        };
+        });
     });
 }
 
@@ -635,7 +652,7 @@ export async function startSessionRun(params: Readonly<{
                 headCommitSha: run.headCommitSha,
             },
         });
-        return run;
+        return toJsonSafe(run);
     });
 }
 
@@ -696,7 +713,7 @@ export async function waitUserSessionRun(params: Readonly<{
             subjectHeadSha: run.headCommitSha ?? null,
             transitionReason: "wait_user",
         });
-        return { run, workflow };
+        return toJsonSafe({ run, workflow });
     });
 }
 
@@ -813,7 +830,7 @@ export async function completeSessionRun(params: Readonly<{
             });
         }
 
-        return { run, workflow };
+        return toJsonSafe({ run, workflow });
     });
 }
 
@@ -879,7 +896,7 @@ export async function failSessionRun(params: Readonly<{
             subjectHeadSha: run.headCommitSha ?? null,
             transitionReason: params.retryRecommended === true ? "retry_recommended" : "failed",
         });
-        return { run, workflow };
+        return toJsonSafe({ run, workflow });
     });
 }
 
@@ -898,7 +915,7 @@ export async function retrySessionRun(params: Readonly<{
             },
         });
         if (existingRun) {
-            return existingRun;
+            return toJsonSafe(existingRun);
         }
 
         const sourceRun = await tx.sessionRun.findFirst({
@@ -948,7 +965,7 @@ export async function retrySessionRun(params: Readonly<{
             transitionReason: "retry",
         });
 
-        return retriedRun;
+        return toJsonSafe(retriedRun);
     });
 }
 
@@ -1003,7 +1020,7 @@ export async function abortSessionRun(params: Readonly<{
             subjectHeadSha: run.headCommitSha ?? null,
             transitionReason: "aborted",
         });
-        return { run, workflow };
+        return toJsonSafe({ run, workflow });
     });
 }
 
@@ -1083,6 +1100,6 @@ export async function expireStaleSessionRuns(params: Readonly<{
             expired.push(run);
         }
 
-        return expired;
+        return toJsonSafe(expired);
     });
 }

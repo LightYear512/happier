@@ -132,6 +132,18 @@ async function readStoredAuthGroupActiveState(params: {
     });
 }
 
+function expectConnectedServicesAccountBroadcasts(accountId: string): void {
+    expect(emitUpdate).toHaveBeenCalledTimes(2);
+    expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        userId: accountId,
+        recipientFilter: { type: "user-machine-scoped-only" },
+    }));
+    expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        userId: accountId,
+        recipientFilter: { type: "user-scoped-only" },
+    }));
+}
+
 function expectLastProjectedGroup(params: {
     accountId: string;
     group: {
@@ -2891,7 +2903,7 @@ describe("connectRoutes connected service auth groups (integration)", () => {
 
         const clearCursor = await readAccountChangeCursor(user.id);
         expect(clearCursor).toBeGreaterThan(blockerCursor ?? -1);
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expectConnectedServicesAccountBroadcasts(user.id);
         expectLastProjectedGroup({
             accountId: user.id,
             group: {

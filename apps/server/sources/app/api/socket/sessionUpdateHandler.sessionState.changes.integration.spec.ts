@@ -55,11 +55,13 @@ const txSessionUpdate = vi.hoisted(() => vi.fn(async () => ({ id: "s1" })));
 const markSessionInactive = vi.hoisted(() => vi.fn());
 const { db, reset: resetDbMocks } = createDbMocks({
     session: ["findMany", "findUnique", "update"],
+    sessionMessage: ["findMany"],
     accountPushToken: ["findMany"],
 } as const);
 const sessionFindMany = db.session.findMany;
 const directSessionFindUnique = db.session.findUnique;
 const directSessionUpdate = db.session.update;
+const directSessionMessageFindMany = db.sessionMessage.findMany;
 const accountPushTokenFindMany = db.accountPushToken.findMany;
 const sessionFindUnique = vi.hoisted(() => vi.fn(async (args: any) => {
     if (args?.select?.metadataVersion === true) {
@@ -183,6 +185,7 @@ describe("sessionUpdateHandler (session state AccountChange integration)", () =>
         sessionFindMany.mockResolvedValue([]);
         directSessionFindUnique.mockResolvedValue(null);
         directSessionUpdate.mockResolvedValue({ id: "s1" });
+        directSessionMessageFindMany.mockResolvedValue([]);
         accountPushTokenFindMany.mockResolvedValue([]);
     });
 

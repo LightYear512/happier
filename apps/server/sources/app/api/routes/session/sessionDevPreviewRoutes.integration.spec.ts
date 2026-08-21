@@ -16,6 +16,10 @@ import { createSessionDevPreviewToken } from '@/app/api/devPreview/sessionDevPre
 
 import { sessionRoutes } from './sessionRoutes';
 
+const relayEnabledEnv = {
+  HAPPIER_FEATURE_SESSIONS_DEV_PREVIEW_RELAY__ENABLED: '1',
+} as const;
+
 function createTestApp(forwardRpcForUser: (params: {
   userId: string;
   method: string;
@@ -104,33 +108,34 @@ describe('session dev preview routes (integration)', () => {
   type DevPreviewRouteTestApp = ReturnType<typeof createTestApp>;
 
   async function mintPreviewToken(app: DevPreviewRouteTestApp, fixture: DevPreviewRouteFixture): Promise<string> {
-      harness.resetEnv({
-        NODE_ENV: 'development',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:3005',
-        HAPPIER_WEBAPP_URL: undefined,
-        HAPPY_WEBAPP_URL: undefined,
-        HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: undefined,
-        HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
-      });
-      const mint = await app.inject({
-        method: 'POST',
-        url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
-        headers: {
-          authorization: `Bearer ${fixture.token}`,
-          host: 'stack.example.test',
-          'x-forwarded-proto': 'https',
-        },
-      });
+    harness.resetEnv({
+      ...relayEnabledEnv,
+      NODE_ENV: 'development',
+      HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:3005',
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPY_WEBAPP_URL: undefined,
+      HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: undefined,
+      HAPPIER_DEV_PREVIEW_RELAY_PATH_MODE_ENABLED: '1',
+    });
+    const mint = await app.inject({
+      method: 'POST',
+      url: `/v1/sessions/${fixture.sessionId}/dev-preview/${fixture.machineId}/route_1/token`,
+      headers: {
+        authorization: `Bearer ${fixture.token}`,
+        host: 'stack.example.test',
+        'x-forwarded-proto': 'https',
+      },
+    });
 
-      expect(mint.statusCode).toBe(200);
-      const tokenPayload = mint.json() as { token: string; previewUrl?: string; namespaceStrategy?: string };
-      expect(typeof tokenPayload.token).toBe('string');
-      expect(tokenPayload.token.length).toBeGreaterThan(0);
-      expect(tokenPayload.namespaceStrategy).toBe('path');
-      expect(tokenPayload.previewUrl).toBe(
-        `https://stack.example.test/preview/${fixture.sessionId}/${fixture.machineId}/route_1/?previewToken=${encodeURIComponent(tokenPayload.token)}`,
-      );
-      return tokenPayload.token;
+    expect(mint.statusCode).toBe(200);
+    const tokenPayload = mint.json() as { token: string; previewUrl?: string; namespaceStrategy?: string };
+    expect(typeof tokenPayload.token).toBe('string');
+    expect(tokenPayload.token.length).toBeGreaterThan(0);
+    expect(tokenPayload.namespaceStrategy).toBe('path');
+    expect(tokenPayload.previewUrl).toBe(
+      `https://stack.example.test/preview/${fixture.sessionId}/${fixture.machineId}/route_1/?previewToken=${encodeURIComponent(tokenPayload.token)}`,
+    );
+    return tokenPayload.token;
   }
 
   async function movePreviewTokenIntoCookie(app: DevPreviewRouteTestApp, fixture: DevPreviewRouteFixture, token: string, params?: Readonly<{
@@ -297,6 +302,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('uses a host-based preview origin when the server has a preview host base domain configured', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
       HAPPIER_PUBLIC_SERVER_URL: 'https://api.other.test:9999',
       HAPPIER_WEBAPP_URL: 'https://stack.example.test:43210',
@@ -424,6 +430,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('serves host preview relay when UI is mounted at root', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
       HAPPIER_PUBLIC_SERVER_URL: 'https://stack.example.test:43210',
       HAPPIER_WEBAPP_URL: undefined,
@@ -549,6 +556,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('keeps host preview unavailable when server feature policy disables the relay', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       HAPPIER_BUILD_FEATURES_DENY: 'sessions.devPreview.relay',
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
       HAPPIER_PUBLIC_SERVER_URL: 'https://stack.example.test',
@@ -613,6 +621,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('does not fall back to the path namespace when the configured preview host base domain is invalid', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'https://preview.example.test',
     });
     const fixture = await createFixture();
@@ -644,6 +653,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('keeps path namespace unavailable in production even when explicitly configured', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       NODE_ENV: 'production',
       HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:3005',
       HAPPIER_WEBAPP_URL: undefined,
@@ -684,6 +694,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('rejects preview host requests with a mismatched host id without falling back to UI', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       HAPPIER_DEV_PREVIEW_RELAY_HOST_BASE_DOMAIN: 'preview.example.test',
       HAPPIER_PUBLIC_SERVER_URL: 'https://stack.example.test',
       HAPPIER_WEBAPP_URL: undefined,
@@ -729,6 +740,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('scrubs preview tokens from GET URLs before opening the daemon relay', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       NODE_ENV: 'development',
       HAPPIER_WEBAPP_URL: undefined,
       HAPPY_WEBAPP_URL: undefined,
@@ -1039,6 +1051,7 @@ describe('session dev preview routes (integration)', () => {
 
   it('rejects a preview token when the routeKey in the URL does not match the token scope', async () => {
     harness.resetEnv({
+      ...relayEnabledEnv,
       NODE_ENV: 'development',
       HAPPIER_WEBAPP_URL: undefined,
       HAPPY_WEBAPP_URL: undefined,
