@@ -182,11 +182,11 @@ describe('createClaudeUnifiedPendingQueuePump', () => {
 
     const abortController = new AbortController();
     const running = pump.start({ abortSignal: abortController.signal });
-    await Promise.resolve();
-    await Promise.resolve();
 
-    expect(waitForNextInput).toHaveBeenCalledTimes(1);
-    expect(injectPrompt).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(waitForNextInput).toHaveBeenCalledTimes(1);
+      expect(injectPrompt).toHaveBeenCalledTimes(1);
+    });
     nowMs += 60_000;
     await vi.advanceTimersByTimeAsync(60_000);
     await Promise.resolve();
@@ -202,12 +202,11 @@ describe('createClaudeUnifiedPendingQueuePump', () => {
     await expect(arbiter.confirmPromptAcceptedByProviderIf(
       (batch) => batch.userMessageLocalIds?.includes('old-local') === true,
     )).resolves.toBe(true);
-    for (let index = 0; index < 10; index += 1) {
-      await Promise.resolve();
-    }
 
-    expect(waitForNextInput).toHaveBeenCalledTimes(2);
-    expect(injectPrompt).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(waitForNextInput).toHaveBeenCalledTimes(2);
+      expect(injectPrompt).toHaveBeenCalledTimes(2);
+    });
     expect(arbiter.snapshot()).toMatchObject({
       queuedCount: 1,
       providerAcceptancePendingCount: 1,
