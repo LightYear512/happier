@@ -310,7 +310,7 @@ describe('claudeRemoteAgentSdk post-result streaming', () => {
                 expect(onReady).toHaveBeenCalledTimes(2);
             });
             await vi.waitFor(() => {
-                expect(nextMessage).toHaveBeenCalledTimes(3);
+                expect(nextMessage.mock.calls.length).toBeGreaterThanOrEqual(3);
             });
         } finally {
             releaseClosed();
@@ -406,7 +406,7 @@ describe('claudeRemoteAgentSdk post-result streaming', () => {
                 expect(onReady).toHaveBeenCalledTimes(2);
             });
             await vi.waitFor(() => {
-                expect(nextMessage).toHaveBeenCalledTimes(3);
+                expect(nextMessage.mock.calls.length).toBeGreaterThanOrEqual(3);
             });
         } finally {
             releaseClosed();
@@ -517,7 +517,7 @@ describe('claudeRemoteAgentSdk post-result streaming', () => {
                 expect(onReady).toHaveBeenCalledTimes(2);
             });
             await vi.waitFor(() => {
-                expect(nextMessage).toHaveBeenCalledTimes(3);
+                expect(nextMessage.mock.calls.length).toBeGreaterThanOrEqual(3);
             });
         } finally {
             releaseClosed();

@@ -1519,6 +1519,9 @@ export async function claudeRemoteAgentSdk(opts: {
 
                         const next: ClaudeRemoteProviderAcceptedPrompt<EnhancedMode> | null = nextOrAbort;
                         if (!next) {
+                            if (foregroundTurnInterruptActive) {
+                                return;
+                            }
                             messages.end();
                             try {
                                 response?.close?.();
@@ -1694,7 +1697,14 @@ export async function claudeRemoteAgentSdk(opts: {
                         opts.onInFlightSteerAvailabilityChange?.(true);
                     }
                 } finally {
+                    const shouldRestartDeferredPromptPump =
+                        !abortSignal.aborted
+                        && deferredUntilForegroundTurnEnds !== null
+                        && !foregroundTurnInterruptActive;
                     nextMessagePump = null;
+                    if (shouldRestartDeferredPromptPump) {
+                        scheduleNextMessagePump();
+                    }
                 }
             })();
         };
@@ -1760,6 +1770,7 @@ export async function claudeRemoteAgentSdk(opts: {
         const releaseCurrentTurnForResult = async () => {
             if (didFinalizeTurn || didReleaseTurnForResult) return;
             didReleaseTurnForResult = true;
+            awaitingNextTurnStart = true;
             await reconcileRuntimeActivityForResult();
             await opts.onReady();
             scheduleNextMessagePump();
@@ -2088,6 +2099,18 @@ export async function claudeRemoteAgentSdk(opts: {
             // Important: Claude Code can emit system/status/progress messages between stream_event stop and the
             // assembled assistant/user message. Do not flush pending tool blocks on those intermediary messages.
             const incomingMessageType = (message as any)?.type;
+            if (
+                awaitingNextTurnStart
+                && didReleaseTurnForResult
+                && (
+                    incomingMessageType === 'assistant'
+                    || incomingMessageType === 'user'
+                    || incomingMessageType === 'result'
+                )
+            ) {
+                awaitingNextTurnStart = false;
+                didReleaseTurnForResult = false;
+            }
             if (incomingMessageType === 'assistant' || incomingMessageType === 'user' || incomingMessageType === 'result') {
                 flushBufferedStreamEventAssistantMessage(message);
             }
