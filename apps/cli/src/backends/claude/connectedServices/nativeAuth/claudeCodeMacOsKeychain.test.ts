@@ -126,6 +126,7 @@ describe('claudeCodeMacOsKeychain', () => {
       readClaudeCodeMacOsKeychainCredential({
         claudeConfigDir: '/Users/tester/.claude',
         homeDir: '/Users/tester',
+        username: 'leeroy',
       }),
     ).resolves.toEqual({
       claudeAiOauth: {
