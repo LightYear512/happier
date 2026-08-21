@@ -22,6 +22,9 @@ vi.mock('@/integrations/watcher/awaitFileExist', () => ({
 
 vi.mock('./utils/claudeCheckSession', () => ({
   claudeCheckSession: vi.fn(() => false),
+  resolveClaudeSessionTranscriptPath: vi.fn((sessionId: string, path: string, transcriptPath?: string | null) =>
+    typeof transcriptPath === 'string' && transcriptPath.trim() ? transcriptPath.trim() : join(path, `${sessionId}.jsonl`),
+  ),
 }));
 
 vi.mock('./utils/claudeFindLastSession', () => ({

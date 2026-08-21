@@ -418,12 +418,11 @@ describe('core e2e: direct Claude sessions browse/link/tail', () => {
       ]));
 
       const localId = `persisted-post-${randomUUID()}`;
-      const postPersistPrompt = await fetchJson<any>(`${server.baseUrl}/v2/sessions/${sessionId}/messages`, {
+      const postPersistPrompt = await fetchJson<any>(`${server.baseUrl}/v2/sessions/${sessionId}/pending`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${auth.token}`,
           'Content-Type': 'application/json',
-          'Idempotency-Key': localId,
         },
         body: JSON.stringify({
           localId,
