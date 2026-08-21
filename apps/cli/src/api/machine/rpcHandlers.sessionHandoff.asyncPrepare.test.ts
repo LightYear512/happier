@@ -16,6 +16,15 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function removeTemporaryDirectory(path: string): Promise<void> {
+  await rm(path, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 50,
+  });
+}
+
 describe('rpcHandlers (session handoff async prepare)', () => {
   it('uses a durable lease so only one daemon instance restarts a persisted non-terminal prepare-target job (no double-import across processes)', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-prepare-lease-liveness-'));
@@ -205,8 +214,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
-      await rm(targetPath, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
+      await removeTemporaryDirectory(targetPath);
     }
   });
 
@@ -418,8 +427,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
-      await rm(targetPath, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
+      await removeTemporaryDirectory(targetPath);
     }
   });
 
@@ -568,8 +577,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
-      await rm(targetPath, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
+      await removeTemporaryDirectory(targetPath);
     }
   });
 
@@ -668,7 +677,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
     }
   });
 
@@ -846,8 +855,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
-      await rm(targetPath, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
+      await removeTemporaryDirectory(targetPath);
     }
   });
 
@@ -935,7 +944,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
     }
   });
 
@@ -1024,7 +1033,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
     }
   });
 
@@ -1157,7 +1166,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       expect(importSessionBundle).toHaveBeenCalledTimes(1);
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true });
+      await removeTemporaryDirectory(activeServerDir);
     }
   });
 
@@ -1286,8 +1295,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       await expect(resultGet!({ handoffId })).resolves.toMatchObject({ ok: false, errorCode: 'aborted' });
     } finally {
       vi.resetModules();
-      await rm(activeServerDir, { recursive: true, force: true }).catch(() => undefined);
-      await rm(targetRoot, { recursive: true, force: true }).catch(() => undefined);
+      await removeTemporaryDirectory(activeServerDir).catch(() => undefined);
+      await removeTemporaryDirectory(targetRoot).catch(() => undefined);
     }
   });
 });

@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, mkdtemp, readFile, rm, watch, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import { join } from 'node:path';
@@ -3647,23 +3647,6 @@ function createLoopbackMachineTransferChannels() {
 
       const prepareJobsDirectory = join(activeServerDir, 'session-handoff', 'prepare-target-jobs');
       const recoveryRecordLockPreparationPrefix = `${prepareJobId}.json.lock.owner-`;
-      const recordLockPreparationObserved = (async () => {
-        try {
-          for await (const event of watch(prepareJobsDirectory, { signal: AbortSignal.timeout(5_000) })) {
-            if (
-              typeof event.filename === 'string'
-              && event.filename.startsWith(recoveryRecordLockPreparationPrefix)
-            ) {
-              return;
-            }
-          }
-        } catch (error) {
-          throw new Error('Timed out waiting for recovery to contend on the prepare-target job record lock', {
-            cause: error,
-          });
-        }
-        throw new Error('Prepare-target job record lock watcher ended before recovery contention');
-      })();
       const statusPromise = statusGet!({ handoffId });
       const leaseOperationLockPath = join(
         activeServerDir,
@@ -3675,8 +3658,12 @@ function createLoopbackMachineTransferChannels() {
       // The status path first acquires this same operation lock to create its proof lease.
       // Waiting for its job-record lock attempt identifies the later recovery critical
       // section, where proof validation has completed and the operation lock stays held.
-      await recordLockPreparationObserved;
-      const recoveryOwner = JSON.parse(await readFile(leaseOperationLockPath, 'utf8')) as Record<string, unknown>;
+      let recoveryOwner: Record<string, unknown> | null = null;
+      await vi.waitFor(async () => {
+        const recordLockContenders = await readdir(prepareJobsDirectory);
+        expect(recordLockContenders.some((name) => name.startsWith(recoveryRecordLockPreparationPrefix))).toBe(true);
+        recoveryOwner = JSON.parse(await readFile(leaseOperationLockPath, 'utf8')) as Record<string, unknown>;
+      });
       expect(recoveryOwner).toMatchObject({ pid: process.pid, ownerToken: expect.any(String) });
       await rm(
         join(activeServerDir, 'session-handoff', 'prepare-target-jobs-staging', prepareJobId, 'lease'),

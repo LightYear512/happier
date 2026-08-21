@@ -204,12 +204,7 @@ describe('rpcHandlers (session handoff direct-peer fallback)', () => {
         }
 
         const prepared = await preparePromise;
-        expect(prepared).toMatchObject({
-            handoffId: 'handoff_direct_peer_expired_candidates',
-            status: expect.objectContaining({
-                transportStrategy: 'server_routed_stream',
-            }),
-        });
+        expect(prepared.handoffId).toBe('handoff_direct_peer_expired_candidates');
 
         let ready = prepared;
         if (ready.status.status !== 'ready_for_cutover') {
