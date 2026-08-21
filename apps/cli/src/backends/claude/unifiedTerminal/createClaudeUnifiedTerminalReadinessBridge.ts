@@ -144,7 +144,7 @@ export function createClaudeUnifiedTerminalReadinessBridge(opts: Readonly<{
   const scheduleQuietDrain = (): void => {
     clearQuietDrainTimer();
     quietDrainTimer = setTimeout(() => {
-      void opts.arbiter.drainWhenSafe().catch(() => undefined);
+      void Promise.resolve(opts.arbiter.drainWhenSafe()).catch(() => undefined);
     }, quietPeriodMs);
     quietDrainTimer.unref?.();
   };

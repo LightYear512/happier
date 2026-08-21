@@ -348,7 +348,7 @@ export function createClaudeUnifiedHookLifecycleBridge(opts: Readonly<{
   };
 
   const drainWhenSafe = (): void => {
-    void opts.arbiter.drainWhenSafe().catch(() => undefined);
+    void Promise.resolve(opts.arbiter.drainWhenSafe()).catch(() => undefined);
   };
 
   const chainTerminalSideEffect = (
