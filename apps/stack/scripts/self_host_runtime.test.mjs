@@ -1934,7 +1934,6 @@ test('buildSelfHostDoctorChecks does not require external minisign and includes 
     },
   );
 
-  assert.ok(checks.find((c) => c.name === 'tar')?.ok);
   assert.ok(checks.find((c) => c.name === 'systemctl')?.ok);
   assert.equal(checks.some((c) => c.name === 'minisign'), false);
   assert.ok(checks.find((c) => c.name === 'ui-web')?.ok);

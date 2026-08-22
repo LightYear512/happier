@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -23,7 +24,9 @@ async function createFixture(t, lines) {
   const root = await mkdtemp(join(tmpdir(), 'hstack-repo-local-provider-'));
   t.after(async () => rm(root, { recursive: true, force: true }));
   const storageDir = join(root, 'storage');
-  const id = (await readFile(join(repoRoot, '.git', 'happier-stack-stackless-id'), 'utf8')).trim();
+  const id = (await readFile(join(repoRoot, '.git', 'happier-stack-stackless-id'), 'utf8').catch(() => ''))
+    .trim()
+    || createHash('sha256').update(String(repoRoot)).digest('hex').slice(0, 10);
   const stackName = `repo-${sanitizeStackNameToken(basename(repoRoot))}-${id.slice(0, 10)}`;
   const stackDir = join(storageDir, stackName);
   const envPath = join(stackDir, 'env');

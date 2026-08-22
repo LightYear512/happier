@@ -306,6 +306,24 @@ function resolveDirectPeerPrepareAvailability(input: Readonly<{
   };
 }
 
+function isDirectPeerProviderRouteKnownUnavailable(input: Readonly<{
+  request: SessionHandoffPrepareTargetRequest;
+  localProviderBundleEndpointCandidates?: readonly TransferEndpointCandidate[];
+  nowMs: number;
+  transferRouteCache: ReturnType<typeof createMachineTransferRouteCache>;
+}>): boolean {
+  const endpointCandidates =
+    input.request.handoffMetadataV2?.providerBundleTransferPublication?.endpointCandidates
+    ?? input.localProviderBundleEndpointCandidates
+    ?? input.request.endpointCandidates;
+  const usableEndpointCandidates = endpointCandidates?.filter((candidate) => candidate.expiresAt >= input.nowMs) ?? [];
+  if (usableEndpointCandidates.length === 0) return false;
+  return input.transferRouteCache.readDirectPeerRoute({
+    remoteMachineId: input.request.sourceMachineId,
+    endpointCandidates: usableEndpointCandidates,
+  })?.status === 'unavailable';
+}
+
 function isMachineTransferTimeoutErrorMessage(message: string): boolean {
   return message.startsWith('Timed out waiting for machine transfer ');
 }
@@ -2627,6 +2645,15 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
           nowMs: Date.now(),
         });
         if (!availability.canUseProviderBundle || !availability.canUseWorkspaceManifest) {
+          return directPeerTransferUnavailable();
+        }
+        if (isDirectPeerProviderRouteKnownUnavailable({
+          request: parsed.data,
+          localProviderBundleEndpointCandidates:
+            preflightLocalSourceExport?.providerBundle?.endpointCandidates,
+          nowMs: Date.now(),
+          transferRouteCache,
+        })) {
           return directPeerTransferUnavailable();
         }
       }

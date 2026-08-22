@@ -129,6 +129,26 @@ test('uninstallService removes definitions only after backend-confirmed teardown
           const script = behavior.replace('#!/bin/sh\n', '#!/bin/sh\necho "$*" >> "$HAPPIER_TEST_SERVICE_LOG"\n');
           await writeFile(commandPath, script, 'utf8');
           await chmod(commandPath, 0o755);
+          if (platform === 'win32') {
+            const powershellPath = join(binDir, 'powershell.exe');
+            const powershellBehavior = outcome === 'denied'
+              ? [
+                  '#!/bin/sh',
+                  'echo "$*" >> "$HAPPIER_TEST_SERVICE_LOG"',
+                  'echo "Access is denied: Permission denied" >&2',
+                  'exit 1',
+                  '',
+                ].join('\n')
+              : [
+                  '#!/bin/sh',
+                  'echo "$*" >> "$HAPPIER_TEST_SERVICE_LOG"',
+                  'printf "%s\\n" \'{"exists":false,"enabled":false,"active":false,"stateLabel":"not_installed","stateValue":null,"lastRunTime":"","lastTaskResult":null,"taskToRun":""}\'',
+                  'exit 0',
+                  '',
+                ].join('\n');
+            await writeFile(powershellPath, powershellBehavior, 'utf8');
+            await chmod(powershellPath, 0o755);
+          }
           process.env.PATH = `${binDir}:${previousPath ?? ''}`;
           process.env.HAPPIER_TEST_SERVICE_LOG = logPath;
 
@@ -153,7 +173,7 @@ test('uninstallService removes definitions only after backend-confirmed teardown
               assert.match(invocations, /print gui\/501\/dev\.happier\.stack\.test/);
               assert.doesNotMatch(invocations, /bootout|disable|\.plist/);
             } else {
-              assert.match(invocations, /\/Query \/TN Happier\\dev\.happier\.stack\.test/);
+              assert.match(invocations, /Get-ScheduledTask/);
               assert.doesNotMatch(invocations, /\/End|\/Delete/);
             }
           }

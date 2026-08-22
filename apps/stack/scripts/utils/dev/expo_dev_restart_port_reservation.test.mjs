@@ -46,7 +46,12 @@ fi
 if [ "\${TEST_EXPO_LISTENER_MARKERS_ONLY:-0}" = "1" ]; then
   exit 1
 fi
-exec /usr/sbin/lsof "$@"
+for candidate in /usr/sbin/lsof /usr/bin/lsof; do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+exit 1
 `,
   });
   const env = buildStackHarnessEnv({ baseEnv: process.env, binDirs: [binDir] });
