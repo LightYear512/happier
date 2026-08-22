@@ -691,9 +691,14 @@ test('manifest publication conflict removes the owned database publication and p
     await mkdir(disposableRoot);
     createDatabase(sourcePath, { large: true });
 
-    const pending = createSqliteSnapshot({ sourcePath, outputPath, disposableRoot });
-    await waitForManifestPartial(disposableRoot);
-    await writeFile(manifestPath, 'preexisting manifest', { flag: 'wx', mode: 0o600 });
+    const pending = createSqliteSnapshot({
+      sourcePath,
+      outputPath,
+      disposableRoot,
+      beforeAccept: async () => {
+        await writeFile(manifestPath, 'preexisting manifest', { flag: 'wx', mode: 0o600 });
+      },
+    });
 
     await assert.rejects(pending, /manifest.*already exists|already exists.*manifest/i);
     await assertMissing(outputPath);
@@ -761,24 +766,28 @@ test('detects manifest partial replacement and never accepts or removes the subs
     await mkdir(disposableRoot);
     createDatabase(sourcePath, { large: true });
 
-    const pending = createSqliteSnapshot({ sourcePath, outputPath, disposableRoot }).then(
+    let manifestPartialPath = null;
+    const pending = createSqliteSnapshot({
+      sourcePath,
+      outputPath,
+      disposableRoot,
+      beforeAccept: async ({ manifestTemporaryPath }) => {
+        manifestPartialPath = manifestTemporaryPath;
+        const manifestText = await readFile(manifestPartialPath, 'utf8');
+        await rename(manifestPartialPath, displacedManifestPath);
+        await writeFile(manifestPartialPath, manifestText);
+      },
+    }).then(
       (value) => ({ value }),
       (error) => ({ error }),
     );
-    const manifestPartialPath = await waitForManifestPartial(disposableRoot);
-    while ((await lstat(manifestPartialPath)).size === 0) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    const manifestText = await readFile(manifestPartialPath, 'utf8');
-    await rename(manifestPartialPath, displacedManifestPath);
-    await writeFile(manifestPartialPath, manifestText);
-    const substituteSha256 = await sha256File(manifestPartialPath);
 
     const outcome = await pending;
     assert.ok(outcome.error instanceof Error);
+    assert.ok(manifestPartialPath, 'expected beforeAccept to observe the manifest partial path');
     await assertMissing(outputPath);
     await assertMissing(`${outputPath}.manifest.json`);
-    assert.equal(await sha256File(manifestPartialPath), substituteSha256);
+    assert.equal(await sha256File(manifestPartialPath), await sha256File(displacedManifestPath));
   });
 });
 
@@ -848,10 +857,15 @@ test('late output-parent replacement rejects success and leaves only private una
     await mkdir(outputParent, { recursive: true });
     createDatabase(sourcePath, { large: true });
 
-    const pending = createSqliteSnapshot({ sourcePath, outputPath, disposableRoot });
-    await waitForManifestPartial(outputParent);
-    await rename(outputParent, movedParent);
-    await mkdir(outputParent, { mode: 0o700 });
+    const pending = createSqliteSnapshot({
+      sourcePath,
+      outputPath,
+      disposableRoot,
+      beforeAccept: async () => {
+        await rename(outputParent, movedParent);
+        await mkdir(outputParent, { mode: 0o700 });
+      },
+    });
 
     await assert.rejects(
       pending,
@@ -934,12 +948,17 @@ test('rejects mutation through the published hard link before accepting its mani
     await mkdir(disposableRoot);
     createDatabase(sourcePath, { large: true });
 
-    const pending = createSqliteSnapshot({ sourcePath, outputPath, disposableRoot });
-    await waitForManifestPartial(disposableRoot);
-    await link(outputPath, attackerLink);
-    const attacker = new DatabaseSync(attackerLink);
-    attacker.prepare('UPDATE retained SET value = ?').run('mutated-after-fingerprint');
-    attacker.close();
+    const pending = createSqliteSnapshot({
+      sourcePath,
+      outputPath,
+      disposableRoot,
+      beforeAccept: async () => {
+        await link(outputPath, attackerLink);
+        const attacker = new DatabaseSync(attackerLink);
+        attacker.prepare('UPDATE retained SET value = ?').run('mutated-after-fingerprint');
+        attacker.close();
+      },
+    });
 
     await assert.rejects(pending, /fingerprint|sidecar|changed|replaced/i);
     await assertMissing(outputPath);

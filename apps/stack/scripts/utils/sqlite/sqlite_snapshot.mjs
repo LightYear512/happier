@@ -696,8 +696,15 @@ async function copyWithSafePublication({
     await assertSameDirectory('disposable root', output.root);
     await assertSameDirectory('output parent', output.outputParent);
     await assertSameRegularFile('source', sourcePath, sourceIdentity);
-    await beforeAccept?.();
+    await beforeAccept?.({
+      temporaryPath,
+      manifestTemporaryPath,
+      outputPath: output.outputPath,
+      manifestPath: output.manifestPath,
+    });
 
+    await assertSameDirectory('disposable root', output.root);
+    await assertSameDirectory('output parent', output.outputParent);
     const finalPublished = await inspectFinalDatabase(output.outputPath);
     if (!hasIdentity(await lstat(output.outputPath), publishedIdentity)) {
       throw new Error('published SQLite output identity changed during final verification');
@@ -706,8 +713,6 @@ async function copyWithSafePublication({
     if (expectedFingerprints) compareFingerprints(finalPublished.fingerprints, expectedFingerprints);
     const finalManifest = await readManifest(manifestTemporaryPath, manifestTemporaryIdentity);
     compareFingerprints(finalPublished.fingerprints, finalManifest.manifest.fingerprints);
-    await assertSameDirectory('disposable root', output.root);
-    await assertSameDirectory('output parent', output.outputParent);
     await assertSameRegularFile('source', sourcePath, sourceIdentity);
     await requireAbsent('output manifest', output.manifestPath);
     await assertSameRegularFile('manifest partial file', manifestTemporaryPath, manifestTemporaryIdentity);
@@ -733,6 +738,7 @@ export async function createSqliteSnapshot({
   sourcePath,
   outputPath,
   disposableRoot,
+  beforeAccept = null,
 }) {
   const absoluteSource = requireAbsolutePath('source', sourcePath);
   const sourceMetadata = await requireRegularFile('source', absoluteSource);
@@ -743,6 +749,7 @@ export async function createSqliteSnapshot({
     sourcePath: absoluteSource,
     sourceIdentity,
     output,
+    beforeAccept,
   });
   return {
     operation: 'snapshot',

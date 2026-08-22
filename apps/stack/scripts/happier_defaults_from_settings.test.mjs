@@ -53,10 +53,10 @@ test('hstack happier defaults to hosted cloud when no CLI settings exist', async
   await mkdir(homeDir, { recursive: true });
 
   const env = {
-    ...process.env,
+    ...sanitizeStackTestRunnerEnv(process.env),
+    HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
     HAPPIER_STACK_STACK: 'test-stack',
     HAPPIER_STACK_SERVER_PORT: '53288',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
     HAPPIER_STACK_REPO_DIR: fixture.dir,
     HAPPIER_HOME_DIR: homeDir,
   };
@@ -73,7 +73,7 @@ test('hstack happier defaults to hosted cloud when no CLI settings exist', async
   assert.equal(parsed.webappUrl, 'https://proxyapi.layaair.com');
   assert.equal(parsed.publicServerUrl, null);
   assert.equal(parsed.localServerUrl, null);
-  assert.equal(parsed.activeServerId, null);
+  assert.equal(parsed.activeServerId, buildStackStableScopeId({ stackName: 'test-stack', cliIdentity: 'default' }));
   assert.equal(parsed.homeDir, homeDir);
 });
 
