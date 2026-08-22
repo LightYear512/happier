@@ -190,7 +190,7 @@ PY
     const observed = JSON.parse(await readFile(capturePath, 'utf-8'));
     assert.deepEqual(observed, {
       serverScopedPath: true,
-      stableAliasPath: false,
+      stableAliasPath: true,
       urlHashServerScopedPath: false,
       hostPortServerScopedPath: false,
       legacyPath: false,
