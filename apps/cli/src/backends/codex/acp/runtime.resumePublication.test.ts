@@ -109,7 +109,7 @@ describe('Codex ACP resume identity publication', () => {
 
     await expect(runtime.startOrLoad({ resumeId })).resolves.toBe(resumeId);
     expect(loadSession).toHaveBeenCalledTimes(1);
-    expect(loadSession).toHaveBeenCalledWith(resumeId);
+    expect(loadSession.mock.calls[0]?.[0]).toBe(resumeId);
     expect(startSession).not.toHaveBeenCalled();
     expect(session.updateMetadata).not.toHaveBeenCalled();
     expect(runtime.getSessionId()).toBe(resumeId);
