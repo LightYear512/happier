@@ -16,6 +16,7 @@ import { claudeDaemonSpawnHooks } from '@/backends/claude/daemon/spawnHooks';
 import { buildClaudeRuntimeLocalHandoffMetadata } from '@/backends/claude/sessionHandoff/runtimeLocalMetadata';
 import type { AgentCatalogEntry } from '../types';
 import type { ConnectedServiceCredentialLifecycleDescriptor } from '@/daemon/connectedServices/credentials/lifecycleTypes';
+import type { ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
 
 
 const claudeConnectedServiceCredentialLifecycleDescriptor: ConnectedServiceCredentialLifecycleDescriptor = {
@@ -75,6 +76,15 @@ const claudeConnectedServiceCredentialLifecycleDescriptor: ConnectedServiceCrede
   },
 };
 
+function resolveClaudeProbeConnectedServicesIdentity(
+  connectedServices?: ConnectedServiceBindingsV1 | null,
+): string {
+  const binding = connectedServices?.bindingsByServiceId['claude-subscription'] ?? null;
+  if (!binding || binding.source === 'native') return 'cs=native';
+  if (binding.selection === 'group') return `cs=group:${binding.groupId}`;
+  return `cs=profile:${binding.profileId}`;
+}
+
 export const agent = {
   id: AGENTS_CORE.claude.id,
   cliSubcommand: AGENTS_CORE.claude.cliSubcommand,
@@ -125,6 +135,8 @@ export const agent = {
   vendorResumeSupport: AGENTS_CORE.claude.resume.vendorResume,
   buildRuntimeLocalHandoffMetadata: buildClaudeRuntimeLocalHandoffMetadata,
   needsAccountSettingsForProbes: true,
+  resolveModelsProbeVariant: ({ connectedServices }) =>
+    `claude:${resolveClaudeProbeConnectedServicesIdentity(connectedServices)}`,
   getPreflightSessionControlsProbeAdapter: async () => (await import('@/backends/claude/preflight/claudePreflightModelsProbeAdapter')).claudePreflightModelsProbeAdapter,
   getHeadlessTmuxArgvTransform: async () => (await import('@/backends/claude/startup/headlessTmuxArgs')).ensureClaudeHeadlessTmuxStartingModeArgs,
 } satisfies AgentCatalogEntry;
