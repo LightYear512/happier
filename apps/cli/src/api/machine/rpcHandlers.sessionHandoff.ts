@@ -122,6 +122,7 @@ import type {
 import type { SessionHandoffProviderBundle } from '../../session/handoff/types';
 import { compareWorkspaceManifests } from '../../scm/sourceController/workspaceExportPackaging/compareWorkspaceManifests';
 const PREPARE_JOB_FAST_PATH_BUDGET_MS = 250;
+const DIRECT_PEER_NO_FALLBACK_PREPARE_JOB_FAST_PATH_BUDGET_MS = 2_000;
 // Start() should complete synchronously when the source export is genuinely fast, but must
 // fail over to the deferred path before RPC callers hit socket ack timeouts on larger repos.
 // Keep this budget comfortably below 1s so `start` can still acknowledge quickly under load.
@@ -979,11 +980,14 @@ async function readPersistedPrepareJob(params: Readonly<{
   return null;
 }
 
-async function waitForPrepareJobFastPath(runPromise: Promise<void>): Promise<'completed' | 'pending'> {
+async function waitForPrepareJobFastPath(
+  runPromise: Promise<void>,
+  budgetMs = PREPARE_JOB_FAST_PATH_BUDGET_MS,
+): Promise<'completed' | 'pending'> {
   return await Promise.race([
     runPromise.then(() => 'completed' as const),
     new Promise<'pending'>((resolve) => {
-      setTimeout(() => resolve('pending'), PREPARE_JOB_FAST_PATH_BUDGET_MS);
+      setTimeout(() => resolve('pending'), budgetMs);
     }),
   ]);
 }
@@ -3076,7 +3080,12 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
 
     activePrepareJobs.set(jobId, runJob);
 
-    const fastPathResult = await waitForPrepareJobFastPath(runJob);
+    const fastPathResult = await waitForPrepareJobFastPath(
+      runJob,
+      parsed.data.negotiatedTransportStrategy === 'direct_peer' && parsed.data.allowServerRoutedFallback === false
+        ? DIRECT_PEER_NO_FALLBACK_PREPARE_JOB_FAST_PATH_BUDGET_MS
+        : PREPARE_JOB_FAST_PATH_BUDGET_MS,
+    );
     if (fastPathResult === 'completed') {
       const completedJob = await prepareJobStore.read(jobId);
       if (completedJob?.prepareTargetResult) {

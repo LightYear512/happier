@@ -1936,7 +1936,7 @@ function createLoopbackMachineTransferChannels() {
 	          });
 	          expect(started.handoffMetadataV2?.providerBundleTransferPublication?.endpointCandidates?.length).toBeGreaterThan(0);
 	          expect(started.handoffMetadataV2?.workspaceReplicationManifestTransferPublication?.endpointCandidates?.length).toBeGreaterThan(0);
-	        }, { timeout: 200 });
+	        }, { timeout: 1_000 });
 	      } catch (error) {
 	        waitError = error;
 	      }
