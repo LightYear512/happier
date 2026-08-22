@@ -214,8 +214,7 @@ function buildNextIntent(params: Readonly<{
       adapterStatus: 'ready',
       intent: {
         ...baseIntent,
-        status: 'paused',
-        nextCheckAtMs: null,
+        status: 'cancelled',
         attemptCount,
         lastProbeError: null,
       },

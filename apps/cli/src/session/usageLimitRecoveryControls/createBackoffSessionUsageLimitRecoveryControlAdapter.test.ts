@@ -122,8 +122,8 @@ describe('createBackoffSessionUsageLimitRecoveryControlAdapter', () => {
       status: 'ready',
       metadata: {
         sessionUsageLimitRecoveryV1: {
-          status: 'paused',
-          nextCheckAtMs: null,
+          status: 'cancelled',
+          nextCheckAtMs: 1_700_000_060_000,
         },
       },
     });
@@ -143,8 +143,8 @@ describe('createBackoffSessionUsageLimitRecoveryControlAdapter', () => {
       status: 'ready',
       metadata: {
         sessionUsageLimitRecoveryV1: {
-          status: 'paused',
-          nextCheckAtMs: null,
+          status: 'cancelled',
+          nextCheckAtMs: 1_700_000_060_000,
         },
       },
     });
