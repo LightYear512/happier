@@ -39,7 +39,7 @@ test('tests workflow keeps slow CI jobs above the observed timeout floor', async
 
   assert.match(
     stackJob,
-    /name:\s*Stack Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*45\b/,
+    /name:\s*Stack Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*90\b/,
     'Stack Tests job should reserve enough time to finish the full unit and integration lane on GitHub-hosted runners',
   );
 
