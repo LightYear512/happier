@@ -23,8 +23,6 @@ import {
   HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY,
   readConnectedServiceChildSelectionsFromEnv,
 } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
-import { reportConnectedServiceRuntimeAuthFailureToDaemon } from '@/daemon/connectedServices/runtimeAuth/reportConnectedServiceRuntimeAuthFailureToDaemon';
-import { projectConnectedServiceRuntimeAuthRecoveryReport } from '@/daemon/connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoverySessionEvent';
 import type { ConnectedServiceRuntimeFailureClassification } from '@/daemon/connectedServices/runtimeAuth/types';
 import { redactBugReportSensitiveText } from '@happier-dev/protocol';
 
@@ -498,6 +496,24 @@ function isPiFailedAssistantTerminalEvent(event: Record<string, unknown>): boole
     message?.terminal_status,
   );
   return terminalStatus === 'failed' || terminalStatus === 'failure' || terminalStatus === 'error';
+}
+
+function isRecoverablePiAssistantErrorEvent(event: Record<string, unknown>): boolean {
+  if (event.type !== 'message_end') return false;
+  const message = asRecord(event.message);
+  if (!message || message.role !== 'assistant') return false;
+
+  const stopReason = asNonEmptyString(message.stopReason ?? message.stop_reason);
+  const errorMessage = asNonEmptyString(message.errorMessage ?? message.error_message ?? event.errorMessage ?? event.error_message);
+  if (stopReason !== 'error' && !errorMessage) return false;
+
+  const evidence = `${stopReason ?? ''} ${errorMessage ?? ''}`.toLowerCase();
+  return (
+    /\bcontext[_\s-]*(?:length[_\s-]*)?(?:exceeded|overflow)\b/u.test(evidence)
+    || /\bserver[_\s-]*is[_\s-]*overloaded\b|\bservice[_\s-]*unavailable[_\s-]*error\b/u.test(evidence)
+    || /\bwebsocket\b.*\b(?:closed|disconnect(?:ed)?|1006)\b/u.test(evidence)
+    || /\bclosed\s+1006\b/u.test(evidence)
+  );
 }
 
 const PI_RPC_LIVENESS_PROBE_TIMEOUT_ENV = 'HAPPIER_PI_RPC_LIVENESS_PROBE_TIMEOUT_MS';
@@ -1619,6 +1635,13 @@ export class PiRpcBackend implements AgentBackend {
     classification: ConnectedServiceRuntimeFailureClassification,
   ): Promise<void> {
     if (!this.options.happierSessionId) return;
+    const [
+      { reportConnectedServiceRuntimeAuthFailureToDaemon },
+      { projectConnectedServiceRuntimeAuthRecoveryReport },
+    ] = await Promise.all([
+      import('@/daemon/connectedServices/runtimeAuth/reportConnectedServiceRuntimeAuthFailureToDaemon'),
+      import('@/daemon/connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoverySessionEvent'),
+    ]);
     const recoveryReport = await reportConnectedServiceRuntimeAuthFailureToDaemon({
       sessionId: this.options.happierSessionId,
       switchesThisTurn: 0,
@@ -1766,14 +1789,14 @@ export class PiRpcBackend implements AgentBackend {
           this.pendingTurn.agentEndActivityEpoch = null;
           this.cancelPendingTurnAgentEndSettle(this.pendingTurn);
           this.armPendingTurnInactivityTimer(this.pendingTurn);
-        } else if (this.pendingTurn.providerFailureDiagnostic) {
-          this.surfacePiProviderFailure(this.pendingTurn.providerFailureDiagnostic);
-          return;
         } else if (this.pendingTurn.recoverableAssistantErrorObserved) {
           this.pendingTurn.agentEndObserved = false;
           this.pendingTurn.agentEndActivityEpoch = null;
           this.cancelPendingTurnAgentEndSettle(this.pendingTurn);
           this.armPendingTurnInactivityTimer(this.pendingTurn);
+        } else if (this.pendingTurn.providerFailureDiagnostic) {
+          this.surfacePiProviderFailure(this.pendingTurn.providerFailureDiagnostic);
+          return;
         } else {
           this.pendingTurn.agentEndObserved = true;
           this.pendingTurn.agentEndActivityEpoch = this.pendingTurn.activityEpoch;
@@ -2231,8 +2254,10 @@ export class PiRpcBackend implements AgentBackend {
       if (message?.role === 'assistant') {
         const stopReason = asNonEmptyString(message.stopReason ?? message.stop_reason);
         pending.lastAssistantStopReason = stopReason;
-        const errorMessage = asNonEmptyString(message.errorMessage ?? message.error_message ?? event.errorMessage ?? event.error_message);
-        pending.recoverableAssistantErrorObserved = stopReason === 'error' || Boolean(errorMessage);
+        pending.recoverableAssistantErrorObserved = isRecoverablePiAssistantErrorEvent(event);
+        if (!pending.recoverableAssistantErrorObserved) {
+          pending.providerFailureDiagnostic = null;
+        }
       }
     }
 

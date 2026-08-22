@@ -1,4 +1,46 @@
 {
   "version": 1,
-  "cycles": []
+  "cycles": [
+    {
+      "files": [
+        "agent/executionRuns/runtime/backendLongLivedSend.ts",
+        "agent/executionRuns/runtime/ExecutionRunManager.ts",
+        "agent/executionRuns/runtime/executionRunManager/ensureExecutionRun.ts",
+        "agent/executionRuns/runtime/prepareExecutionRunConnectedServices.ts",
+        "agent/executionRuns/runtime/rehydrateExecutionRunBackendLaunch.ts",
+        "agent/executionRuns/runtime/resumeBackendController.ts",
+        "api/api.ts",
+        "api/apiMachine.ts",
+        "api/machine/rpcHandlers.connectedServiceQuotas.ts",
+        "api/machine/rpcHandlers.sessionGoals.ts",
+        "api/machine/rpcHandlers.ts",
+        "api/session/sessionClient.ts",
+        "daemon/controlClient.ts",
+        "daemon/multiDaemon.ts",
+        "daemon/ownership/evaluateCurrentDaemonOwner.ts",
+        "daemon/restartDaemonAndWait.ts",
+        "daemon/service/cli.ts",
+        "daemon/spawn/waitForSessionWebhook.ts",
+        "daemon/statusSnapshot.ts",
+        "diagnostics/backgroundServiceRepair/resolveBackgroundServiceRepairPlanForCurrentRuntime.ts",
+        "diagnostics/bugReportMachineDiagnostics.ts",
+        "diagnostics/bugReportMachineDiagnosticsRecipe.ts",
+        "doctor/inv/services.ts",
+        "doctor/inv/warnings.ts",
+        "rpc/handlers/capabilities.ts",
+        "rpc/handlers/executionRuns.ts",
+        "rpc/handlers/registerSessionHandlers.ts",
+        "session/actions/createCliActionDeps.ts",
+        "session/actions/options/spawnTargetDiscovery.ts",
+        "session/services/awaitSpawnedSessionId.ts",
+        "session/services/createSpawnedSession.ts",
+        "session/services/requestInactiveSessionResume.ts",
+        "session/services/requestSessionStop.ts",
+        "session/services/sendSessionMessage.ts",
+        "session/services/setSessionArchivedState.ts",
+        "session/usageLimitRecoveryControls/sessionUsageLimitRecoverySwitchAccountNow.ts",
+        "ui/doctorSnapshot.ts"
+      ]
+    }
+  ]
 }

@@ -74,8 +74,6 @@ import { readContextWindowTokensFromModelRecord } from '@/backends/modelCapabili
 import { buildOpenCodeTodoWorkState, OPEN_CODE_TODO_WORK_STATE_OWNED_SOURCE_FAMILIES } from './workState';
 import { mergeSessionWorkStateMetadataV1 } from '@/session/workState/sessionWorkStateMetadata';
 import { readConnectedServiceChildSelectionsFromEnv } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
-import { reportConnectedServiceRuntimeAuthFailureToDaemon } from '@/daemon/connectedServices/runtimeAuth/reportConnectedServiceRuntimeAuthFailureToDaemon';
-import { projectConnectedServiceRuntimeAuthRecoveryReport } from '@/daemon/connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoverySessionEvent';
 import { raceWithTimeout } from './raceWithTimeout';
 import {
   buildOpenCodeProviderToolCallKey,
@@ -289,12 +287,20 @@ export function createOpenCodeServerRuntime(params: {
         : { ...(asRecord(error) ?? {}), runtimeAuthClassification }
       : error;
     if (runtimeAuthClassification) {
-      void reportConnectedServiceRuntimeAuthFailureToDaemon({
-        sessionId: params.session.sessionId,
-        switchesThisTurn: 0,
-        classification: runtimeAuthClassification,
-        logPrefix: '[opencode]',
-      }).then((recoveryReport) => {
+      void (async () => {
+        const [
+          { reportConnectedServiceRuntimeAuthFailureToDaemon },
+          { projectConnectedServiceRuntimeAuthRecoveryReport },
+        ] = await Promise.all([
+          import('@/daemon/connectedServices/runtimeAuth/reportConnectedServiceRuntimeAuthFailureToDaemon'),
+          import('@/daemon/connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoverySessionEvent'),
+        ]);
+        const recoveryReport = await reportConnectedServiceRuntimeAuthFailureToDaemon({
+          sessionId: params.session.sessionId,
+          switchesThisTurn: 0,
+          classification: runtimeAuthClassification,
+          logPrefix: '[opencode]',
+        });
         projectConnectedServiceRuntimeAuthRecoveryReport({
           report: recoveryReport,
           classification: runtimeAuthClassification,
@@ -308,7 +314,7 @@ export function createOpenCodeServerRuntime(params: {
             return true;
           },
         });
-      });
+      })();
     }
     void surfacePrimarySessionRuntimeIssue({
       cause,
