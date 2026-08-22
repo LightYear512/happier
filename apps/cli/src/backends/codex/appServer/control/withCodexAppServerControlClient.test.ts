@@ -11,6 +11,28 @@ import {
     writeFakeCodexAppServerScript,
 } from '../testkit/fakeCodexAppServer';
 
+async function readRequestLog(path: string): Promise<Array<Record<string, unknown>>> {
+    const text = await readFile(path, 'utf8').catch(() => '');
+    return text.trim() ? text.trim().split('\n').map((line) => JSON.parse(line)) : [];
+}
+
+async function waitForRequestLogContaining(
+    path: string,
+    expected: Array<Record<string, unknown>>,
+): Promise<Array<Record<string, unknown>>> {
+    const deadline = Date.now() + 5_000;
+    let requestLog: Array<Record<string, unknown>> = [];
+    while (Date.now() < deadline) {
+        requestLog = await readRequestLog(path);
+        const matched = expected.every((entry) => requestLog.some((actual) => {
+            return Object.entries(entry).every(([key, value]) => actual[key] === value);
+        }));
+        if (matched) return requestLog;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return requestLog;
+}
+
 async function importControlClientModule(): Promise<{
     withCodexAppServerControlClient?: unknown;
 }> {
@@ -155,14 +177,15 @@ describe('withCodexAppServerControlClient', () => {
             })).rejects.toThrow('callback failed');
 
             await appendFile(requestLogPath, '');
-            const requestLog = (await readFile(requestLogPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-            expect(requestLog).toEqual(expect.arrayContaining([
+            const expectedLogEntries = [
                 { method: 'initialize' },
                 { method: 'initialized' },
                 { method: 'thread/list' },
                 { event: 'sigterm' },
                 { event: 'exit' },
-            ]));
+            ];
+            const requestLog = await waitForRequestLogContaining(requestLogPath, expectedLogEntries);
+            expect(requestLog).toEqual(expect.arrayContaining(expectedLogEntries));
         });
     });
 });
