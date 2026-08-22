@@ -1991,6 +1991,24 @@ export async function startLocalDaemonWithAuth({
   const startVerifyTimeoutMs = resolveStackDaemonStartVerifyTimeoutMs(baseEnv);
   const startVerifyPollMs = parseNonNegativeInt(baseEnv.HAPPIER_STACK_DAEMON_START_VERIFY_POLL_MS, 125);
   const startVerifyStableMs = parseNonNegativeInt(baseEnv.HAPPIER_STACK_DAEMON_START_VERIFY_STABLE_MS, 750);
+  const preserveExistingForMissingDist = async ({ pid, reason }) => {
+    console.warn(
+      `[local] happier-cli dist entrypoint is missing (${runnerDistEntrypoint}).\n` +
+        `[local] Refusing to restart daemon to avoid downtime. Rebuild happier-cli first.` +
+        (reason ? `\n[local] Detail: ${reason}` : '')
+    );
+    await syncRuntimeDaemonState({ runtimeDaemonPid: pid });
+  };
+  const waitForLocalDistBuildBeforeStopping = async () => {
+    if (!guardLocalCliDist || !runnerDistEntrypoint) return null;
+    const cliDir = join(dirname(runnerDistEntrypoint), '..');
+    const lockPath = resolveCliDistBuildLockPath(cliDir);
+    const startedAt = Date.now();
+    while (isCliDistBuildLockActive(lockPath) && Date.now() - startedAt <= 30_000) {
+      await delay(100);
+    }
+    return readCliDistIntegrity(runnerDistEntrypoint);
+  };
 
   const restartStaleRunningDaemon = async ({ pid, distRestartReason }) => {
     console.warn(`[local] daemon is running with stale runtime; requesting confirmed overlap restart (pid=${pid}).\n[local] ${distRestartReason}`);
@@ -2122,6 +2140,27 @@ export async function startLocalDaemonWithAuth({
     // (common when auth is required but daemon start is non-interactive). Attempt a safe restart.
     // eslint-disable-next-line no-console
     console.warn(`[local] daemon appears stuck starting for stack home (pid=${existing.pid}); restarting...`);
+  }
+
+  if (
+    runnerDistEntrypoint &&
+    !existsSync(runnerDistEntrypoint) &&
+    (existing.status === 'running' || existing.status === 'starting')
+  ) {
+    await preserveExistingForMissingDist({ pid: existing.pid });
+    return;
+  }
+
+  if (guardLocalCliDist && (existing.status === 'running' || existing.status === 'starting')) {
+    await waitForLocalDistBuildBeforeStopping();
+    const latestDistIntegrity = readCliDistIntegrity(runnerDistEntrypoint);
+    if (!latestDistIntegrity.ok) {
+      await preserveExistingForMissingDist({
+        pid: existing.pid,
+        reason: latestDistIntegrity.reason ?? 'unknown',
+      });
+      return;
+    }
   }
 
   // Stop any existing daemon for THIS stack home dir.
