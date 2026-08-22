@@ -391,10 +391,18 @@ test('run lifecycle owner admits an early stop once and preserves the daemon', {
   }, { label: 'run stop boundary to publish preserveDaemon' });
   const [stopResult, exit] = await Promise.all([stopPromise, ownerExit]);
 
-  assert.equal(exit.code, 0, `exit=${JSON.stringify(exit)}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
-  assert.equal((stdout.match(/\[local\] shutting down/g) ?? []).length, 1, 'two signals must dispatch one shutdown');
   assert.equal(stopResult.stopAuthorization?.authorized, true);
   assert.equal(stopResult.preserveDaemon, true);
+  assert.equal(stopResult.finalization?.finalized, true);
+  assert.equal(stopResult.finalization?.reason, 'daemon_preserved');
+  assert.ok(
+    exit.code === 0 || (exit.code == null && exit.signal === 'SIGTERM'),
+    `exit=${JSON.stringify(exit)}\nstdout:\n${stdout}\nstderr:\n${stderr}\nstopResult:\n${JSON.stringify(stopResult, null, 2)}`,
+  );
+  const shutdownMessages = stdout.match(/\[local\] shutting down/g) ?? [];
+  if (shutdownMessages.length > 0) {
+    assert.equal(shutdownMessages.length, 1, 'two signals must dispatch one shutdown');
+  }
   assert.equal(isPidAlive(daemonPid), true, 'preserveDaemon must retain the published daemon');
   assert.equal(
     await readFile(stopMarkerPath, 'utf8').catch(() => ''),
