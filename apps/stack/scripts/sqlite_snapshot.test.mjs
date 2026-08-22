@@ -838,11 +838,19 @@ test('nested output stages its manifest partial under the pinned output parent',
     await mkdir(outputParent, { recursive: true });
     createDatabase(sourcePath, { large: true });
 
-    const pending = createSqliteSnapshot({ sourcePath, outputPath, disposableRoot });
-    const manifestPartialPath = await waitForManifestPartial(disposableRoot, outputParent);
+    let manifestPartialPath = null;
+    const pending = createSqliteSnapshot({
+      sourcePath,
+      outputPath,
+      disposableRoot,
+      beforeAccept: async ({ manifestTemporaryPath }) => {
+        manifestPartialPath = manifestTemporaryPath;
+      },
+    });
     const result = await pending;
 
     assert.equal(result.integrityCheck, 'ok');
+    assert.ok(manifestPartialPath, 'expected beforeAccept to observe the manifest partial path');
     assert.equal(dirname(manifestPartialPath), outputParent);
   });
 });
