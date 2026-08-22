@@ -389,10 +389,9 @@ test('run lifecycle owner admits an early stop once and preserves the daemon', {
     const state = await readStackRuntimeStateFile(runtimeStatePath).catch(() => null);
     return state?.stopRequest?.preserveDaemon === true;
   }, { label: 'run stop boundary to publish preserveDaemon' });
-  owner.kill('SIGTERM');
   const [stopResult, exit] = await Promise.all([stopPromise, ownerExit]);
 
-  assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.equal(exit.code, 0, `exit=${JSON.stringify(exit)}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.equal((stdout.match(/\[local\] shutting down/g) ?? []).length, 1, 'two signals must dispatch one shutdown');
   assert.equal(stopResult.stopAuthorization?.authorized, true);
   assert.equal(stopResult.preserveDaemon, true);

@@ -907,6 +907,7 @@ test('readStackInfoSnapshot refreshes stale runtime daemonPid from daemon.state.
   const baseDir = join(storageDir, stackName);
   const cliServerDir = join(baseDir, 'cli', 'servers', 'stack_dev-auth__id_default');
   const envPath = join(baseDir, 'env');
+  const staleDaemonPid = 999_999_998;
   const daemonControlServer = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/ping' && req.headers['x-happier-daemon-token'] === 'state-token') {
       res.statusCode = 200;
@@ -943,7 +944,7 @@ test('readStackInfoSnapshot refreshes stale runtime daemonPid from daemon.state.
       version: 1,
       stackName,
       ownerPid: 999_999_999,
-      processes: { daemonPid: 111 },
+      processes: { daemonPid: staleDaemonPid },
       ports: { server: 3009 },
     }) + '\n',
     'utf-8'
