@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
+  execFile,
   spawnSync,
   mkdirSync,
   readFileSync,
@@ -9,6 +10,7 @@ const {
   installRemoteFirstPartyComponentMock,
   createRelayHostEngineMock,
 } = vi.hoisted(() => ({
+  execFile: vi.fn(),
   spawnSync: vi.fn(),
   mkdirSync: vi.fn(),
   readFileSync: vi.fn(),
@@ -19,6 +21,7 @@ const {
 }));
 
 vi.mock('node:child_process', () => ({
+  execFile,
   spawnSync,
 }));
 
