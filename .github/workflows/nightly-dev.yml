@@ -119,9 +119,74 @@ jobs:
             echo "__HAPPIER_RELEASE_MESSAGE__"
           } >> "$GITHUB_OUTPUT"
 
+  release_actor_guard:
+    name: Release actor guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted workflow control bytes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Authorize release actor
+        uses: ./.github/actions/release-actor-guard
+        with:
+          team_slug: release-admins
+          app_id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private_key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+  release_preflight:
+    name: Preflight release write authority
+    needs: [prepare_release_candidate, release_actor_guard]
+    runs-on: ubuntu-latest
+    environment: release-shared
+    permissions:
+      contents: write
+    env:
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+    steps:
+      - name: Checkout trusted workflow control bytes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+      - name: Create scoped release token
+        id: app_token
+        if: ${{ env.RELEASE_BOT_APP_ID != '' && env.RELEASE_BOT_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547
+        with:
+          app-id: ${{ env.RELEASE_BOT_APP_ID }}
+          private-key: ${{ env.RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Verify GitHub release tag write authority
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token != '' && steps.app_token.outputs.token || github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ needs.prepare_release_candidate.outputs.source_sha }}
+          PROBE_TAG: release-preflight-dev-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/github/release-preflight-github-write.mjs \
+            --repository "$GH_REPO" \
+            --target-sha "$TARGET_SHA" \
+            --tag "$PROBE_TAG"
+
   cli:
     name: CLI immutable candidate (dev)
-    needs: [resolve_resume, prepare_release_candidate]
+    needs: [resolve_resume, prepare_release_candidate, release_preflight]
     uses: ./.github/workflows/publish-cli-binaries.yml
     secrets: inherit
     with:
@@ -135,7 +200,7 @@ jobs:
 
   hstack:
     name: HStack immutable candidate (dev)
-    needs: [resolve_resume, prepare_release_candidate]
+    needs: [resolve_resume, prepare_release_candidate, release_preflight]
     uses: ./.github/workflows/publish-hstack-binaries.yml
     secrets: inherit
     with:
@@ -149,7 +214,7 @@ jobs:
 
   server_runtime:
     name: Server immutable candidate (dev)
-    needs: [resolve_resume, prepare_release_candidate]
+    needs: [resolve_resume, prepare_release_candidate, release_preflight]
     uses: ./.github/workflows/publish-server-runtime.yml
     secrets: inherit
     with:
@@ -163,7 +228,7 @@ jobs:
 
   ui_web:
     name: UI web immutable candidate (dev)
-    needs: [resolve_resume, prepare_release_candidate]
+    needs: [resolve_resume, prepare_release_candidate, release_preflight]
     uses: ./.github/workflows/publish-ui-web.yml
     secrets: inherit
     with:
@@ -177,7 +242,7 @@ jobs:
 
   resolve_validation_risk:
     name: Resolve changed-seam validation risk
-    needs: [prepare_release_candidate]
+    needs: [prepare_release_candidate, release_preflight]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -415,7 +480,7 @@ jobs:
   release_status:
     name: Project terminal nightly release status
     if: ${{ always() }}
-    needs: [prepare_release_candidate, cli, hstack, server_runtime, ui_web, release_verify, verify_resume_candidates, promote_server, promote_hstack, promote_cli, promote_ui_web, ui_mobile, ui_desktop, docker, verify_promoted, advance_source_issues_to_dev]
+    needs: [prepare_release_candidate, release_actor_guard, release_preflight, cli, hstack, server_runtime, ui_web, release_verify, verify_resume_candidates, promote_server, promote_hstack, promote_cli, promote_ui_web, ui_mobile, ui_desktop, docker, verify_promoted, advance_source_issues_to_dev]
     runs-on: ubuntu-latest
     permissions:
       contents: read

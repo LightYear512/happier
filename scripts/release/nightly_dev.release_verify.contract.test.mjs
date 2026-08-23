@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'yaml';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -84,6 +85,39 @@ test('nightly-dev gates Expo-backed mobile publishing behind an explicit reposit
       raw,
       new RegExp(`${inputName}:\\s*\\$\\{\\{\\s*vars\\.HAPPIER_ENABLE_MOBILE_DEV_RELEASE == 'true'\\s*\\}\\}`),
       `${inputName} should be disabled by default in forks without Expo project permissions`,
+    );
+  }
+});
+
+test('nightly-dev preflights release write authority before expensive immutable candidates', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'nightly-dev.yml'), 'utf8');
+  const workflow = parse(raw);
+  const jobs = workflow?.jobs ?? {};
+  const preflight = jobs.release_preflight;
+  const releaseActorGuard = jobs.release_actor_guard;
+
+  assert.ok(releaseActorGuard, 'nightly-dev privileged preflight should require the release actor guard');
+  assert.match(raw, /release_actor_guard:[\s\S]*?uses:\s*\.\/\.github\/actions\/release-actor-guard/);
+  assert.ok(preflight, 'nightly-dev should fail fast on release credentials before building candidates');
+  assert.deepEqual(preflight.needs, ['prepare_release_candidate', 'release_actor_guard']);
+  assert.equal(preflight.environment, 'release-shared');
+  assert.equal(preflight.permissions?.contents, 'write');
+  assert.equal(preflight.env?.RELEASE_BOT_APP_ID, '${{ secrets.RELEASE_BOT_APP_ID }}');
+  assert.equal(preflight.env?.RELEASE_BOT_PRIVATE_KEY, '${{ secrets.RELEASE_BOT_PRIVATE_KEY }}');
+  assert.match(raw, /release-preflight-github-write\.mjs/, 'preflight should run the same GitHub ref write contract that failed in release publishing');
+  assert.match(
+    raw,
+    /GH_TOKEN:\s*\${{\s*steps\.app_token\.outputs\.token != '' && steps\.app_token\.outputs\.token \|\| github\.token\s*}}/,
+    'preflight should use the same App-token-or-github.token fallback path as release publishing',
+  );
+
+  for (const jobName of ['cli', 'hstack', 'server_runtime', 'ui_web', 'resolve_validation_risk']) {
+    assert.deepEqual(
+      jobs[jobName]?.needs,
+      ['resolve_resume', 'prepare_release_candidate', 'release_preflight'].filter((need) => (
+        jobName === 'resolve_validation_risk' ? need !== 'resolve_resume' : true
+      )),
+      `${jobName} should wait for release_preflight before spending release build/test time`,
     );
   }
 });
