@@ -156,6 +156,9 @@ function createWrapperEnv(
   if (caseItem.toolCommandName === 'yarn') {
     env.npm_execpath = fakeToolchain.sharedScriptPath;
   }
+  if (caseItem.name === 'apps-ui-run-vitest-shards') {
+    env.HAPPIER_UI_VITEST_BIN = fakeToolchain.commandPath;
+  }
   return env;
 }
 

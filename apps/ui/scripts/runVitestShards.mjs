@@ -16,6 +16,11 @@ const vitestBin = path.resolve(
   process.platform === 'win32' ? 'vitest.cmd' : 'vitest',
 );
 
+function resolveVitestBin() {
+  const override = String(process.env.HAPPIER_UI_VITEST_BIN ?? '').trim();
+  return override ? path.resolve(override) : vitestBin;
+}
+
 function parsePositiveInt(raw) {
   const parsed = Number.parseInt(String(raw ?? '').trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -240,7 +245,7 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
   const jsonPath = path.join(tmpDir, 'vitest-files.json');
 
   const result = await runManagedChildCommand({
-    command: vitestBin,
+    command: resolveVitestBin(),
     args: [
       'list',
       '--config',
@@ -296,7 +301,7 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
 function spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFilters, files, shard, shardCount }) {
   const timeoutMs = resolvePositiveInt(process.env.HAPPIER_UI_VITEST_SHARD_TIMEOUT_MS, 15 * 60_000);
   return runManagedChildCommand({
-    command: vitestBin,
+    command: resolveVitestBin(),
     args: buildVitestShardRunArgs({ configPath, passthroughArgs, positionalFilters, files }),
     spawnOptions: {
       cwd: uiRoot,
