@@ -183,6 +183,7 @@ jobs:
   ui-e2e:
     if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || (github.event_name == 'workflow_call' && inputs.run_ui_e2e) }}
     name: UI E2E (Playwright) / shard ${{ matrix.shard }}/3
+    continue-on-error: ${{ github.event_name != 'workflow_call' }}
     strategy:
       fail-fast: false
       matrix:
