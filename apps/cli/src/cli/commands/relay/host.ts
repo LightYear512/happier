@@ -671,7 +671,7 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
     const installParams: RelayRuntimeTaskParams = {
       ...taskParams,
       ...(mergedEnv ? { env: mergedEnv } : {}),
-      ...(!ssh && selfHostRelayBinaryOverride ? { selfHostRelayBinaryOverride } : {}),
+      ...(selfHostRelayBinaryOverride ? { selfHostRelayBinaryOverride } : {}),
     };
     const result = ssh
       ? (() => {

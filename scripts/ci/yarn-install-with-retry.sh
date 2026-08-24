@@ -4,7 +4,15 @@ set -eu
 LOG_PATH="${YARN_INSTALL_LOG_PATH:-${TMPDIR:-/tmp}/yarn-install.log}"
 MAX_ATTEMPTS="${YARN_INSTALL_MAX_ATTEMPTS:-3}"
 SLEEP_SECONDS="${YARN_INSTALL_RETRY_SLEEP_SECONDS:-5}"
+ATTEMPT_TIMEOUT_SECONDS="${YARN_INSTALL_ATTEMPT_TIMEOUT_SECONDS:-1800}"
 DEFAULT_REGISTRY="${YARN_INSTALL_REGISTRY:-https://registry.npmjs.org}"
+
+case "$ATTEMPT_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*)
+        echo "YARN_INSTALL_ATTEMPT_TIMEOUT_SECONDS must be a non-negative integer (got: ${ATTEMPT_TIMEOUT_SECONDS})" >&2
+        exit 1
+        ;;
+esac
 
 is_transient_yarn_error() {
     log_path="$1"
@@ -14,6 +22,7 @@ is_transient_yarn_error() {
     grep -Eq 'prebuild-install http (5[0-9]{2}|429) ' "$log_path" && return 0
     grep -Eq 'EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT|socket hang up' "$log_path" && return 0
     grep -Eq 'trouble with your network connection' "$log_path" && return 0
+    grep -Eq 'yarn install timed out after [0-9]+ seconds' "$log_path" && return 0
     return 1
 }
 
@@ -28,6 +37,33 @@ configure_registry() {
     yarn config set registry "${npm_config_registry%/}/" >/dev/null
 }
 
+run_yarn_install() {
+    if [ "$ATTEMPT_TIMEOUT_SECONDS" -eq 0 ]; then
+        yarn install "$@" >"$LOG_PATH" 2>&1
+        return $?
+    fi
+
+    yarn install "$@" >"$LOG_PATH" 2>&1 &
+    install_pid="$!"
+    elapsed_seconds=0
+
+    while kill -0 "$install_pid" 2>/dev/null; do
+        if [ "$elapsed_seconds" -ge "$ATTEMPT_TIMEOUT_SECONDS" ]; then
+            echo "yarn install timed out after ${ATTEMPT_TIMEOUT_SECONDS} seconds" >>"$LOG_PATH"
+            kill "$install_pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$install_pid" 2>/dev/null || true
+            wait "$install_pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+        elapsed_seconds=$((elapsed_seconds + 1))
+    done
+
+    wait "$install_pid"
+    return $?
+}
+
 clear_cache_after_transient_failure() {
     yarn cache clean >/dev/null 2>&1 || true
 }
@@ -36,7 +72,7 @@ configure_registry
 
 attempt=1
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-    if yarn install "$@" >"$LOG_PATH" 2>&1; then
+    if run_yarn_install "$@"; then
         rm -f "$LOG_PATH" || true
         exit 0
     fi

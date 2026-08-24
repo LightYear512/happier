@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reloadConfiguration } from '../../configuration';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
-import { captureConsoleLogAndMuteStdout } from '../../testkit/logger/captureOutput';
+import { captureStdoutJsonOutput } from '../../testkit/logger/captureOutput';
 
 vi.mock('@happier-dev/cli-common/relayHost', async (importOriginal) => {
     const actual = await importOriginal<any>();
@@ -48,7 +48,7 @@ describe('happier relay host status warnings', () => {
     });
 
     it('includes relay warnings in the local JSON status envelope', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
 
@@ -61,7 +61,7 @@ describe('happier relay host status warnings', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_status');
             expect(parsed.data?.warnings).toEqual([

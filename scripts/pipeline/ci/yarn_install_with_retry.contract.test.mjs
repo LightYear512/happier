@@ -204,6 +204,35 @@ test('yarn-install-with-retry does not retry non-transient failures', () => {
   assert.match(res.stderr, /non-transient error/i, 'expected stderr to explain that the failure was not retried');
 });
 
+test('yarn-install-with-retry times out a hung install attempt', () => {
+  const root = createFakeYarnWorkspace({
+    installBody: `  sleep 5
+  exit 0`,
+  });
+  const stateFile = path.join(root, 'state.log');
+
+  const res = spawnSync('bash', [scriptPath, '--frozen-lockfile'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
+      FAKE_YARN_STATE_FILE: stateFile,
+      YARN_INSTALL_ATTEMPT_TIMEOUT_SECONDS: '1',
+      YARN_INSTALL_MAX_ATTEMPTS: '1',
+      YARN_INSTALL_RETRY_SLEEP_SECONDS: '0',
+    },
+    timeout: 4000,
+  });
+
+  assert.notEqual(res.status, 0, 'expected hung install to fail instead of consuming the job timeout');
+  assert.deepEqual(
+    readFileSync(stateFile, 'utf8').trim().split('\n').filter(Boolean),
+    ['config set registry https://registry.npmjs.org/', 'install --frozen-lockfile'],
+  );
+  assert.match(res.stderr, /timed out/i, 'expected stderr to explain the install timeout');
+});
+
 test('yarn-install-with-retry executes directly without bash on PATH for alpine docker stages', () => {
   const root = createFakeYarnWorkspace({
     installBody: '  exit 0',

@@ -5,7 +5,7 @@ import { basename, join } from 'node:path';
 import { reloadConfiguration } from '../../configuration';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
-import { captureConsoleLogAndMuteStdout } from '../../testkit/logger/captureOutput';
+import { captureStdoutJsonOutput } from '../../testkit/logger/captureOutput';
 
 let mockedPreparedPayloadRoot = '';
 let mockedPreparedVersionId = 'preview-release-0.2.1';
@@ -95,7 +95,7 @@ describe('happier relay host install local server-binary version tracking', () =
     });
 
     it('tracks the local payload root version instead of the prepared preview bundle version', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
 
@@ -108,7 +108,7 @@ describe('happier relay host install local server-binary version tracking', () =
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
             expect(resolvedLocalInstallVersion).toBe(basename(serverPayloadRoot));
@@ -121,7 +121,7 @@ describe('happier relay host install local server-binary version tracking', () =
     });
 
     it('accepts --yes for relay host install as a no-op installer acknowledgement', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
 
@@ -134,7 +134,7 @@ describe('happier relay host install local server-binary version tracking', () =
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
             expect(resolvedLocalInstallVersion).toBe(mockedPreparedVersionId);

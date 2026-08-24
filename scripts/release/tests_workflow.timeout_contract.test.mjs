@@ -27,7 +27,7 @@ test('tests workflow keeps slow CI jobs above the observed timeout floor', async
 
   assert.match(
     uiJob,
-    /name:\s*UI Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*75\b/,
+    /name:\s*UI Tests \(unit \+ integration\)[\s\S]*?timeout-minutes:\s*120\b/,
     'UI Tests job should reserve enough time to finish on GitHub-hosted runners',
   );
 

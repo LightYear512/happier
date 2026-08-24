@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleProfilesCliCommand } from './profiles';
 import * as persistenceModule from '@/persistence';
 import * as accountSettingsModule from '@/settings/accountSettings/bootstrapAccountSettingsContext';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -13,7 +13,7 @@ describe('happier profiles list --json', () => {
   it('lists built-in profiles when unauthenticated', async () => {
     vi.spyOn(persistenceModule, 'readCredentials').mockResolvedValue(null);
     const bootstrapSpy = vi.spyOn(accountSettingsModule, 'bootstrapAccountSettingsContext');
-    const output = captureConsoleLogAndMuteStdout();
+    const output = captureStdoutJsonOutput();
 
     await handleProfilesCliCommand({
       args: ['profiles', 'list', '--json'],
@@ -23,8 +23,7 @@ describe('happier profiles list --json', () => {
 
     expect(bootstrapSpy).not.toHaveBeenCalled();
 
-    const stdout = output.logs.join('\n').trim();
-    const payload = JSON.parse(stdout) as any;
+    const payload = output.json() as any;
     expect(payload.ok).toBe(true);
     expect(payload.kind).toBe('profiles_list');
     expect(payload.data?.authenticated).toBe(false);
@@ -63,7 +62,7 @@ describe('happier profiles list --json', () => {
       whenRefreshed: null,
     } as any);
 
-    const output = captureConsoleLogAndMuteStdout();
+    const output = captureStdoutJsonOutput();
 
     await handleProfilesCliCommand({
       args: ['profiles', 'list', '--refresh-settings', '--json'],
@@ -73,8 +72,7 @@ describe('happier profiles list --json', () => {
 
     expect(bootstrapSpy).toHaveBeenCalledWith(expect.objectContaining({ refresh: 'force' }));
 
-    const stdout = output.logs.join('\n').trim();
-    const payload = JSON.parse(stdout) as any;
+    const payload = output.json() as any;
     expect(payload.ok).toBe(true);
     expect(payload.kind).toBe('profiles_list');
     expect(payload.data?.authenticated).toBe(true);
@@ -121,7 +119,7 @@ describe('happier profiles list --json', () => {
       whenRefreshed: null,
     } as any);
 
-    const output = captureConsoleLogAndMuteStdout();
+    const output = captureStdoutJsonOutput();
 
     await handleProfilesCliCommand({
       args: ['profiles', 'list', '--json'],
@@ -129,7 +127,7 @@ describe('happier profiles list --json', () => {
       terminalRuntime: null,
     } as any);
 
-    const payload = JSON.parse(output.logs.join('\n').trim()) as any;
+    const payload = output.json() as any;
     expect(payload.data?.profiles).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

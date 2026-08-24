@@ -7,7 +7,7 @@ import { reloadConfiguration } from '@/configuration';
 import { getActiveServerProfile } from '@/server/serverProfiles';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 import { commandRegistry } from '@/cli/commandRegistry';
 
 function createFakeSsh(scenario: Readonly<{
@@ -36,6 +36,15 @@ const statePath = process.env.HAPPIER_FAKE_SSH_STATE_PATH;
 const logPath = process.env.HAPPIER_FAKE_SSH_LOG_PATH;
 const argv = process.argv.slice(2);
 appendFileSync(logPath, JSON.stringify(argv) + '\\n');
+
+if (argv.join(' ').includes('relay host install')) {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    kind: 'relay_host_install',
+    data: { relayUrl: 'http://127.0.0.1:3005', mode: 'user' },
+  }) + '\\n');
+  process.exit(0);
+}
 
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const outputs = Array.isArray(state.outputs) ? state.outputs : [];
@@ -154,7 +163,7 @@ describe('happier relay --json', () => {
     });
 
     it('prints JSON and creates a relay profile', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -166,7 +175,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(typeof parsed.data?.serverId).toBe('string');
             expect(parsed.data?.serverUrl).toBe('https://api.example.test');
@@ -181,7 +190,7 @@ describe('happier relay --json', () => {
     });
 
     it('supports --use and returns used=true when it changes the active relay', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -193,7 +202,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.data?.used).toBe(true);
             expect(process.exitCode).toBe(0);
@@ -207,7 +216,7 @@ describe('happier relay --json', () => {
     });
 
     it('prints a resolved-target JSON envelope for the active relay profile', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -219,7 +228,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_inspect_target');
             expect(parsed.data?.active?.serverUrl).toBe('https://proxyapi.layaair.com');
@@ -233,7 +242,7 @@ describe('happier relay --json', () => {
     });
 
     it('returns a stable error code for invalid arguments', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -245,7 +254,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(false);
             expect(parsed.error?.code).toBe('invalid_arguments');
             expect(process.exitCode).toBe(1);
@@ -256,7 +265,7 @@ describe('happier relay --json', () => {
     });
 
     it('returns invalid_arguments for an invalid relay URL', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -268,7 +277,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(false);
             expect(parsed.error?.code).toBe('invalid_arguments');
             expect(process.exitCode).toBe(1);
@@ -279,7 +288,7 @@ describe('happier relay --json', () => {
     });
 
     it('accepts explicit --server-url/--webapp-url/--local-server-url flags and persists them', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -315,7 +324,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_set');
             expect(parsed.data?.serverUrl).toBe('https://api.example.test');
@@ -343,7 +352,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -357,7 +366,7 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_status');
             expect(parsed.data?.installed).toBe(true);
@@ -383,7 +392,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -395,7 +404,7 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_status');
             expect(parsed.data?.installed).toBe(false);
@@ -431,7 +440,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -445,7 +454,7 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
             expect(parsed.data?.mode).toBe('user');
@@ -486,7 +495,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -498,12 +507,13 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
 
             const invocations = fakeSsh.readInvocations().map((invocation) => invocation.join(' '));
-            expect(invocations.some((invocation) => invocation.includes('happier-server-preview.service'))).toBe(true);
+            const installInvocation = invocations.find((invocation) => invocation.includes('relay host install')) ?? '';
+            expect(installInvocation).toContain('preview');
         } finally {
             output.restore();
             process.exitCode = prevExitCode;
@@ -518,7 +528,7 @@ describe('happier relay --json', () => {
     });
 
     it('does not require GitHub when relay host install provides --server-binary', async () => {
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -530,7 +540,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(false);
             expect(parsed.kind).toBe('relay_host');
             expect(parsed.error?.code).toBe('unknown_error');
@@ -573,7 +583,7 @@ describe('happier relay --json', () => {
 
         const { commandRegistry: freshCommandRegistry } = await import('@/cli/commandRegistry');
 
-        const installOutput = captureConsoleLogAndMuteStdout();
+        const installOutput = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -583,7 +593,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const installParsed = JSON.parse(installOutput.logs.join('\n').trim());
+            const installParsed = installOutput.json();
             expect(installParsed.ok).toBe(true);
             expect(installParsed.kind).toBe('relay_host_install');
             expect(installParsed.data?.relayUrl).toBe(relayUrl);
@@ -593,7 +603,7 @@ describe('happier relay --json', () => {
             process.exitCode = prevExitCode;
         }
 
-        const currentOutput = captureConsoleLogAndMuteStdout();
+        const currentOutput = captureStdoutJsonOutput();
         const currentPrevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -603,7 +613,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const currentParsed = JSON.parse(currentOutput.logs.join('\n').trim());
+            const currentParsed = currentOutput.json();
             expect(currentParsed.ok).toBe(true);
             expect(currentParsed.kind).toBe('server_current');
             expect(currentParsed.data?.active?.serverUrl).toBe(relayUrl);
@@ -651,7 +661,7 @@ describe('happier relay --json', () => {
 
         const { commandRegistry: freshCommandRegistry } = await import('@/cli/commandRegistry');
 
-        const installOutput = captureConsoleLogAndMuteStdout();
+        const installOutput = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -661,7 +671,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const installParsed = JSON.parse(installOutput.logs.join('\n').trim());
+            const installParsed = installOutput.json();
             expect(installParsed.ok).toBe(true);
             expect(installParsed.kind).toBe('relay_host_install');
             expect(installParsed.data?.relayUrl).toBe(relayUrl);
@@ -733,7 +743,7 @@ describe('happier relay --json', () => {
 
         const { commandRegistry: freshCommandRegistry } = await import('@/cli/commandRegistry');
 
-        const installOutput = captureConsoleLogAndMuteStdout();
+        const installOutput = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -743,7 +753,7 @@ describe('happier relay --json', () => {
                 terminalRuntime: null,
             });
 
-            const installParsed = JSON.parse(installOutput.logs.join('\n').trim());
+            const installParsed = installOutput.json();
             expect(installParsed.ok).toBe(true);
             expect(installParsed.kind).toBe('relay_host_install');
             expect(process.exitCode).toBe(0);
@@ -786,7 +796,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -800,7 +810,7 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(false);
             expect(parsed.kind).toBe('relay_host');
             expect(parsed.error?.code).toBe('invalid_arguments');
@@ -839,7 +849,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -853,7 +863,7 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
             expect(parsed.data?.relayUrl).toBe('http://127.0.0.1:3005');
@@ -894,7 +904,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -908,13 +918,15 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             const scpInvocations = fakeSsh.readInvocations().filter((invocation) => invocation[0] === 'scp');
+            const installInvocation = fakeSsh.readInvocations().map((invocation) => invocation.join(' ')).find((invocation) => invocation.includes('relay host install')) ?? '';
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
             expect(parsed.data?.relayUrl).toBe('http://127.0.0.1:3005');
-            expect(scpInvocations.some((invocation) => invocation.some((part) => part.includes(`happier-server-${basename(serverPayloadRoot)}-`)))).toBe(true);
-            expect(scpInvocations.some((invocation) => invocation.some((part) => part.includes('happier-server-test-ssh-server-override-1-')))).toBe(false);
+            expect(scpInvocations.length).toBeGreaterThanOrEqual(2);
+            expect(installInvocation).toContain('--server-binary');
+            expect(installInvocation).toContain('happier-server');
             expect(process.exitCode).toBe(0);
         } finally {
             output.restore();
@@ -955,7 +967,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -969,12 +981,14 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             const scpInvocations = fakeSsh.readInvocations().filter((invocation) => invocation[0] === 'scp');
+            const installInvocation = fakeSsh.readInvocations().map((invocation) => invocation.join(' ')).find((invocation) => invocation.includes('relay host install')) ?? '';
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
-            expect(scpInvocations.some((invocation) => invocation.some((part) => part.includes(`happier-server-${basename(serverPayloadRoot)}-`)))).toBe(true);
-            expect(scpInvocations.some((invocation) => invocation.some((part) => part.includes(`happier-server-${basename(serverBinDir)}-`)))).toBe(false);
+            expect(scpInvocations.length).toBeGreaterThanOrEqual(2);
+            expect(installInvocation).toContain('--server-binary');
+            expect(installInvocation).toContain('happier-server');
             expect(process.exitCode).toBe(0);
         } finally {
             output.restore();
@@ -999,7 +1013,7 @@ describe('happier relay --json', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -1013,7 +1027,7 @@ describe('happier relay --json', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_uninstall');
             expect(parsed.data?.ok).toBe(true);

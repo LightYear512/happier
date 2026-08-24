@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 
 type PreparedPayload = Readonly<{
     componentId: string;
@@ -75,6 +75,15 @@ const statePath = process.env.HAPPIER_FAKE_SSH_STATE_PATH;
 const logPath = process.env.HAPPIER_FAKE_SSH_LOG_PATH;
 const argv = process.argv.slice(2);
 appendFileSync(logPath, JSON.stringify(argv) + '\\n');
+
+if (argv.join(' ').includes('relay host install')) {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    kind: 'relay_host_install',
+    data: { relayUrl: 'http://127.0.0.1:3005', mode: 'user' },
+  }) + '\\n');
+  process.exit(0);
+}
 
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const outputs = Array.isArray(state.outputs) ? state.outputs : [];
@@ -166,11 +175,10 @@ describe('happier relay host arch resolution', () => {
         const fakeSsh = createFakeSsh({
             outputs: [
                 { status: 0, stdout: `${JSON.stringify({ platform: 'linux', arch: 'aarch64' })}\n` },
-                { status: 0, stdout: 'yes\n' },
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -190,7 +198,7 @@ describe('happier relay host arch resolution', () => {
             expect(scpCall).toBeTruthy();
             expect(preparedRoots.some((root) => root.includes('happier-first-party-mock-arm64-'))).toBe(true);
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(true);
             expect(parsed.kind).toBe('relay_host_install');
         } finally {
@@ -207,7 +215,7 @@ describe('happier relay host arch resolution', () => {
             ],
         });
 
-        const output = captureConsoleLogAndMuteStdout();
+        const output = captureStdoutJsonOutput();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
@@ -222,7 +230,7 @@ describe('happier relay host arch resolution', () => {
                 });
             });
 
-            const parsed = JSON.parse(output.logs.join('\n').trim());
+            const parsed = output.json();
             expect(parsed.ok).toBe(false);
             expect(String(parsed.error?.message ?? '')).toContain('Could not resolve hostname');
         } finally {
