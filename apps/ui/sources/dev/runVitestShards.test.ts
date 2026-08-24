@@ -7,7 +7,9 @@ import {
     resolveVitestConfigPath,
     resolveVitestPositionalFilters,
     resolveVitestShardCount,
+    resolveVitestShardOffset,
     resolveVitestPassthroughArgs,
+    resolveVitestShardSelection,
     runVitestShardRuns,
     shouldVitestShardRunProceedWithoutFiles,
     summarizeVitestShardOutcomes,
@@ -65,6 +67,28 @@ describe('apps/ui runVitestShards', () => {
         // No file may be dropped and none may be executed twice.
         expect(executed.slice().sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
         expect(executed).toHaveLength(files.length);
+    });
+
+    it('can select UI Vitest shards from an offset for local CI retry', () => {
+        const shards = [['a'], ['b'], ['c'], ['d']];
+
+        expect(resolveVitestShardOffset({
+            HAPPIER_UI_VITEST_SHARD_OFFSET: '2',
+        })).toBe(2);
+        expect(resolveVitestShardSelection(shards, {
+            HAPPIER_UI_VITEST_SHARD_OFFSET: '2',
+            HAPPIER_UI_VITEST_SHARD_LIMIT: '1',
+        })).toEqual([['c']]);
+    });
+
+    it('ignores invalid UI Vitest shard offsets', () => {
+        const shards = [['a'], ['b']];
+
+        expect(resolveVitestShardSelection(shards, {
+            HAPPIER_UI_VITEST_SHARD_OFFSET: '-1',
+            HAPPIER_UI_VITEST_SHARD_LIMIT: 'nope',
+        })).toEqual(shards);
+        expect(resolveVitestShardOffset({ HAPPIER_UI_VITEST_SHARD_OFFSET: '-1' })).toBe(0);
     });
 
     it('runs a shard on its own file list without re-adding the caller path filters', () => {
@@ -154,6 +178,19 @@ describe('apps/ui runVitestShards', () => {
 
         expect(runShard.mock.calls.map(([entry]) => entry.shard)).toEqual([1, 2, 3]);
         expect(outcomes.map((entry) => entry.outcome)).toEqual(['failed', 'passed', 'passed']);
+    });
+
+    it('preserves original shard numbers when running from an offset', async () => {
+        const runShard = vi.fn().mockResolvedValue({ ok: true, code: 0, signal: null });
+
+        const outcomes = await runVitestShardRuns({
+            shardFiles: [['/abs/c.test.ts']],
+            shardOffset: 2,
+            runShard,
+        });
+
+        expect(runShard.mock.calls.map(([entry]) => entry.shard)).toEqual([3]);
+        expect(outcomes.map((entry) => entry.shard)).toEqual([3]);
     });
 
     it('exits non-zero and names every failing shard when a later shard fails', () => {

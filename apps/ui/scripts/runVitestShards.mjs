@@ -2,10 +2,19 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { resolveSignalExitCode, runManagedChildCommand } from '../../../scripts/testing/process/managedChildLifecycle.mjs';
 import { resolveMaxOldSpaceSizeMb, upsertMaxOldSpaceSize } from './withNodeHeapLimit.mjs';
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const uiRoot = path.resolve(scriptDir, '..');
+const vitestBin = path.resolve(
+  uiRoot,
+  'node_modules',
+  '.bin',
+  process.platform === 'win32' ? 'vitest.cmd' : 'vitest',
+);
 
 function parsePositiveInt(raw) {
   const parsed = Number.parseInt(String(raw ?? '').trim(), 10);
@@ -14,6 +23,22 @@ function parsePositiveInt(raw) {
 
 function resolvePositiveInt(raw, fallback) {
   return parsePositiveInt(raw) ?? fallback;
+}
+
+function parseNonNegativeInt(raw) {
+  const parsed = Number.parseInt(String(raw ?? '').trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function resolveVitestShardOffset(env = process.env) {
+  return parseNonNegativeInt(env?.HAPPIER_UI_VITEST_SHARD_OFFSET) ?? 0;
+}
+
+export function resolveVitestShardSelection(shardFiles, env = process.env) {
+  const shardOffset = resolveVitestShardOffset(env);
+  const shardLimit = parsePositiveInt(env?.HAPPIER_UI_VITEST_SHARD_LIMIT);
+  const offsetShards = Array.from(shardFiles ?? []).slice(shardOffset);
+  return shardLimit ? offsetShards.slice(0, shardLimit) : offsetShards;
 }
 
 export function resolveVitestShardCount(env) {
@@ -116,12 +141,12 @@ export function classifyVitestShardTermination({ code, signal }) {
   return { outcome: 'passed', exitCode: 0, signal: null };
 }
 
-export async function runVitestShardRuns({ shardFiles, runShard }) {
+export async function runVitestShardRuns({ shardFiles, runShard, shardOffset = 0 }) {
   const outcomes = [];
   let aborted = false;
 
   for (let index = 0; index < shardFiles.length; index += 1) {
-    const shard = index + 1;
+    const shard = shardOffset + index + 1;
     const files = shardFiles[index] ?? [];
     if (files.length === 0) {
       outcomes.push({ outcome: 'empty', shard, fileCount: 0, exitCode: 0, signal: null });
@@ -215,7 +240,7 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
   const jsonPath = path.join(tmpDir, 'vitest-files.json');
 
   const result = await runManagedChildCommand({
-    command: 'vitest',
+    command: vitestBin,
     args: [
       'list',
       '--config',
@@ -226,6 +251,7 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
       ...passthroughArgs,
     ],
     spawnOptions: {
+      cwd: uiRoot,
       env: {
         ...process.env,
         NODE_OPTIONS: nodeOptions,
@@ -270,9 +296,10 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
 function spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFilters, files, shard, shardCount }) {
   const timeoutMs = resolvePositiveInt(process.env.HAPPIER_UI_VITEST_SHARD_TIMEOUT_MS, 15 * 60_000);
   return runManagedChildCommand({
-    command: 'vitest',
+    command: vitestBin,
     args: buildVitestShardRunArgs({ configPath, passthroughArgs, positionalFilters, files }),
     spawnOptions: {
+      cwd: uiRoot,
       env: {
         ...process.env,
         NODE_OPTIONS: nodeOptions,
@@ -317,10 +344,12 @@ async function main(argv) {
     return;
   }
   const positionalFilters = await resolveVitestPositionalFilters(passthroughArgs);
-  const shardFiles = partitionVitestFilesIntoShards(allFiles, shardCount);
+  const shardOffset = resolveVitestShardOffset(process.env);
+  const shardFiles = resolveVitestShardSelection(partitionVitestFilesIntoShards(allFiles, shardCount));
 
   const outcomes = await runVitestShardRuns({
     shardFiles,
+    shardOffset,
     runShard: async ({ shard, files }) => {
       // eslint-disable-next-line no-console
       console.log(`[vitest] shard ${shard}/${shardCount}`);

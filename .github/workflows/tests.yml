@@ -467,6 +467,8 @@ jobs:
         run: yarn workspace @happier-dev/protocol test
 
       - name: Run unit tests
+        env:
+          HAPPIER_UI_VITEST_SHARD_TIMEOUT_MS: "300000"
         run: yarn workspace @happier-dev/app test:unit
 
       - name: Run integration tests
