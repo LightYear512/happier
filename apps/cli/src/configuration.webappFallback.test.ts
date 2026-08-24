@@ -362,7 +362,7 @@ describe('configuration env url fallback', () => {
     expect(configMod.configuration.daemonLockFile).toBe(join(homeDir, 'servers', lifecycleScopeId, 'daemon.state.json.lock'));
   });
 
-  it('keeps an explicit stack runtime identity when only a different persisted profile matches the endpoint', async () => {
+  it('keeps a matching persisted endpoint profile ahead of a different stack runtime identity', async () => {
     const homeDir = createTempDirSync('happier-cli-config-stable-stack-identity-');
     tempDirs.push(homeDir);
     const stableScopeId = 'stack_repo-remote-dev-d72117acdb__id_default';
@@ -391,8 +391,8 @@ describe('configuration env url fallback', () => {
     const configMod = await import('./configuration');
     configMod.reloadConfiguration();
 
-    expect(configMod.configuration.activeServerId).toBe(stableScopeId);
-    expect(configMod.configuration.activeServerDir).toBe(join(homeDir, 'servers', stableScopeId));
+    expect(configMod.configuration.activeServerId).toBe(matchingAliasId);
+    expect(configMod.configuration.activeServerDir).toBe(join(homeDir, 'servers', matchingAliasId));
     expect(configMod.configuration.serverUrl).toBe('http://127.0.0.1:52753');
   });
 
