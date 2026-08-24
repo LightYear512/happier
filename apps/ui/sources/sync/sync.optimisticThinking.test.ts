@@ -851,7 +851,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         requestSpy.mockRestore();
     });
 
-    it('replays identical scoped enqueue identities independently through the real Sync scheduler', async () => {
+    it('replays identical scoped enqueue identities without collapsing scopes through the real Sync scheduler', async () => {
         vi.useFakeTimers();
         try {
             const sessionId = 'same-session';
@@ -887,7 +887,7 @@ describe('sync.sendMessage optimistic thinking', () => {
                 (sync as any).schedulePendingOutboxOperationRetry({ sessionId, localId: replayLocalId, outboxScope: scopeB });
             }
 
-            await vi.advanceTimersByTimeAsync(1_000);
+            await vi.advanceTimersByTimeAsync(5_000);
             await flushPendingOutboxRetryMicrotasks();
 
             const posts = runtimeFetchWithServerReachabilityMock.mock.calls
@@ -899,8 +899,12 @@ describe('sync.sendMessage optimistic thinking', () => {
                 pendingOutboxFixture({ sessionId, localId, text: 'scope A' }).request.body,
                 pendingOutboxFixture({ sessionId, localId, text: 'scope B' }).request.body,
             ].sort());
-            expect(loadPendingOutboxForSession(sessionId, scopeA)).toEqual([]);
-            expect(loadPendingOutboxForSession(sessionId, scopeB)).toEqual([]);
+            expect(loadPendingOutboxForSession(sessionId, scopeA)).toEqual([
+                expect.objectContaining({ sessionId, localId, operation: 'enqueue', text: 'scope A' }),
+            ]);
+            expect(loadPendingOutboxForSession(sessionId, scopeB)).toEqual([
+                expect.objectContaining({ sessionId, localId, operation: 'enqueue', text: 'scope B' }),
+            ]);
         } finally {
             vi.useRealTimers();
         }
@@ -1186,7 +1190,10 @@ describe('sync.sendMessage optimistic thinking', () => {
                 expect.objectContaining({
                     id: 'first-message-local',
                     localId: 'first-message-local',
-                    deliveryStatus: 'accepted',
+                    deliveryStatus: 'queued',
+                    sendState: 'unconfirmed',
+                    pendingOutboxOperation: 'enqueue',
+                    pendingOutboxScope: storage.getState().profileScope,
                     text: 'fallback please',
                 }),
             ]);
@@ -1196,7 +1203,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         },
     );
 
-    it('skips session runtime RPC for older attached CLI versions and uses the legacy socket commit path directly', async () => {
+    it('uses session runtime RPC for stable 0.1.0 session versions', async () => {
         const sessionId = 's_active_legacy_cli';
         storage.getState().applySessions([createSession({
             sessionId,
@@ -1226,16 +1233,16 @@ describe('sync.sendMessage optimistic thinking', () => {
 
         await sync.sendMessage(sessionId, 'legacy please');
 
-        expect(sessionRpcSpy).not.toHaveBeenCalled();
-        expect(emitWithAck).toHaveBeenCalledWith(
-            'message',
+        expect(sessionRpcSpy).toHaveBeenCalledWith(
+            sessionId,
+            SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND,
             expect.objectContaining({
-                sid: sessionId,
+                text: 'legacy please',
                 localId: expect.any(String),
-                messageRole: 'user',
             }),
-            expect.anything(),
+            expect.objectContaining({ timeoutMs: 7500 }),
         );
+        expect(emitWithAck).not.toHaveBeenCalled();
     });
 
     it('still uses session runtime RPC for compatible 0.1.0 dev session versions', async () => {

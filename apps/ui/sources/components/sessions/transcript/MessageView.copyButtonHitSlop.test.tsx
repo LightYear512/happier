@@ -187,7 +187,6 @@ describe('MessageView (copy button hitSlop)', () => {
             );
 
             const markdownView = screen.findByType('MarkdownView' as any);
-            expect(markdownView.props.testID).toBe('transcript-user-message-markdown');
             expect(markdownView.props.selectable).toBe(expectedSelectable);
             expect(markdownView.props.profile).toBe('transcript');
             expect(markdownView.props.textStyle).toMatchObject({

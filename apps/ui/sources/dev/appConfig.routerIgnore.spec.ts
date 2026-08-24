@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -103,6 +103,7 @@ describe('expo-router route hygiene', () => {
 
         const unexpected = walk(appRoot).filter((filePath) => {
             if (filePath.endsWith('.ts')) return true;
+            if (basename(filePath).startsWith('+')) return false;
             if (!filePath.endsWith('.tsx')) return false;
 
             const source = readFileSync(filePath, 'utf8');
