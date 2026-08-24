@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveVitestConfigPath, resolveVitestShardCount } from '../runVitestShards.mjs';
+import { resolveBatchSelection } from '../runVitestBatches.mjs';
 
 describe('runVitestShards', () => {
   it('defaults shard count to 8', () => {
@@ -25,5 +26,22 @@ describe('runVitestShards', () => {
   it('returns null when --config is missing', () => {
     expect(resolveVitestConfigPath(['node', 'run'])).toBe(null);
   });
-});
 
+  it('can select CLI Vitest batches from an offset for local CI retry', () => {
+    const batches = [['a'], ['b'], ['c'], ['d']];
+
+    expect(resolveBatchSelection(batches, {
+      HAPPIER_CLI_VITEST_BATCH_OFFSET: '2',
+      HAPPIER_CLI_VITEST_BATCH_LIMIT: '1',
+    })).toEqual([['c']]);
+  });
+
+  it('ignores invalid CLI Vitest batch offsets', () => {
+    const batches = [['a'], ['b']];
+
+    expect(resolveBatchSelection(batches, {
+      HAPPIER_CLI_VITEST_BATCH_OFFSET: '-1',
+      HAPPIER_CLI_VITEST_BATCH_LIMIT: 'nope',
+    })).toEqual(batches);
+  });
+});

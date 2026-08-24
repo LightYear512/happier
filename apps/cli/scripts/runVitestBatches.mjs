@@ -20,6 +20,18 @@ function parsePositiveInt(raw, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseNonNegativeInt(raw, fallback) {
+  const parsed = Number.parseInt(String(raw ?? '').trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export function resolveBatchSelection(allBatches, env = process.env) {
+  const batchOffset = parseNonNegativeInt(env.HAPPIER_CLI_VITEST_BATCH_OFFSET, 0);
+  const batchLimit = parsePositiveInt(env.HAPPIER_CLI_VITEST_BATCH_LIMIT, 0);
+  const offsetBatches = allBatches.slice(batchOffset);
+  return batchLimit > 0 ? offsetBatches.slice(0, batchLimit) : offsetBatches;
+}
+
 function isExcludedTestFile(filePath) {
   return (
     filePath.endsWith('.slow.test.ts')
@@ -128,9 +140,8 @@ async function main() {
     ...collectTestFiles(resolve(cliRoot, 'src')),
     ...collectTestFiles(resolve(cliRoot, 'scripts')),
   ];
-  const batchLimit = parsePositiveInt(process.env.HAPPIER_CLI_VITEST_BATCH_LIMIT, 0);
   const allBatches = chunk(files, batchSize);
-  const batches = batchLimit > 0 ? allBatches.slice(0, batchLimit) : allBatches;
+  const batches = resolveBatchSelection(allBatches);
   const nodeOptions = upsertMaxOldSpaceSize(process.env.NODE_OPTIONS, resolveMaxOldSpaceSizeMb(process.env));
 
   // eslint-disable-next-line no-console
