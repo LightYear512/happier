@@ -123,7 +123,7 @@ async function main() {
   const configPath = process.argv.includes('--config')
     ? process.argv[process.argv.indexOf('--config') + 1]
     : 'vitest.config.ts';
-  const batchSize = parsePositiveInt(process.env.HAPPIER_CLI_VITEST_BATCH_SIZE, 5);
+  const batchSize = parsePositiveInt(process.env.HAPPIER_CLI_VITEST_BATCH_SIZE, 25);
   const files = [
     ...collectTestFiles(resolve(cliRoot, 'src')),
     ...collectTestFiles(resolve(cliRoot, 'scripts')),
