@@ -127,8 +127,7 @@ test('provider workflow does not install Cursor through an unpinned remote shell
 
 test('stress workflows do not inherit secrets into reusable tests workflow', async () => {
   const { parsed } = await loadWorkflow('stress-tests.yml');
-  assert.equal(parsed?.jobs?.['stress-scheduled']?.secrets, undefined, 'stress-scheduled should not inherit secrets');
-  assert.equal(parsed?.jobs?.['stress-manual']?.secrets, undefined, 'stress-manual should not inherit secrets');
+  assert.equal(parsed?.jobs?.stress?.secrets, undefined, 'stress should not inherit secrets');
 });
 
 test('release workflow keeps provider checks outside the compact manual release surface', async () => {

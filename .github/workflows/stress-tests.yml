@@ -25,36 +25,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  stress-scheduled:
-    if: ${{ github.event_name == 'schedule' }}
-    uses: ./.github/workflows/tests.yml
-    with:
-      run_ui: false
-      run_server: false
-      run_cli: false
-      run_stack: false
-      run_typecheck: false
-      run_cli_daemon_e2e: false
-      run_e2e_core: false
-      run_providers: false
-      providers_preset: all
-      providers_tier: smoke
-      run_stress: true
-      stress_config: '{"repeat":"10","seed":""}'
+  stress:
+    name: Stress (repeat/chaos)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-  stress-dispatch:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/tests.yml
-    with:
-      run_ui: false
-      run_server: false
-      run_cli: false
-      run_stack: false
-      run_typecheck: false
-      run_cli_daemon_e2e: false
-      run_e2e_core: false
-      run_providers: false
-      providers_preset: all
-      providers_tier: smoke
-      run_stress: true
-      stress_config: ${{ format('{{"repeat":{0},"seed":{1}}}', toJSON(github.event.inputs.repeat), toJSON(github.event.inputs.seed)) }}
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Enable Corepack
+        uses: ./.github/actions/enable-corepack-yarn
+
+      - name: Install dependencies
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile --ignore-engines
+
+      - name: Run stress suite
+        env:
+          CI: "1"
+          HAPPIER_E2E_REPEAT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.repeat || '10' }}
+          HAPPIER_E2E_SEED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.seed || '' }}
+          HAPPIER_E2E_FLAKE_RETRY: "1"
+        run: yarn test:stress
+
+      - name: Upload stress artifacts (on failure)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stress-artifacts
+          path: .project/logs/e2e
