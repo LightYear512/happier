@@ -36,9 +36,9 @@ describe('handleSessionCommand required positionals', () => {
   });
 
   it.each([
-    ['unknown list options', ['list', '--definitely-invalid', '--json']],
-    ['invalid list limits', ['list', '--limit', '0', '--json']],
-  ] as const)('rejects %s with a truthful JSON error and exit code', async (_label, argv) => {
+    ['unknown list options', ['list', '--definitely-invalid', '--json'], 'Usage: happier session list'],
+    ['invalid list limits', ['list', '--limit', '0', '--json'], 'Invalid --limit: expected an integer within the supported range.'],
+  ] as const)('rejects %s with a truthful JSON error and exit code', async (_label, argv, message) => {
     const { handleSessionCommand } = await import('./handleSessionCommand');
     const readCredentialsFn = vi.fn(async () => {
       throw new Error('credentials must not be read for invalid arguments');
@@ -53,7 +53,7 @@ describe('handleSessionCommand required positionals', () => {
         kind: 'session_list',
         error: {
           code: 'invalid_arguments',
-          message: expect.stringContaining('Usage: happier session list'),
+          message: expect.stringContaining(message),
         },
       });
       expect(process.exitCode).toBe(1);
