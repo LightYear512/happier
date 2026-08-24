@@ -83,6 +83,7 @@ function chunk(files, size) {
 async function runBatch({ configPath, files, batchIndex, batchCount, nodeOptions }) {
   // eslint-disable-next-line no-console
   console.log(`[vitest] batch ${batchIndex}/${batchCount} (${files.length} files)`);
+  const timeoutMs = parsePositiveInt(process.env.HAPPIER_CLI_VITEST_BATCH_TIMEOUT_MS, 15 * 60_000);
   const result = await runManagedChildCommand({
     command: vitestBin,
     args: ['run', '--config', configPath, '--maxWorkers=1', ...files],
@@ -98,6 +99,12 @@ async function runBatch({ configPath, files, batchIndex, batchCount, nodeOptions
     cleanupPollMs: 25,
     signalCleanupGraceMs: 0,
     exitCleanupGraceMs: 1_000,
+    timeoutMs,
+    timeoutCleanupGraceMs: 1_000,
+    onTimeout: () => {
+      // eslint-disable-next-line no-console
+      console.error(`[vitest] batch ${batchIndex}/${batchCount} timed out after ${timeoutMs}ms`);
+    },
     parentWatchdogPollMs: Number.parseInt(process.env.HAPPIER_TEST_PARENT_WATCHDOG_MS ?? '1000', 10),
   });
   if (!result.ok) throw result.error;

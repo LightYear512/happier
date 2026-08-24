@@ -12,6 +12,10 @@ function parsePositiveInt(raw) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function resolvePositiveInt(raw, fallback) {
+  return parsePositiveInt(raw) ?? fallback;
+}
+
 export function resolveVitestShardCount(env) {
   const override = parsePositiveInt(env?.HAPPIER_UI_VITEST_SHARDS);
   // The UI suite has a large module graph (React Native stubs + Expo/web shims).
@@ -206,6 +210,7 @@ export function partitionVitestFilesIntoShards(files, shardCount) {
 }
 
 async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs }) {
+  const timeoutMs = resolvePositiveInt(process.env.HAPPIER_UI_VITEST_LIST_TIMEOUT_MS, 5 * 60_000);
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'happier-ui-vitest-list-'));
   const jsonPath = path.join(tmpDir, 'vitest-files.json');
 
@@ -231,6 +236,12 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
     cleanupPollMs: 25,
     signalCleanupGraceMs: 0,
     exitCleanupGraceMs: 1_000,
+    timeoutMs,
+    timeoutCleanupGraceMs: 1_000,
+    onTimeout: () => {
+      // eslint-disable-next-line no-console
+      console.error(`[vitest] list timed out after ${timeoutMs}ms`);
+    },
     parentWatchdogPollMs: Number.parseInt(process.env.HAPPIER_TEST_PARENT_WATCHDOG_MS ?? '1000', 10),
   });
 
@@ -256,7 +267,8 @@ async function resolveVitestTestFiles({ configPath, nodeOptions, passthroughArgs
   }
 }
 
-function spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFilters, files }) {
+function spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFilters, files, shard, shardCount }) {
+  const timeoutMs = resolvePositiveInt(process.env.HAPPIER_UI_VITEST_SHARD_TIMEOUT_MS, 15 * 60_000);
   return runManagedChildCommand({
     command: 'vitest',
     args: buildVitestShardRunArgs({ configPath, passthroughArgs, positionalFilters, files }),
@@ -271,6 +283,12 @@ function spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFi
     cleanupPollMs: 25,
     signalCleanupGraceMs: 0,
     exitCleanupGraceMs: 1_000,
+    timeoutMs,
+    timeoutCleanupGraceMs: 1_000,
+    onTimeout: () => {
+      // eslint-disable-next-line no-console
+      console.error(`[vitest] shard ${shard}/${shardCount} timed out after ${timeoutMs}ms`);
+    },
     parentWatchdogPollMs: Number.parseInt(process.env.HAPPIER_TEST_PARENT_WATCHDOG_MS ?? '1000', 10),
   });
 }
@@ -306,7 +324,7 @@ async function main(argv) {
     runShard: async ({ shard, files }) => {
       // eslint-disable-next-line no-console
       console.log(`[vitest] shard ${shard}/${shardCount}`);
-      return spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFilters, files });
+      return spawnVitestRun({ configPath, nodeOptions, passthroughArgs, positionalFilters, files, shard, shardCount });
     },
   });
 

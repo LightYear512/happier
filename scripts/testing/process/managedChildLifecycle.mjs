@@ -127,7 +127,38 @@ export async function runManagedChildCommand(params) {
   });
 
   return await new Promise((resolve) => {
+    let settled = false;
+    const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0 ? params.timeoutMs : null;
+    const timeout = timeoutMs === null
+      ? null
+      : setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        void Promise.resolve(params.onTimeout?.({ child, timeoutMs }))
+          .catch(() => {})
+          .then(() => lifecycle.cleanupChild('SIGTERM'))
+          .then(() => lifecycle.finalizeChildExit({
+            graceMs: params.timeoutCleanupGraceMs ?? params.exitCleanupGraceMs,
+            pollMs: params.cleanupPollMs,
+            skipAliveCheck: true,
+          }))
+          .then(() => {
+            resolve({
+              child,
+              ok: true,
+              code: 124,
+              signal: null,
+              timedOut: true,
+              timeoutMs,
+            });
+          });
+      }, timeoutMs);
+    timeout?.unref?.();
+
     child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
       lifecycle.dispose();
       resolve({
         child,
@@ -137,6 +168,9 @@ export async function runManagedChildCommand(params) {
     });
 
     child.once('exit', async (code, signal) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
       await lifecycle.finalizeChildExit({
         graceMs: params.exitCleanupGraceMs,
         pollMs: params.cleanupPollMs,
@@ -147,6 +181,7 @@ export async function runManagedChildCommand(params) {
         ok: true,
         code,
         signal,
+        timedOut: false,
       });
     });
   });
