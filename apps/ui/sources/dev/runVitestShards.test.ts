@@ -15,6 +15,10 @@ import {
     summarizeVitestShardOutcomes,
 } from '../../scripts/runVitestShards.mjs';
 
+function env(values: Record<string, string>): NodeJS.ProcessEnv {
+    return { NODE_ENV: 'test', ...values };
+}
+
 describe('apps/ui runVitestShards', () => {
     it('defaults shard count to 24', () => {
         expect(resolveVitestShardCount({})).toBe(24);
@@ -72,23 +76,23 @@ describe('apps/ui runVitestShards', () => {
     it('can select UI Vitest shards from an offset for local CI retry', () => {
         const shards = [['a'], ['b'], ['c'], ['d']];
 
-        expect(resolveVitestShardOffset({
+        expect(resolveVitestShardOffset(env({
             HAPPIER_UI_VITEST_SHARD_OFFSET: '2',
-        })).toBe(2);
-        expect(resolveVitestShardSelection(shards, {
+        }))).toBe(2);
+        expect(resolveVitestShardSelection(shards, env({
             HAPPIER_UI_VITEST_SHARD_OFFSET: '2',
             HAPPIER_UI_VITEST_SHARD_LIMIT: '1',
-        })).toEqual([['c']]);
+        }))).toEqual([['c']]);
     });
 
     it('ignores invalid UI Vitest shard offsets', () => {
         const shards = [['a'], ['b']];
 
-        expect(resolveVitestShardSelection(shards, {
+        expect(resolveVitestShardSelection(shards, env({
             HAPPIER_UI_VITEST_SHARD_OFFSET: '-1',
             HAPPIER_UI_VITEST_SHARD_LIMIT: 'nope',
-        })).toEqual(shards);
-        expect(resolveVitestShardOffset({ HAPPIER_UI_VITEST_SHARD_OFFSET: '-1' })).toBe(0);
+        }))).toEqual(shards);
+        expect(resolveVitestShardOffset(env({ HAPPIER_UI_VITEST_SHARD_OFFSET: '-1' }))).toBe(0);
     });
 
     it('runs a shard on its own file list without re-adding the caller path filters', () => {

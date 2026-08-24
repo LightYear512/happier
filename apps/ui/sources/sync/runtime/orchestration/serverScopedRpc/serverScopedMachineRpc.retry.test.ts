@@ -9,9 +9,14 @@ const getCredentialsSpy = vi.hoisted(() => vi.fn());
 const createEncryptionSpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const runtimeFetchWithServerReachabilitySpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient', () => ({
   createEphemeralServerSocketClient: (...args: unknown[]) => createEphemeralSocketSpy(...args),
+}));
+
+vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
+  runtimeFetchWithServerReachability: (...args: unknown[]) => runtimeFetchWithServerReachabilitySpy(...args),
 }));
 
 vi.mock('@/sync/api/session/apiSocket', () => ({
@@ -54,11 +59,16 @@ describe('machineRpcWithServerScope (retry)', () => {
     createEncryptionSpy.mockReset();
     listServerProfilesSpy.mockReset();
     getActiveServerSnapshotSpy.mockReset();
+    runtimeFetchWithServerReachabilitySpy.mockReset();
     getActiveServerSnapshotSpy.mockReturnValue({
       serverId: 'server-a',
       serverUrl: 'https://server-a.example.test',
       kind: 'custom',
       generation: 1,
+    });
+    runtimeFetchWithServerReachabilitySpy.mockResolvedValue({
+      ok: true,
+      json: async () => [{ id: 'machine-1', dataEncryptionKey: null }],
     });
   });
 
@@ -81,11 +91,6 @@ describe('machineRpcWithServerScope (retry)', () => {
       initializeMachines: vi.fn(async () => {}),
       getMachineEncryption: vi.fn(() => machineEncryption),
     });
-
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => [{ id: 'machine-1', dataEncryptionKey: null }],
-    })));
 
     const emitWithAckSpy = vi
       .fn()
@@ -118,10 +123,9 @@ describe('machineRpcWithServerScope (retry)', () => {
       preferScoped: true,
       authorization,
     });
-    const assertion = expect(rpcPromise).resolves.toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(250);
 
-    await vi.runAllTimersAsync();
-    await assertion;
+    await expect(rpcPromise).resolves.toEqual({ ok: true });
 
     expect(machineRpcSpy).not.toHaveBeenCalled();
     expect(createEphemeralSocketSpy).toHaveBeenCalledTimes(2);
@@ -152,11 +156,6 @@ describe('machineRpcWithServerScope (retry)', () => {
       initializeMachines: vi.fn(async () => {}),
       getMachineEncryption: vi.fn(() => machineEncryption),
     });
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => [{ id: 'machine-1', dataEncryptionKey: null }],
-    })));
-
     const emitWithAckSpy = vi.fn(async () => ({
       ok: false,
       error: 'RPC method not available',
@@ -177,10 +176,7 @@ describe('machineRpcWithServerScope (retry)', () => {
       preferScoped: true,
       onIssued,
     });
-    const assertion = expect(rpcPromise).rejects.toThrow('RPC method not available');
-
-    await vi.runAllTimersAsync();
-    await assertion;
+    await expect(rpcPromise).rejects.toThrow('RPC method not available');
 
     expect(onIssued).toHaveBeenCalledTimes(1);
     expect(createEphemeralSocketSpy).toHaveBeenCalledTimes(1);

@@ -217,7 +217,7 @@ describe('SessionSimulatorPreviewPane', () => {
 
         expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomOutIcon' }).props.name).toBe('remove');
         expect(screen.findByProps({ testID: 'session.simulatorPreview.zoomInIcon' }).props.name).toBe('add');
-        expect(screen.findByProps({ testID: 'session.simulatorPreview.fitIcon' }).props.name).toBe('resize-outline');
+        expect(screen.findByProps({ testID: 'session.simulatorPreview.fitIcon' }).props.name).toBe('resize');
     });
 
     it('lets users zoom beyond fit and reset back to fit', async () => {

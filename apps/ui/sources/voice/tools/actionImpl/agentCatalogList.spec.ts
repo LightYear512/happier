@@ -5,15 +5,14 @@ import {
   resetDynamicModelProbeCacheForTests,
 } from '@/sync/domains/models/dynamicModelProbeCache';
 import { buildDynamicModelProbeCacheKey } from '@/sync/domains/models/dynamicModelProbeCacheKey';
-import { installVoiceToolActionImplCommonModuleMocks } from './voiceToolActionImplTestHelpers';
 
 const machineCapabilitiesInvoke = vi.fn();
 
-const state: any = {
+const state: any = vi.hoisted(() => ({
   settings: {
     backendEnabledByTargetKey: {
-      [buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'gemini' })]: false,
-      [buildBackendTargetKey({ kind: 'configuredAcpBackend', backendId: 'team-review' })]: false,
+      'agent:gemini': false,
+      'acpBackend:team-review': false,
     },
     acpCatalogSettingsV1: {
       v: 2,
@@ -38,17 +37,17 @@ const state: any = {
       }],
     },
   },
-};
+}));
 
-installVoiceToolActionImplCommonModuleMocks({
-  storage: async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-      storage: {
-        getState: () => state,
-      } as typeof import('@/sync/domains/state/storage').storage,
-    });
-  },
+// This spec imports model-cache helpers before the action module; register the storage boundary
+// mock directly so Vitest installs it before any module in this graph reads real storage.
+vi.mock('@/sync/domains/state/storage', async () => {
+  const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+  return createStorageModuleStub({
+    storage: {
+      getState: () => state,
+    } as typeof import('@/sync/domains/state/storage').storage,
+  });
 });
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -133,8 +132,8 @@ describe('agent catalog voice tools', () => {
 
     expect(models?.items?.map((item: any) => item.label)).toEqual([
       'Default',
+      'Opus 5',
       'Fable 5',
-      'Opus 4.8',
     ]);
   });
 

@@ -787,7 +787,7 @@ export function SessionSimulatorPreviewPane(props: SessionSimulatorPreviewPanePr
                         })}
                         {renderZoomRailButton({
                             color: theme.colors.text.secondary,
-                            iconName: 'resize-outline',
+                            iconName: 'resize',
                             iconTestID: 'session.simulatorPreview.fitIcon',
                             label: t('session.simulatorPreview.controls.fit'),
                             onPress: () => {
