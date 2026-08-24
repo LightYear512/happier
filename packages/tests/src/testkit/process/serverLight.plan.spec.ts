@@ -117,6 +117,17 @@ describe("startServerLight planning helpers", () => {
     })).toBe(explicitDatabaseUrl);
   });
 
+  it("ignores an external provider DATABASE_URL when a test explicitly starts SQLite server-light", () => {
+    expect(resolveServerLightSqliteDatabaseUrl({
+      dataDir: "/tmp/happier-e2e",
+      env: {
+        HAPPIER_E2E_DB_PROVIDER: "postgres",
+        DATABASE_URL: "postgresql://happier:happier@127.0.0.1:5432/happier?sslmode=disable",
+      },
+      platform: "linux",
+    })).toBe("file:///tmp/happier-e2e/happier-server-light.sqlite?socket_timeout=30&connection_limit=1");
+  });
+
   it("serializes shared deps builds across concurrent callers", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "happier-server-shared-deps-lock-"));
     const lockPath = resolve(rootDir, "server-shared-deps-build.lock");

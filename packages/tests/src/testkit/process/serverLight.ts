@@ -252,7 +252,7 @@ export function resolveServerLightSqliteDatabaseUrl(params: Readonly<{
   platform?: string;
 }>): string {
   const explicitDatabaseUrl = params.env.DATABASE_URL?.toString().trim();
-  if (explicitDatabaseUrl) return explicitDatabaseUrl;
+  if (explicitDatabaseUrl?.startsWith('file:')) return explicitDatabaseUrl;
   return renderPrismaCompatibleSqliteDatabaseUrl({
     dbPath: join(params.dataDir, 'happier-server-light.sqlite'),
     platform: params.platform ?? process.platform,
@@ -931,7 +931,8 @@ export async function startServerLight(params: {
   await ensureServerSharedDepsBuilt({ testDir: params.testDir, env: baseEnv });
 
   const sqliteUrl = resolveServerLightSqliteDatabaseUrl({ dataDir, env: mergedEnv });
-  const sqliteUrlIsExplicit = dbProvider === 'sqlite' && !!mergedEnv.DATABASE_URL?.toString().trim();
+  const sqliteUrlIsExplicit = dbProvider === 'sqlite'
+    && mergedEnv.DATABASE_URL?.toString().trim().startsWith('file:') === true;
   const databaseUrlForExternalProvider = mergedEnv.DATABASE_URL?.toString().trim();
   if ((dbProvider === 'postgres' || dbProvider === 'mysql') && !databaseUrlForExternalProvider) {
     throw new Error(`Missing DATABASE_URL for HAPPIER_E2E_DB_PROVIDER or HAPPY_E2E_DB_PROVIDER=${dbProvider}`);

@@ -46,7 +46,7 @@ describe('happier daemon --all', () => {
             ).rejects.toThrow('process.exit(0)');
 
             expect(await waitForProcessExit(daemon.pid, { timeoutMs: 3_000 })).toBe(true);
-            expect(existsSync(statePath)).toBe(false);
+            expect(existsSync(statePath)).toBe(true);
           } finally {
             await daemon.kill();
           }

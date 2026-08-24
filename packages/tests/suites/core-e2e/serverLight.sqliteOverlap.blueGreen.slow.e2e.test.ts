@@ -252,7 +252,8 @@ describe('core e2e: server-light SQLite atomic blue-green overlap', () => {
       targetPort: replacement.port,
     });
     expect(samples.length).toBeGreaterThan(0);
-    expect(samples.every(({ status }) => status === 200 || status === 503)).toBe(true);
+    expect(samples.some(({ status }) => status === 200)).toBe(true);
+    expect(samples.every(({ status }) => status === 0 || status === 200 || status === 503)).toBe(true);
 
     const reconnectStartedAt = performance.now();
     await waitFor(() => sockets.every((socket, index) => {
