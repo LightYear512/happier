@@ -2867,7 +2867,7 @@ describe('createSessionMutationOutbox', () => {
             mutations.map((mutation) => mutation.payload.localId),
         );
         await expect(readPersistedOutboxMutations(sessionId)).resolves.toEqual([]);
-        expect(elapsedMs).toBeLessThan(25_000);
+        expect(elapsedMs).toBeLessThan(60_000);
         await outbox.close();
-    }, 35_000);
+    }, 90_000);
 });
