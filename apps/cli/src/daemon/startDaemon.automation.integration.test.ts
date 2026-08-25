@@ -786,6 +786,7 @@ vi.mock('@/session/devPreview/startSessionDevPreviewSocketRelay', () => ({
 }));
 
 vi.mock('./connectedServices/quotas/ConnectedServiceQuotasCoordinator', () => ({
+  DEFAULT_CONNECTED_SERVICE_QUOTA_FETCH_TIMEOUT_MS: 5_000,
   ConnectedServiceQuotasCoordinator: vi.fn(() => ({
     flushInBandQuotaPersistence: vi.fn(async () => ({
       timedOut: false,

@@ -308,16 +308,18 @@ export function createOnHappySessionWebhook(params: Readonly<{
       const agentId = inferAgentIdFromSessionMetadata(normalizedMetadata);
       const vendorResumeId = resolveVendorResumeIdFromSessionMetadata(agentId, normalizedMetadata);
       if (vendorResumeId) trackedForPid.vendorResumeId = vendorResumeId;
-      if (trackedForPid.startedBy === 'daemon' && !isPlaceholderSessionId) {
-        // Best-effort report observers must not wait on strict startup reconciliation:
-        // terminal-host serviceability is produced by this exact report and is independently useful.
-        const reportObserverFailure = (error: unknown): void => {
-          logger.debug('[DAEMON RUN] Tracked session reported callback failed', error);
-        };
-        try {
-          void Promise.resolve(onTrackedSessionReported?.(trackedForPid)).catch(reportObserverFailure);
-        } catch (error) {
-          reportObserverFailure(error);
+      if (!isPlaceholderSessionId) {
+        if (trackedForPid.startedBy === 'daemon') {
+          // Best-effort report observers must not wait on strict startup reconciliation:
+          // terminal-host serviceability is produced by this exact report and is independently useful.
+          const reportObserverFailure = (error: unknown): void => {
+            logger.debug('[DAEMON RUN] Tracked session reported callback failed', error);
+          };
+          try {
+            void Promise.resolve(onTrackedSessionReported?.(trackedForPid)).catch(reportObserverFailure);
+          } catch (error) {
+            reportObserverFailure(error);
+          }
         }
         if (onTrackedSessionReady) {
           await onTrackedSessionReady(trackedForPid);

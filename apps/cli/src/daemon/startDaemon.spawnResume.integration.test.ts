@@ -122,9 +122,10 @@ const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, 'p
 const { spawnChildProcess } = vi.hoisted(() => ({
   spawnChildProcess: vi.fn(() => ({
     pid: 12345,
-    stdout: null,
-    stderr: null,
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
     on: vi.fn(),
+    kill: vi.fn(),
     unref: vi.fn(),
   })),
 }));
@@ -2481,8 +2482,13 @@ describe('startDaemon spawn resume wiring (integration)', () => {
 
       expect(spawnHappyCLI).not.toHaveBeenCalled();
       expect(buildCgroupSelfMigratingHappyCliLaunchSpec).toHaveBeenCalledTimes(1);
-      expect(spawnChildProcess).toHaveBeenCalledTimes(1);
-      const spawnCall = spawnChildProcess.mock.calls[0] as unknown as [string, string[], { env?: NodeJS.ProcessEnv } | undefined] | undefined;
+      const spawnCalls = spawnChildProcess.mock.calls as unknown as Array<[string, string[], { env?: NodeJS.ProcessEnv } | undefined]>;
+      const spawnCall = spawnCalls.find(([filePath, args]) =>
+        filePath === '/bin/sh'
+        && Array.isArray(args)
+        && args.includes('-lc')
+        && args.join(' ').includes('happier-session-$$.scope'),
+      );
       const spawnFilePath = spawnCall?.[0];
       const spawnArgs = spawnCall?.[1];
       const spawnOptions = spawnCall?.[2];
@@ -4241,10 +4247,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       expect(updateSessionMetadataWithRetryMock).toHaveBeenCalledWith(expect.objectContaining({
         sessionId,
       }));
-      const retirementUpdate = updateSessionMetadataWithRetryMock.mock.calls.find(
-        ([call]) => call && typeof call === 'object' && 'sessionId' in call && call.sessionId === sessionId,
-      )?.[0];
-      expect(retirementUpdate?.updater({
+      const retirementInput = {
         terminal: {
           mode: 'zellij',
           controlServiceabilityV1: {
@@ -4255,7 +4258,13 @@ describe('startDaemon spawn resume wiring (integration)', () => {
             reason: 'control_descriptor_missing',
           },
         },
-      })).toMatchObject({
+      };
+      const retirementUpdate = updateSessionMetadataWithRetryMock.mock.calls.find(([call]) => {
+        if (!call || typeof call !== 'object' || !('sessionId' in call) || call.sessionId !== sessionId) return false;
+        const updated = call.updater(retirementInput) as { terminal?: { controlServiceabilityV1?: { reason?: string } } };
+        return updated.terminal?.controlServiceabilityV1?.reason === 'attachment_retired';
+      })?.[0];
+      expect(retirementUpdate?.updater(retirementInput)).toMatchObject({
         terminal: {
           mode: 'zellij',
           controlServiceabilityV1: {

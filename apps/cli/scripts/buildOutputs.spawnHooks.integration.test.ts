@@ -95,7 +95,7 @@ function containsStaticSessionControlAdapterWiring(text: string, agentId: 'claud
 async function listDistFiles(distDir: string): Promise<string[]> {
   // Focus the scan on the primary built bundles that contain the AGENT catalog wiring.
   // This avoids reading hundreds of unrelated dist chunks, keeping the test fast and stable.
-  const isPrimaryBundle = (name: string) => /^(api|index|types)(?:-[^.]+)?\.(?:mjs|cjs)$/.test(name);
+  const isPrimaryBundle = (name: string) => /^(api|controlClient|index|types)(?:-[^.]+)?\.(?:mjs|cjs)$/.test(name);
   const isAnyBundle = (name: string) => /\.(?:mjs|cjs)$/.test(name);
 
   // Retry briefly to avoid flaky ENOENT/empty-dir failures when dist is being rebuilt.

@@ -20,11 +20,11 @@ describe('happier session send plaintext sessions (integration)', () => {
   let envScope = createEnvKeyScope(envKeys);
   let server: Server | null = null;
   let happyHomeDir = '';
-  const receivedMessages: any[] = [];
+  const pendingBodies: any[] = [];
 
   beforeEach(async () => {
     happyHomeDir = await createTempDir('happier-cli-session-send-plain-');
-    receivedMessages.length = 0;
+    pendingBodies.length = 0;
 
     const sessionId = 'sess_integration_send_plain_123';
     const metadataPlain = JSON.stringify({
@@ -49,7 +49,7 @@ describe('happier session send plaintext sessions (integration)', () => {
               seq: 1,
               createdAt: 1,
               updatedAt: 2,
-              active: false,
+              active: true,
               activeAt: 0,
               metadata: metadataPlain,
               metadataVersion: 0,
@@ -63,6 +63,30 @@ describe('happier session send plaintext sessions (integration)', () => {
             },
           }),
         );
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === `/v2/sessions/${sessionId}/pending`) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        const bodyText = Buffer.concat(chunks).toString('utf8');
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        const parsedBody = bodyText ? JSON.parse(bodyText) : null;
+        pendingBodies.push(parsedBody);
+        res.end(JSON.stringify({
+          didWrite: true,
+          terminal: true,
+          suppressed: false,
+          message: {
+            id: 'm1',
+            seq: 2,
+            localId: parsedBody?.localId,
+            requestedAction: parsedBody?.requestedAction,
+          },
+        }));
         return;
       }
 
@@ -87,7 +111,6 @@ describe('happier session send plaintext sessions (integration)', () => {
       emit: (event: string, args: unknown[]) => {
         const [payload, ack] = args as [any, ((answer: any) => void) | undefined];
         if (event === 'message') {
-          receivedMessages.push(payload?.message);
           ack?.({ ok: true, id: 'm1', seq: 2, localId: payload?.localId ?? null, didWrite: true });
           return;
         }
@@ -99,6 +122,7 @@ describe('happier session send plaintext sessions (integration)', () => {
 
   afterEach(async () => {
     if (server) {
+      server.closeAllConnections?.();
       await new Promise<void>((resolve, reject) => server!.close((e) => (e ? reject(e) : resolve())));
     }
     server = null;
@@ -138,11 +162,11 @@ describe('happier session send plaintext sessions (integration)', () => {
       }
       expect(parsed.kind).toBe('session_send');
 
-      const last = receivedMessages[receivedMessages.length - 1];
-      expect(last?.t).toBe('plain');
-      expect(last?.v?.content?.text).toBe('Hello from controller');
-      expect(last?.v?.meta?.permissionMode).toBe('safe-yolo');
-      expect(last?.v?.meta?.model).toBe('claude-sonnet-4-0');
+      const last = pendingBodies[pendingBodies.length - 1];
+      expect(last?.content?.t).toBe('plain');
+      expect(last?.content?.v?.content?.text).toBe('Hello from controller');
+      expect(last?.content?.v?.meta?.permissionMode).toBe('safe-yolo');
+      expect(last?.content?.v?.meta?.model).toBe('claude-sonnet-4-0');
     } finally {
       output.restore();
     }

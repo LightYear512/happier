@@ -594,8 +594,14 @@ function readBrokerSelectionIdentityFromEnv(
   return null;
 }
 
+function readBrokerSelectionIdentityFromMetadata(metadata: Record<string, unknown> | null | undefined): string | null {
+  const value = metadata?.connectedServiceBrokerSelectionIdentityV1;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
 function resolveTrackedBrokerSelectionIdentity(tracked: TrackedSession): string | null {
-  return readBrokerSelectionIdentityFromEnv(tracked.spawnOptions?.environmentVariables);
+  return readBrokerSelectionIdentityFromEnv(tracked.spawnOptions?.environmentVariables)
+    ?? readBrokerSelectionIdentityFromMetadata(tracked.happySessionMetadataFromLocalWebhook);
 }
 
 export function registerConnectedServiceTrackedSessionTargetsForDaemon(input: Readonly<{

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import type { SessionClientPort } from '@/api/session/sessionClientPort';
@@ -50,6 +53,7 @@ type ContributionObservation = Readonly<{
 }>;
 
 const createdSessions: Session[] = [];
+const createdTranscriptRoots: string[] = [];
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolveFn: ((value: T) => void) | null = null;
@@ -133,6 +137,11 @@ function createHarness(): Readonly<{
     off: vi.fn(),
   } as unknown as SessionClientPort;
 
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'happier-claude-legacy-runtime-'));
+  const transcriptPath = join(transcriptRoot, 'claude-current.jsonl');
+  writeFileSync(transcriptPath, `${JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-current' })}\n`);
+  createdTranscriptRoots.push(transcriptRoot);
+
   const session = new Session({
     client,
     path: '/tmp',
@@ -158,7 +167,7 @@ function createHarness(): Readonly<{
       isCurrentRuntime: () => true,
     },
   });
-  session.transcriptPath = '/tmp/claude-current.jsonl';
+  session.transcriptPath = transcriptPath;
   createdSessions.push(session);
 
   return { session, observations, switchHandlerReady: switchDeferred.promise };
@@ -249,7 +258,9 @@ async function runLegacySubscriberScenario(params: Readonly<{
       snapshot: params.expectedAfterTerminal === 'unknown'
         ? { state: 'unknown', activeCount: 0 }
         : { state: 'idle', activeCount: 0 },
-      reason: 'claude-native-terminal',
+      reason: params.expectedAfterTerminal === 'unknown'
+        ? 'claude_legacy_required_hook_failed'
+        : 'claude-native-terminal',
     });
   });
 
@@ -286,6 +297,7 @@ describe.sequential('claudeRemoteLauncher legacy Runtime Activity subscriber', (
       process.env.HAPPIER_CLAUDE_REMOTE_INTERRUPT_THEN_TEARDOWN_GRACE_MS = previousGraceMs;
     }
     for (const session of createdSessions.splice(0)) session.cleanup();
+    for (const root of createdTranscriptRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
   it.each([
