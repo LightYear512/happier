@@ -7,6 +7,7 @@ import { PassThrough, Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import { CLAUDE_CODE_SETUP_TOKEN_SCOPES } from '@/backends/claude/connectedServices/nativeAuth/claudeCodeCredentialScopes';
 import { resolveOpenCodeConnectedConfigHomeDir } from '@/backends/opencode/brokerPlugin';
 import { buildPiBrokerMarker } from '@/backends/pi/brokerExtension';
 import { materializeConnectedServicesForSpawn } from './materializeConnectedServicesForSpawn';
@@ -951,11 +952,7 @@ describe('materializeConnectedServicesForSpawn', () => {
     expect(JSON.parse(await readFile(join(result!.env.CLAUDE_CONFIG_DIR!, '.credentials.json'), 'utf8'))).toEqual({
       claudeAiOauth: {
         accessToken: 'sk-ant-oat01-123',
-        scopes: [
-          'user:inference',
-          'user:profile',
-          'user:sessions:claude_code',
-        ],
+        scopes: [...CLAUDE_CODE_SETUP_TOKEN_SCOPES],
       },
     });
     expect('CLAUDE_CODE_OAUTH_TOKEN' in result!.env).toBe(false);
