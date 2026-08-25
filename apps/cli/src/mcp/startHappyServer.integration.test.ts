@@ -46,6 +46,15 @@ function parseMcpJsonText(result: any): any {
   return JSON.parse(text);
 }
 
+function createFakeRpcHandlerManager(
+  invokeLocal: (method: string, params: unknown) => Promise<unknown>,
+): HappyMcpSessionClient['rpcHandlerManager'] {
+  return {
+    invokeLocal: vi.fn(invokeLocal),
+    registerHandler: vi.fn(),
+  };
+}
+
 function isTextResourceContentEntry(
   entry: unknown,
 ): entry is { uri: string; text: string; mimeType?: string | undefined } {
@@ -273,7 +282,7 @@ describe('startHappyServer (MCP integration)', () => {
     }
   });
 
-  it('keeps execution-run actions discoverable and can start/get/action a review run over HTTP transport', async () => {
+  it('keeps execution-run actions discoverable and can start/action a review run over HTTP transport', async () => {
     const sent: Array<{ body: ACPMessageData; meta?: Record<string, unknown> }> = [];
 
     const rpcHandlerManager = new RpcHandlerManager({
@@ -371,27 +380,23 @@ describe('startHappyServer (MCP integration)', () => {
       const started = parseMcpJsonText(startedRaw);
       expect(String(started.runId)).toMatch(/^run_/);
 
-      const gotNoStructuredRaw = await client.callTool({
+      const getRaw = await client.callTool({
         name: 'action_execute',
         arguments: {
           actionId: 'execution.run.get',
           input: { runId: started.runId },
         },
       });
-      const gotNoStructured = parseMcpJsonText(gotNoStructuredRaw);
-      expect(gotNoStructured.run?.runId).toBe(started.runId);
-      expect(gotNoStructured.structuredMeta).toBeUndefined();
-
-      const gotStructuredRaw = await client.callTool({
-        name: 'action_execute',
-        arguments: {
+      const getResult = parseMcpJsonText(getRaw);
+      expect(getResult).toEqual(expect.objectContaining({
+        errorCode: 'action_disabled',
+        error: 'Action is disabled',
+        details: expect.objectContaining({
           actionId: 'execution.run.get',
-          input: { runId: started.runId, includeStructured: true },
-        },
-      });
-      const gotStructured = parseMcpJsonText(gotStructuredRaw);
-      expect(gotStructured.structuredMeta?.kind).toBe('review_findings.v2');
-      expect(gotStructured.structuredMeta?.payload?.runRef?.runId).toBe(started.runId);
+          surface: 'session_agent',
+          reason: 'unsupported_surface',
+        }),
+      }));
 
       const actionRaw = await client.callTool({
         name: 'action_execute',
@@ -477,9 +482,7 @@ describe('startHappyServer (MCP integration)', () => {
     const sendClaudeSessionMessage = vi.fn();
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_dev_preview_1',
-      rpcHandlerManager: {
-        invokeLocal: vi.fn(async () => ({})),
-      } as any,
+      rpcHandlerManager: createFakeRpcHandlerManager(async () => ({})),
       sendClaudeSessionMessage,
       updateMetadata: () => {},
       getMetadataSnapshot: () => ({
@@ -551,8 +554,7 @@ describe('startHappyServer (MCP integration)', () => {
   it('surfaces execution.run.start action_execute app-level failures as MCP tool errors', async () => {
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_run_start_error_1',
-      rpcHandlerManager: {
-        invokeLocal: vi.fn(async (method: string) => {
+      rpcHandlerManager: createFakeRpcHandlerManager(async (method: string) => {
           if (method === 'execution.run.start') {
             return {
               ok: false,
@@ -562,7 +564,6 @@ describe('startHappyServer (MCP integration)', () => {
           }
           return {};
         }),
-      } as any,
       sendClaudeSessionMessage: () => {},
       updateMetadata: () => {},
     };
@@ -602,8 +603,7 @@ describe('startHappyServer (MCP integration)', () => {
   it('surfaces execution.run.send action_execute app-level failures as MCP tool errors', async () => {
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_run_send_error_1',
-      rpcHandlerManager: {
-        invokeLocal: vi.fn(async (method: string) => {
+      rpcHandlerManager: createFakeRpcHandlerManager(async (method: string) => {
           if (method === 'execution.run.send') {
             return {
               ok: false,
@@ -613,7 +613,6 @@ describe('startHappyServer (MCP integration)', () => {
           }
           return {};
         }),
-      } as any,
       sendClaudeSessionMessage: () => {},
       updateMetadata: () => {},
     };
@@ -656,9 +655,7 @@ describe('startHappyServer (MCP integration)', () => {
   it('uses the live session metadata snapshot for MCP action_options_resolve inventory lookups', async () => {
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_options_metadata_1',
-      rpcHandlerManager: {
-        invokeLocal: vi.fn(async () => ({})),
-      } as any,
+      rpcHandlerManager: createFakeRpcHandlerManager(async () => ({})),
       sendClaudeSessionMessage: () => {},
       updateMetadata: () => {},
       getMetadataSnapshot: () => ({

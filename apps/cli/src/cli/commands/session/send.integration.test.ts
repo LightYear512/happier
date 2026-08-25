@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 
 import { deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
-import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import {
   bindApiSessionSocketMock,
@@ -29,6 +29,7 @@ describe('happier session send (integration)', () => {
   let happyHomeDir = '';
   const receivedMessages: any[] = [];
   let dek: Uint8Array | null = null;
+  let machineKeySeed: Uint8Array | null = null;
   let decodeBase64Fn: ((value: string, kind?: any) => Uint8Array) | null = null;
   let decryptWithDataKeyFn: ((ciphertext: Uint8Array, dataKey: Uint8Array) => any) | null = null;
   let sessionActive = false;
@@ -49,12 +50,13 @@ describe('happier session send (integration)', () => {
     happyHomeDir = await createTempDir('happier-cli-session-send-');
     receivedMessages.length = 0;
     dek = null;
+    machineKeySeed = null;
     decodeBase64Fn = null;
     decryptWithDataKeyFn = null;
 
     const sessionId = 'sess_integration_send_123';
     dek = new Uint8Array(32).fill(3);
-    const machineKeySeed = new Uint8Array(32).fill(8);
+    machineKeySeed = new Uint8Array(32).fill(8);
     const recipientPublicKey = deriveBoxPublicKeyFromSeed(machineKeySeed);
     const envelope = sealEncryptedDataKeyEnvelopeV1({
       dataKey: dek!,
@@ -62,13 +64,22 @@ describe('happier session send (integration)', () => {
       randomBytes: (length) => new Uint8Array(length).fill(5),
     });
 
-    const { encodeBase64: encodeBase64Session, encryptWithDataKey, decodeBase64, decryptWithDataKey } = await import('@/api/encryption');
+    const {
+      encodeBase64: encodeBase64Session,
+      encrypt,
+      encryptWithDataKey,
+      decodeBase64,
+      decryptWithDataKey,
+    } = await import('@/api/encryption');
     decodeBase64Fn = decodeBase64;
     decryptWithDataKeyFn = decryptWithDataKey;
     const metadataCiphertext = encodeBase64Session(
       encryptWithDataKey(
         {
           path: '/tmp',
+          machineId: 'machine-1',
+          agentId: 'claude',
+          claudeSessionId: 'claude-session-1',
           tag: 'MyTag',
           host: 'host1',
           permissionMode: 'safe-yolo',
@@ -117,6 +128,8 @@ describe('happier session send (integration)', () => {
               updatedAt: 2,
               active: sessionActive,
               activeAt: sessionActiveAt,
+              machineId: 'machine-1',
+              path: '/tmp',
               metadata: sessionMetadataCiphertext,
               metadataVersion: 0,
               agentState: sessionAgentStateCiphertext,
@@ -129,6 +142,100 @@ describe('happier session send (integration)', () => {
             },
           }),
         );
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === `/v2/sessions/${sessionId}/pending`) {
+        let bodyText = '';
+        for await (const chunk of req) {
+          bodyText += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        }
+        const body = bodyText.length > 0 ? JSON.parse(bodyText) as Record<string, unknown> : {};
+        const localId = typeof body.localId === 'string' ? body.localId : null;
+        const content = typeof body.ciphertext === 'string'
+          ? ({ t: 'encrypted', c: body.ciphertext } as const)
+          : body.content && typeof body.content === 'object'
+            ? body.content as { t: 'plain'; v: unknown }
+            : null;
+
+        if (!localId || !content) {
+          res.statusCode = 400;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ error: 'invalid-params' }));
+          return;
+        }
+
+        if (!sessionActive) {
+          if (content.t === 'encrypted') {
+            const decrypted = decryptWithDataKeyFn!(
+              decodeBase64Fn!(content.c, 'base64'),
+              dek!,
+            );
+            receivedMessages.push(decrypted);
+          } else if (content.t === 'plain') {
+            receivedMessages.push(content.v);
+          }
+        }
+
+        if (stageCommittedUserMessageInTranscript) {
+          transcriptMessages.push({
+            id: `m${transcriptMessages.length + 1}`,
+            seq: transcriptMessages.length + 1,
+            localId,
+            createdAt: Date.now(),
+            content,
+          });
+          if (stageAssistantReplyAfterCommittedUser) {
+            transcriptMessages.push({
+              id: `m${transcriptMessages.length + 1}`,
+              seq: transcriptMessages.length + 1,
+              localId: null,
+              createdAt: Date.now(),
+              content: {
+                t: 'plain',
+                v: {
+                  role: 'agent',
+                  content: { type: 'text', text: 'assistant completion' },
+                },
+              },
+            });
+          }
+        }
+
+        if (typeof stageVisibleMessageByLocalIdDelayMs === 'number') {
+          const createdAt = Date.now();
+          setTimeout(() => {
+            visibleMessageByLocalId = {
+              id: `lookup-${localId}`,
+              localId,
+              seq: 1,
+              createdAt,
+              updatedAt: createdAt,
+              content,
+            };
+          }, stageVisibleMessageByLocalIdDelayMs);
+        } else if (!visibleMessageByLocalId) {
+          const createdAt = Date.now();
+          visibleMessageByLocalId = {
+            id: `lookup-${localId}`,
+            localId,
+            seq: 1,
+            createdAt,
+            updatedAt: createdAt,
+            content,
+          };
+        }
+
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ didWrite: true }));
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === `/v2/sessions/${sessionId}/pending`) {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ pending: [] }));
         return;
       }
 
@@ -279,6 +386,19 @@ describe('happier session send (integration)', () => {
 
           ack?.({ ok: true, id: 'm1', seq: 2, localId: payload?.localId ?? null, didWrite: true });
           return;
+        }
+        if (event === SOCKET_RPC_EVENTS.CALL) {
+          const [payload, ack] = args as [any, ((answer: any) => void) | undefined];
+          if (payload?.method === `machine-1:${RPC_METHODS.SPAWN_HAPPY_SESSION}`) {
+            ack?.({
+              ok: true,
+              result: encodeBase64Session(encrypt(machineKeySeed!, 'dataKey', {
+                type: 'success',
+                sessionId,
+              }), 'base64'),
+            });
+            return;
+          }
         }
         ack?.({ ok: false, error: 'unsupported' });
       },
@@ -491,7 +611,7 @@ describe('happier session send (integration)', () => {
       expect(parsed.ok).toBe(false);
       expect(parsed.kind).toBe('session_send');
       expect(parsed.error?.code).toBe('wait_failed');
-      expect(parsed.error?.message).toBe('wait socket failed');
+      expect(parsed.error?.message).toBe('wait_failed');
     } finally {
       if (releaseLookupTimer) {
         clearTimeout(releaseLookupTimer);
@@ -780,6 +900,7 @@ describe('happier session send (integration)', () => {
     sessionActive = true;
     sessionActiveAt = 2;
     sessionAgentStateCiphertext = busyAgentStateCiphertext;
+    stageCommittedUserMessageInTranscript = true;
 
     const rpcSocket = createApiSessionSocketStub({
       emit: (event: string, args: unknown[]) => {
@@ -1248,7 +1369,7 @@ describe('happier session send (integration)', () => {
     }
   });
 
-  it('falls back to committed socket send when active-session RPC cannot connect', async () => {
+  it('keeps durable pending send when active-session wake RPC cannot connect', async () => {
     const { handleSessionCommand } = await import('./index');
 
     const sessionId = 'sess_integration_send_123';
@@ -1261,25 +1382,7 @@ describe('happier session send (integration)', () => {
       rpcSocket.trigger('connect_error', new Error('connect_error'));
       return rpcSocket;
     });
-    const committedSocket = createApiSessionSocketStub({
-      emit: (event: string, args: unknown[]) => {
-        const [payload, ack] = args as [any, ((answer: any) => void) | undefined];
-        if (event !== 'message') {
-          throw new Error(`Unexpected socket event: ${event}`);
-        }
-        expect(payload).toEqual(expect.objectContaining({ messageRole: 'user' }));
-        const content = payload?.message;
-        if (content?.t === 'encrypted') {
-          const decrypted = decryptWithDataKeyFn!(
-            decodeBase64Fn!(String(content?.c ?? ''), 'base64'),
-            dek!,
-          );
-          receivedMessages.push(decrypted);
-        }
-        ack?.({ ok: true, id: 'm1', seq: 2, localId: payload?.localId ?? null, didWrite: true });
-      },
-    });
-    bindApiSessionSocketSequenceMock(mockIo, [rpcSocket, committedSocket]);
+    bindApiSessionSocketMock(mockIo, rpcSocket);
 
     const output = captureConsoleJsonOutput();
 
@@ -1298,16 +1401,13 @@ describe('happier session send (integration)', () => {
       const parsed = output.json();
       expect(parsed.ok).toBe(true);
       expect(parsed.kind).toBe('session_send');
-      expect(receivedMessages.at(-1)).toMatchObject({
-        role: 'user',
-        content: { type: 'text', text: 'Fallback after connect error' },
-      });
+      expect(receivedMessages).toHaveLength(0);
     } finally {
       output.restore();
     }
   });
 
-  it('falls back to committed socket send when active-session RPC reports session_not_found', async () => {
+  it('keeps durable pending send when active-session wake RPC reports session_not_found', async () => {
     const { handleSessionCommand } = await import('./index');
 
     const sessionId = 'sess_integration_send_123';
@@ -1324,24 +1424,7 @@ describe('happier session send (integration)', () => {
         ack?.({ ok: false, error: 'session_not_found', errorCode: 'session_not_found' });
       },
     });
-    const committedSocket = createApiSessionSocketStub({
-      emit: (event: string, args: unknown[]) => {
-        const [payload, ack] = args as [any, ((answer: any) => void) | undefined];
-        if (event !== 'message') {
-          throw new Error(`Unexpected socket event: ${event}`);
-        }
-        const content = payload?.message;
-        if (content?.t === 'encrypted') {
-          const decrypted = decryptWithDataKeyFn!(
-            decodeBase64Fn!(String(content?.c ?? ''), 'base64'),
-            dek!,
-          );
-          receivedMessages.push(decrypted);
-        }
-        ack?.({ ok: true, id: 'm1', seq: 2, localId: payload?.localId ?? null, didWrite: true });
-      },
-    });
-    bindApiSessionSocketSequenceMock(mockIo, [rpcSocket, committedSocket]);
+    bindApiSessionSocketMock(mockIo, rpcSocket);
 
     const output = captureConsoleJsonOutput();
 
@@ -1360,16 +1443,13 @@ describe('happier session send (integration)', () => {
       const parsed = output.json();
       expect(parsed.ok).toBe(true);
       expect(parsed.kind).toBe('session_send');
-      expect(receivedMessages.at(-1)).toMatchObject({
-        role: 'user',
-        content: { type: 'text', text: 'Fallback after session_not_found' },
-      });
+      expect(receivedMessages).toHaveLength(0);
     } finally {
       output.restore();
     }
   });
 
-  it('does not retry via committed socket send after an active-session RPC timeout', async () => {
+  it('does not fail or retry via committed socket send after an active-session wake RPC timeout', async () => {
     const { handleSessionCommand } = await import('./index');
 
     const sessionId = 'sess_integration_send_123';
@@ -1400,10 +1480,8 @@ describe('happier session send (integration)', () => {
       });
 
       const parsed = output.json();
-      expect(parsed.ok).toBe(false);
+      expect(parsed.ok).toBe(true);
       expect(parsed.kind).toBe('session_send');
-      expect(parsed.error?.code).toBe('timeout');
-      expect(parsed.error?.message).toContain('RPC call timeout');
       expect(mockIo).toHaveBeenCalledTimes(1);
       expect(receivedMessages).toHaveLength(0);
     } finally {
@@ -1419,7 +1497,7 @@ describe('happier session send (integration)', () => {
     try {
       const machineKeySeed = new Uint8Array(32).fill(8);
       await handleSessionCommand(
-        ['send', 'sess_integration_send_123', 'Hello from controller', '--permission-mode', 'bypassPermissions', '--model', 'default', '--json'],
+        ['send', 'sess_integration_send_123', 'Hello from controller', '--permission-mode', 'default', '--model', 'default', '--json'],
         {
           readCredentialsFn: async () => ({
             token: 'token_test',
@@ -1439,7 +1517,7 @@ describe('happier session send (integration)', () => {
       expect(parsed.kind).toBe('session_send');
 
       const last = receivedMessages[receivedMessages.length - 1];
-      expect(last?.meta?.permissionMode).toBe('yolo');
+      expect(last?.meta?.permissionMode).toBe('default');
       expect(last?.meta?.model).toBeUndefined();
     } finally {
       output.restore();
