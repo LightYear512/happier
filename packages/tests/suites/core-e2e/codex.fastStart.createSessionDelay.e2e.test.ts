@@ -115,10 +115,7 @@ setInterval(() => {}, 1000);
       HAPPIER_E2E_DELAY_CREATE_SESSION_MS: '30000',
     };
 
-    const cliDistEntrypoint = await ensureCliDistBuilt(
-      { testDir, env: cliEnv },
-      { skipDistIntegrityCheck: true, skipSourceFreshnessCheck: true },
-    );
+    const cliDistEntrypoint = await ensureCliDistBuilt({ testDir, env: cliEnv });
 
     proc = spawnLoggedProcess({
       command: process.execPath,
@@ -143,5 +140,5 @@ setInterval(() => {}, 1000);
     });
 
     expect(existsSync(rolloutPath)).toBe(true);
-  }, 60_000);
+  }, 240_000);
 });
