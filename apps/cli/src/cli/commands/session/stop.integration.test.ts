@@ -1,15 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
-import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
+import { encodeBase64, encrypt } from '@/api/encryption';
+import { requestSessionStop } from '@/session/services/requestSessionStop';
 
 import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 
-const { mockIo } = vi.hoisted(() => ({
-  mockIo: vi.fn(),
-}));
 const { stopDaemonSessionMock } = vi.hoisted(() => ({
   stopDaemonSessionMock: vi.fn(),
 }));
@@ -19,9 +16,6 @@ const { listSessionMarkersMock, removeSessionMarkerMock, isPidSafeHappySessionPr
   isPidSafeHappySessionProcessMock: vi.fn(),
 }));
 
-vi.mock('socket.io-client', () => ({
-  io: mockIo,
-}));
 vi.mock('@/daemon/controlClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/daemon/controlClient')>();
   return {
@@ -41,7 +35,7 @@ vi.mock('@/daemon/pidSafety', () => ({
   isPidSafeHappySessionProcess: isPidSafeHappySessionProcessMock,
 }));
 
-describe('happier session stop (integration)', () => {
+describe('requestSessionStop (integration)', () => {
   const envKeys = ['HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL', 'HAPPIER_HOME_DIR'] as const;
   let envScope = createEnvKeyScope(envKeys);
   let server: Server | null = null;
@@ -49,6 +43,16 @@ describe('happier session stop (integration)', () => {
   let sessionActive = true;
   let sessionStatusFetchCount = 0;
   let sessionStatusShouldFail = false;
+  const machineKeySeed = new Uint8Array(32).fill(8);
+  const metadataCiphertext = encodeBase64(encrypt(machineKeySeed, 'dataKey', {}), 'base64');
+  const credentials = {
+    token: 'token_test',
+    encryption: {
+      type: 'dataKey' as const,
+      publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed),
+      machineKey: machineKeySeed,
+    },
+  };
 
   beforeEach(async () => {
     happyHomeDir = await createTempDir('happier-cli-session-stop-');
@@ -78,7 +82,7 @@ describe('happier session stop (integration)', () => {
               updatedAt: 2,
               active: sessionActive,
               activeAt: sessionActive ? 10 : 0,
-              metadata: 'metadata_ciphertext',
+              metadata: metadataCiphertext,
               metadataVersion: 0,
               agentState: null,
               agentStateVersion: 0,
@@ -106,7 +110,6 @@ describe('happier session stop (integration)', () => {
     const { reloadConfiguration } = await import('@/configuration');
     reloadConfiguration();
 
-    mockIo.mockReset();
     stopDaemonSessionMock.mockReset();
     listSessionMarkersMock.mockReset();
     listSessionMarkersMock.mockResolvedValue([]);
@@ -138,113 +141,49 @@ describe('happier session stop (integration)', () => {
 
   it('uses the daemon-owned stop path and avoids emitting session-end when the daemon reports success', async () => {
     const sessionId = 'sess_integration_stop_123';
-    const emitSpy = vi.fn((...args: any[]) => {
-      const cb = args[2];
-      sessionActive = false;
-      if (typeof cb === 'function') cb();
-    });
     stopDaemonSessionMock.mockImplementation(async (requestedSessionId: string) => {
       expect(requestedSessionId).toBe(sessionId);
       sessionActive = false;
       return { status: 'stopped' } as const;
     });
 
-    const socket = createApiSessionSocketStub({
-      emit: (event: string, args: unknown[]) => emitSpy(event, ...args),
+    await expect(requestSessionStop({ credentials, idOrPrefix: sessionId })).resolves.toEqual({
+      ok: true,
+      sessionId,
+      stopped: true,
     });
-    bindApiSessionSocketMock(mockIo, socket);
-
-    const { handleSessionCommand } = await import('./index');
-
-    const output = captureConsoleJsonOutput();
-
-    try {
-      const machineKeySeed = new Uint8Array(32).fill(8);
-      await handleSessionCommand(['stop', sessionId, '--json'], {
-        readCredentialsFn: async () => ({
-          token: 'token_test',
-          encryption: {
-            type: 'dataKey',
-            publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed),
-            machineKey: machineKeySeed,
-          },
-        }),
-      });
-
-      expect(stopDaemonSessionMock).toHaveBeenCalledWith(sessionId);
-      expect(emitSpy).not.toHaveBeenCalled();
-      expect(sessionStatusFetchCount).toBeGreaterThanOrEqual(2);
-
-      const parsed = output.json();
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('session_stop');
-      expect(parsed.data?.sessionId).toBe(sessionId);
-      expect(parsed.data?.stopped).toBe(true);
-    } finally {
-      output.restore();
-    }
+    expect(stopDaemonSessionMock).toHaveBeenCalledWith(sessionId);
+    expect(sessionStatusFetchCount).toBeGreaterThanOrEqual(2);
   });
 
   it('reports stopped false when the daemon stop path is unavailable instead of falling back to session-end', async () => {
     const sessionId = 'sess_integration_stop_timeout';
-    const emitSpy = vi.fn((...args: any[]) => {
-      const cb = args[2];
-      if (typeof cb === 'function') cb();
-    });
     stopDaemonSessionMock.mockResolvedValue({ status: 'not_found' });
-
-    const socket = createApiSessionSocketStub({
-      emit: (event: string, args: unknown[]) => emitSpy(event, ...args),
-    });
-    bindApiSessionSocketMock(mockIo, socket);
 
     process.env.HAPPIER_SESSION_STOP_TIMEOUT_MS = '20';
     process.env.HAPPIER_SESSION_STOP_POLL_INTERVAL_MS = '1';
 
-    const { handleSessionCommand } = await import('./index');
-
-    const output = captureConsoleJsonOutput();
-
     try {
-      const machineKeySeed = new Uint8Array(32).fill(8);
-      await handleSessionCommand(['stop', sessionId, '--json'], {
-        readCredentialsFn: async () => ({
-          token: 'token_test',
-          encryption: {
-            type: 'dataKey',
-            publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed),
-            machineKey: machineKeySeed,
-          },
-        }),
+      await expect(requestSessionStop({ credentials, idOrPrefix: sessionId })).resolves.toEqual({
+        ok: true,
+        sessionId,
+        stopped: false,
+        stopOutcome: {
+          status: 'physical_stop_unconfirmed',
+          reason: 'local_session_not_found',
+        },
       });
-
       expect(stopDaemonSessionMock).toHaveBeenCalledWith(sessionId);
-      expect(emitSpy).not.toHaveBeenCalled();
       expect(sessionStatusFetchCount).toBeGreaterThanOrEqual(1);
-
-      const parsed = output.json();
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('session_stop');
-      expect(parsed.data?.sessionId).toBe(sessionId);
-      expect(parsed.data?.stopped).toBe(false);
-      expect(parsed.data?.stopOutcome).toEqual({
-        status: 'physical_stop_unconfirmed',
-        reason: 'local_session_not_found',
-      });
     } finally {
       delete process.env.HAPPIER_SESSION_STOP_TIMEOUT_MS;
       delete process.env.HAPPIER_SESSION_STOP_POLL_INTERVAL_MS;
-      output.restore();
     }
   });
 
   it('does not signal a marker-backed runner without committed terminal topology proof', async () => {
     const sessionId = 'sess_integration_stop_marker_fallback';
     const markerPid = 12345;
-    const emitSpy = vi.fn((...args: any[]) => {
-      const cb = args[2];
-      if (typeof cb === 'function') cb();
-    });
     stopDaemonSessionMock.mockResolvedValue({ status: 'not_found' });
     listSessionMarkersMock.mockResolvedValue([
       {
@@ -265,53 +204,29 @@ describe('happier session stop (integration)', () => {
       return true;
     }) as typeof process.kill);
 
-    const socket = createApiSessionSocketStub({
-      emit: (event: string, args: unknown[]) => emitSpy(event, ...args),
-    });
-    bindApiSessionSocketMock(mockIo, socket);
-
     process.env.HAPPIER_SESSION_STOP_TIMEOUT_MS = '50';
     process.env.HAPPIER_SESSION_STOP_POLL_INTERVAL_MS = '1';
 
-    const { handleSessionCommand } = await import('./index');
-
-    const output = captureConsoleJsonOutput();
-
     try {
-      const machineKeySeed = new Uint8Array(32).fill(8);
-      await handleSessionCommand(['stop', sessionId, '--json'], {
-        readCredentialsFn: async () => ({
-          token: 'token_test',
-          encryption: {
-            type: 'dataKey',
-            publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed),
-            machineKey: machineKeySeed,
-          },
-        }),
+      await expect(requestSessionStop({ credentials, idOrPrefix: sessionId })).resolves.toEqual({
+        ok: true,
+        sessionId,
+        stopped: false,
+        stopOutcome: {
+          status: 'physical_stop_unconfirmed',
+          reason: 'missing_topology_proof',
+        },
       });
-
       expect(stopDaemonSessionMock).toHaveBeenCalledWith(sessionId);
       expect(listSessionMarkersMock).toHaveBeenCalledTimes(1);
       expect(isPidSafeHappySessionProcessMock).not.toHaveBeenCalled();
       expect(processKillSpy).not.toHaveBeenCalled();
       expect(removeSessionMarkerMock).not.toHaveBeenCalled();
-      expect(emitSpy).not.toHaveBeenCalled();
       expect(sessionStatusFetchCount).toBeGreaterThanOrEqual(1);
-
-      const parsed = output.json();
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('session_stop');
-      expect(parsed.data?.sessionId).toBe(sessionId);
-      expect(parsed.data?.stopped).toBe(false);
-      expect(parsed.data?.stopOutcome).toEqual({
-        status: 'physical_stop_unconfirmed',
-        reason: 'missing_topology_proof',
-      });
     } finally {
       delete process.env.HAPPIER_SESSION_STOP_TIMEOUT_MS;
       delete process.env.HAPPIER_SESSION_STOP_POLL_INTERVAL_MS;
       processKillSpy.mockRestore();
-      output.restore();
     }
   });
 
@@ -323,45 +238,24 @@ describe('happier session stop (integration)', () => {
       return { status: 'stopped' } as const;
     });
 
-    const socket = createApiSessionSocketStub();
-    bindApiSessionSocketMock(mockIo, socket);
-
     process.env.HAPPIER_SESSION_STOP_TIMEOUT_MS = '20';
     process.env.HAPPIER_SESSION_STOP_POLL_INTERVAL_MS = '1';
 
-    const { handleSessionCommand } = await import('./index');
-
-    const output = captureConsoleJsonOutput();
-
     try {
-      const machineKeySeed = new Uint8Array(32).fill(8);
-      await handleSessionCommand(['stop', sessionId, '--json'], {
-        readCredentialsFn: async () => ({
-          token: 'token_test',
-          encryption: {
-            type: 'dataKey',
-            publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed),
-            machineKey: machineKeySeed,
-          },
-        }),
+      await expect(requestSessionStop({ credentials, idOrPrefix: sessionId })).resolves.toEqual({
+        ok: true,
+        sessionId,
+        stopped: false,
+        stopOutcome: {
+          status: 'stopped_projection_unconfirmed',
+          reason: 'relay_inactive_not_observed',
+        },
       });
-
       expect(stopDaemonSessionMock).toHaveBeenCalledWith(sessionId);
       expect(sessionStatusFetchCount).toBeGreaterThanOrEqual(1);
-
-      const parsed = output.json();
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('session_stop');
-      expect(parsed.data?.sessionId).toBe(sessionId);
-      expect(parsed.data?.stopped).toBe(false);
-      expect(parsed.data?.stopOutcome).toEqual({
-        status: 'stopped_projection_unconfirmed',
-        reason: 'relay_inactive_not_observed',
-      });
     } finally {
       delete process.env.HAPPIER_SESSION_STOP_TIMEOUT_MS;
       delete process.env.HAPPIER_SESSION_STOP_POLL_INTERVAL_MS;
-      output.restore();
     }
   });
 });

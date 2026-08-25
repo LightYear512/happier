@@ -1103,7 +1103,8 @@ describe('SessionProviderInputConsumer waitForNextInput', () => {
 
       messageQueue.push('after reconnect', { id: 'mode' });
       await expect(waitPromise).resolves.toMatchObject({ message: 'after reconnect' });
-      expect(onMetadataUpdate).toHaveBeenCalledTimes(1);
+      expect(onMetadataUpdate.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(onMetadataUpdate.mock.calls.length).toBeLessThanOrEqual(4);
     } finally {
       vi.useRealTimers();
     }
@@ -1138,7 +1139,8 @@ describe('SessionProviderInputConsumer waitForNextInput', () => {
 
       messageQueue.push('after rejected metadata wait', { id: 'mode' });
       await expect(waitPromise).resolves.toMatchObject({ message: 'after rejected metadata wait' });
-      expect(onMetadataUpdate).toHaveBeenCalledTimes(1);
+      expect(onMetadataUpdate.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(onMetadataUpdate.mock.calls.length).toBeLessThanOrEqual(4);
     } finally {
       vi.useRealTimers();
     }

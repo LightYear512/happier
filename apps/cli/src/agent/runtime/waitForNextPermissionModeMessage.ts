@@ -21,7 +21,12 @@ export async function waitForNextPermissionModeMessage<Mode, Message>(opts: {
     reconcilePendingQueueState: async (reconcileOpts) => {
       await opts.session.reconcilePendingQueueState?.(reconcileOpts);
     },
-    waitForPendingEligibilityUpdate: (signal) => opts.session.waitForPendingEligibilityUpdate(signal),
+    waitForPendingEligibilityUpdate: (signal) => {
+      const waitForPendingEligibilityUpdate = opts.session.waitForPendingEligibilityUpdate;
+      return typeof waitForPendingEligibilityUpdate === 'function'
+        ? waitForPendingEligibilityUpdate.call(opts.session, signal)
+        : Promise.resolve(false);
+    },
   };
 
   const consumerOptions: SessionProviderInputConsumerOptions<Mode, Message> = {
