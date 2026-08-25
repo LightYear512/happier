@@ -9,6 +9,19 @@ import {
   tryAcquireSessionHandoffPrepareTargetJobLease,
 } from './sessionHandoffPrepareTargetJobLease';
 
+async function waitForHeartbeatState(
+  heartbeat: ReturnType<typeof startSessionHandoffPrepareTargetJobLeaseHeartbeat>,
+  status: ReturnType<typeof heartbeat.getState>['status'],
+): Promise<void> {
+  const startedAtMs = Date.now();
+  while (Date.now() - startedAtMs <= 2_000) {
+    if (heartbeat.getState().status === status) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 describe('sessionHandoffPrepareTargetJobLease', () => {
   it.each(['', '.', '..', 'nested/job', 'nested\\job'])(
     'rejects non-isolated job id %j before creating a lease path',
@@ -122,7 +135,7 @@ describe('sessionHandoffPrepareTargetJobLease', () => {
       await writeFile(join(leaseDirectory, 'lease.json'), `${JSON.stringify(successor)}\n`, 'utf8');
       await writeFile(join(leaseDirectory, 'runner.json'), `${JSON.stringify(successor)}\n`, 'utf8');
 
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await waitForHeartbeatState(heartbeat, 'lost');
 
       expect(heartbeat.getState()).toMatchObject({ status: 'lost' });
       await expect(heartbeat.proof.validate()).resolves.toBe(false);
