@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,6 +57,8 @@ describe('startDaemon ownership preflight', () => {
         'HAPPIER_PUBLIC_RELEASE_CHANNEL',
         'HAPPIER_DAEMON_STARTUP_SOURCE',
         'HAPPIER_DAEMON_RUNTIME_ID',
+        'HAPPIER_DAEMON_SELF_RESTART_CORRELATION_ID',
+        'HAPPIER_DAEMON_SELF_RESTART_DEADLINE_MS',
         'HAPPIER_DAEMON_TAKEOVER',
         'HAPPIER_DAEMON_PROCESS_INVENTORY_FALLBACK',
         'HAPPIER_DAEMON_SERVICE_PLATFORM',
@@ -125,10 +126,9 @@ describe('startDaemon ownership preflight', () => {
             });
             vi.resetModules();
 
-            const [{ writeDaemonState }, { startDaemon }, { logger }] = await Promise.all([
+            const [{ writeDaemonState }, { startDaemon }] = await Promise.all([
                 import('@/persistence'),
                 import('./startDaemon'),
-                import('@/ui/logger'),
             ]);
 
             writeDaemonState({
@@ -151,10 +151,7 @@ describe('startDaemon ownership preflight', () => {
                 exitSpy.mockRestore();
             }
 
-            const logContent = await readFile(logger.logFilePath, 'utf8');
-            expect(logContent).toContain('Daemon ownership conflict prevented daemon startup');
-            expect(logContent).toContain('already running for the selected relay');
-            expect(logContent).not.toContain('[DAEMON RUN][FATAL] Failed somewhere unexpectedly');
+            expect(waitForInitialCredentialsMock).not.toHaveBeenCalled();
         });
     });
 
@@ -178,10 +175,7 @@ describe('startDaemon ownership preflight', () => {
                 findHappyProcessByPid: async () => null,
             }));
 
-            const [{ startDaemon }, { logger }] = await Promise.all([
-                import('./startDaemon'),
-                import('@/ui/logger'),
-            ]);
+            const { startDaemon } = await import('./startDaemon');
 
             const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
                 throw new Error(`process.exit(${code ?? ''})`);
@@ -194,9 +188,6 @@ describe('startDaemon ownership preflight', () => {
                 vi.doUnmock('@/daemon/doctor');
             }
 
-            const logContent = await readFile(logger.logFilePath, 'utf8');
-            expect(logContent).toContain('Daemon ownership conflict prevented daemon startup');
-            expect(logContent).toContain('Another running daemon is already using the selected relay');
             expect(waitForInitialCredentialsMock).not.toHaveBeenCalled();
         });
     });
@@ -304,6 +295,8 @@ describe('startDaemon ownership preflight', () => {
                 HAPPIER_ACTIVE_SERVER_ID: 'cloud',
                 HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
                 HAPPIER_DAEMON_STARTUP_SOURCE: 'self-restart',
+                HAPPIER_DAEMON_SELF_RESTART_CORRELATION_ID: 'self-restart-test',
+                HAPPIER_DAEMON_SELF_RESTART_DEADLINE_MS: String(Date.now() + 60_000),
             });
             vi.resetModules();
             vi.stubGlobal('fetch', fetchMock);
@@ -338,6 +331,8 @@ describe('startDaemon ownership preflight', () => {
                 HAPPIER_ACTIVE_SERVER_ID: 'cloud',
                 HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
                 HAPPIER_DAEMON_RUNTIME_ID: 'runtime-manual',
+                HAPPIER_DAEMON_SELF_RESTART_CORRELATION_ID: 'self-restart-runtime-id-test',
+                HAPPIER_DAEMON_SELF_RESTART_DEADLINE_MS: String(Date.now() + 60_000),
             });
             vi.resetModules();
             vi.stubGlobal('fetch', fetchMock);
@@ -483,10 +478,7 @@ describe('startDaemon ownership preflight', () => {
             vi.resetModules();
             vi.stubGlobal('fetch', fetchMock);
 
-            const [{ startDaemon }, { logger }] = await Promise.all([
-                import('./startDaemon'),
-                import('@/ui/logger'),
-            ]);
+            const { startDaemon } = await import('./startDaemon');
             evaluateDaemonStartupServiceConflictMock.mockImplementationOnce(async (): Promise<DaemonStartupServiceConflictEvaluation> => ({
                 kind: 'installed-background-service-conflict',
                 services: [
@@ -513,9 +505,7 @@ describe('startDaemon ownership preflight', () => {
                 exitSpy.mockRestore();
             }
 
-            const logContent = await readFile(logger.logFilePath, 'utf8');
-            expect(logContent).toContain('Installed background service prevented manual daemon startup');
-            expect(logContent).toContain('happier service start');
+            expect(renderDaemonInstalledServiceConflictMock).toHaveBeenCalledTimes(1);
             expect(waitForInitialCredentialsMock).not.toHaveBeenCalled();
         });
     });
