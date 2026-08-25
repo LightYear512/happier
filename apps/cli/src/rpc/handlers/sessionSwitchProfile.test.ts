@@ -96,10 +96,11 @@ describe('registerSessionSwitchProfileHandler', () => {
     expect(deps.stopSession).toHaveBeenCalledWith('session-1');
     expect(deps.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       directory: '/work',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       profileId: 'work',
       existingSessionId: 'session-1',
       resume: undefined,
-      initialPrompt: undefined,
+      initialPrompt: 'do not replay',
     }));
     expect(deps.removeSuspendedSession).toHaveBeenCalledWith('session-1');
   });
