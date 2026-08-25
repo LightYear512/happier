@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 import { createAuthenticationHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
-import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
+import { resolveRuntimeServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 
 export type RawTranscriptRow = Readonly<{
   id?: unknown;
@@ -31,7 +31,7 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
   role?: 'user' | 'agent' | 'event' | 'unknown';
   roles?: readonly ('user' | 'agent' | 'event' | 'unknown')[];
 }>): Promise<FetchEncryptedTranscriptMessagesPageResult> {
-  const serverUrl = resolveServerHttpBaseUrl();
+  const serverUrl = resolveRuntimeServerHttpBaseUrl();
   const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
     headers: {
       Authorization: `Bearer ${params.token}`,
