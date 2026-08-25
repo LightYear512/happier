@@ -57,7 +57,10 @@ describe('executeClaimedExternalIssueSessionRun', () => {
       sessionId: 'session-1',
       machineId: 'machine-1',
       spawnNonce: 'external-issue-session-run:run-1:3',
-      initialPrompt: expect.stringContaining('Fix flaky checkout'),
+      pendingFirstInput: expect.objectContaining({
+        localId: expect.stringMatching(/^spawn-first:/),
+        text: expect.stringContaining('Fix flaky checkout'),
+      }),
     }));
     expect(claimClient.succeedRun).toHaveBeenCalledWith({
       runId: 'run-1',
