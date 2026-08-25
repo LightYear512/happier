@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { spawnSyncMock } = vi.hoisted(() => ({
   spawnSyncMock: vi.fn<typeof import('node:child_process').spawnSync>(),
@@ -15,7 +15,21 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { readBackgroundServiceHealth } from './readBackgroundServiceHealth';
 
 describe('readBackgroundServiceHealth', () => {
+  const originalXdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
+  const originalDbusSessionBusAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+
+  afterEach(() => {
+    if (originalXdgRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = originalXdgRuntimeDir;
+    if (originalDbusSessionBusAddress === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    else process.env.DBUS_SESSION_BUS_ADDRESS = originalDbusSessionBusAddress;
+    spawnSyncMock.mockReset();
+  });
+
   it('classifies a failed restarting systemd user service as crash-looping', () => {
+    delete process.env.XDG_RUNTIME_DIR;
+    delete process.env.DBUS_SESSION_BUS_ADDRESS;
+
     spawnSyncMock.mockImplementation((cmd, args) => {
       if (cmd === 'systemctl') {
         return {
