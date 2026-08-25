@@ -34,19 +34,31 @@ export function createDaemonEventLoopStallMonitor(input: Readonly<{
     expectedSampleAtMs = observedAtMs + sampleIntervalMs;
     if (eventLoopDelayMs < warningThresholdMs) return;
 
-    const activeRpcOperations = input.getActiveRpcOperations()
+    let activeRpcOperationsUnavailable: Readonly<Record<string, string>> | null = null;
+    let activeRpcOperations: readonly RpcHandlerActiveExecution[] = [];
+    try {
+      activeRpcOperations = input.getActiveRpcOperations();
+    } catch (error) {
+      const typedError = error instanceof Error ? error : null;
+      activeRpcOperationsUnavailable = {
+        name: typedError?.name ?? 'Error',
+        message: typedError?.message ?? String(error),
+      };
+    }
+    const sortedActiveRpcOperations = activeRpcOperations
       .map((operation) => ({
         method: operation.method,
         activeForMs: Math.max(0, Math.round(operation.activeForMs)),
       }))
       .sort((left, right) => right.activeForMs - left.activeForMs);
-    const reportedOperations = activeRpcOperations.slice(0, maxReportedOperations);
+    const reportedOperations = sortedActiveRpcOperations.slice(0, maxReportedOperations);
 
     input.warn('[DAEMON PERF] Event loop stall detected', {
       eventLoopDelayMs,
       sampleIntervalMs,
       activeRpcOperations: reportedOperations,
-      omittedActiveRpcOperationCount: Math.max(0, activeRpcOperations.length - reportedOperations.length),
+      omittedActiveRpcOperationCount: Math.max(0, sortedActiveRpcOperations.length - reportedOperations.length),
+      ...(activeRpcOperationsUnavailable ? { activeRpcOperationsUnavailable } : {}),
     });
   };
 

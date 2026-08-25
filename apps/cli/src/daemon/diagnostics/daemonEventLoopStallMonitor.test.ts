@@ -49,4 +49,39 @@ describe('createDaemonEventLoopStallMonitor', () => {
     samples[0]?.();
     expect(warn).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps the timer alive when diagnostic active-RPC collection fails', () => {
+    let nowMs = 10_000;
+    const samples: Array<() => void> = [];
+    const warn = vi.fn();
+    const monitor = createDaemonEventLoopStallMonitor({
+      nowMs: () => nowMs,
+      setIntervalFn: (callback) => {
+        samples.push(callback);
+        return {};
+      },
+      clearIntervalFn: vi.fn(),
+      sampleIntervalMs: 1_000,
+      warningThresholdMs: 2_000,
+      getActiveRpcOperations: () => {
+        throw new TypeError('missing diagnostic method');
+      },
+      warn,
+    });
+
+    monitor.start();
+    nowMs = 13_500;
+
+    expect(() => samples[0]?.()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(
+      '[DAEMON PERF] Event loop stall detected',
+      expect.objectContaining({
+        activeRpcOperations: [],
+        activeRpcOperationsUnavailable: {
+          name: 'TypeError',
+          message: 'missing diagnostic method',
+        },
+      }),
+    );
+  });
 });

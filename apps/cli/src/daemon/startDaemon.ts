@@ -2195,7 +2195,12 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
       let stopSessionDevPreviewSocketRelay: (() => void) | null = null;
       let apiMachine: ApiMachineClient | null = null;
       const eventLoopStallMonitor = createDaemonEventLoopStallMonitor({
-        getActiveRpcOperations: () => apiMachineForSessions?.getActiveRpcHandlerExecutions() ?? [],
+        getActiveRpcOperations: () => {
+          const getActiveRpcHandlerExecutions = apiMachineForSessions?.getActiveRpcHandlerExecutions;
+          return typeof getActiveRpcHandlerExecutions === 'function'
+            ? getActiveRpcHandlerExecutions.call(apiMachineForSessions)
+            : [];
+        },
         warn: (message, data) => logger.warn(message, data),
       });
       eventLoopStallMonitor.start();
