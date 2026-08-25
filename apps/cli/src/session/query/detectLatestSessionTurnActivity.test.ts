@@ -6,7 +6,7 @@ describe('detectLatestSessionTurnActivity', () => {
     vi.clearAllMocks();
   });
 
-  it('trusts a refreshed complete foreground projection over transcript task lifecycle rows', async () => {
+  it('lets busy transcript evidence override a refreshed completed projection', async () => {
     const fetchSessionById = vi.fn(async () => ({
       id: 'sess-1',
       latestTurnStatus: 'completed',
@@ -57,15 +57,15 @@ describe('detectLatestSessionTurnActivity', () => {
       encryptionVariant: 'dataKey',
     })).resolves.toEqual({
       pendingUserTurns: 0,
-      activeTaskInFlight: false,
-      turnInFlight: false,
+      activeTaskInFlight: true,
+      turnInFlight: true,
     });
 
     expect(fetchSessionById).toHaveBeenCalledWith({
       token: 'token',
       sessionId: 'sess-1',
     });
-    expect(fetchEncryptedTranscriptPageLatest).not.toHaveBeenCalled();
+    expect(fetchEncryptedTranscriptPageLatest).toHaveBeenCalled();
     expect(fetchEncryptedTranscriptPageAfterSeq).not.toHaveBeenCalled();
   });
 });

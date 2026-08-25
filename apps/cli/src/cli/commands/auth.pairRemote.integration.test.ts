@@ -7,7 +7,7 @@ import { decodeBase64 } from '@/api/encryption';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 import { setStdioTtyForTest } from '@/testkit/process/stdio';
 
 const spawnSyncMock = vi.fn();
@@ -105,7 +105,7 @@ describe('auth pair-remote (ssh)', () => {
       vi.resetModules();
       const { handleAuthPairRemote } = await import('./auth/pairRemote');
       const { decryptWithEphemeralKey } = await import('@/ui/auth');
-      const output = captureConsoleLogAndMuteStdout();
+      const output = captureConsoleJsonOutput();
       try {
         await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
       } finally {
@@ -219,7 +219,7 @@ describe('auth pair-remote (ssh)', () => {
 
       vi.resetModules();
       const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      const output = captureConsoleLogAndMuteStdout();
+      const output = captureConsoleJsonOutput();
       try {
         await handleAuthPairRemote(['--ssh', 'user@host', '--json']);
       } finally {
@@ -228,7 +228,7 @@ describe('auth pair-remote (ssh)', () => {
 
       expect(spawnSyncMock).toHaveBeenCalledTimes(2);
       expect(requests.has(remotePublicKey)).toBe(true);
-      expect(JSON.parse(output.logs.join('\n'))).toEqual(expect.objectContaining({
+      expect(output.json()).toEqual(expect.objectContaining({
         success: true,
         postCheck: {
           skipped: true,
@@ -295,7 +295,7 @@ describe('auth pair-remote (ssh)', () => {
       vi.resetModules();
       const { handleAuthPairRemote } = await import('./auth/pairRemote');
       const { decryptWithEphemeralKey } = await import('@/ui/auth');
-      const output = captureConsoleLogAndMuteStdout();
+      const output = captureConsoleJsonOutput();
       try {
         await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
       } finally {

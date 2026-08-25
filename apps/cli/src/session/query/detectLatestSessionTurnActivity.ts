@@ -21,7 +21,7 @@ export async function detectLatestSessionTurnActivity(params: Readonly<{
             sessionId: params.sessionId,
         });
         projectedActivity = detectSessionTurnActivityFromProjection(refreshedSession);
-        if (projectedActivity) {
+        if (projectedActivity?.turnInFlight) {
             return projectedActivity;
         }
     } catch {

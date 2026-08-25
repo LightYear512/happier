@@ -8,7 +8,7 @@ import { deriveAccountMachineKeyFromRecoverySecret } from '@happier-dev/protocol
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 import { setStdioTtyForTest } from '@/testkit/process/stdio';
 
 type RequestRow = {
@@ -74,10 +74,10 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       vi.resetModules();
 
       const { handleAuthRequest } = await import('./auth/request');
-      const output = captureConsoleLogAndMuteStdout();
+      const output = captureConsoleJsonOutput();
       try {
         await handleAuthRequest(['--json']);
-        const request = JSON.parse(output.logs[0] ?? '') as {
+        const request = output.json() as {
           pairingRequirement?: string;
           stateFile?: string;
         };
@@ -165,27 +165,21 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         HAPPIER_VARIANT: 'dev',
       });
       vi.resetModules();
-      const remoteLogs: string[] = [];
       const remoteWarns: string[] = [];
-      const remoteLogSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-        remoteLogs.push(args.map((arg) => String(arg)).join(' '));
-      });
       const remoteWarnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
         remoteWarns.push(args.map((arg) => String(arg)).join(' '));
       });
-      const remoteWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
       const { handleAuthRequest } = await import('./auth/request');
+      const remoteOut = captureConsoleJsonOutput();
       let requestJson: any;
       try {
         await handleAuthRequest(['--json']);
         expect(remoteWarns).toEqual([]);
-        expect(remoteLogs.length).toBe(1);
-        requestJson = JSON.parse(remoteLogs[0] ?? '');
+        requestJson = remoteOut.json();
       } finally {
-        remoteLogSpy.mockRestore();
+        remoteOut.restore();
         remoteWarnSpy.mockRestore();
-        remoteWriteSpy.mockRestore();
       }
       expect(typeof requestJson.publicKey).toBe('string');
       expect(typeof requestJson.claimSecret).toBe('string');
@@ -205,11 +199,10 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
 
       vi.resetModules();
       const { handleAuthApprove } = await import('./auth/approve');
-      const approveOut = captureConsoleLogAndMuteStdout();
+      const approveOut = captureConsoleJsonOutput();
       try {
         await handleAuthApprove(['--public-key', requestJson.publicKey, '--json']);
-        expect(approveOut.logs.length).toBe(1);
-        expect(JSON.parse(approveOut.logs[0] ?? '')).toEqual({ success: true });
+        expect(approveOut.json()).toEqual({ success: true });
       } finally {
         approveOut.restore();
       }
@@ -225,11 +218,10 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       });
       vi.resetModules();
       const { handleAuthWait } = await import('./auth/wait');
-      const waitOut = captureConsoleLogAndMuteStdout();
+      const waitOut = captureConsoleJsonOutput();
       try {
         await handleAuthWait(['--public-key', requestJson.publicKey, '--json']);
-        expect(waitOut.logs.length).toBe(1);
-        const parsed = JSON.parse(waitOut.logs[0] ?? '');
+        const parsed = waitOut.json() as any;
         expect(parsed.success).toBe(true);
         expect(parsed.token).toBe('issued-token');
         expect(parsed.encryptionType).toBe('dataKey');
@@ -281,11 +273,11 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
 
       vi.resetModules();
       const { handleAuthRequest } = await import('./auth/request');
-      const requestOut = captureConsoleLogAndMuteStdout();
+      const requestOut = captureConsoleJsonOutput();
       let requestJson: { publicKey: string };
       try {
         await handleAuthRequest(['--json']);
-        requestJson = JSON.parse(requestOut.logs[0] ?? '') as { publicKey: string };
+        requestJson = requestOut.json() as { publicKey: string };
       } finally {
         requestOut.restore();
       }
@@ -298,11 +290,10 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
 
       vi.resetModules();
       const { handleAuthWait } = await import('./auth/wait');
-      const waitOut = captureConsoleLogAndMuteStdout();
+      const waitOut = captureConsoleJsonOutput();
       try {
         await handleAuthWait(['--public-key', requestJson.publicKey, '--json']);
-        expect(waitOut.logs.length).toBe(1);
-        const parsed = JSON.parse(waitOut.logs[0] ?? '') as {
+        const parsed = waitOut.json() as {
           success?: boolean;
           machineId?: string;
           encryptionType?: string;
