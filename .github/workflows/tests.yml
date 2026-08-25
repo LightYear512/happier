@@ -623,11 +623,27 @@ jobs:
           DATABASE_URL: postgresql://happier:happier@127.0.0.1:${{ job.services.postgres.ports[5432] }}/happier?sslmode=disable
         run: yarn --cwd apps/server test:server:db-contract
 
-  cli:
+  cli_unit:
     if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || inputs.run_cli }}
-    name: CLI Tests (unit + integration)
+    name: CLI Unit Tests / shard ${{ matrix.shard }}
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            batch_offset: 0
+          - shard: 2
+            batch_offset: 6
+          - shard: 3
+            batch_offset: 12
+          - shard: 4
+            batch_offset: 18
+          - shard: 5
+            batch_offset: 24
+          - shard: 6
+            batch_offset: 30
     env:
       # Some CLI tests fetch/inspect GitHub Release assets. Prefer the built-in
       # GitHub Actions token rather than requiring extra secrets.
@@ -635,8 +651,10 @@ jobs:
       HAPPIER_GITHUB_TOKEN: ${{ github.token }}
       HAPPIER_CLI_TMUX_INTEGRATION: "1"
       HAPPIER_CLI_DAEMON_REATTACH_INTEGRATION: "1"
-      HAPPIER_CLI_VITEST_BATCH_SIZE: "25"
-      HAPPIER_CLI_VITEST_BATCH_TIMEOUT_MS: "300000"
+      HAPPIER_CLI_VITEST_BATCH_SIZE: "100"
+      HAPPIER_CLI_VITEST_BATCH_TIMEOUT_MS: "600000"
+      HAPPIER_CLI_VITEST_BATCH_OFFSET: ${{ matrix.batch_offset }}
+      HAPPIER_CLI_VITEST_BATCH_LIMIT: "6"
       HAPPIER_CLI_VITEST_MAX_FORKS: "1"
       HAPPIER_NO_BROWSER_OPEN: "1"
       NODE_OPTIONS: --max-old-space-size=8192
@@ -712,13 +730,149 @@ jobs:
             sed -i 's/^DEBUG=.*/DEBUG=/' apps/cli/.env.integration-test
           fi
 
-      - name: Run unit tests and import-cycle guard
+      - name: Run unit test shard
         run: |
           node apps/cli/scripts/runVitestBatches.mjs --config vitest.config.ts
-          yarn workspace @happier-dev/cli test:import-cycles
+
+  cli_import_cycles:
+    if: ${{ always() && ((github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || inputs.run_cli) }}
+    name: CLI Import Cycle Guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Setup Node (GitHub Actions)
+        if: env.ACT != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Setup Node (act)
+        if: env.ACT == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+
+      - name: Enable Corepack
+        uses: ./.github/actions/enable-corepack-yarn
+
+      - name: Install dependencies
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile --ignore-engines
+
+      - name: Run import-cycle guard
+        run: yarn workspace @happier-dev/cli test:import-cycles
+
+  cli_integration:
+    if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || inputs.run_cli }}
+    name: CLI Integration Tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      # Some CLI tests fetch/inspect GitHub Release assets. Prefer the built-in
+      # GitHub Actions token rather than requiring extra secrets.
+      GH_TOKEN: ${{ github.token }}
+      HAPPIER_GITHUB_TOKEN: ${{ github.token }}
+      HAPPIER_CLI_TMUX_INTEGRATION: "1"
+      HAPPIER_CLI_DAEMON_REATTACH_INTEGRATION: "1"
+      HAPPIER_CLI_VITEST_MAX_FORKS: "1"
+      HAPPIER_NO_BROWSER_OPEN: "1"
+      NODE_OPTIONS: --max-old-space-size=8192
+      TMPDIR: /tmp
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Setup Node (GitHub Actions)
+        if: env.ACT != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Setup Node (act)
+        if: env.ACT == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+
+      - name: Enable Corepack
+        uses: ./.github/actions/enable-corepack-yarn
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          APT_FLAGS="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          if [ "${ACT:-}" = "true" ] || [ -d /var/run/act ]; then
+            . /etc/os-release || true
+            CODENAME="${VERSION_CODENAME:-noble}"
+            ARCH="$(dpkg --print-architecture)"
+            BASE_URL="http://ports.ubuntu.com/ubuntu-ports"
+            if [ "${ARCH}" = "amd64" ]; then BASE_URL="http://archive.ubuntu.com/ubuntu"; fi
+            if command -v sudo >/dev/null 2>&1; then
+              sudo rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true
+              echo "deb ${BASE_URL} ${CODENAME} main universe" | sudo tee /etc/apt/sources.list >/dev/null
+            else
+              rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true
+              echo "deb ${BASE_URL} ${CODENAME} main universe" > /etc/apt/sources.list
+            fi
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get ${APT_FLAGS} update
+            sudo apt-get ${APT_FLAGS} install -y --no-install-recommends tmux
+          else
+            apt-get ${APT_FLAGS} update
+            apt-get ${APT_FLAGS} install -y --no-install-recommends tmux
+          fi
+          tmux -V
+
+      - name: Install Sapling
+        run: |
+          bash scripts/ci/install_sapling_ubuntu22.sh
+
+      - name: Verify Sapling CLI
+        run: sl --version
+
+      - name: Install dependencies
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile --ignore-engines
+
+      - name: Disable remote logging for CI (avoid hanging test process)
+        run: |
+          set -euo pipefail
+          if [ -f apps/cli/.env.integration-test ]; then
+            sed -i 's/^DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING=.*/DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING=/' apps/cli/.env.integration-test
+            sed -i 's/^DEBUG=.*/DEBUG=/' apps/cli/.env.integration-test
+          fi
 
       - name: Run integration tests
         run: yarn workspace @happier-dev/cli test:integration
+
+  cli:
+    if: ${{ always() && ((github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || inputs.run_cli) }}
+    name: CLI Tests (unit + integration)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [cli_unit, cli_import_cycles, cli_integration]
+    steps:
+      - name: Verify CLI test shards
+        run: |
+          test "${{ needs.cli_unit.result }}" = "success"
+          test "${{ needs.cli_import_cycles.result }}" = "success"
+          test "${{ needs.cli_integration.result }}" = "success"
 
   stack:
     if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || inputs.run_stack }}
