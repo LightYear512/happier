@@ -79,7 +79,7 @@ describe('happier session set-permission-mode (integration)', () => {
         const decrypted = decryptLegacy(decodeBase64(String(data?.metadata ?? ''), 'base64'), secret);
 
         // Legacy provider token should be persisted as provider-agnostic intent.
-        expect(decrypted?.permissionMode).toBe('safe-yolo');
+        expect(decrypted?.permissionMode).toBe('read-only');
         expect(typeof decrypted?.permissionModeUpdatedAt).toBe('number');
 
         if (typeof callback === 'function') {
@@ -113,7 +113,7 @@ describe('happier session set-permission-mode (integration)', () => {
     const output = captureConsoleJsonOutput();
 
     try {
-      await handleSessionCommand(['set-permission-mode', sessionId, 'acceptEdits', '--json'], {
+      await handleSessionCommand(['set-permission-mode', sessionId, 'read_only', '--json'], {
         readCredentialsFn: async () => ({
           token: 'token_test',
           encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
@@ -124,7 +124,7 @@ describe('happier session set-permission-mode (integration)', () => {
       expect(parsed.ok).toBe(true);
       expect(parsed.kind).toBe('session_set_permission_mode');
       expect(parsed.data?.sessionId).toBe(sessionId);
-      expect(parsed.data?.permissionMode).toBe('safe-yolo');
+      expect(parsed.data?.permissionMode).toBe('read-only');
     } finally {
       output.restore();
     }

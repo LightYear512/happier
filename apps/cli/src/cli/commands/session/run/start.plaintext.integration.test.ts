@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
+import { bindApiSessionSocketSequenceMock, createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const { mockIo } = vi.hoisted(() => ({
   mockIo: vi.fn(),
@@ -25,7 +26,7 @@ describe('happier session run start (plaintext integration)', () => {
     happyHomeDir = await createTempDir('happier-cli-session-run-start-plain-');
 
     const sessionId = 'sess_integration_run_start_plain_123';
-    const metadataPlain = JSON.stringify({ path: '/tmp', flavor: 'claude' });
+    const metadataPlain = JSON.stringify({ path: '/tmp', flavor: 'claude', machineId: 'machine-session' });
 
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
@@ -36,6 +37,7 @@ describe('happier session run start (plaintext integration)', () => {
         updatedAt: 2,
         active: false,
         activeAt: 0,
+        machineId: 'machine-session',
         encryptionMode: 'plain',
         metadata: metadataPlain,
         metadataVersion: 0,
@@ -81,18 +83,52 @@ describe('happier session run start (plaintext integration)', () => {
     const { reloadConfiguration } = await import('@/configuration');
     reloadConfiguration();
 
-    const socket = createApiSessionSocketStub({
+    const { decodeBase64, decrypt, encodeBase64: encodeBase64Rpc, encrypt } = await import('@/api/encryption');
+    const rpcSecret = new Uint8Array(32).fill(8);
+    let submittedNonce = '';
+    const userSocket = createApiSessionSocketStub({
       emit: (event: string, args: unknown[]) => {
         const [data, cb] = args as [any, ((value: unknown) => void) | undefined];
         if (event !== SOCKET_RPC_EVENTS.CALL) return;
+        const decodedParams = decodeBase64(String(data.params ?? ''), 'base64');
+        const decrypted = decrypt(rpcSecret, 'legacy', decodedParams) as any;
+        const method = String(data.method ?? '');
+        if (method === `machine-session:${RPC_METHODS.SPAWN_HAPPY_SESSION}`) {
+          expect(decrypted).toMatchObject({
+            type: 'resume-session',
+            sessionId,
+            directory: '/tmp',
+            spawnNonce: expect.stringMatching(/^inactive-session\.resume:/u),
+          });
+          submittedNonce = String(decrypted.spawnNonce);
+          cb?.({
+            ok: true,
+            result: encodeBase64Rpc(encrypt(rpcSecret, 'legacy', { type: 'success', sessionId }), 'base64'),
+          });
+          return;
+        }
+        expect(method).toBe(`machine-session:${RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE}`);
+        expect(decrypted).toEqual({ spawnNonce: submittedNonce });
+        cb?.({
+          ok: true,
+          result: encodeBase64Rpc(encrypt(rpcSecret, 'legacy', { status: 'success', sessionId }), 'base64'),
+        });
+      },
+    });
+    const startSocket = createApiSessionSocketStub({
+      emit: (event: string, args: unknown[]) => {
+        const [data, cb] = args as [any, ((value: unknown) => void) | undefined];
+        if (event !== SOCKET_RPC_EVENTS.CALL) return;
+        expect(data.method).toBe(`${sessionId}:execution.run.start`);
         expect(data.params).toMatchObject({
           intent: 'review',
           backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
         });
-        cb?.({ ok: true, result: { runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' } });
+        const resultPayload = { runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' };
+        cb?.({ ok: true, result: resultPayload });
       },
     });
-    bindApiSessionSocketMock(mockIo, socket);
+    bindApiSessionSocketSequenceMock(mockIo, [userSocket, userSocket, startSocket]);
   });
 
   afterEach(async () => {

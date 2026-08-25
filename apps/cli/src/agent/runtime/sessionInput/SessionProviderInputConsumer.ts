@@ -522,6 +522,10 @@ async function waitForNextInput<Mode, Message>(
     if (opts.abortSignal.aborted || !opts.isProviderInputAdmissionOpen()) {
       return null;
     }
+    await callMetadataUpdate(opts.onMetadataUpdate, opts.abortSignal);
+    if (opts.abortSignal.aborted || !opts.isProviderInputAdmissionOpen()) {
+      return null;
+    }
     // Arm ordinary wakes before the complete reconcile/materialize pass. A wake at any awaited
     // phase marks this pass dirty and forces a full re-run; it never materializes directly.
     const controller = new AbortController();
@@ -553,6 +557,18 @@ async function waitForNextInput<Mode, Message>(
 
     const materializationRetryAfterMs = await materializePendingMessage(opts);
     if (!opts.isProviderInputAdmissionOpen()) return null;
+    await callMetadataUpdate(opts.onMetadataUpdate, opts.abortSignal);
+    if (opts.abortSignal.aborted || !opts.isProviderInputAdmissionOpen()) return null;
+    if (passDirty) {
+      controller.abort('sessionProviderInputConsumer-materialize-dirty-pass');
+      opts.abortSignal.removeEventListener('abort', onAbort);
+      const dirtyWinner = await wakePromise;
+      if (dirtyWinner.kind === 'meta' && dirtyWinner.ok) {
+        await callMetadataUpdate(opts.onMetadataUpdate, opts.abortSignal);
+      }
+      if (opts.abortSignal.aborted || !opts.isProviderInputAdmissionOpen()) return null;
+      continue;
+    }
 
     const materializedBatch = await collectQueuedBatch(opts.messageQueue, opts.abortSignal);
     if (materializedBatch) {

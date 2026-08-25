@@ -170,6 +170,33 @@ export async function runPermissionModePromptLoop(opts: {
     opts.setCurrentPermissionModeUpdatedAt(updatedAt);
   };
 
+  const syncRuntimeOverridesFromMetadata = async (): Promise<void> => {
+    syncPermissionModeFromMetadata();
+    overrideSync.syncFromMetadata();
+    if (!turnInFlight) {
+      await overrideSync.flushPendingAfterStart();
+    }
+  };
+
+  const releaseMetadataUpdatedListener = (() => {
+    const sessionWithEvents = opts.session as unknown as {
+      on?: (event: 'metadata-updated', handler: () => void) => void;
+      off?: (event: 'metadata-updated', handler: () => void) => void;
+    };
+    if (typeof sessionWithEvents.on !== 'function' || typeof sessionWithEvents.off !== 'function') {
+      return () => {};
+    }
+    const handler = () => {
+      void syncRuntimeOverridesFromMetadata().catch(() => {});
+    };
+    const release = () => {
+      sessionWithEvents.off?.('metadata-updated', handler);
+    };
+    sessionWithEvents.on('metadata-updated', handler);
+    opts.getAbortSignal().addEventListener('abort', release, { once: true });
+    return release;
+  })();
+
   const refreshSessionSnapshotBeforeTurnBestEffort = async (): Promise<void> => {
     if (typeof opts.session.refreshSessionSnapshotFromServerBestEffort === 'function') {
       try {
@@ -292,18 +319,17 @@ export async function runPermissionModePromptLoop(opts: {
     // Provider startup can publish metadata after the prompt-boundary refresh, so keep one post-start catch-up.
     await refreshSessionSnapshotBeforeTurnBestEffort();
     if (opts.shouldExit()) return { startedFreshSessionForTurn };
-    syncPermissionModeFromMetadata();
-    overrideSync.syncFromMetadata();
-    await overrideSync.flushPendingAfterStart();
+    await syncRuntimeOverridesFromMetadata();
     if (opts.shouldExit()) return { startedFreshSessionForTurn };
     await opts.runtime.drainPendingAfterStartOrLoad?.();
     return { startedFreshSessionForTurn };
   };
 
+  try {
   if (opts.startRuntimeBeforeFirstPrompt === true && !wasStarted) {
     await ensureFreshSessionSnapshotBeforeTurnBestEffort();
     if (opts.shouldExit()) return;
-    overrideSync.syncFromMetadata();
+    await syncRuntimeOverridesFromMetadata();
     const eagerStart = await ensureRuntimeStarted();
     if (opts.shouldExit()) return;
     pendingFreshSessionSystemPrompt = eagerStart.startedFreshSessionForTurn;
@@ -314,6 +340,8 @@ export async function runPermissionModePromptLoop(opts: {
     pending = null;
 
     if (!message) {
+      await syncRuntimeOverridesFromMetadata();
+      if (opts.shouldExit()) return;
       const next = await waitForNextPermissionModeMessage({
         messageQueue: opts.messageQueue,
         abortSignal: opts.getAbortSignal(),
@@ -321,11 +349,7 @@ export async function runPermissionModePromptLoop(opts: {
         inputConsumer: opts.inputConsumer,
         onMetadataUpdate: async () => {
           await refreshSessionSnapshotBeforeTurnBestEffort();
-          syncPermissionModeFromMetadata();
-          overrideSync.syncFromMetadata();
-          if (!turnInFlight) {
-            await overrideSync.flushPendingAfterStart();
-          }
+          await syncRuntimeOverridesFromMetadata();
         },
       });
       if (!next) continue;
@@ -371,9 +395,7 @@ export async function runPermissionModePromptLoop(opts: {
 
     currentModeHash = message.hash;
     await ensureFreshSessionSnapshotBeforeTurnBestEffort();
-    syncPermissionModeFromMetadata();
-    overrideSync.syncFromMetadata();
-    await overrideSync.flushPendingAfterStart();
+    await syncRuntimeOverridesFromMetadata();
     opts.messageBuffer.addMessage(message.message.text, 'user');
 
     const special = parseSpecialCommand(message.message.text);
@@ -575,12 +597,15 @@ export async function runPermissionModePromptLoop(opts: {
         }
       }
       // Metadata updates can arrive while we're mid-turn.
-      overrideSync.syncFromMetadata();
+      await syncRuntimeOverridesFromMetadata();
       opts.setThinking(false);
       opts.keepAlive();
       if (shouldSendReady && !opts.shouldExit()) {
         opts.sendReady(readyTurnContext);
       }
     }
+  }
+  } finally {
+    releaseMetadataUpdatedListener();
   }
 }

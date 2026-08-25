@@ -3274,6 +3274,8 @@ export class ApiSessionClient extends EventEmitter {
 
     waitForPendingEligibilityUpdate(abortSignal?: AbortSignal): Promise<boolean> {
         if (abortSignal?.aborted) return Promise.resolve(false);
+        const startMetadataVersion = this.metadataVersion;
+        const startAgentStateVersion = this.agentStateVersion;
         const startPendingWakeSeq = this.pendingWakeSeq;
         return new Promise((resolve) => {
             let cleanedUp = false;
@@ -3282,6 +3284,7 @@ export class ApiSessionClient extends EventEmitter {
                 resolve(value);
             };
             const onUpdate = () => finish(true);
+            const onMetadataUpdate = () => finish(true);
             const onAbort = () => finish(false);
             let connectConvergenceStarted = false;
             const onConnect = () => {
@@ -3297,12 +3300,14 @@ export class ApiSessionClient extends EventEmitter {
                 if (cleanedUp) return;
                 cleanedUp = true;
                 this.off('pending-eligibility-updated', onUpdate);
+                this.off('metadata-updated', onMetadataUpdate);
                 abortSignal?.removeEventListener('abort', onAbort);
                 this.userSocket.off('connect', onConnect);
                 this.userSocket.off('disconnect', onDisconnect);
                 this.maybeScheduleUserSocketDisconnect();
             };
             this.on('pending-eligibility-updated', onUpdate);
+            this.on('metadata-updated', onMetadataUpdate);
             abortSignal?.addEventListener('abort', onAbort, { once: true });
             this.userSocket.on('connect', onConnect);
             this.userSocket.on('disconnect', onDisconnect);
@@ -3314,6 +3319,11 @@ export class ApiSessionClient extends EventEmitter {
                 && this.userSocketSettingsConvergedEpoch !== this.userSocketSettingsConnectionEpoch
             ) {
                 onConnect();
+            } else if (
+                this.metadataVersion !== startMetadataVersion
+                || this.agentStateVersion !== startAgentStateVersion
+            ) {
+                onMetadataUpdate();
             } else if (this.pendingWakeSeq !== startPendingWakeSeq) {
                 onUpdate();
             }
@@ -5362,6 +5372,7 @@ export class ApiSessionClient extends EventEmitter {
                 },
                 handler,
             });
+            this.publishPendingEligibilityWake();
         });
     }
 
@@ -5370,7 +5381,7 @@ export class ApiSessionClient extends EventEmitter {
     ): Promise<TResult> {
         return this.metadataLock.inLock(async () => {
             await this.waitForSessionSocketOnlineForAckWrite('update-metadata');
-            return await updateSessionMetadataWithAckResult({
+            const result = await updateSessionMetadataWithAckResult({
                 socket: this.socket as any,
                 sessionId: this.sessionId,
                 sessionEncryptionMode: this.sessionEncryptionMode,
@@ -5385,6 +5396,8 @@ export class ApiSessionClient extends EventEmitter {
                 },
                 handler,
             });
+            this.publishPendingEligibilityWake();
+            return result;
         });
     }
 
