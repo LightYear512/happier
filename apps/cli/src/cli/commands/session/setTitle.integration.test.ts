@@ -4,6 +4,7 @@ import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
+import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 
 const { mockIo } = vi.hoisted(() => ({
   mockIo: vi.fn(),
@@ -25,6 +26,7 @@ describe('happier session set-title (integration)', () => {
   const sessionId = 'sess_integration_set_title_123';
 
   beforeEach(async () => {
+    resetInMemoryAccountSettingsContextForTests();
     happyHomeDir = await createTempDir('happier-cli-session-set-title-');
     requireApprovalForCliSurface = false;
     allowMetadataUpdate = true;
@@ -163,6 +165,7 @@ describe('happier session set-title (integration)', () => {
 
     const { reloadConfiguration } = await import('@/configuration');
     reloadConfiguration();
+    resetInMemoryAccountSettingsContextForTests();
   });
 
   it('updates session metadata title via update-metadata socket event', async () => {
@@ -191,6 +194,14 @@ describe('happier session set-title (integration)', () => {
   it('returns approval_request_created when the CLI surface requires approval', async () => {
     requireApprovalForCliSurface = true;
     allowMetadataUpdate = false;
+    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
+      v: 1,
+      actions: {
+        'session.title.set': {
+          approvalRequiredSurfaces: ['cli'],
+        },
+      },
+    });
 
     const { handleSessionCommand } = await import('./index');
 

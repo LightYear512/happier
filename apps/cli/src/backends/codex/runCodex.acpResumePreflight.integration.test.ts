@@ -2651,7 +2651,7 @@ describe('runCodex CodexACP resume behavior', () => {
 
     expect(steerPrompt).toHaveBeenCalledTimes(1);
     expect(steerPrompt).toHaveBeenNthCalledWith(1, 'STEER REPLAY SEED\n\nsteer after replay seed', expect.objectContaining({
-      localIds: ['local-steer-undeliverable'],
+      localId: 'local-steer-undeliverable',
       userMessageSeq: null,
     }));
     expect(appServerRuntime.sendPrompt).not.toHaveBeenCalled();
@@ -2807,8 +2807,8 @@ describe('runCodex CodexACP resume behavior', () => {
       throw outcome.error;
     }
     expect(appServerRuntime.sendPrompt).toHaveBeenCalledWith('first prompt', {
+      appliedModelId: null,
       metadata: undefined,
-      localId: null,
       userMessageSeq: null,
     });
     const runtimeParams = createCodexAppServerRuntimeSpy.mock.calls[0]?.[0] as
@@ -2937,6 +2937,7 @@ describe('runCodex CodexACP resume behavior', () => {
       throw outcome.error;
     }
     expect(appServerRuntime.sendPrompt).toHaveBeenCalledWith('provider-owned pending prompt', {
+      appliedModelId: null,
       metadata: undefined,
       localId: 'pending-local-provider-claim',
       userMessageSeq: null,
@@ -3241,8 +3242,8 @@ describe('runCodex CodexACP resume behavior', () => {
     }
 
     expect(sendPrompt).toHaveBeenCalledWith(expect.any(String), {
+      appliedModelId: null,
       metadata: structuredInputMetadata,
-      localId: null,
       userMessageSeq: null,
     });
   });
@@ -3309,6 +3310,7 @@ describe('runCodex CodexACP resume behavior', () => {
     }
 
     expect(sendPrompt).toHaveBeenCalledWith(expect.any(String), {
+      appliedModelId: null,
       metadata: { source: 'test' },
       localId: 'local-user-message-seq',
       userMessageSeq: 77,
@@ -3484,9 +3486,13 @@ describe('runCodex CodexACP resume behavior', () => {
     let undeliverableCallback:
       ((prompts: ReadonlyArray<Readonly<{ localIds?: readonly string[] | null; text: string; userMessageSeq: number | null }>>) => void)
       | null = null;
-    const sendPrompt = vi.fn(async (_prompt: string, options?: { localIds?: readonly string[] | null; userMessageSeq?: number | null }) => {
+    const sendPrompt = vi.fn(async (_prompt: string, options?: { localId?: string | null; localIds?: readonly string[] | null; userMessageSeq?: number | null }) => {
       const userMessageSeq = options?.userMessageSeq ?? null;
-      undeliverableCallback?.([{ localIds: options?.localIds ?? null, text: 'not-used-for-replay', userMessageSeq }]);
+      undeliverableCallback?.([{
+        localIds: options?.localIds ?? (typeof options?.localId === 'string' ? [options.localId] : null),
+        text: 'not-used-for-replay',
+        userMessageSeq,
+      }]);
     });
     createCodexAppServerRuntimeSpy.mockImplementationOnce(() => ({
       getSessionId: () => 'thread-app-server',
@@ -3572,10 +3578,11 @@ describe('runCodex CodexACP resume behavior', () => {
       ((prompts: ReadonlyArray<Readonly<{ localIds?: readonly string[] | null; text: string; userMessageSeq: number | null }>>) => void)
       | null = null;
     const sendPrompt = vi.fn(async (_prompt: string, options?: {
+      localId?: string | null;
       localIds?: readonly string[] | null;
       userMessageSeq?: number | null;
     }) => {
-      const localIds = options?.localIds ?? null;
+      const localIds = options?.localIds ?? (typeof options?.localId === 'string' ? [options.localId] : null);
       const userMessageSeq = options?.userMessageSeq ?? null;
       acceptedCallback?.({
         localIds,
@@ -3661,11 +3668,12 @@ describe('runCodex CodexACP resume behavior', () => {
       ((prompts: ReadonlyArray<Readonly<{ localIds?: readonly string[] | null; text: string; userMessageSeq: number | null }>>) => void)
       | null = null;
     const sendPrompt = vi.fn(async (_prompt: string, options?: {
+      localId?: string | null;
       localIds?: readonly string[] | null;
       userMessageSeq?: number | null;
     }) => {
       undeliverableCallback?.([{
-        localIds: options?.localIds ?? null,
+        localIds: options?.localIds ?? (typeof options?.localId === 'string' ? [options.localId] : null),
         text: 'not-used-for-pending-block',
         userMessageSeq: options?.userMessageSeq ?? null,
       }]);
@@ -3903,9 +3911,13 @@ describe('runCodex CodexACP resume behavior', () => {
     let undeliverableCallback:
       ((prompts: ReadonlyArray<Readonly<{ localIds?: readonly string[] | null; text: string; userMessageSeq: number | null }>>) => void)
       | null = null;
-    const sendPrompt = vi.fn(async (_prompt: string, options?: { localIds?: readonly string[] | null; userMessageSeq?: number | null }) => {
+    const sendPrompt = vi.fn(async (_prompt: string, options?: { localId?: string | null; localIds?: readonly string[] | null; userMessageSeq?: number | null }) => {
       const userMessageSeq = options?.userMessageSeq ?? null;
-      undeliverableCallback?.([{ localIds: options?.localIds ?? null, text: 'not-used-for-replay', userMessageSeq }]);
+      undeliverableCallback?.([{
+        localIds: options?.localIds ?? (typeof options?.localId === 'string' ? [options.localId] : null),
+        text: 'not-used-for-replay',
+        userMessageSeq,
+      }]);
     });
     createCodexAppServerRuntimeSpy.mockImplementationOnce(() => ({
       getSessionId: () => 'thread-app-server',

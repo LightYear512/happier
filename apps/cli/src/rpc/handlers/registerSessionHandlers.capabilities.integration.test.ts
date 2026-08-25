@@ -21,6 +21,7 @@ import type {
 import { CHECKLIST_IDS, resumeChecklistId } from '@happier-dev/protocol/checklists';
 import { CODEX_ACP_DEP_ID } from '@happier-dev/protocol/installables';
 import { createEncryptedRpcTestClient } from './encryptedRpc.testkit';
+import { reloadConfiguration } from '@/configuration';
 
 function createTestRpcManager(params?: { scopePrefix?: string }) {
     const scopePrefix = params?.scopePrefix ?? 'machine-test';
@@ -47,6 +48,7 @@ function expectCapabilityData(
 describe('registerCommonHandlers capabilities', () => {
     const originalPath = process.env.PATH;
     const originalPathext = process.env.PATHEXT;
+    const originalHappyHomeDir = process.env.HAPPIER_HOME_DIR;
 
     beforeEach(() => {
         if (originalPath === undefined) delete process.env.PATH;
@@ -62,6 +64,10 @@ describe('registerCommonHandlers capabilities', () => {
 
         if (originalPathext === undefined) delete process.env.PATHEXT;
         else process.env.PATHEXT = originalPathext;
+
+        if (originalHappyHomeDir === undefined) delete process.env.HAPPIER_HOME_DIR;
+        else process.env.HAPPIER_HOME_DIR = originalHappyHomeDir;
+        reloadConfiguration();
     });
 
     it('describes supported capabilities and checklists', async () => {
@@ -332,6 +338,7 @@ describe('registerCommonHandlers capabilities', () => {
 
     it('supports per-capability params (includeLoginStatus) and skips latest-version checks when onlyIfInstalled=true and not installed', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'happier-cli-capabilities-login-'));
+        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-cli-capabilities-home-'));
         try {
             const isWindows = process.platform === 'win32';
             const fakeCodex = join(dir, isWindows ? 'codex.cmd' : 'codex');
@@ -348,6 +355,8 @@ describe('registerCommonHandlers capabilities', () => {
                 process.env.PATHEXT = '.CMD';
             }
             process.env.PATH = `${dir}`;
+            process.env.HAPPIER_HOME_DIR = happyHomeDir;
+            reloadConfiguration();
 
             const { call } = createTestRpcManager();
             const result = await call<CapabilitiesDetectResponse, CapabilitiesDetectRequest>(RPC_METHODS.CAPABILITIES_DETECT, {
@@ -365,6 +374,7 @@ describe('registerCommonHandlers capabilities', () => {
             expect(depData.latestVersionCheck).toBeUndefined();
         } finally {
             await rm(dir, { recursive: true, force: true });
+            await rm(happyHomeDir, { recursive: true, force: true });
         }
     });
 
