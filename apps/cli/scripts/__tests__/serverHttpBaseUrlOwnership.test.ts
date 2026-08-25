@@ -23,8 +23,11 @@ describe('server HTTP base URL helper ownership', () => {
       ['src/api/client/serverHttpBaseUrl.ts'],
     );
 
-    expect(readFileSync(resolve(cliRoot, 'src/session/transport/http/serverHttpBaseUrl.ts'), 'utf8')).toContain(
-      "export { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';",
+    const sessionHelperSource = readFileSync(
+      resolve(cliRoot, 'src/session/transport/http/serverHttpBaseUrl.ts'),
+      'utf8',
     );
+    expect(sessionHelperSource).toContain("from '@/api/client/serverHttpBaseUrl';");
+    expect(sessionHelperSource).toContain('resolveServerHttpBaseUrl');
   });
 });

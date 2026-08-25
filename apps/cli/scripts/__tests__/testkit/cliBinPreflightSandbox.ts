@@ -44,6 +44,26 @@ export function copyCliBinRuntimeFiles(options: {
   for (const file of runtimeScriptFiles) {
     cpSync(resolve(runtimeScriptsDir, file), join(targetScriptsDir, file));
   }
+
+  writeNodeModuleStub({
+    packageDir: resolve(options.binDir, '..', 'node_modules', '@happier-dev', 'cli-common'),
+    manifest: {
+      name: '@happier-dev/cli-common',
+      version: '0.0.0',
+      type: 'module',
+      exports: {
+        './workspaceBundleLock': './workspaceBundleLock.mjs',
+      },
+    },
+    files: {
+      'workspaceBundleLock.mjs': [
+        "export function resolveWorkspaceBundleLockPath(repoRoot) { return `${repoRoot}/.project/tmp/cli-dist-build.lock`; }",
+        'export async function withWorkspaceBundleLock(fn) { return await fn(); }',
+        'export function withWorkspaceBundleLockSync(fn) { return fn(); }',
+        '',
+      ].join('\n'),
+    },
+  });
 }
 
 export function runHappierBin(options: {

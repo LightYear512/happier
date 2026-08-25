@@ -60,7 +60,10 @@ describe('packTarball (npmExecpath)', () => {
       existsSync: (targetPath) => {
         const normalized = String(targetPath).replaceAll('\\', '/').toLowerCase();
         const normalizedNpmCli = npmCliPath.replaceAll('\\', '/').toLowerCase();
-        return normalized === normalizedNpmCli || normalized.endsWith(`/${tarballName}`) || normalized.endsWith('/dist');
+        return normalized === normalizedNpmCli
+          || normalized.endsWith(`/${tarballName}`)
+          || normalized.endsWith('/dist')
+          || normalized.includes('/package-dist.__sync_tmp__.');
       },
       ...fakePackageDistFs,
       env: {},
@@ -90,7 +93,9 @@ describe('packTarball (npmExecpath)', () => {
       spawnSync: spawn,
       existsSync: (targetPath) => {
         const normalized = String(targetPath).replaceAll('\\', '/').toLowerCase();
-        return normalized.endsWith(`/${tarballName}`) || normalized.endsWith('/dist');
+        return normalized.endsWith(`/${tarballName}`)
+          || normalized.endsWith('/dist')
+          || normalized.includes('/package-dist.__sync_tmp__.');
       },
       ...fakePackageDistFs,
       env: {},
@@ -123,7 +128,10 @@ describe('packTarball (npmExecpath)', () => {
       existsSync: (targetPath) => {
         const normalized = String(targetPath).replaceAll('\\', '/').toLowerCase();
         const normalizedNpmCli = npmCliPath.replaceAll('\\', '/').toLowerCase();
-        return normalized === normalizedNpmCli || normalized.endsWith(`/${tarballName}`) || normalized.endsWith('/dist');
+        return normalized === normalizedNpmCli
+          || normalized.endsWith(`/${tarballName}`)
+          || normalized.endsWith('/dist')
+          || normalized.includes('/package-dist.__sync_tmp__.');
       },
       ...fakePackageDistFs,
       env: {},
