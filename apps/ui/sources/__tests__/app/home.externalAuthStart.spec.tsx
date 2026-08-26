@@ -182,6 +182,9 @@ function mockGithubAuthFeatures(action: 'provision' | 'login', mode: 'keyed' | '
                         },
                     ],
                 },
+                server: {
+                    retention: null,
+                },
             },
         },
     });

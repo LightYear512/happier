@@ -12,7 +12,10 @@ vi.mock('@/components/ui/theme/haptics', () => ({
 vi.mock('@/text', () => createTextModuleMock());
 
 vi.mock('@/agents/catalog/catalog', () => ({
-    getAgentCore: () => ({ displayNameKey: 'agents.codex' }),
+    getAgentCore: () => ({
+        displayNameKey: 'agents.codex',
+        ui: { agentPickerIconName: 'terminal-outline' },
+    }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
             supportsExactContextUsageBadge: agentId !== 'codex' && agentId !== 'gemini',

@@ -260,8 +260,12 @@ import { useSessionScreenIsFocused } from './useSessionScreenIsFocused';
 import { resolveMobileWorkspaceExperienceToggleActionId } from '@/components/workspaceCockpit/mobileWorkspaceExperience';
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
 import { useOpenSessionTarget } from '@/components/sessions/panes/open/useOpenSessionTarget';
-import type { SessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import {
+    createLocalServicePreviewDetailsTabResolver,
+    type SessionPaneUrlState,
+} from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { useSessionPaneUrlSync } from '@/components/sessions/panes/url/useSessionPaneUrlSync';
+import { listLocalServicePreviewPayloadsFromSources } from '@/components/sessions/devPreview/resolveLatestLocalServicePreviewPayload';
 import { SessionResumeProvider } from '@/components/sessions/model/SessionResumeContext';
 import { useSessionResumeRequestListener } from '@/components/sessions/model/sessionResumeRequests';
 import { resolveSessionResumeMachineTarget } from './sessionResumeMachineTarget';
@@ -2406,12 +2410,32 @@ function SessionViewLoaded({
         };
     }, [sessionId, usageLimitRecoveryResetAtMs]);
 
+    const shouldResolveLocalServicePreviewDetails = paneUrlState?.details?.kind === 'localServicePreview';
+    const { messages: localServicePreviewMessages } = useSessionMessages(sessionId, {
+        enabled: shouldResolveLocalServicePreviewDetails,
+    });
+    const localServicePreviewDetailsTabResolver = React.useMemo(() => {
+        const previews = listLocalServicePreviewPayloadsFromSources({
+            metadata: session.metadata ?? null,
+            messages: shouldResolveLocalServicePreviewDetails ? localServicePreviewMessages : [],
+        });
+        return createLocalServicePreviewDetailsTabResolver(previews);
+    }, [
+        localServicePreviewMessages,
+        session.metadata,
+        shouldResolveLocalServicePreviewDetails,
+    ]);
+    const paneUrlSyncEnabled = paneUrlSyncRouteActive
+        && multiPaneEnabled
+        && (Platform.OS === 'web' || paneUrlState !== null);
+
     useSessionPaneUrlSync({
-        enabled: paneUrlSyncRouteActive && multiPaneEnabled && Platform.OS === 'web',
+        enabled: paneUrlSyncEnabled,
         scopeKey: paneScopeId,
         scopeState: pane.scopeState,
         urlState: paneUrlState,
         pane,
+        resolveLocalServicePreviewDetailsTab: localServicePreviewDetailsTabResolver,
         setParams: typeof (router as any)?.setParams === 'function' ? (router as any).setParams.bind(router) : null,
     });
 

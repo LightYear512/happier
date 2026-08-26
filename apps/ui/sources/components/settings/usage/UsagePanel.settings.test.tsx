@@ -31,6 +31,9 @@ const usageApiState: UsageApiState = {
         costByModel: {},
     })),
 };
+const dateTimeFormatSpy = vi.hoisted(() => vi.fn((_locale: unknown, _options: unknown) => ({
+    format: () => '2 janv.',
+})));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -68,6 +71,10 @@ vi.mock('@/sync/api/account/apiUsage', () => ({
     calculateTotals: (...args: unknown[]) => usageApiState.calculateTotals(...args),
 }));
 
+vi.mock('@/utils/datetime/cachedIntlFormatters', () => ({
+    getCachedIntlDateTimeFormat: (...args: unknown[]) => dateTimeFormatSpy(...args),
+}));
+
 function findPressableByText(
     screen: Parameters<typeof renderScreen>[0] extends never ? never : Awaited<ReturnType<typeof renderScreen>>,
     text: string,
@@ -98,6 +105,10 @@ describe('UsagePanel settings behavior', () => {
             tokensByModel: {},
             costByModel: {},
         });
+        dateTimeFormatSpy.mockClear();
+        dateTimeFormatSpy.mockImplementation((_locale: unknown, _options: unknown) => ({
+            format: () => '2 janv.',
+        }));
         getStorage().setState((state) => ({
             settings: {
                 ...(state.settings ?? {}),
@@ -152,13 +163,11 @@ describe('UsagePanel settings behavior', () => {
                 },
             ],
         });
-        const dateSpy = vi.spyOn(Date.prototype, 'toLocaleDateString').mockReturnValue('2 janv.');
-
         const { UsagePanel } = await import('./UsagePanel');
         await renderScreen(<UsagePanel />);
         await flushHookEffects();
 
-        expect(dateSpy).toHaveBeenCalledWith('fr-CH', { month: 'short', day: 'numeric' });
+        expect(dateTimeFormatSpy).toHaveBeenCalledWith('fr-CH', { month: 'short', day: 'numeric' });
     });
 
     it('uses theme token colors for the active period control', async () => {

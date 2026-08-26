@@ -7,30 +7,26 @@ import { renderScreen } from '@/dev/testkit';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const probeResultState = {
-  value: { availableModels: [{ id: 'm1', name: 'Model 1' }], supportsFreeform: false } as {
-    availableModels: Array<{ id: string; name: string }>;
-    supportsFreeform: boolean;
+const preflightModelsTestState = vi.hoisted(() => ({
+  probeResult: {
+    value: { availableModels: [{ id: 'm1', name: 'Model 1' }], supportsFreeform: false } as {
+      availableModels: Array<{ id: string; name: string }>;
+      supportsFreeform: boolean;
+    },
   },
-};
-
-const agentModelCapabilitiesState = {
-  supportsSelection: true,
-  supportsFreeform: false,
-};
-
-const machineCapabilitiesInvokeMock = vi.fn(async (_machineId: any, _request: any, _options: any) => ({
-  supported: true as const,
-  response: {
-    ok: true as const,
-    result: probeResultState.value,
+  agentModelCapabilities: {
+    supportsSelection: true,
+    supportsFreeform: false,
   },
+  machineCapabilitiesInvokeMock: vi.fn(),
 }));
+
+const { agentModelCapabilities: agentModelCapabilitiesState, machineCapabilitiesInvokeMock, probeResult: probeResultState } = preflightModelsTestState;
 
 type ProbeResponse = Awaited<ReturnType<typeof machineCapabilitiesInvokeMock>>;
 
 vi.mock('@/sync/ops/capabilities', () => ({
-  machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
+  machineCapabilitiesInvoke: preflightModelsTestState.machineCapabilitiesInvokeMock,
 }));
 
 vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
@@ -39,10 +35,10 @@ vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
     ...actual,
     getAgentCore: () => ({
       model: {
-        supportsSelection: agentModelCapabilitiesState.supportsSelection,
+        supportsSelection: preflightModelsTestState.agentModelCapabilities.supportsSelection,
         allowedModes: [],
         defaultMode: 'default',
-        supportsFreeform: agentModelCapabilitiesState.supportsFreeform,
+        supportsFreeform: preflightModelsTestState.agentModelCapabilities.supportsFreeform,
       }
     }),
   };
@@ -56,6 +52,14 @@ describe('useNewSessionPreflightModelsState (cache)', () => {
     };
     agentModelCapabilitiesState.supportsSelection = true;
     agentModelCapabilitiesState.supportsFreeform = false;
+    machineCapabilitiesInvokeMock.mockReset();
+    machineCapabilitiesInvokeMock.mockImplementation(async () => ({
+      supported: true as const,
+      response: {
+        ok: true as const,
+        result: probeResultState.value,
+      },
+    }));
   });
 
   it('does not re-probe when a fresh result is cached', async () => {

@@ -64,10 +64,15 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
 
 const transcriptViewSpy = vi.fn();
 
-vi.mock('@/components/sessions/panes/details/SessionTranscriptDetailsView', () => ({
-    SessionTranscriptDetailsView: (props: any) => {
+vi.mock('./SessionDetailsPanelDetailViews', () => ({
+    SessionCommitDetailsViewForPanel: (props: any) => React.createElement('SessionCommitDetailsViewForPanel', props),
+    SessionFileDetailsViewForPanel: (props: any) => React.createElement('SessionFileDetailsViewForPanel', props),
+    SessionScmReviewDetailsViewForPanel: (props: any) => React.createElement('SessionScmReviewDetailsViewForPanel', props),
+    SessionScmStashDetailsViewForPanel: (props: any) => React.createElement('SessionScmStashDetailsViewForPanel', props),
+    SessionSubagentDetailsViewForPanel: (props: any) => React.createElement('SessionSubagentDetailsViewForPanel', props),
+    SessionTranscriptDetailsViewForPanel: (props: any) => {
         transcriptViewSpy(props);
-        return React.createElement('SessionTranscriptDetailsView');
+        return React.createElement('SessionTranscriptDetailsViewForPanel');
     },
 }));
 

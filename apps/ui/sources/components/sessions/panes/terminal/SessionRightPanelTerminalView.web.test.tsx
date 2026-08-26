@@ -25,8 +25,23 @@ let activeScreen: RenderScreenResult | null = null;
 let sessionState: any = { metadata: { machineId: 'machine-1', path: '/tmp' } };
 let projectState: any = null;
 
+const storage = Object.assign(
+    (selector?: (state: any) => unknown) => {
+        const state = storageGetStateSpy();
+        return typeof selector === 'function' ? selector(state) : state;
+    },
+    {
+        getState: () => storageGetStateSpy(),
+        getInitialState: () => storageGetStateSpy(),
+        setState: vi.fn(),
+        subscribe: vi.fn(() => () => {}),
+        destroy: vi.fn(),
+    },
+);
+
 installSessionDetailsPanelCommonModuleMocks({
     storage: async () => ({
+        getStorage: () => storage,
         useLocalSetting: (key: string) => {
             if (key === 'uiFontScale') return 1;
             if (key === 'embeddedTerminalDockLocation') return 'sidebar';
@@ -40,9 +55,7 @@ installSessionDetailsPanelCommonModuleMocks({
         useAllSessions: () => Object.values(storageGetStateSpy()?.sessions ?? {}),
         useProjectForSession: () => projectState,
         useSession: () => sessionState,
-        storage: {
-            getState: () => storageGetStateSpy(),
-        },
+        storage,
     }),
 });
 
@@ -158,26 +171,10 @@ vi.mock('@/sync/ops/machineTerminal', () => ({
     machineTerminalResize: (...args: any[]) => machineTerminalResizeSpy(...args),
 }));
 
-vi.mock('@/sync/domains/state/storageStore', () => {
-    const storage = Object.assign(
-        (selector?: (state: any) => unknown) => {
-            const state = storageGetStateSpy();
-            return typeof selector === 'function' ? selector(state) : state;
-        },
-        {
-            getState: () => storageGetStateSpy(),
-            getInitialState: () => storageGetStateSpy(),
-            setState: vi.fn(),
-            subscribe: vi.fn(() => () => {}),
-            destroy: vi.fn(),
-        },
-    );
-
-    return {
-        getStorage: () => storage,
-        storage,
-    };
-});
+vi.mock('@/sync/domains/state/storageStore', () => ({
+    getStorage: () => storage,
+    storage,
+}));
 
 vi.mock('@/utils/ui/clipboard', () => ({
     setClipboardStringSafe: vi.fn(),

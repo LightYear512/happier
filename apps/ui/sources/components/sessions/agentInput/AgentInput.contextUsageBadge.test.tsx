@@ -137,7 +137,11 @@ vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['codex', 'claude', 'opencode', 'gemini'],
     DEFAULT_AGENT_ID: 'codex',
     resolveAgentIdFromFlavor: () => null,
-    getAgentCore: () => ({ displayNameKey: 'agents.codex', toolRendering: { hideUnknownToolsByDefault: false } }),
+    getAgentCore: () => ({
+        displayNameKey: 'agents.codex',
+        ui: { agentPickerIconName: 'terminal-outline' },
+        toolRendering: { hideUnknownToolsByDefault: false },
+    }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
             supportsExactContextUsageBadge: agentId !== 'codex' && agentId !== 'gemini',
@@ -432,7 +436,7 @@ describe('AgentInput (context usage badge)', () => {
                     outputTokens: 0,
                     cacheCreation: 0,
                     cacheRead: 0,
-                    contextSize: 38_691,
+                    contextSize: 198_691,
                     contextWindowTokens: 200_000,
                 }}
                 alwaysShowContextSize={true}
@@ -443,7 +447,7 @@ describe('AgentInput (context usage badge)', () => {
         expect(badge).toBeTruthy();
         expect(screen.findByTestId('agent-input-context-usage-ring')).toBeTruthy();
         expect(screen.findByTestId('agent-input-context-usage-value')?.props.children).toBe('99');
-        expect(String(badge?.props.accessibilityLabel ?? '')).toContain('198k/200k');
+        expect(String(badge?.props.accessibilityLabel ?? '')).toContain('199k/200k');
 
         act(() => screen.tree.unmount());
     });

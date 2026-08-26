@@ -78,6 +78,7 @@ function notifyProfileStateChanged() {
 
 function createProfileSnapshot(groups: unknown[] = []) {
     return {
+        connectedServiceCredentialRevisionsV1: [],
         connectedServicesV2: [
             {
                 serviceId: 'openai-codex',
@@ -198,10 +199,10 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 }));
 
 vi.mock('@/sync/store/hooks', async () => {
-    const actual = await vi.importActual<typeof import('@/sync/store/hooks')>('@/sync/store/hooks');
+    const actual = await vi.importActual('@/sync/store/hooks');
     const React = await import('react');
     return {
-        ...actual,
+        ...(actual as Record<string, unknown>),
         useProfile: () => React.useSyncExternalStore(
             (listener) => {
                 profileState.listeners.add(listener);
@@ -250,9 +251,9 @@ vi.mock('@/sync/api/account/apiConnectedServicesQuotasV3', () => ({
 
 vi.mock('@/components/ui/lists/ItemRowActions', () => {
     const React = require('react');
-    type ItemRowActionsMockProps = React.PropsWithChildren<Record<string, unknown>>;
     return {
-        ItemRowActions: (props: ItemRowActionsMockProps) => React.createElement('ItemRowActions', props, props.children),
+        ItemRowActions: (props: { children?: React.ReactNode } & Record<string, unknown>) =>
+            React.createElement('ItemRowActions', props, props.children),
     };
 });
 

@@ -38,6 +38,7 @@ const featureEnabledState = vi.hoisted(() => ({
 }));
 const chooseSubmitModeState = vi.hoisted(() => ({
     mode: 'agent_queue',
+    pendingSupportState: 'unsupported' as 'supported' | 'unsupported',
 }));
 const reviewCommentDraftsState = vi.hoisted(() => ({
     current: [] as any[],
@@ -204,6 +205,10 @@ vi.mock('@/components/sessions/model/resolveSessionMachineReachability', () => (
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => ({ machineReachable: true, machineOnline: true }),
 }));
+vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
+    useSessionMachineTarget: () => ({ machineId: 'm1', basePath: '/tmp' }),
+    useSessionMachineControlTarget: () => ({ machineId: 'm1', basePath: '/tmp' }),
+}));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({ serverId: 'server-1' }),
@@ -360,6 +365,7 @@ installSessionShellCommonModuleMocks({
         return createStorageModuleStub({
             storage: createStorageStoreMock({
                     sessions: { s1: sessionState.session },
+                    sessionPending: {},
                     machines: {
                         m1: {
                             id: 'm1',
@@ -381,7 +387,10 @@ installSessionShellCommonModuleMocks({
                         },
                     },
                     sessionListViewDataByServerId: {},
-                    settings: settingsDefaults,
+                    settings: {
+                        ...settingsDefaults,
+                        sessionMessageSendMode: 'agent_queue',
+                    },
                     deleteWorkspaceReviewCommentDraft: deleteWorkspaceReviewCommentDraftSpy,
             }),
             useSession: () => sessionState.session,
@@ -461,7 +470,12 @@ vi.mock('@/agents/hooks/useResumeCapabilityOptions', () => ({
     useResumeCapabilityOptions: () => ({ resumeCapabilityOptions: { accountSettings: { codexBackendMode: 'acp' } } }),
 }));
 vi.mock('@/agents/runtime/resumeCapabilities', async (importOriginal) => {
-    return await importOriginal<any>();
+    const actual = await importOriginal<any>();
+    return {
+        ...actual,
+        canResumeSessionWithOptions: () => true,
+        canContinueSessionWithFreshSpawn: () => false,
+    };
 });
 vi.mock('@/hooks/server/useMachineCapabilitiesCache', async (importOriginal) => {
     const actual = await importOriginal<any>();
@@ -511,7 +525,7 @@ vi.mock('@/sync/domains/session/control/submitMode', () => ({
         mode: chooseSubmitModeState.mode,
         intent: 'default',
         reason: 'test_decision',
-        pendingSupportState: 'supported',
+        pendingSupportState: chooseSubmitModeState.pendingSupportState,
         ...(chooseSubmitModeState.mode === 'agent_queue'
             ? { directBypassReason: 'selected_direct' }
             : chooseSubmitModeState.mode === 'interrupt'
@@ -521,8 +535,8 @@ vi.mock('@/sync/domains/session/control/submitMode', () => ({
     chooseSubmitMode: () => chooseSubmitModeState.mode,
     chooseForceImmediateSubmitMode: () => chooseSubmitModeState.mode,
     canDirectSubmitUserMessageNow: () => true,
-    getPendingQueueSubmitSupportState: () => 'supported',
-    isPendingQueueSubmitKnownUnsupported: () => false,
+    getPendingQueueSubmitSupportState: () => chooseSubmitModeState.pendingSupportState,
+    isPendingQueueSubmitKnownUnsupported: () => chooseSubmitModeState.pendingSupportState === 'unsupported',
 }));
 vi.mock('@/sync/domains/session/control/localControlSwitch', () => ({
     shouldRenderChatTimelineForSession: () => true,
@@ -546,6 +560,7 @@ const { SessionView } = await import('./SessionView');
 describe('SessionView (attachments.uploads resumable send)', () => {
     beforeEach(() => {
         chooseSubmitModeState.mode = 'agent_queue';
+        chooseSubmitModeState.pendingSupportState = 'unsupported';
         enqueuePendingMessageSpy.mockClear();
         updatePendingMessageSpy.mockClear();
         chatListPropsSpy.mockClear();
@@ -664,7 +679,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             ]));
 
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             expect(pendingFireAndForget.length).toBe(1);
@@ -672,6 +687,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
 
             expect(uploadSpy).not.toHaveBeenCalled();
             expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+            expect(enqueuePendingMessageSpy).not.toHaveBeenCalled();
 
             const [sentSessionId, sentText, sentDisplayText, sentMetaOverrides] = sendMessageSpy.mock.calls[0] ?? [];
             expect(sentSessionId).toBe('s1');
@@ -1202,6 +1218,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         expect(getInactiveSessionUiState({ isSessionActive: true, isResumable: true, isMachineOnline: true })).toMatchObject({ shouldShowInput: true });
 
         chooseSubmitModeState.mode = 'server_pending';
+        chooseSubmitModeState.pendingSupportState = 'supported';
         featureEnabledState.reviewComments = false;
         sendMessageSpy.mockClear();
         enqueuePendingMessageSpy.mockClear();
@@ -1340,7 +1357,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
 
             agentInput = findTestInstanceByTypeWithProps(renderedTree, 'AgentInput' as any, {}) as any;
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             expect(pendingFireAndForget.length).toBe(1);
@@ -1430,7 +1447,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
 
             agentInput = findTestInstanceByTypeWithProps(renderedTree, 'AgentInput' as any, {}) as any;
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             await act(async () => {
@@ -1521,7 +1538,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
 
             agentInput = findTestInstanceByTypeWithProps(renderedTree, 'AgentInput' as any, {}) as any;
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             expect(pendingFireAndForget.length).toBe(1);
@@ -1620,7 +1637,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
 
             agentInput = findTestInstanceByTypeWithProps(renderedTree, 'AgentInput' as any, {}) as any;
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             expect(pendingFireAndForget.length).toBe(1);
@@ -1709,7 +1726,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             });
 
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             expect(pendingFireAndForget.length).toBe(1);
@@ -1791,7 +1808,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             });
 
             await act(async () => {
-                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                invokeTestInstanceHandler(agentInput, 'onSend', { forceImmediate: true }, 'AgentInput');
             });
 
             expect(pendingFireAndForget.length).toBe(1);

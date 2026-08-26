@@ -375,7 +375,7 @@ describe('NewSessionSimplePanel (modelOptionsOverride)', () => {
                         newSessionSidePadding: 16,
                         newSessionBottomPadding: 8,
                         containerStyle: {},
-                        sessionPrompt: '',
+                        promptStore: createNewSessionPromptStore(''),
                         setSessionPrompt: () => {},
                         handleCreateSession: () => {},
                         canCreate: true,

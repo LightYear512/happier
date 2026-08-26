@@ -34,6 +34,7 @@ installToolShellPresentationCommonModuleMocks({
 
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
     ActivitySpinner: (props: any) => React.createElement('ActivityIndicator', props),
+    iconMatchedSpinnerSize: (size: number) => size,
 }));
 
 describe('ToolStatusIndicator (permission states)', () => {

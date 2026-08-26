@@ -19,7 +19,10 @@ vi.mock('@/text', async () => {
 vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['codex', 'claude', 'opencode', 'gemini'],
     DEFAULT_AGENT_ID: 'codex',
-    getAgentCore: () => ({ displayNameKey: 'agents.codex' }),
+    getAgentCore: () => ({
+        displayNameKey: 'agents.codex',
+        ui: { agentPickerIconName: 'terminal-outline' },
+    }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
             supportsExactContextUsageBadge: agentId !== 'codex' && agentId !== 'gemini',

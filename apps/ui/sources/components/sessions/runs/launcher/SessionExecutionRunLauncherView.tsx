@@ -39,6 +39,7 @@ import { resolveExecutionRunLauncherBackendChoices } from './resolveExecutionRun
 import { buildExecutionRunActionDraftInputForUi } from '@/sync/domains/actions/buildExecutionRunActionDraftInputForUi';
 import { resolveExecutionRunActionDefaultPermissionMode } from '@/sync/domains/actions/resolveExecutionRunActionDefaultPermissionMode';
 import { resolveExecutionRunActionAllowedPermissionModes } from '@/sync/domains/actions/resolveExecutionRunActionAllowedPermissionModes';
+import { normalizeActionInputForProtocol } from '@/sync/domains/actions/normalizeActionInputForProtocol';
 import { ActionInputFields, getValueAtPath, setValueAtTopLevelPatch, type ActionFieldOption } from '@/components/sessions/actions/ActionInputFields';
 
 import {
@@ -410,7 +411,7 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
                 actionId as any,
                 {
                     sessionId: props.sessionId,
-                    ...actionInput,
+                    ...normalizeActionInputForProtocol(actionId, actionInput),
                 },
                 { defaultSessionId: props.sessionId },
             );

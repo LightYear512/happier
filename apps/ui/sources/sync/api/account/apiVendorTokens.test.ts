@@ -4,6 +4,12 @@ import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
 import { connectVendorToken, disconnectVendorToken } from './apiVendorTokens';
 
+const serverFetchSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('@/sync/http/client', () => ({
+    serverFetch: (...args: unknown[]) => serverFetchSpy(...args),
+}));
+
 vi.mock('@/utils/timing/time', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/utils/timing/time')>();
     const immediate = async <T,>(callback: () => Promise<T>): Promise<T> => await callback();
@@ -16,28 +22,19 @@ vi.mock('@/utils/timing/time', async (importOriginal) => {
 
 const credentials: AuthCredentials = { token: 'test', secret: 'secret' };
 
-function stubFetch(responseFactory: () => Promise<unknown>) {
-    vi.stubGlobal(
-        'fetch',
-        vi.fn(async (input: unknown) => {
-            const url = String(input);
-            if (url.endsWith('/health')) {
-                return { ok: true, status: 200, json: async () => ({ ok: true }) };
-            }
-            return await responseFactory();
-        }) as unknown as typeof fetch,
-    );
+function stubServerFetch(responseFactory: () => Promise<unknown>) {
+    serverFetchSpy.mockImplementation(async () => await responseFactory());
 }
 
 describe('apiVendorTokens', () => {
     afterEach(() => {
-        vi.unstubAllGlobals();
+        serverFetchSpy.mockReset();
         vi.restoreAllMocks();
     });
 
     describe('disconnectVendorToken', () => {
         it('throws a HappyError when a 404 response body is not JSON', async () => {
-            stubFetch(async () => ({
+            stubServerFetch(async () => ({
                 ok: false,
                 status: 404,
                 json: async () => {
@@ -52,7 +49,7 @@ describe('apiVendorTokens', () => {
         });
 
         it('surfaces success:false responses with a non-retryable HappyError', async () => {
-            stubFetch(async () => ({
+            stubServerFetch(async () => ({
                 ok: true,
                 status: 200,
                 json: async () => ({ success: false, error: 'not_connected' }),
@@ -65,7 +62,7 @@ describe('apiVendorTokens', () => {
         });
 
         it('throws a generic Error for non-retryable server failures (5xx)', async () => {
-            stubFetch(async () => ({
+            stubServerFetch(async () => ({
                 ok: false,
                 status: 503,
                 json: async () => ({ error: 'unavailable' }),
@@ -79,7 +76,7 @@ describe('apiVendorTokens', () => {
 
     describe('connectVendorToken', () => {
         it('surfaces success:false responses with a non-retryable HappyError', async () => {
-            stubFetch(async () => ({
+            stubServerFetch(async () => ({
                 ok: true,
                 status: 200,
                 json: async () => ({ success: false, reason: 'bad_token' }),
@@ -92,7 +89,7 @@ describe('apiVendorTokens', () => {
         });
 
         it('throws invalid response when successful payload is not JSON', async () => {
-            stubFetch(async () => ({
+            stubServerFetch(async () => ({
                 ok: true,
                 status: 200,
                 json: async () => {
@@ -108,7 +105,7 @@ describe('apiVendorTokens', () => {
         });
 
         it('falls back to default connect message when 4xx body is not JSON', async () => {
-            stubFetch(async () => ({
+            stubServerFetch(async () => ({
                 ok: false,
                 status: 400,
                 json: async () => {

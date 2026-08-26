@@ -286,6 +286,7 @@ describe('ChatList Legend-primary host axis', () => {
             expect(flashListChatListHarnessState.legendListPropsHistory.map((renderedProps) =>
                 renderedProps.data.map((item: { id: string }) => item.id)
             )).not.toContainEqual(['m1', 'm2', 'm3', 'm4']);
+            await publishLegendPaintMetrics(screen, props);
             expect(legendRef.scrollToIndex).toHaveBeenCalledTimes(1);
             expect(legendRef.scrollToIndex).toHaveBeenCalledWith({
                 animated: false,

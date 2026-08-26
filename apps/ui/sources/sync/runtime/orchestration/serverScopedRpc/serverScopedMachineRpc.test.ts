@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { resetScopedMachineDataKeyCacheForTests } from './serverScopedRpcPool';
@@ -10,6 +10,7 @@ const getCredentialsSpy = vi.hoisted(() => vi.fn());
 const createEncryptionSpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const runtimeFetchWithServerReachabilitySpy = vi.hoisted(() => vi.fn());
 const activeApiSocketHarness = vi.hoisted(() => ({
     useReal: false,
     real: null as any,
@@ -56,6 +57,10 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotSpy(...args),
 }));
 
+vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
+    runtimeFetchWithServerReachability: (...args: unknown[]) => runtimeFetchWithServerReachabilitySpy(...args),
+}));
+
 function findTelemetryEvent(name: string) {
     return syncPerformanceTelemetry.snapshot().events.find((event) => event.name === name);
 }
@@ -100,6 +105,12 @@ function installScopedFallback(): Readonly<{
 }
 
 describe('machineRpcWithServerScope', () => {
+    beforeEach(() => {
+        runtimeFetchWithServerReachabilitySpy.mockImplementation(async (params: { url: RequestInfo | URL; init?: RequestInit }) => {
+            return await fetch(params.url, params.init);
+        });
+    });
+
     afterEach(() => {
         machineRpcSpy.mockReset();
         createEphemeralSocketSpy.mockReset();
@@ -107,6 +118,7 @@ describe('machineRpcWithServerScope', () => {
         createEncryptionSpy.mockReset();
         listServerProfilesSpy.mockReset();
         getActiveServerSnapshotSpy.mockReset();
+        runtimeFetchWithServerReachabilitySpy.mockReset();
         vi.unstubAllGlobals();
         resetScopedMachineDataKeyCacheForTests();
         syncPerformanceTelemetry.configure({ enabled: false });

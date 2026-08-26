@@ -99,6 +99,14 @@ export function installConnectedServiceDetailShellMocks() {
             Avatar: (props: Record<string, unknown>) => React.createElement('Avatar', props),
         };
     });
+
+    vi.mock('@react-navigation/native', async () => {
+        const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+        return {
+            ...createReactNavigationNativeMock(),
+            useIsFocused: () => true,
+        };
+    });
 }
 
 export function installConnectedServicesCommonModuleMocks(

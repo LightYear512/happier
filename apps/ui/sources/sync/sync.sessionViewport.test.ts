@@ -715,7 +715,21 @@ describe('sync session viewport', () => {
         const invalidateCoalesced = vi.fn();
         const requestMock = apiSocket.request as unknown as ReturnType<typeof vi.fn>;
         requestMock.mockImplementation(async () => new Response(
-            JSON.stringify({ messages: [], hasMore: false, nextAfterSeq: null }),
+            JSON.stringify({
+                messages: [{
+                    id: 'message-stale',
+                    createdAt: 7,
+                    role: 'user',
+                    content: {
+                        t: 'plain',
+                        v: { role: 'user', content: { type: 'text', text: 'message-stale' }, meta: {} },
+                    },
+                    seq: 7,
+                    isSidechain: false,
+                }],
+                hasMore: false,
+                nextAfterSeq: null,
+            }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
         ));
         const sessionId = 'session-stale-reveal';

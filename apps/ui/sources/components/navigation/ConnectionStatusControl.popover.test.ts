@@ -193,6 +193,9 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: {
+        regular: '400',
+    },
     Typography: {
         default: () => ({}),
         pillLabel: () => ({}),

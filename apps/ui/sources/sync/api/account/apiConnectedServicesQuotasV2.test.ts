@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+
+const serverFetchSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/utils/timing/time', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/timing/time')>();
@@ -12,7 +14,23 @@ vi.mock('@/utils/timing/time', async (importOriginal) => {
   };
 });
 
-afterEach(() => {
+vi.mock('@/sync/http/client', () => ({
+  serverFetch: (...args: unknown[]) => serverFetchSpy(...args),
+}));
+
+beforeEach(() => {
+  serverFetchSpy.mockImplementation(async (path: string, init?: RequestInit) => {
+    return await fetch(`https://api.example.test${path}`, {
+      ...init,
+      headers: new Headers(init?.headers),
+    });
+  });
+});
+
+afterEach(async () => {
+  const { resetServerReachabilitySupervisors } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+  await resetServerReachabilitySupervisors();
+  serverFetchSpy.mockReset();
   vi.unstubAllGlobals();
   vi.resetModules();
 });

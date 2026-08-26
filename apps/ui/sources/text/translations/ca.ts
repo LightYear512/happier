@@ -956,7 +956,7 @@ export const ca: TranslationStructure = {
                 intervalSubtitle: 'Executa cada N minuts.',
                 cronTitle: 'Expressió cron',
                 cronSubtitle: 'Expressió de programació avançada.',
-                manualTitle: 'Manual',
+                manualTitle: 'Manualment',
                 manualSubtitle: 'Executa només quan s’activa des de l’aplicació, l’API o la CLI.',
                 cronHelpText:
                     'Cron estàndard de 5 camps: minut hora dia-del-mes mes dia-de-la-setmana.',

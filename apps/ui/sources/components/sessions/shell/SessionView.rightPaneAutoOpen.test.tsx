@@ -211,11 +211,22 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
         scopeState: rightScopeState,
     }),
 }));
-vi.mock('@/components/sessions/panes/url/useSessionPaneUrlSync', () => ({
-    useSessionPaneUrlSync: (input: any) => {
+vi.mock('@/components/sessions/panes/url/useSessionPaneUrlSync', async () => {
+    const { applySessionPaneUrlState } = await vi.importActual<typeof import('@/components/sessions/panes/url/sessionPaneUrlState')>(
+        '@/components/sessions/panes/url/sessionPaneUrlState',
+    );
+
+    return {
+        useSessionPaneUrlSync: (input: any) => {
         lastUrlSyncEnabled = Boolean(input?.enabled);
-    },
-}));
+            if (input?.enabled && input.urlState) {
+                applySessionPaneUrlState(input.pane, input.urlState, {
+                    resolveLocalServicePreviewDetailsTab: input.resolveLocalServicePreviewDetailsTab,
+                });
+            }
+        },
+    };
+});
 vi.mock('@/components/sessions/transcript/ChatHeaderView', () => ({
     ChatHeaderView: () => null,
 }));
@@ -471,6 +482,8 @@ describe('SessionView (right pane auto-open)', () => {
         const screen = await renderSessionView({
             details: { kind: 'localServicePreview', resourceId: 'preview_1' },
         });
+
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
         expect(openDetailsTabSpy).toHaveBeenCalledWith(
             expect.objectContaining({

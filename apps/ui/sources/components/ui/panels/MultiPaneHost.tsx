@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Animated, Platform, Pressable, StyleSheet, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { Animated, Platform, Pressable, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ResolvedPaneLayout } from './paneBreakpoints';
 import { ResizableDockedPane } from './ResizableDockedPane';
 import { ESCAPE_KEY_BLOCKER_PRIORITIES, getMaxEscapeKeyBlockerPriority, isEscapeEventHandled } from './escapeKeyHandling';

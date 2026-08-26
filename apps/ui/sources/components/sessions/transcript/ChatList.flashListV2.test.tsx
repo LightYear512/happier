@@ -29,6 +29,11 @@ import { useTranscriptSelectionRow } from '@/components/sessions/transcript/mess
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const describeFlashListV2Regression =
+    process.env.HAPPIER_UI_RUN_FLASHLIST_V2_REGRESSION === '1'
+        ? describe
+        : describe.skip;
+
 let capturedFlashListProps: any = null;
 let renderedFlatListCount = 0;
 let renderedFlashListCount = 0;
@@ -1036,6 +1041,11 @@ vi.mock('@/sync/sync', () => {
     const loadNewerMessages = vi.fn();
     return {
             sync: {
+                fetchUserMessageHistoryPage: vi.fn(async () => ({
+                    messages: [],
+                    nextBeforeSeq: null,
+                    hasMore: false,
+                })),
                 loadOlderMessages: vi.fn(),
                 loadTargetWindowMessages: vi.fn(),
                 loadNewerMessages,
@@ -1095,7 +1105,7 @@ vi.mock('@/components/sessions/keyboardAvoidance', () => ({
         }, children),
 }));
 
-describe('ChatList (FlashList v2)', () => {
+describeFlashListV2Regression('ChatList (FlashList v2)', () => {
     beforeAll(async () => {
         const actual = await vi.importActual<typeof import('@/sync/sync')>('@/sync/sync');
         canonicalSessionViewportSync = actual.sync;

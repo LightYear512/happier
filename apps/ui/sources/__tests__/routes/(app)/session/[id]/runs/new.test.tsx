@@ -5,6 +5,7 @@ import {
     createDeferred,
     changeTextTestInstance,
     findTestInstanceByTypeContainingText,
+    flushHookEffects,
     pressTestInstanceAsync,
     renderScreen,
     standardCleanup,
@@ -796,7 +797,7 @@ describe('Session New Run Screen', () => {
                 intent: 'review',
                 backendId: 'claude',
                 instructions: 'please review this',
-                permissionMode: 'read-only',
+                permissionMode: 'read_only',
                 changeType: 'uncommitted',
             }),
         );
@@ -823,7 +824,7 @@ describe('Session New Run Screen', () => {
                 intent: 'review',
                 backendId: 'claude',
                 instructions: '',
-                permissionMode: 'read-only',
+                permissionMode: 'read_only',
                 changeType: 'uncommitted',
                 base: { kind: 'none' },
             }),
@@ -903,11 +904,13 @@ describe('Session New Run Screen', () => {
 
         const screen = await renderNewRunScreen();
         await screen.pressByTestIdAsync('execution-run-launcher-intent:delegate');
+        await flushHookEffects();
 
         const input = findInstructionsInput(screen);
         await act(async () => {
             screen.changeTextByTestId('execution-run-new-instructions-input', 'do the task');
         });
+        await flushHookEffects();
 
         findStartButton(screen);
         await screen.pressByTestIdAsync('execution-run-new-start-button');
@@ -918,7 +921,7 @@ describe('Session New Run Screen', () => {
                 intent: 'delegate',
                 backendId: 'claude',
                 instructions: 'do the task',
-                permissionMode: 'safe-yolo',
+                permissionMode: 'workspace_write',
             }),
         );
     });
@@ -961,10 +964,12 @@ describe('Session New Run Screen', () => {
         localSearchParamsMock = { id: 'session-1', intent: 'delegate' };
 
         const screen = await renderNewRunScreen();
+        await flushHookEffects();
         const input = findInstructionsInput(screen);
         await act(async () => {
             screen.changeTextByTestId('execution-run-new-instructions-input', 'do the thing');
         });
+        await flushHookEffects();
 
         const startButton = findStartButton(screen);
         expect(startButton.props.disabled).toBe(false);
@@ -977,15 +982,18 @@ describe('Session New Run Screen', () => {
         localSearchParamsMock = { id: 'session-1', intent: 'delegate' };
 
         const screen = await renderNewRunScreen();
+        await flushHookEffects();
         const toggleClaude = screen.findByProps({ accessibilityLabel: 'Toggle backend claude' });
         expect(toggleClaude).toBeDefined();
 
         await pressTestInstanceAsync(toggleClaude, 'backend claude');
+        await flushHookEffects();
 
         const input = findInstructionsInput(screen);
         await act(async () => {
             screen.changeTextByTestId('execution-run-new-instructions-input', 'do the task');
         });
+        await flushHookEffects();
 
         findStartButton(screen);
         await screen.pressByTestIdAsync('execution-run-new-start-button');
@@ -1050,15 +1058,18 @@ describe('Session New Run Screen', () => {
         };
 
         const screen = await renderNewRunScreen();
+        await flushHookEffects();
         const togglePreset = screen.findByProps({ accessibilityLabel: 'Toggle backend Review Bot' });
         expect(togglePreset).toBeDefined();
 
         await pressTestInstanceAsync(togglePreset, 'backend Review Bot');
+        await flushHookEffects();
 
         const input = findInstructionsInput(screen);
         await act(async () => {
             screen.changeTextByTestId('execution-run-new-instructions-input', 'delegate to the custom ACP backend');
         });
+        await flushHookEffects();
 
         findStartButton(screen);
         await screen.pressByTestIdAsync('execution-run-new-start-button');
@@ -1084,10 +1095,12 @@ describe('Session New Run Screen', () => {
         };
 
         const screen = await renderNewRunScreen();
+        await flushHookEffects();
         const input = findInstructionsInput(screen);
         await act(async () => {
             screen.changeTextByTestId('execution-run-new-instructions-input', 'do the task');
         });
+        await flushHookEffects();
 
         const startButton = findStartButton(screen);
         expect(startButton.props.disabled).toBe(false);

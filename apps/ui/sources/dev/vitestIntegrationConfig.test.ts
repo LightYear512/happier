@@ -5,6 +5,6 @@ describe('vitest integration config', () => {
         const module = await import('../../vitest.integration.config');
         const testConfig = (module.default as any)?.test ?? {};
 
-        expect(testConfig.exclude ?? []).toEqual([]);
+        expect(testConfig.exclude ?? []).toEqual([module.NATIVE_LEGEND_INTEGRATION_INCLUDE_GLOB]);
     });
 });

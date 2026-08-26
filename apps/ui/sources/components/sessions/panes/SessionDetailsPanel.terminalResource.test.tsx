@@ -26,7 +26,28 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: 'TextInput',
 }));
 
+vi.mock('@/components/ui/scroll/useWebScrollLockBypass', () => ({
+    useWebScrollLockBypass: () => {},
+}));
+
+vi.mock('@/components/appShell/panes/focusMode/usePaneFocusMode', () => ({
+    usePaneFocusMode: () => ({ active: false, canEnter: false, toggle: vi.fn() }),
+}));
+
+vi.mock('@/components/sessions/shell/sessionScreenTestIds', () => ({
+    resolveOptionalSessionScreenTestId: () => undefined,
+    useSessionScreenTestIdsEnabled: () => false,
+}));
+
+vi.mock('@/agents/registry/sessionSubagentUiBehavior', () => ({
+    renderProviderSessionDetailsTab: () => null,
+    resolveProviderSessionDetailsTabIconName: () => null,
+}));
+
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: {
+        regular: '400',
+    },
     Typography: { default: () => ({}) },
 }));
 
@@ -38,16 +59,33 @@ vi.mock('@/components/sessions/terminal/SessionEmbeddedTerminalPane', () => ({
     },
 }));
 
-vi.mock('@/components/sessions/files/views/SessionCommitDetailsView', () => ({
-    SessionCommitDetailsView: () => React.createElement('SessionCommitDetailsView'),
+vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
+    SessionExecutionRunLauncherView: (props: any) => React.createElement('SessionExecutionRunLauncherView', props),
 }));
 
-vi.mock('@/components/sessions/files/views/SessionFileDetailsView', () => ({
-    SessionFileDetailsView: () => React.createElement('SessionFileDetailsView'),
+vi.mock('@/components/sessions/devPreview/SessionLocalServicePreviewPane', () => ({
+    SessionLocalServicePreviewPane: (props: any) => React.createElement('SessionLocalServicePreviewPane', props),
 }));
 
-vi.mock('@/components/sessions/files/views/SessionScmReviewDetailsView', () => ({
-    SessionScmReviewDetailsView: () => React.createElement('SessionScmReviewDetailsView'),
+vi.mock('@/components/sessions/simulatorPreview/SessionSimulatorPreviewPane', () => ({
+    SessionSimulatorPreviewPane: (props: any) => React.createElement('SessionSimulatorPreviewPane', props),
+}));
+
+vi.mock('@/components/sessions/simulatorPreview/useSessionSimulatorPreviewControl', () => ({
+    useSessionSimulatorPreviewControl: () => ({ sendInput: vi.fn(), start: vi.fn(), stop: vi.fn() }),
+}));
+
+vi.mock('@/components/sessions/simulatorPreview/useSessionSimulatorPreviewStreamUrl', () => ({
+    useSessionSimulatorPreviewStreamUrl: () => null,
+}));
+
+vi.mock('./SessionDetailsPanelDetailViews', () => ({
+    SessionCommitDetailsViewForPanel: (props: any) => React.createElement('SessionCommitDetailsViewForPanel', props),
+    SessionFileDetailsViewForPanel: (props: any) => React.createElement('SessionFileDetailsViewForPanel', props),
+    SessionScmReviewDetailsViewForPanel: (props: any) => React.createElement('SessionScmReviewDetailsViewForPanel', props),
+    SessionScmStashDetailsViewForPanel: (props: any) => React.createElement('SessionScmStashDetailsViewForPanel', props),
+    SessionSubagentDetailsViewForPanel: (props: any) => React.createElement('SessionSubagentDetailsViewForPanel', props),
+    SessionTranscriptDetailsViewForPanel: (props: any) => React.createElement('SessionTranscriptDetailsViewForPanel', props),
 }));
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
@@ -80,7 +118,10 @@ describe('SessionDetailsPanel (terminal resource)', () => {
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
         terminalViewSpy.mockClear();
 
-        const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+        const screen = await renderScreen(
+            <SessionDetailsPanel sessionId="s1" scopeId="session:s1" />,
+            { flushOptions: { cycles: 0 } },
+        );
 
         expect(terminalViewSpy).toHaveBeenCalledTimes(1);
         expect(terminalViewSpy.mock.calls[0]?.[0]?.sessionId).toBe('s1');

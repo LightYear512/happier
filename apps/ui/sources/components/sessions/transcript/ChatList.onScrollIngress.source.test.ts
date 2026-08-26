@@ -11,7 +11,8 @@ const SCROLL_OBSERVATION_HOST_SOURCE = readFileSync(
 function extractMainOnScrollBody(): string {
     const start = CHAT_LIST_SOURCE.indexOf('onScroll={scrollObservationHost.onScroll}');
     expect(start, 'missing main TranscriptListShell onScroll handler').toBeGreaterThanOrEqual(0);
-    const end = CHAT_LIST_SOURCE.indexOf('\n                            onScrollBeginDrag=', start);
+    const endMatch = /\n\s+onScrollBeginDrag=/.exec(CHAT_LIST_SOURCE.slice(start));
+    const end = endMatch ? start + endMatch.index : -1;
     expect(end, 'missing end of main TranscriptListShell onScroll handler').toBeGreaterThan(start);
     return CHAT_LIST_SOURCE.slice(start, end);
 }

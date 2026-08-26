@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Platform, Pressable, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { Platform, Pressable, useWindowDimensions, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { COMPOSER_SURFACE_RADIUS } from '@/components/sessions/agentInput/composerContentInset';
 import { ITEM_SUBTITLE_TEXT_METRICS, ITEM_TITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';

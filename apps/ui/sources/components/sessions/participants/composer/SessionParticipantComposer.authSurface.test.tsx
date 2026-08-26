@@ -17,6 +17,9 @@ vi.mock('react-native-mmkv', () => {
         delete(key: string) {
             kvStore.delete(key);
         }
+        getAllKeys() {
+            return Array.from(kvStore.keys());
+        }
         clearAll() {
             kvStore.clear();
         }
@@ -139,6 +142,14 @@ function readLatestAgentInputProps(): {
     };
 }
 
+function tokenForSub(sub: string): string {
+    const payload = globalThis.btoa(JSON.stringify({ sub }))
+        .replaceAll('+', '-')
+        .replaceAll('/', '_')
+        .replaceAll('=', '');
+    return `e30.${payload}.signature`;
+}
+
 describe('SessionParticipantComposer auth send surface', () => {
     beforeEach(() => {
         storage.setState(initialStorageState, true);
@@ -163,6 +174,17 @@ describe('SessionParticipantComposer auth send surface', () => {
 
         const encryption = await Encryption.create(new Uint8Array(32).fill(9));
         await encryption.initializeSessions(new Map([[sessionId, null]]));
+
+        const { setActiveServerId, upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example.test', name: 'Active' });
+        setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: activeServer.id, accountId: 'account-a' });
+
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: tokenForSub('account-a'),
+            secret: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        });
 
         const { sync } = await import('@/sync/sync');
         sync.encryption = encryption;

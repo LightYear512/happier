@@ -32,7 +32,9 @@ import {
     SessionScmReviewDetailsViewForPanel,
     SessionScmStashDetailsViewForPanel,
     SessionSubagentDetailsViewForPanel,
+    SessionTranscriptDetailsViewForPanel,
 } from './SessionDetailsPanelDetailViews';
+import { isSessionTranscriptDetailsResource } from './details/sessionTranscriptDetailsResource';
 
 export type SessionDetailsPanelProps = Readonly<{
     sessionId: string;
@@ -564,6 +566,25 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                             sessionId={props.sessionId}
                             scopeId={props.scopeId}
                             subagentId={tab.resource.subagentId}
+                        />
+                    </React.Suspense>
+                );
+            }
+        }
+        if (resource?.kind === 'transcript') {
+            if (isSessionTranscriptDetailsResource(tab.resource)) {
+                if (tab.resource.scope.sessionId !== props.sessionId) {
+                    return (
+                        <View style={styles.empty} testID="session-details-transcript-session-mismatch">
+                            <Text style={styles.emptyText}>{t('session.detailsPanel.transcriptFromOtherSession')}</Text>
+                        </View>
+                    );
+                }
+                return (
+                    <React.Suspense fallback={renderLoadingFallback()}>
+                        <SessionTranscriptDetailsViewForPanel
+                            scope={tab.resource.scope}
+                            testID="session-details-transcript"
                         />
                     </React.Suspense>
                 );

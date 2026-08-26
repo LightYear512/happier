@@ -3,6 +3,12 @@ import { PermissionStatus } from 'expo-modules-core';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 
+const asyncStorageState = vi.hoisted(() => ({
+    store: new Map<string, string>(),
+}));
+
+const runtimeFetchWithServerReachabilityMock = vi.hoisted(() => vi.fn());
+
 vi.mock('expo-notifications', () => ({
     getPermissionsAsync: vi.fn(),
     requestPermissionsAsync: vi.fn(),
@@ -37,7 +43,24 @@ vi.mock('expo-secure-store', () => {
     };
 });
 
+vi.mock('@react-native-async-storage/async-storage', () => ({
+    default: {
+        getItem: vi.fn(async (key: string) => asyncStorageState.store.get(key) ?? null),
+        setItem: vi.fn(async (key: string, value: string) => {
+            asyncStorageState.store.set(key, value);
+        }),
+        removeItem: vi.fn(async (key: string) => {
+            asyncStorageState.store.delete(key);
+        }),
+    },
+}));
+
+vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
+    runtimeFetchWithServerReachability: runtimeFetchWithServerReachabilityMock,
+}));
+
 afterEach(() => {
+    asyncStorageState.store.clear();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
 });
@@ -67,6 +90,9 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
             json: async () => ({ success: true }),
         }));
         vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
+        runtimeFetchWithServerReachabilityMock.mockImplementation(
+            async ({ url, init }: { url: string; init: RequestInit }) => fetchSpy(url, init),
+        );
 
         const { upsertServerProfile, setActiveServerId } = await import('@/sync/domains/server/serverProfiles');
         const defaultServer = upsertServerProfile({ serverUrl: 'https://remote-a.example.test', name: 'Primary' });
@@ -138,6 +164,9 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
             json: async () => ({ success: true }),
         }));
         vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
+        runtimeFetchWithServerReachabilityMock.mockImplementation(
+            async ({ url, init }: { url: string; init: RequestInit }) => fetchSpy(url, init),
+        );
 
         const state = {
             activeServerId: 'server-a',

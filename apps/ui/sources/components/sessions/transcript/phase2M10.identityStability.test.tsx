@@ -16,6 +16,7 @@ import { resolveTranscriptListRendererSelection } from '@/components/sessions/tr
 import { useMainTranscriptRendererFrameHost } from '@/components/sessions/transcript/viewport/shell/useMainTranscriptRendererFrameHost';
 import { useTranscriptViewportTelemetryEvents } from '@/components/sessions/transcript/viewport/telemetryHost/useTranscriptViewportTelemetryEvents';
 import { useTranscriptWebViewportTelemetryDiagnostics } from '@/components/sessions/transcript/viewport/telemetryHost/useTranscriptWebViewportTelemetryDiagnostics';
+import { createTranscriptUserScrollIntentOwner } from '@/components/sessions/transcript/viewport/driver/userScrollIntentOwner';
 
 function createRef<T>(current: T): { current: T } {
     return { current };
@@ -266,6 +267,7 @@ describe('phase2 M10 hook identity stability', () => {
             setEntrySliceWindow: vi.fn(),
             setExpandedToolCallsAnchorMessageIds: vi.fn(),
             setListContentHeight: vi.fn(),
+            userScrollIntent: createTranscriptUserScrollIntentOwner(),
             viewportCommandController: { resetForSession: vi.fn() },
             wantsPinnedRef: createRef(true),
             webDomObservation: { reset: vi.fn() },

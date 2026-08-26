@@ -146,6 +146,7 @@ vi.mock('@/components/ui/layout/layout', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: { regular: '400' },
     Typography: {
         default: () => ({}),
         mono: () => ({}),

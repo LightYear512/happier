@@ -72,6 +72,14 @@ vi.mock('react-native-svg', () => {
     };
 });
 
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return {
+        ...createReactNavigationNativeMock(),
+        useIsFocused: () => true,
+    };
+});
+
 vi.mock('@/components/ui/avatar/Avatar', () => {
     const React = require('react');
     return { Avatar: (props: Record<string, unknown>) => React.createElement('Avatar', props) };

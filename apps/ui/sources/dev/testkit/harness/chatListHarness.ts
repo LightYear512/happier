@@ -765,6 +765,7 @@ export function createFlashListChatListSyncModuleMock(
         sync: {
             loadOlderMessages: async () => ({ loaded: 0, hasMore: false, status: 'no_more' as const }),
             loadNewerMessages,
+            fetchUserMessageHistoryPage: async () => ({ messages: [], nextBeforeSeq: null }),
             hasDeferredNewerMessages,
             getSyncTuning: () => flashListChatListHarnessState.syncTuningState,
             // Stable identity: ChatList consumes this through useSyncExternalStore.
@@ -812,6 +813,7 @@ export async function triggerFlashListChatListInitialFill(
             options.contentWidth ?? 400,
             options.contentHeight ?? 200,
         );
+        capturedFlashListProps.onLoad?.({ elapsedTimeInMs: 0 });
     });
     await flushHookEffects(options.flushOptions);
 }

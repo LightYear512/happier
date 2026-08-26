@@ -66,6 +66,7 @@ vi.mock('@/components/ui/layout/layout', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: { regular: '400' },
     Typography: new Proxy({}, { get: () => () => ({}) }),
 }));
 
@@ -207,7 +208,11 @@ vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['codex'],
     DEFAULT_AGENT_ID: 'codex',
     resolveAgentIdFromFlavor: () => null,
-    getAgentCore: () => ({ displayNameKey: 'agents.codex', toolRendering: { hideUnknownToolsByDefault: false } }),
+    getAgentCore: () => ({
+        displayNameKey: 'agents.codex',
+        ui: { agentPickerIconName: 'terminal-outline' },
+        toolRendering: { hideUnknownToolsByDefault: false },
+    }),
     getAgentBehavior: (agentId: string) => ({
         sessionUsage: {
             supportsExactContextUsageBadge: agentId !== 'codex' && agentId !== 'gemini',

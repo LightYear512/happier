@@ -1,6 +1,7 @@
 import type { ActionInputFieldHint, ActionSpec } from '@happier-dev/protocol';
 
 import { t } from '@/text';
+import { normalizeActionInputForProtocol } from './normalizeActionInputForProtocol';
 
 type ValidationIssue = Readonly<{
     code?: string;
@@ -46,9 +47,10 @@ export function resolveActionInputValidationError(args: Readonly<{
     spec: ActionSpec;
     fields: readonly ActionInputFieldHint[];
 }>): string | null {
+    const input = normalizeActionInputForProtocol(args.spec.id, args.input ?? {});
     const parsed = (args.spec.inputSchema as { safeParse: (value: unknown) => unknown }).safeParse({
         sessionId: args.sessionId,
-        ...(args.input ?? {}),
+        ...input,
     }) as
         | { success: true }
         | { success: false; error?: { issues?: readonly ValidationIssue[] } };

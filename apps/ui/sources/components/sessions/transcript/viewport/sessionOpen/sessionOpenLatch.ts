@@ -215,7 +215,7 @@ export function createSessionOpenLatch(): SessionOpenLatch {
                 phase = 'done';
                 return decision();
             }
-            if (!facts.isLoaded || facts.itemCount <= 0) {
+            if (!facts.isLoaded || (armed.entryKind !== 'bottom' && facts.itemCount <= 0)) {
                 phase = 'awaiting-data';
                 return decision();
             }
