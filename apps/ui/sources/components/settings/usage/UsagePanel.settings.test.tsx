@@ -72,7 +72,10 @@ vi.mock('@/sync/api/account/apiUsage', () => ({
 }));
 
 vi.mock('@/utils/datetime/cachedIntlFormatters', () => ({
-    getCachedIntlDateTimeFormat: (...args: unknown[]) => dateTimeFormatSpy(...args),
+    getCachedIntlDateTimeFormat: (
+        locale: string | readonly string[] | undefined,
+        options?: Intl.DateTimeFormatOptions,
+    ) => dateTimeFormatSpy(locale, options),
 }));
 
 function findPressableByText(
