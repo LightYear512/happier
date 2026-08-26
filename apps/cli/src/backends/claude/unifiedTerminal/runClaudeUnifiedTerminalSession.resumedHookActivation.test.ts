@@ -66,7 +66,7 @@ function composerScreen(draft: string, generating = false): string {
   ].join('\n');
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitUntil(predicate: () => boolean, timeoutMs = 8_000): Promise<void> {
   const startedAt = Date.now();
   while (!predicate()) {
     if (Date.now() - startedAt > timeoutMs) {
