@@ -379,6 +379,7 @@ test('hstack stack start --runtime --restart keeps a service-mode stack healthy'
     HAPPIER_STACK_STACK: fixture.stackName,
     HAPPIER_STACK_ENV_FILE: join(fixture.stackDir, 'env'),
     HAPPIER_STACK_SERVICE_MODE: '1',
+    HAPPIER_SERVER_SHUTDOWN_DEADLINE_MS: '10000',
   };
 
   const startArgs = [join(rootDir, 'bin', 'hstack.mjs'), 'stack', 'start', fixture.stackName, '--background', '--runtime', '--no-browser'];

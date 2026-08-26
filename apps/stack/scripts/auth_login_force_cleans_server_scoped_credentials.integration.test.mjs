@@ -97,6 +97,9 @@ test('hstack stack auth login --force clears stale stack credential aliases whil
         'HAPPIER_STACK_TAILSCALE_PREFER_PUBLIC_URL=0',
         'HAPPIER_STACK_TAILSCALE_SERVE=0',
         'HAPPIER_STACK_RUNTIME_MODE=prefer',
+        'HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS=20',
+        'HAPPIER_STACK_DAEMON_START_VERIFY_POLL_MS=1',
+        'HAPPIER_STACK_DAEMON_START_VERIFY_STABLE_MS=0',
       ],
     });
     fixture.stackName = stackName;

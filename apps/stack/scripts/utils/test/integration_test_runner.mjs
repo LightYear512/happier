@@ -1,7 +1,13 @@
+import { basename } from 'node:path';
+
 import { readBooleanEnvFlag } from './test_env.mjs';
 import { isIntegrationTestFile, isRealIntegrationTestFile } from './test_paths.mjs';
 
 export const RUN_REAL_INTEGRATION_ENV_VAR = 'HAPPIER_STACK_RUN_REAL_INTEGRATION_TESTS';
+const RELEASE_OWNED_BINARY_SMOKE_FILES = new Set([
+  'release_binary_smoke.integration.test.mjs',
+  'self_host_binary_smoke.integration.test.mjs',
+]);
 
 export function shouldRunRealIntegrationTests(env) {
   return readBooleanEnvFlag(env, RUN_REAL_INTEGRATION_ENV_VAR, false);
@@ -12,7 +18,7 @@ export function splitRealIntegrationTests(testFiles) {
   const regular = [];
   for (const file of testFiles) {
     if (!isIntegrationTestFile(file)) continue;
-    if (isRealIntegrationTestFile(file)) real.push(file);
+    if (isRealIntegrationTestFile(file) || RELEASE_OWNED_BINARY_SMOKE_FILES.has(basename(file))) real.push(file);
     else regular.push(file);
   }
   return { regular, real };

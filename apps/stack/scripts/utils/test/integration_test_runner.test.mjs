@@ -23,6 +23,8 @@ test('splitRealIntegrationTests splits real integration suffixes', () => {
   const files = [
     '/tmp/a.integration.test.mjs',
     '/tmp/b.real.integration.test.mjs',
+    '/tmp/release_binary_smoke.integration.test.mjs',
+    '/tmp/self_host_binary_smoke.integration.test.mjs',
     '/tmp/not-a-test.mjs',
     '/tmp/c.integration.test.mjs',
     '/tmp/d.real.integration.test.mjs',
@@ -30,7 +32,12 @@ test('splitRealIntegrationTests splits real integration suffixes', () => {
   ];
   const { regular, real } = splitRealIntegrationTests(files);
   assert.deepEqual(regular, ['/tmp/a.integration.test.mjs', '/tmp/c.integration.test.mjs']);
-  assert.deepEqual(real, ['/tmp/b.real.integration.test.mjs', '/tmp/d.real.integration.test.mjs']);
+  assert.deepEqual(real, [
+    '/tmp/b.real.integration.test.mjs',
+    '/tmp/release_binary_smoke.integration.test.mjs',
+    '/tmp/self_host_binary_smoke.integration.test.mjs',
+    '/tmp/d.real.integration.test.mjs',
+  ]);
 });
 
 test('shouldRunRealIntegrationTests trims and lowercases env values', () => {

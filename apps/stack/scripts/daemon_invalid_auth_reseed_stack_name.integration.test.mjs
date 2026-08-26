@@ -9,6 +9,12 @@ import { dirname, join } from 'node:path';
 import { startLocalDaemonWithAuth, stopLocalDaemon } from './daemon.mjs';
 import { writeStubHappierCliFiles } from './testkit/core/stub_happier_cli_files.mjs';
 
+const fastDaemonVerifyEnv = {
+  HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS: '1000',
+  HAPPIER_STACK_DAEMON_START_VERIFY_POLL_MS: '10',
+  HAPPIER_STACK_DAEMON_START_VERIFY_STABLE_MS: '0',
+};
+
 function encodeBase64Url(value) {
   return Buffer.from(value, 'utf-8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
@@ -228,6 +234,7 @@ test('invalid-auth auto-reseed uses resolved stack name instead of null placehol
       HAPPIER_STACK_AUTO_AUTH_SEED: '1',
       HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
       HAPPIER_STACK_CLI_BUILD: '0',
+      ...fastDaemonVerifyEnv,
     };
 
     profileServer = await startProfileAuthServer({ port: 4101, allowToken: seedToken });
@@ -325,6 +332,7 @@ test('invalid-auth auto-reseed overwrites stale target credentials', async () =>
       HAPPIER_STACK_AUTO_AUTH_SEED: '1',
       HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
       HAPPIER_STACK_CLI_BUILD: '0',
+      ...fastDaemonVerifyEnv,
     };
 
     profileServer = await startProfileAuthServer({ port: 4201, allowToken: seedToken });
@@ -523,6 +531,7 @@ if (sub === 'start') {
       HAPPIER_STACK_AUTO_AUTH_SEED: '1',
       HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
       HAPPIER_STACK_CLI_BUILD: '0',
+      ...fastDaemonVerifyEnv,
     };
 
     // Server is reachable but rejects the configured seed token. This should fail closed and must not fall back to main.
@@ -696,6 +705,7 @@ if (sub === 'start') {
       HAPPIER_STACK_AUTO_AUTH_SEED: '1',
       HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
       HAPPIER_STACK_CLI_BUILD: '0',
+      ...fastDaemonVerifyEnv,
     };
 
     await assert.rejects(
