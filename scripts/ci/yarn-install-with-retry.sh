@@ -49,7 +49,8 @@ run_yarn_install() {
 
     while kill -0 "$install_pid" 2>/dev/null; do
         if [ "$elapsed_seconds" -ge "$ATTEMPT_TIMEOUT_SECONDS" ]; then
-            echo "yarn install timed out after ${ATTEMPT_TIMEOUT_SECONDS} seconds" >>"$LOG_PATH"
+            timeout_message="yarn install timed out after ${ATTEMPT_TIMEOUT_SECONDS} seconds"
+            printf '%s\n' "$timeout_message" | tee -a "$LOG_PATH" >&2
             kill "$install_pid" 2>/dev/null || true
             sleep 2
             kill -9 "$install_pid" 2>/dev/null || true
