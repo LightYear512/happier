@@ -24,6 +24,11 @@ test('tests workflow keeps slow CI jobs above the observed timeout floor', async
     /name:\s*UI E2E \(Playwright\)[\s\S]*?timeout-minutes:\s*45\b/,
     'UI E2E job should reserve enough time to finish the slow multi-session Playwright scenarios on GitHub-hosted runners',
   );
+  assert.match(
+    uiE2eJob,
+    /name:\s*UI E2E \(Playwright\) \/ shard \$\{\{ matrix\.shard \}\}\/6[\s\S]*?max-parallel:\s*6[\s\S]*?shard:\s*\[1,\s*2,\s*3,\s*4,\s*5,\s*6\][\s\S]*?--shard=\$\{\{ matrix\.shard \}\}\/6[\s\S]*?ui-e2e-playwright-artifacts-shard-\$\{\{ matrix\.shard \}\}-of-6/,
+    'UI E2E should stay split across six shards so release-critical Playwright lanes finish before the 45 minute job timeout',
+  );
 
   assert.match(
     uiJob,

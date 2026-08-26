@@ -47,10 +47,19 @@ function validatePropertyValue(tag: string, propertyName: string, value: unknown
 
     const normalizedPropertyName = propertyName.toLowerCase();
     if (normalizedPropertyName === 'href' || normalizedPropertyName === 'xlinkhref') {
-        if (typeof value !== 'string') return false;
-        if (isLocalFragment(value)) return true;
+        if (typeof value === 'string') {
+            if (isLocalFragment(value)) return true;
+            const normalizedTag = tag.toLowerCase();
+            return (normalizedTag === 'image' || normalizedTag === 'feimage') && isSafeRasterDataUri(value);
+        }
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const entries = Object.entries(value as Record<string, unknown>);
+        if (entries.length !== 1 || entries[0]?.[0] !== 'uri' || typeof entries[0]?.[1] !== 'string') {
+            return false;
+        }
+        if (isLocalFragment(entries[0][1])) return true;
         const normalizedTag = tag.toLowerCase();
-        return (normalizedTag === 'image' || normalizedTag === 'feimage') && isSafeRasterDataUri(value);
+        return (normalizedTag === 'image' || normalizedTag === 'feimage') && isSafeRasterDataUri(entries[0][1]);
     }
 
     if (typeof value === 'string') {

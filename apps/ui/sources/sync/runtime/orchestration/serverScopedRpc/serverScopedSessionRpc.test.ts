@@ -19,6 +19,7 @@ const sessionListByIdFixture = {
   pendingCount: 0,
   pendingVersion: 0,
   dataEncryptionKey: 'k1',
+  encryptionMode: 'e2ee',
 } as const;
 
 const sessionRpcSpy = vi.hoisted(() => vi.fn());
@@ -34,6 +35,22 @@ function tokenForSub(sub: string): string {
     .replaceAll('/', '_')
     .replaceAll('=', '');
   return `e30.${payload}.signature`;
+}
+
+function stubSessionByIdFetch(session: Record<string, unknown> = sessionListByIdFixture): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/auth/ping')) {
+        return { ok: true, status: 200, headers: new Headers(), json: async () => ({ ok: true }) };
+      }
+      if (url.includes('/v2/sessions/')) {
+        return { ok: true, status: 200, headers: new Headers(), json: async () => ({ session }) };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }),
+  );
 }
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient', () => ({
@@ -181,19 +198,11 @@ describe('sessionRpcWithServerScope', () => {
       getSessionEncryption,
     });
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          session: {
-            ...sessionListByIdFixture,
-            encryptionMode: 'plain',
-            dataEncryptionKey: null,
-          },
-        }),
-      })),
-    );
+    stubSessionByIdFetch({
+      ...sessionListByIdFixture,
+      encryptionMode: 'plain',
+      dataEncryptionKey: null,
+    });
 
     const emitWithAck = vi.fn(async () => ({ ok: true, result: { decodedPlain: true } }));
     const fakeSocket = {
@@ -249,19 +258,11 @@ describe('sessionRpcWithServerScope', () => {
       getSessionEncryption,
     });
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          session: {
-            ...sessionListByIdFixture,
-            encryptionMode: 'plain',
-            dataEncryptionKey: null,
-          },
-        }),
-      })),
-    );
+    stubSessionByIdFetch({
+      ...sessionListByIdFixture,
+      encryptionMode: 'plain',
+      dataEncryptionKey: null,
+    });
 
     const emitWithAck = vi.fn(async () => ({ ok: true, result: { decodedPlain: true } }));
     const fakeSocket = {
@@ -318,13 +319,7 @@ describe('sessionRpcWithServerScope', () => {
       getSessionEncryption: vi.fn(() => sessionEncryption),
     });
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({ session: sessionListByIdFixture }),
-      })),
-    );
+    stubSessionByIdFetch();
 
     const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
     const fakeSocket = {
@@ -386,13 +381,7 @@ describe('sessionRpcWithServerScope', () => {
       getSessionEncryption: vi.fn(() => sessionEncryption),
     });
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({ session: sessionListByIdFixture }),
-      })),
-    );
+    stubSessionByIdFetch();
 
     const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result-alt' }));
     const fakeSocket = {
@@ -442,19 +431,11 @@ describe('sessionRpcWithServerScope', () => {
       getSessionEncryption,
     });
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          session: {
-            ...sessionListByIdFixture,
-            encryptionMode: 'plain',
-            dataEncryptionKey: null,
-          },
-        }),
-      })),
-    );
+    stubSessionByIdFetch({
+      ...sessionListByIdFixture,
+      encryptionMode: 'plain',
+      dataEncryptionKey: null,
+    });
 
     const emitWithAck = vi.fn(async () => ({ ok: true, result: { decodedPlain: true } }));
     const fakeSocket = {
@@ -519,13 +500,7 @@ describe('sessionRpcWithServerScope', () => {
       initializeSessions: vi.fn(async () => {}),
       getSessionEncryption: vi.fn(() => sessionEncryption),
     });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({ session: sessionListByIdFixture }),
-      })),
-    );
+    stubSessionByIdFetch();
 
     const emitWithAck = vi.fn();
     const fakeSocket = {
@@ -569,19 +544,11 @@ describe('sessionRpcWithServerScope', () => {
       getSessionEncryption: vi.fn(() => null),
     });
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          session: {
-            ...sessionListByIdFixture,
-            encryptionMode: 'plain',
-            dataEncryptionKey: null,
-          },
-        }),
-      })),
-    );
+    stubSessionByIdFetch({
+      ...sessionListByIdFixture,
+      encryptionMode: 'plain',
+      dataEncryptionKey: null,
+    });
 
     const emitWithAck = vi.fn(() => new Promise<unknown>(() => {}));
     const fakeSocket = {

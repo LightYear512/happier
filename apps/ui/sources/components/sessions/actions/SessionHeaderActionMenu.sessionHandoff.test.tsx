@@ -101,6 +101,15 @@ const storageState = vi.hoisted(() => ({
   },
 }));
 
+function findFireAndForgetPromiseByTag(tag: string): Promise<void> {
+  const call = fireAndForgetMock.mock.calls.find(([, opts]) => (opts as { tag?: string } | undefined)?.tag === tag);
+  const promise = call?.[0] as Promise<void> | undefined;
+  if (!promise) {
+    throw new Error(`Expected fireAndForget call tagged ${tag}`);
+  }
+  return promise;
+}
+
 installSessionActionsCommonModuleMocks({
   reactNative: async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -457,8 +466,7 @@ describe('SessionHeaderActionMenu handoff', () => {
 
     expect(resumeListener).toHaveBeenCalledTimes(1);
     expect(otherSessionListener).not.toHaveBeenCalled();
-    expect(fireAndForgetMock).toHaveBeenCalledTimes(1);
-    const resumeAction = fireAndForgetMock.mock.calls[0]?.[0] as Promise<void>;
+    const resumeAction = findFireAndForgetPromiseByTag('SessionHeaderActionMenu.execute.sessionResume');
     let settled = false;
     void resumeAction.then(
       () => {
@@ -500,7 +508,7 @@ describe('SessionHeaderActionMenu handoff', () => {
       await flushHookEffects();
     });
 
-    const resumeAction = fireAndForgetMock.mock.calls[0]?.[0] as Promise<void>;
+    const resumeAction = findFireAndForgetPromiseByTag('SessionHeaderActionMenu.execute.sessionResume');
     await expect(resumeAction).rejects.toThrow();
     expect(modalAlertMock).toHaveBeenCalledWith('common.error', 'session.resumeFailed');
   });

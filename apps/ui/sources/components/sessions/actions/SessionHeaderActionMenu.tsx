@@ -47,6 +47,7 @@ import {
   runSwitchProfile,
 } from '@/components/sessions/sessionSwitchProfile/runSwitchProfile';
 import { completeSessionForkNavigation } from '@/components/sessions/transcript/forkContext/completeSessionForkNavigation';
+import { emitSessionResumeRequest } from '@/components/sessions/model/sessionResumeRequests';
 import { createSessionActionTarget } from '@/components/sessions/actions/sessionActionContext';
 import { executeSessionAction } from '@/components/sessions/actions/sessionActionExecution';
 import { listVisibleSessionActionIds } from '@/components/sessions/actions/sessionActionAvailability';
@@ -57,6 +58,7 @@ import {
   SESSION_ACTION_MARK_READ_ID,
   SESSION_ACTION_MARK_UNREAD_ID,
   SESSION_ACTION_RENAME_ID,
+  SESSION_ACTION_RESUME_ID,
   SESSION_ACTION_STOP_ID,
   SESSION_ACTION_UNARCHIVE_ID,
 } from '@/components/sessions/actions/sessionActionIds';
@@ -131,7 +133,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
       isConnected: session.active === true,
       isPinned: false,
     }),
-    [session, sessionServerId],
+    [open, session, sessionServerId],
   );
   const reachableMachineId = React.useMemo(
     () => readMachineTargetForSession(props.sessionId)?.machineId ?? null,
@@ -328,6 +330,17 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           const targetProfileId = sessionSwitchProfileAction?.candidates[0]?.id;
           if (!targetProfileId) return;
           executeSessionProfileSwitch(targetProfileId);
+          return;
+        }
+        if (actionId === SESSION_ACTION_RESUME_ID) {
+          fireAndForget((async () => {
+            try {
+              await emitSessionResumeRequest(props.sessionId);
+            } catch (error) {
+              Modal.alert(t('common.error'), t('session.resumeFailed'));
+              throw error;
+            }
+          })(), { tag: 'SessionHeaderActionMenu.execute.sessionResume' });
           return;
         }
         const manualReadState = resolveManualReadStateFromSessionActionId(actionId);

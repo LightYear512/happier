@@ -62,7 +62,7 @@ describe('parseSafeNativeSvgXml', () => {
             '<rect width="16" height="16" fill="url(\'#paint\')"/>',
             '<use href="#shape"/>',
             '<text x="1" y="8">safe</text>',
-            '<image href="data:image/png;base64,iVBORw0KGgo=" width="1" height="1"/>',
+            '<image href="data:image/png;base64,AAAA" width="1" height="1"/>',
             '</svg>',
         ].join('');
 

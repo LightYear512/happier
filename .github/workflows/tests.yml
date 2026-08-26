@@ -182,13 +182,13 @@ env:
 jobs:
   ui-e2e:
     if: ${{ (github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call') || (github.event_name == 'workflow_call' && inputs.run_ui_e2e) }}
-    name: UI E2E (Playwright) / shard ${{ matrix.shard }}/3
+    name: UI E2E (Playwright) / shard ${{ matrix.shard }}/6
     continue-on-error: ${{ github.event_name != 'workflow_call' }}
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 6
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
@@ -265,13 +265,13 @@ jobs:
 
       - name: Run UI E2E
         if: github.event_name == 'workflow_call' || steps.changes.outputs.ui_e2e == 'true'
-        run: yarn -s test:e2e:ui -- --shard=${{ matrix.shard }}/3
+        run: yarn -s test:e2e:ui -- --shard=${{ matrix.shard }}/6
 
       - name: Upload UI E2E artifacts (Playwright)
         if: (github.event_name == 'workflow_call' || steps.changes.outputs.ui_e2e == 'true') && failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ui-e2e-playwright-artifacts-shard-${{ matrix.shard }}-of-3
+          name: ui-e2e-playwright-artifacts-shard-${{ matrix.shard }}-of-6
           path: |
             packages/tests/.project/logs/e2e/ui-playwright
             .project/logs/e2e/*ui-e2e*

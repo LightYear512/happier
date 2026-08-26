@@ -421,6 +421,68 @@ vi.mock('@/components/ui/icons/Icon', () => ({
 // inspectable placeholders. A test needing different behaviour can still mock it locally.
 vi.mock('react-native-svg', () => {
     const host = (name: string) => name;
+    const parseAttributes = (raw: string, tag: string) => {
+        const props: Record<string, unknown> = {};
+        const attrPattern = /([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*"([^"]*)"/g;
+        let match: RegExpExecArray | null;
+        while ((match = attrPattern.exec(raw)) !== null) {
+            const rawName = match[1]!;
+            const name = rawName === 'xlink:href' ? 'xlinkHref' : rawName;
+            const value = match[2]!;
+            props[name] = (
+                (name === 'href' || name === 'xlinkHref')
+                && ['feImage', 'image', 'use'].includes(tag)
+            )
+                ? { uri: value }
+                : value;
+        }
+        return props;
+    };
+    const parseTestSvgXml = (xml: string, visitor?: (root: any) => any) => {
+        const rootStack: Array<{ tag: string; props: Record<string, unknown>; children: any[] }> = [];
+        const tokenPattern = /<[^>]+>|[^<]+/g;
+        let root: { tag: string; props: Record<string, unknown>; children: any[] } | null = null;
+        let token: RegExpExecArray | null;
+        while ((token = tokenPattern.exec(xml)) !== null) {
+            const raw = token[0]!;
+            if (!raw.startsWith('<')) {
+                const text = raw.trim();
+                if (text.length > 0) rootStack.at(-1)?.children.push(text);
+                continue;
+            }
+            if (raw.startsWith('</')) {
+                const tag = raw.slice(2, -1).trim();
+                const node = rootStack.pop();
+                if (!node || node.tag !== tag) throw new Error('Malformed XML');
+                if (rootStack.length > 0) {
+                    rootStack.at(-1)!.children.push(node);
+                } else {
+                    root = node;
+                }
+                continue;
+            }
+            if (raw.startsWith('<?') || raw.startsWith('<!--')) continue;
+            const selfClosing = raw.endsWith('/>');
+            const inner = raw.slice(1, selfClosing ? -2 : -1).trim();
+            const spaceIndex = inner.search(/\s/);
+            const tag = spaceIndex < 0 ? inner : inner.slice(0, spaceIndex);
+            const attrs = spaceIndex < 0 ? '' : inner.slice(spaceIndex + 1);
+            const node = { tag, props: parseAttributes(attrs, tag), children: [] };
+            if (selfClosing) {
+                if (rootStack.length > 0) {
+                    rootStack.at(-1)!.children.push(node);
+                } else if (!root) {
+                    root = node;
+                } else {
+                    throw new Error('Malformed XML');
+                }
+            } else {
+                rootStack.push(node);
+            }
+        }
+        if (rootStack.length > 0 || !root) throw new Error('Malformed XML');
+        return typeof visitor === 'function' ? visitor(root) : root;
+    };
     return {
         default: host('Svg'), Svg: host('Svg'), SvgXml: host('SvgXml'),
         Path: host('Path'), G: host('G'), Circle: host('Circle'), Ellipse: host('Ellipse'),
@@ -430,6 +492,8 @@ vi.mock('react-native-svg', () => {
         Image: host('SvgImage'), LinearGradient: host('LinearGradient'),
         RadialGradient: host('RadialGradient'), Stop: host('Stop'), Symbol: host('SvgSymbol'),
         Marker: host('Marker'), ForeignObject: host('ForeignObject'),
+        parse: parseTestSvgXml,
+        SvgAst: host('SvgAst'),
     };
 });
 

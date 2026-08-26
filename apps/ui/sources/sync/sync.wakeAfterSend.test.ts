@@ -47,6 +47,7 @@ import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { getActiveServerAccountScope } from './domains/scope/activeServerAccountScope';
 import { readPersistedSessionViewport } from './domains/state/sessionViewportPersistence';
+import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
 
 const initialStorageState = storage.getState();
 
@@ -344,6 +345,12 @@ describe('sync.sendMessage wake-after-send', () => {
             getSessionEncryption: () => null,
             getMachineEncryption: () => ({}),
         };
+        vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+            if (String(input).includes('/v1/features')) {
+                return Response.json(buildServerFeaturesResponse());
+            }
+            throw new Error(`Unexpected fetch ${String(input)}`);
+        }));
 
         vi.spyOn(apiSocket, 'request').mockImplementation(async (_path, init) => {
             const current = storage.getState().sessions[sessionId];
