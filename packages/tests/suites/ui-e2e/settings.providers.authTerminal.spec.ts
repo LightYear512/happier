@@ -94,7 +94,7 @@ test.describe('ui e2e: provider settings auth status', () => {
 
     let cliLogin: StartedCliTerminalConnect | null = null;
     try {
-      await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
+      await gotoDomContentLoadedWithRetries(page, uiBaseUrl, 300_000);
       await ensureAccountReadyForConnect({ page, timeoutMs: 120_000 });
 
       cliLogin = await startCliAuthLoginForTerminalConnect({

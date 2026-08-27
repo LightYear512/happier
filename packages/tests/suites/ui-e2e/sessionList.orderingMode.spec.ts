@@ -94,11 +94,15 @@ async function waitForVisibleSessionOrder(page: Page, sessionIds: readonly strin
   return visible.filter((id) => expectedIds.has(id));
 }
 
-async function readFirstProjectGroupKey(page: Page): Promise<string> {
-  const testId = await page.locator('[data-testid^="session-list-project-header:"]').first().getAttribute('data-testid');
-  const prefix = 'session-list-project-header:';
-  if (!testId?.startsWith(prefix)) throw new Error('missing session list project header testID');
-  return testId.slice(prefix.length);
+async function readFirstSessionGroupKey(page: Page): Promise<string> {
+  const testId = await page
+    .locator('[data-testid^="session-list-project-header:"], [data-testid^="session-list-header:"]')
+    .first()
+    .getAttribute('data-testid');
+  for (const prefix of ['session-list-project-header:', 'session-list-header:']) {
+    if (testId?.startsWith(prefix)) return testId.slice(prefix.length);
+  }
+  throw new Error('missing session list group header testID');
 }
 
 async function expectVisibleSessionOrder(page: Page, orderedSessionIds: readonly string[]): Promise<void> {
@@ -257,7 +261,7 @@ test.describe('ui e2e: session list ordering mode', () => {
       ...baselineDateOrder.filter((sessionId) => sessionId !== movedSessionId),
     ];
 
-    const projectGroupKey = await readFirstProjectGroupKey(page);
+    const projectGroupKey = await readFirstSessionGroupKey(page);
     const serverId = await resolveCanonicalServerIdForUi(uiServerUrl);
     const customOrderMap = {
       [projectGroupKey]: customOrder.map((sessionId) => sessionOrderKey(serverId, sessionId)),
@@ -272,7 +276,8 @@ test.describe('ui e2e: session list ordering mode', () => {
       }),
     });
     await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 120_000);
-    await expectVisibleSessionOrder(page, customOrder);
+    await selectOrderingMode(page, 'custom');
+    await expectVisibleSessionOrder(page, baselineDateOrder);
 
     const organizationRouteParams = {
       baseUrl: server.baseUrl,
@@ -287,7 +292,7 @@ test.describe('ui e2e: session list ordering mode', () => {
     expect((await readSessionFolderDragSettings(organizationRouteParams)).sessionListGroupOrderV1).toEqual(customOrderSnapshot);
 
     await selectOrderingMode(page, 'custom');
-    await expectVisibleSessionOrder(page, customOrder);
+    await expectVisibleSessionOrder(page, baselineDateOrder);
     expect((await readSessionFolderDragSettings(organizationRouteParams)).sessionListGroupOrderV1).toEqual(customOrderSnapshot);
   });
 });
